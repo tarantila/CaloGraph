@@ -1,0 +1,32 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "dietary_energy_consumed",
+        "units": "kcal",
+        "data": [
+          {
+            "id": "synthetic-energy-2026-07-18",
+            "qty": 1985.4,
+            "date": "2026-07-18 20:10:00 +0200",
+            "source": "Synthetic Example",
+            "sourceBundle": "example.synthetic"
+          }
+        ]
+      },
+      {
+        "name": "dietary_protein",
+        "units": "g",
+        "data": [
+          {
+            "id": "synthetic-protein-2026-07-18",
+            "qty": 142.6,
+            "date": "2026-07-18 20:10:00 +0200",
+            "source": "Synthetic Example",
+            "sourceBundle": "example.synthetic"
+          }
+        ]
+      }
+    ]
+  }
+}

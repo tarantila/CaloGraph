@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14.6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: 0.11.29
+          enable-cache: true
+      - working-directory: backend
+        run: uv sync --frozen --all-extras
+      - working-directory: backend
+        run: uv run ruff check app tests
+      - working-directory: backend
+        run: uv run mypy app
+      - working-directory: backend
+        run: uv run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm run lint
+      - working-directory: frontend
+        run: npm run typecheck
+      - working-directory: frontend
+        run: npm run test:unit
+      - working-directory: frontend
+        run: npm run build
+
+  containers-and-e2e:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cp .env.example .env
+      - run: |
+          sed -i 's/CHANGE_ME_DATABASE_PASSWORD/ci-database-password/g' .env
+          sed -i 's/CHANGE_ME_AT_LEAST_32_RANDOM_CHARACTERS/ci-session-secret-at-least-32-characters/' .env
+          sed -i 's/CHANGE_ME_ANOTHER_RANDOM_SECRET/ci-rate-secret-at-least-32-characters/' .env
+      - run: docker compose build
+      - run: ./scripts/e2e.sh
+      - if: always()
+        run: docker compose logs --no-color --tail=300

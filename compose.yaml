@@ -1,0 +1,107 @@
+name: calograph
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-calograph}
+      POSTGRES_USER: ${POSTGRES_USER:-calograph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [internal]
+    security_opt: [no-new-privileges:true]
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://calograph:calograph@postgres:5432/calograph}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set RATE_LIMIT_SECRET in .env}
+      CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
+      TRUSTED_PROXY_NETWORKS: ${TRUSTED_PROXY_NETWORKS:-127.0.0.1/32}
+      ENABLE_HSTS: ${ENABLE_HSTS:-false}
+      MAX_JSON_PAYLOAD_BYTES: ${MAX_JSON_PAYLOAD_BYTES:-10485760}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-1073741824}
+      MAX_ZIP_UNCOMPRESSED_BYTES: ${MAX_ZIP_UNCOMPRESSED_BYTES:-2147483648}
+      MAX_ZIP_ENTRIES: ${MAX_ZIP_ENTRIES:-20}
+      RAW_PAYLOAD_RETENTION_DAYS: ${RAW_PAYLOAD_RETENTION_DAYS:-0}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}
+      IMPORT_RATE_LIMIT: ${IMPORT_RATE_LIMIT:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [internal]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CALOGRAPH_PORT:-8180}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=1777
+      - /var/run:size=4m,mode=1777
+
+  frontend-ci:
+    profiles: [test]
+    build:
+      context: ./frontend
+      target: build
+    command: ["npm", "run", "test:unit"]
+    networks: [internal]
+
+  e2e:
+    profiles: [test]
+    build:
+      context: ./frontend
+      target: e2e
+    environment:
+      BASE_URL: http://frontend:8080
+    command: ["npx", "playwright", "test"]
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:

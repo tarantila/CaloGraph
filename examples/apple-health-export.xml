@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="de_DE">
+  <Record
+    type="HKQuantityTypeIdentifierDietaryEnergyConsumed"
+    sourceName="Synthetic Example"
+    sourceVersion="1.0"
+    unit="kcal"
+    value="612.5"
+    startDate="2026-07-18 12:00:00 +0200"
+    endDate="2026-07-18 12:00:00 +0200"
+    creationDate="2026-07-18 12:01:00 +0200"
+  />
+</HealthData>
