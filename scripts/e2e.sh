@@ -18,7 +18,7 @@ token_output=$(docker compose exec -T backend python -m app.cli create-import-to
   --label playwright)
 e2e_token=$(printf '%s\n' "$token_output" | tail -n 1)
 
-docker compose --profile test run --rm \
+docker compose --profile test run --rm --build \
   -e E2E_USERNAME="$e2e_username" \
   -e E2E_PASSWORD="$e2e_password" \
   -e E2E_IMPORT_TOKEN="$e2e_token" \

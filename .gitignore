@@ -35,6 +35,8 @@ frontend/test-results/
 *.tsbuildinfo
 
 # Runtime data
+.agents/
+.codex/ralph-audit/
 logs/
 uploads/
 raw-imports/

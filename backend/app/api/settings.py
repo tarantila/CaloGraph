@@ -1,3 +1,4 @@
+from datetime import date
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -47,7 +48,6 @@ def update_profile(
         raise HTTPException(status_code=422, detail="Unbekannte IANA-Zeitzone") from exc
     user.timezone = payload.timezone
     user.week_starts_on = payload.week_starts_on
-    user.preferred_weight_unit = payload.preferred_weight_unit
     user.raw_payload_retention_days = payload.raw_payload_retention_days
     db.commit()
     db.refresh(user)
@@ -94,6 +94,30 @@ def create_target(
         **payload.model_dump(),
     )
     db.add(target)
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.put("/targets/{valid_from}", response_model=TargetResponse)
+def update_target(
+    valid_from: date,
+    payload: TargetInput,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> NutritionTarget:
+    if payload.valid_from != valid_from:
+        raise HTTPException(status_code=422, detail="Datum im Pfad und Inhalt stimmt nicht überein")
+    target = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from == valid_from,
+        )
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Budget- und Zielversion nicht gefunden")
+    for field, value in payload.model_dump(exclude={"valid_from"}).items():
+        setattr(target, field, value)
     db.commit()
     db.refresh(target)
     return target

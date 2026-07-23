@@ -1,4 +1,4 @@
-.PHONY: dev up down logs migrate test lint typecheck frontend-test e2e build
+.PHONY: dev up down logs migrate test lint typecheck frontend-test e2e build backup backup-secrets update
 
 dev:
 	docker compose -f compose.yaml -f compose.dev.yaml up --build
@@ -34,3 +34,12 @@ e2e:
 
 build:
 	docker compose build
+
+backup:
+	./scripts/backup-postgres.sh
+
+backup-secrets:
+	./scripts/backup-secrets.sh
+
+update:
+	./scripts/update-containers.sh

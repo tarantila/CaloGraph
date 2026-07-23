@@ -6,6 +6,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.micronutrients import MICRONUTRIENTS
+
 
 @dataclass(slots=True)
 class CanonicalSample:
@@ -55,21 +57,27 @@ METRIC_MAP = {
     "HKQuantityTypeIdentifierDietarySugar": ("sugar_g", "g"),
     "dietary_sodium": ("sodium_mg", "mg"),
     "HKQuantityTypeIdentifierDietarySodium": ("sodium_mg", "mg"),
-    "dietary_water": ("water_ml", "ml"),
-    "HKQuantityTypeIdentifierDietaryWater": ("water_ml", "ml"),
-    "weight_&_body_mass": ("weight_kg", "kg"),
-    "body_mass": ("weight_kg", "kg"),
-    "weight": ("weight_kg", "kg"),
-    "HKQuantityTypeIdentifierBodyMass": ("weight_kg", "kg"),
-    "body_fat_percentage": ("body_fat_percent", "%"),
-    "HKQuantityTypeIdentifierBodyFatPercentage": ("body_fat_percent", "%"),
-    "active_energy": ("active_energy_kcal", "kcal"),
-    "active_energy_burned": ("active_energy_kcal", "kcal"),
-    "HKQuantityTypeIdentifierActiveEnergyBurned": ("active_energy_kcal", "kcal"),
-    "step_count": ("steps", "count"),
-    "HKQuantityTypeIdentifierStepCount": ("steps", "count"),
-    "apple_exercise_time": ("exercise_minutes", "min"),
-    "HKQuantityTypeIdentifierAppleExerciseTime": ("exercise_minutes", "min"),
+}
+for micronutrient in MICRONUTRIENTS:
+    for healthkit_type in micronutrient.healthkit_types:
+        METRIC_MAP[healthkit_type] = (micronutrient.metric_type, micronutrient.unit)
+
+IGNORED_METRIC_TYPES = {
+    "dietary_water",
+    "HKQuantityTypeIdentifierDietaryWater",
+    "active_energy",
+    "active_energy_burned",
+    "HKQuantityTypeIdentifierActiveEnergyBurned",
+    "step_count",
+    "HKQuantityTypeIdentifierStepCount",
+    "apple_exercise_time",
+    "HKQuantityTypeIdentifierAppleExerciseTime",
+    "weight_&_body_mass",
+    "body_mass",
+    "weight",
+    "HKQuantityTypeIdentifierBodyMass",
+    "body_fat_percentage",
+    "HKQuantityTypeIdentifierBodyFatPercentage",
 }
 
 
@@ -97,18 +105,25 @@ def decimal_value(value: Any) -> Decimal:
 
 
 def normalize_value(value: Decimal, incoming_unit: str, canonical_unit: str) -> Decimal:
-    unit = incoming_unit.strip().lower().replace("µ", "u")
+    unit = (
+        incoming_unit.strip()
+        .lower()
+        .replace("µ", "u")
+        .replace("μ", "u")
+        .replace("mcg", "ug")
+    )
     canonical = canonical_unit.lower()
     if unit == canonical or (unit in {"cal", "kcal"} and canonical == "kcal"):
         return value
     conversions: dict[tuple[str, str], Decimal] = {
         ("kj", "kcal"): Decimal(1) / Decimal("4.184"),
         ("j", "kcal"): Decimal("0.000239005736"),
-        ("lb", "kg"): Decimal("0.45359237"),
-        ("lbs", "kg"): Decimal("0.45359237"),
         ("mg", "g"): Decimal("0.001"),
         ("ug", "g"): Decimal("0.000001"),
         ("g", "mg"): Decimal("1000"),
+        ("ug", "mg"): Decimal("0.001"),
+        ("mg", "ug"): Decimal("1000"),
+        ("g", "ug"): Decimal("1000000"),
         ("l", "ml"): Decimal("1000"),
         ("fl_oz_us", "ml"): Decimal("29.5735295625"),
         ("min", "min"): Decimal("1"),

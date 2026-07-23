@@ -1,5 +1,7 @@
 .git
 .github
+.agents
+.codex/ralph-audit
 .venv
 **/__pycache__
 **/.pytest_cache
@@ -12,4 +14,3 @@ frontend/test-results
 backups
 uploads
 .env
-

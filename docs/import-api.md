@@ -28,7 +28,23 @@ JSON-Importe verwenden `Authorization: Bearer cg_…`. Tokens besitzen nur den S
 }
 ```
 
-Zeitstempel benötigen einen UTC-Offset. Einheiten werden kontrolliert in kcal, kg, g, mg, ml, Prozent, Minuten und count konvertiert. Negative, unendliche oder nicht numerische Werte werden abgewiesen.
+## YAZIO-Exporter-JSON
+
+`POST /api/v1/import/yazio` akzeptiert die `days.json` und
+`nutrients.json` von `yazio-exporter`.
+Eine Prüfung ohne Speicherung ist über
+`POST /api/v1/import/yazio/validate` möglich. Beide Endpunkte verwenden wie der
+Apple-Health-JSON-Import ein Import-Token.
+
+Im Browser können dieselben Dateien unter **Importe** hochgeladen werden.
+CaloGraph aggregiert die vier Makronährstofffelder über alle Mahlzeiten und
+übernimmt die unterstützten Vitamine und Mineralstoffe als Tageswerte.
+Aktivitätsenergie, Schritte und Wasser werden bewusst nicht verarbeitet. Namen
+von Mahlzeiten, Produkten und Rezepten werden nicht gespeichert.
+
+Zeitstempel benötigen einen UTC-Offset. Einheiten werden kontrolliert in kcal,
+g, mg und µg konvertiert. Negative, unendliche oder nicht
+numerische Werte werden abgewiesen.
 
 ## Idempotenz
 
@@ -36,5 +52,9 @@ Bei stabiler `id` aktualisiert ein erneuter Import den bestehenden Datensatz. Oh
 
 `POST /api/v1/import/apple-health/validate` führt Mapping und Validierung ohne Persistenz aus. Antworten enthalten Batch-ID, Status und Zähler für empfangene, neue, aktualisierte, übersprungene, fehlerhafte und unbekannte Datensätze.
 
-Gesundheitswerte werden nicht in Fehlerantworten oder normalen Logs ausgegeben.
+Angemeldete Benutzer sehen ihre letzten Importläufe über `GET /api/v1/imports`.
+`GET /api/v1/imports/{batch_id}` ergänzt bis zu 100 sichere Fehlerdetails mit
+Eintragsposition, Metrik, Fehlercode und verständlicher Beschreibung. Beide
+Endpunkte sind strikt auf die Importläufe des angemeldeten Benutzers begrenzt.
 
+Gesundheitswerte werden nicht in Fehlerantworten oder normalen Logs ausgegeben.

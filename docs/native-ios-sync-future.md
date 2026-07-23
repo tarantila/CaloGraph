@@ -2,7 +2,7 @@
 
 Die nicht im MVP enthaltene iOS-App soll das dokumentierte `calograph_sync_v1`-Format verwenden.
 
-- HealthKit-Leseberechtigungen nur für Energieaufnahme, unterstützte Nährstoffe, Wasser, Gewicht, Körperfett, aktive Energie, Schritte und optional Trainingsminuten anfordern.
+- HealthKit-Leseberechtigungen nur für Energieaufnahme sowie unterstützte Makro- und Mikronährstoffe anfordern. Aktivität, Schritte, Trainingsminuten, Flüssigkeit, Gewicht und Körperfett bleiben außerhalb des CaloGraph-Umfangs.
 - Einverständnis je Datentyp erklären; niemals Daten ohne ausdrückliche Freigabe übertragen.
 - Inkrementelle Synchronisation mit `HKAnchoredObjectQuery` und sicher persistiertem Anchor umsetzen.
 - Import-Token ausschließlich im iOS Keychain speichern.
@@ -12,4 +12,3 @@ Die nicht im MVP enthaltene iOS-App soll das dokumentierte `calograph_sync_v1`-F
 - Tokenwiderruf, Gerätewechsel, Zeitzonenwechsel und Teilfehler verständlich behandeln.
 
 Eine native App darf nicht behaupten, HealthKit im Hintergrund jederzeit lesen zu können; iOS entscheidet über Ausführungszeit und Datenzugriff.
-

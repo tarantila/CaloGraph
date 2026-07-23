@@ -1,9 +1,7 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
-from statistics import median
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,7 +10,6 @@ from app.models import (
     HealthSample,
     NutritionTarget,
     TrackingOverride,
-    TrackingQualitySettings,
     User,
 )
 from app.schemas import DailyPoint
@@ -26,7 +23,13 @@ NUTRITION_METRICS = {
     "fiber_g",
     "sugar_g",
     "sodium_mg",
-    "water_ml",
+}
+
+PRIMARY_NUTRITION_METRICS = {
+    "dietary_energy_kcal",
+    "protein_g",
+    "carbohydrates_g",
+    "fat_g",
 }
 
 
@@ -45,23 +48,12 @@ def _target_for(targets: list[NutritionTarget], day: date) -> NutritionTarget | 
     )
 
 
-def _settings(db: Session, user: User) -> TrackingQualitySettings:
-    found = db.get(TrackingQualitySettings, user.id)
-    if found:
-        return found
-    found = TrackingQualitySettings(user_id=user.id)
-    db.add(found)
-    db.flush()
-    return found
-
-
 def daily_points(
     db: Session, user: User, start: date, end: date, source: str | None = None
 ) -> list[DailyPoint]:
-    extended_start = start - timedelta(days=28)
     query = select(HealthSample).where(
         HealthSample.user_id == user.id,
-        HealthSample.local_date >= extended_start,
+        HealthSample.local_date >= start,
         HealthSample.local_date <= end,
     )
     if source:
@@ -84,45 +76,29 @@ def daily_points(
             )
         )
     }
-    quality = _settings(db, user)
     totals: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
-    time_buckets: dict[date, set[int]] = defaultdict(set)
     nutrition_counts: dict[date, int] = defaultdict(int)
-    latest_weight: dict[date, tuple[datetime | None, Decimal | None]] = {}
     for sample in samples:
-        if sample.metric_type == "weight_kg":
-            previous = latest_weight.get(sample.local_date)
-            if previous is None or previous[0] is None or sample.start_at > previous[0]:
-                latest_weight[sample.local_date] = (sample.start_at, sample.value)
-            continue
         totals[sample.local_date][sample.metric_type] += sample.value
         if sample.metric_type in NUTRITION_METRICS:
             nutrition_counts[sample.local_date] += 1
-            time_buckets[sample.local_date].add(
-                sample.start_at.astimezone(ZoneInfo(user.timezone)).hour
-            )
 
-    historical_calories = {day: values.get("dietary_energy_kcal") for day, values in totals.items()}
+    for day, values in totals.items():
+        if any(values.get(metric, Decimal()) > 0 for metric in PRIMARY_NUTRITION_METRICS):
+            continue
+        for metric in PRIMARY_NUTRITION_METRICS:
+            values.pop(metric, None)
+        nutrition_counts[day] = 0
+
     points: list[DailyPoint] = []
     for day in daterange(start, end):
         values = totals.get(day, {})
         calories = values.get("dietary_energy_kcal")
         target = _target_for(targets, day)
         target_kcal = target.calories_kcal if target else None
-        preceding = [
-            amount
-            for historic_day, amount in historical_calories.items()
-            if day - timedelta(days=28) <= historic_day < day and amount is not None
-        ]
-        personal_median = Decimal(str(median(preceding))) if preceding else None
         status, score, reasons = tracking_status(
             calories=calories,
-            target=target_kcal,
-            values=values,
-            buckets=len(time_buckets.get(day, set())),
             nutrition_count=nutrition_counts.get(day, 0),
-            personal_median=personal_median,
-            quality=quality,
         )
         if day in overrides:
             status = overrides[day].status
@@ -138,9 +114,6 @@ def daily_points(
                 protein_g=values.get("protein_g"),
                 carbs_g=values.get("carbohydrates_g"),
                 fat_g=values.get("fat_g"),
-                active_energy_kcal=values.get("active_energy_kcal"),
-                steps=values.get("steps"),
-                weight_kg=latest_weight.get(day, (None, None))[1],
                 tracking_status=status,
                 tracking_score=score,
                 tracking_reasons=reasons,
@@ -152,59 +125,13 @@ def daily_points(
 def tracking_status(
     *,
     calories: Decimal | None,
-    target: Decimal | None,
-    values: dict[str, Decimal],
-    buckets: int,
     nutrition_count: int,
-    personal_median: Decimal | None,
-    quality: TrackingQualitySettings,
 ) -> tuple[str, int, list[str]]:
     if nutrition_count == 0:
         return "no_data", 0, ["Keine Ernährungsdaten vorhanden"]
-    score = 0
-    reasons: list[str] = []
-    if calories is not None and target:
-        ratio = calories / target
-        if ratio >= quality.calories_full_ratio:
-            score += 2
-        elif ratio >= quality.calories_partial_ratio:
-            score += 1
-        else:
-            reasons.append("Kalorien deutlich unter dem Tagesziel")
-    macro_count = sum(metric in values for metric in ("protein_g", "carbohydrates_g", "fat_g"))
-    if macro_count == 3:
-        score += 2
-    elif macro_count == 2:
-        score += 1
-    else:
-        reasons.append("Makronährstoffe nur teilweise vorhanden")
-    if buckets >= 3:
-        score += 2
-    elif buckets == 2:
-        score += 1
-    else:
-        reasons.append("Wenige zeitlich verteilte Einträge")
-    if calories is not None and personal_median:
-        median_ratio = calories / personal_median
-        if median_ratio >= quality.median_full_ratio:
-            score += 2
-        elif median_ratio >= quality.median_partial_ratio:
-            score += 1
-        else:
-            reasons.append("Deutlich unter dem persönlichen 28-Tage-Median")
-    else:
-        reasons.append("Noch keine ausreichende persönliche Vergleichsbasis")
-    if score >= quality.complete_score:
-        status = "complete"
-    elif score >= quality.probably_complete_score:
-        status = "probably_complete"
-    elif score >= quality.probably_incomplete_score:
-        status = "probably_incomplete"
-    else:
-        status = "incomplete"
-    if not reasons:
-        reasons.append("Zielquote, Makros und zeitliche Verteilung sind plausibel")
-    return status, score, reasons
+    if calories is not None:
+        return "complete", 1, ["Kalorienwert vorhanden"]
+    return "incomplete", 0, ["Ernährungsdaten vorhanden, aber kein Kalorienwert"]
 
 
 def moving_average(points: list[DailyPoint], window: int, index: int) -> Decimal | None:
@@ -217,16 +144,6 @@ def moving_average(points: list[DailyPoint], window: int, index: int) -> Decimal
         and point.tracking_status in {"complete", "probably_complete"}
     ]
     return sum(eligible, Decimal()) / len(eligible) if eligible else None
-
-
-def weight_moving_average(points: list[DailyPoint], window: int, index: int) -> Decimal | None:
-    start = points[index].date - timedelta(days=window - 1)
-    values = [
-        point.weight_kg
-        for point in points[: index + 1]
-        if point.date >= start and point.weight_kg is not None
-    ]
-    return sum(values, Decimal()) / len(values) if values else None
 
 
 def percentile(values: list[Decimal], fraction: Decimal) -> Decimal | None:

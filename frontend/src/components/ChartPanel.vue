@@ -6,7 +6,10 @@ import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-const props = defineProps<{ title: string; option: EChartsOption; empty?: boolean }>()
+const props = withDefaults(
+  defineProps<{ title: string; option: EChartsOption; empty?: boolean; height?: number }>(),
+  { empty: false, height: 300 },
+)
 const element = ref<HTMLDivElement>()
 use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
@@ -35,8 +38,11 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="card chart-card">
-    <h2>{{ title }}</h2>
+    <div class="chart-card-header">
+      <h2>{{ title }}</h2>
+      <slot name="header-actions"></slot>
+    </div>
     <div v-if="empty" class="empty">Für diesen Zeitraum liegen keine Werte vor.</div>
-    <div v-else ref="element" style="height: 300px" role="img" :aria-label="title"></div>
+    <div v-else ref="element" :style="{ height: `${height}px` }" role="img" :aria-label="title"></div>
   </section>
 </template>

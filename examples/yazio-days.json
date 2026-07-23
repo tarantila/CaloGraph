@@ -1,0 +1,38 @@
+{
+  "2026-07-20": {
+    "daily_summary": {
+      "activity_energy": 321,
+      "steps": 8421,
+      "water_intake": 2100,
+      "units": {
+        "unit_energy": "kcal"
+      },
+      "meals": {
+        "breakfast": {
+          "nutrients": {
+            "energy.energy": 450,
+            "nutrient.protein": 25,
+            "nutrient.carb": 60,
+            "nutrient.fat": 15
+          }
+        },
+        "lunch": {
+          "nutrients": {
+            "energy.energy": 680,
+            "nutrient.protein": 45,
+            "nutrient.carb": 85,
+            "nutrient.fat": 20
+          }
+        },
+        "dinner": {
+          "nutrients": {
+            "energy.energy": 520,
+            "nutrient.protein": 40,
+            "nutrient.carb": 70,
+            "nutrient.fat": 18
+          }
+        }
+      }
+    }
+  }
+}

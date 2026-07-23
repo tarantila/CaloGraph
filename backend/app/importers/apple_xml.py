@@ -3,6 +3,7 @@ from typing import IO
 from defusedxml.ElementTree import iterparse  # type: ignore[import-untyped]
 
 from app.importers.common import (
+    IGNORED_METRIC_TYPES,
     METRIC_MAP,
     CanonicalSample,
     decimal_value,
@@ -23,6 +24,10 @@ def parse_apple_health_xml(stream: IO[bytes], timezone: str) -> AdapterResult:
         raw_type = attrs.get("type", "")
         mapped = METRIC_MAP.get(raw_type)
         if not mapped:
+            if raw_type in IGNORED_METRIC_TYPES:
+                result.unknown_count += 1
+                element.clear()
+                continue
             result.unknown_types.add(raw_type or "unknown")
             result.unknown_count += 1
             element.clear()

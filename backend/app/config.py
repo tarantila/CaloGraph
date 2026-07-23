@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from cryptography.fernet import Fernet
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,12 +26,42 @@ class Settings(BaseSettings):
     raw_payload_retention_days: int = 0
     login_rate_limit: int = 10
     import_rate_limit: int = 30
+    credential_encryption_key: str = ""
+    yazio_scheduler_poll_seconds: int = 60
+    yazio_scheduler_jitter_minutes: int = 30
 
     @field_validator("raw_payload_retention_days")
     @classmethod
     def retention_non_negative(cls, value: int) -> int:
         if value < 0:
             raise ValueError("RAW_PAYLOAD_RETENTION_DAYS must be zero or positive")
+        return value
+
+    @field_validator("credential_encryption_key")
+    @classmethod
+    def valid_credential_key(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            Fernet(value.encode())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key"
+            ) from exc
+        return value
+
+    @field_validator("yazio_scheduler_poll_seconds")
+    @classmethod
+    def valid_scheduler_poll(cls, value: int) -> int:
+        if not 10 <= value <= 3600:
+            raise ValueError("YAZIO_SCHEDULER_POLL_SECONDS must be between 10 and 3600")
+        return value
+
+    @field_validator("yazio_scheduler_jitter_minutes")
+    @classmethod
+    def valid_scheduler_jitter(cls, value: int) -> int:
+        if not 0 <= value <= 180:
+            raise ValueError("YAZIO_SCHEDULER_JITTER_MINUTES must be between 0 and 180")
         return value
 
     @property

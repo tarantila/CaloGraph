@@ -1,5 +1,6 @@
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Never
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_session,
+    hash_invitation_token,
     hash_password,
     hash_session_token,
     revoke_user_sessions,
@@ -16,11 +18,64 @@ from app.auth.security import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models import User, UserSession
-from app.schemas import CsrfResponse, LoginRequest, PasswordChangeRequest, UserResponse
+from app.models import NutritionTarget, TrackingQualitySettings, User, UserInvitation, UserSession
+from app.schemas import (
+    CsrfResponse,
+    LoginRequest,
+    PasswordChangeRequest,
+    RegistrationRequest,
+    UserResponse,
+)
 from app.services.rate_limit import check_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
+
+
+@router.post("/register", response_model=UserResponse, status_code=201)
+def register(
+    payload: RegistrationRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> User:
+    client = request.client.host if request.client else "unknown"
+    check_rate_limit(db, "register", client, 5)
+    now = datetime.now(UTC)
+    invitation = db.scalar(
+        select(UserInvitation).where(
+            UserInvitation.token_hash == hash_invitation_token(payload.invitation_token),
+            UserInvitation.used_at.is_(None),
+            UserInvitation.revoked_at.is_(None),
+            UserInvitation.expires_at > now,
+        ).with_for_update()
+    )
+    if invitation is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Einladung ist ungültig oder abgelaufen")
+    if db.scalar(select(User.id).where(User.username == payload.username)):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail="Benutzername ist bereits vergeben")
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        timezone=settings.calograph_timezone,
+    )
+    db.add(user)
+    db.flush()
+    db.add(TrackingQualitySettings(user_id=user.id))
+    db.add(
+        NutritionTarget(
+            user_id=user.id,
+            valid_from=date.today(),
+            calories_kcal=Decimal("2200"),
+            protein_g=Decimal("140"),
+        )
+    )
+    invitation.used_at = now
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.post("/login")

@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.importers.common import (
+    IGNORED_METRIC_TYPES,
     METRIC_MAP,
     CanonicalSample,
     decimal_value,
@@ -43,6 +44,10 @@ def _parse_health_auto_export(payload: dict[str, Any], timezone: str) -> Adapter
         result.received += len(data)
         mapped = METRIC_MAP.get(name)
         if not mapped:
+            if name in IGNORED_METRIC_TYPES:
+                result.unknown_count += len(data)
+                item_index += len(data)
+                continue
             result.unknown_types.add(name or "unknown")
             result.unknown_count += len(data)
             item_index += len(data)
@@ -95,6 +100,9 @@ def _parse_calograph(payload: dict[str, Any], timezone: str) -> AdapterResult:
         name = str(point.get("type", ""))
         mapped = METRIC_MAP.get(name)
         if not mapped:
+            if name in IGNORED_METRIC_TYPES:
+                result.unknown_count += 1
+                continue
             result.unknown_types.add(name or "unknown")
             result.unknown_count += 1
             continue

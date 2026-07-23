@@ -4,8 +4,8 @@ export interface User {
   language: string
   timezone: string
   week_starts_on: number
-  preferred_weight_unit: 'kg' | 'lb'
   raw_payload_retention_days: number
+  is_admin: boolean
 }
 
 export type TrackingStatus =
@@ -23,16 +23,12 @@ export interface DailyPoint {
   protein_g: number | null
   carbs_g: number | null
   fat_g: number | null
-  active_energy_kcal: number | null
-  steps: number | null
-  weight_kg: number | null
   tracking_status: TrackingStatus
   tracking_score: number
   tracking_reasons: string[]
   average_7d?: number | null
   average_14d?: number | null
   average_28d?: number | null
-  weight_average_7d?: number | null
   classification?: string
 }
 
@@ -52,6 +48,28 @@ export interface ImportBatch {
   error_message: string | null
 }
 
+export interface ImportSummary {
+  batch_id: string | null
+  status: string
+  received: number
+  inserted: number
+  updated: number
+  skipped: number
+  failed: number
+  unknown_types: string[]
+}
+
+export interface YazioStatus {
+  configured: boolean
+  sync_enabled: boolean
+  sync_interval_minutes: number | null
+  sync_days: number | null
+  last_attempt_at: string | null
+  last_success_at: string | null
+  next_sync_at: string | null
+  last_error: string | null
+}
+
 export interface Target {
   id: string
   valid_from: string
@@ -61,7 +79,6 @@ export interface Target {
   carbs_g: number | null
   fat_g: number | null
   fiber_g: number | null
-  water_ml: number | null
 }
 
 export interface ApiProblem {

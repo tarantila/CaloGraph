@@ -6,19 +6,20 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analytics.service import (
+    PRIMARY_NUTRITION_METRICS,
     daily_points,
     moving_average,
     percentile,
     serialize_decimal,
-    weight_moving_average,
 )
 from app.auth.dependencies import current_user
 from app.database import get_db
-from app.models import ImportBatch, User
+from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
+from app.models import HealthSample, ImportBatch, User
 from app.schemas import DailyPoint
 
 router = APIRouter(tags=["Analytics"])
@@ -60,25 +61,164 @@ def daily(
     return points
 
 
+@router.get("/analytics/micronutrients")
+def micronutrients(
+    start: date | None = None,
+    end: date | None = None,
+    source: str | None = Query(default="yazio_export_v1", max_length=64),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    start, end = _range(start, end, user.timezone, 30)
+
+    all_source_rows = db.execute(
+        select(HealthSample.source_type, func.max(HealthSample.updated_at))
+        .where(
+            HealthSample.user_id == user.id,
+            HealthSample.local_date >= start,
+            HealthSample.local_date <= end,
+            HealthSample.metric_type.in_(MICRONUTRIENT_METRIC_TYPES),
+        )
+        .group_by(HealthSample.source_type)
+        .order_by(HealthSample.source_type)
+    ).all()
+
+    sample_query = select(HealthSample).where(
+        HealthSample.user_id == user.id,
+        HealthSample.local_date >= start,
+        HealthSample.local_date <= end,
+        HealthSample.metric_type.in_(MICRONUTRIENT_METRIC_TYPES),
+    )
+    nutrition_day_query = (
+        select(HealthSample.local_date)
+        .where(
+            HealthSample.user_id == user.id,
+            HealthSample.local_date >= start,
+            HealthSample.local_date <= end,
+            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
+            HealthSample.value > 0,
+        )
+        .distinct()
+    )
+    if source:
+        sample_query = sample_query.where(HealthSample.source_type == source)
+        nutrition_day_query = nutrition_day_query.where(
+            HealthSample.source_type == source
+        )
+
+    samples = list(db.scalars(sample_query))
+    recorded_dates = set(db.scalars(nutrition_day_query))
+    if not recorded_dates:
+        recorded_dates = {sample.local_date for sample in samples}
+
+    totals: dict[str, Decimal] = defaultdict(Decimal)
+    days_with_value: dict[str, set[date]] = defaultdict(set)
+    for sample in samples:
+        totals[sample.metric_type] += sample.value
+        days_with_value[sample.metric_type].add(sample.local_date)
+
+    recorded_days = len(recorded_dates)
+    output = []
+    for definition in MICRONUTRIENTS:
+        total = totals.get(definition.metric_type)
+        available_days = len(days_with_value.get(definition.metric_type, set()))
+        average = (
+            total / recorded_days
+            if total is not None and recorded_days
+            else None
+        )
+        coverage_ratio = available_days / recorded_days if recorded_days else 0.0
+        reference_percent = (
+            average / definition.eu_nrv * Decimal("100")
+            if average is not None and definition.eu_nrv
+            else None
+        )
+        if average is None:
+            status = "no_data"
+        elif coverage_ratio < 0.7:
+            status = "insufficient_data"
+        elif reference_percent is not None and reference_percent < Decimal("80"):
+            status = "below_orientation"
+        else:
+            status = "covered"
+        output.append(
+            {
+                "id": definition.yazio_id,
+                "metric_type": definition.metric_type,
+                "label": definition.label,
+                "category": definition.category,
+                "unit": definition.unit,
+                "eu_nrv": serialize_decimal(definition.eu_nrv),
+                "total": serialize_decimal(total),
+                "average_daily": serialize_decimal(average),
+                "days_with_value": available_days,
+                "coverage_ratio": coverage_ratio,
+                "percent_of_nrv": serialize_decimal(reference_percent),
+                "status": status,
+            }
+        )
+
+    filtered_updated_at = max(
+        (sample.updated_at for sample in samples),
+        default=None,
+    )
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "source": source,
+        "recorded_days": recorded_days,
+        "last_updated_at": filtered_updated_at.isoformat()
+        if filtered_updated_at
+        else None,
+        "available_sources": [
+            {
+                "source_type": source_type,
+                "last_updated_at": updated_at.isoformat() if updated_at else None,
+            }
+            for source_type, updated_at in all_source_rows
+        ],
+        "nutrients": output,
+        "definition": {
+            "reference": "EU-NRV für Erwachsene, Verordnung (EU) Nr. 1169/2011, Anhang XIII",
+            "average": "Summe im Zeitraum geteilt durch Tage mit Ernährungseinträgen derselben Quelle",
+            "coverage_threshold": 0.7,
+            "orientation_threshold_percent": 80,
+        },
+    }
+
+
 @router.get("/dashboard/summary")
 def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     today = datetime.now(ZoneInfo(user.timezone)).date()
-    week_start = today - timedelta(days=(today.weekday() - user.week_starts_on) % 7)
-    points = daily_points(db, user, week_start - timedelta(days=7), today)
-    today_point = points[-1]
-    current_week = [point for point in points if point.date >= week_start]
-    previous_week = [point for point in points if point.date < week_start]
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+    points_through_today = [point for point in points if point.date <= today]
+    today_point = points_through_today[-1]
+    current_week = [point for point in points if week_start <= point.date <= today]
+    full_week = [point for point in points if week_start <= point.date <= week_end]
     consumed = sum([point.calories_kcal or Decimal() for point in current_week], Decimal())
-    budget = sum([point.target_kcal or Decimal() for point in current_week], Decimal())
-    protein_values = [point.protein_g for point in points[-7:] if point.protein_g is not None]
-    weights = [point.weight_kg for point in points if point.weight_kg is not None]
-    previous_weights = [point.weight_kg for point in previous_week if point.weight_kg is not None]
+    budget = sum([point.target_kcal or Decimal() for point in full_week], Decimal())
+    protein_values = [
+        point.protein_g for point in points_through_today[-7:] if point.protein_g is not None
+    ]
     last_import = db.scalar(
         select(ImportBatch)
         .where(ImportBatch.user_id == user.id, ImportBatch.status.like("completed%"))
         .order_by(ImportBatch.finished_at.desc())
         .limit(1)
     )
+    first_data_date, last_data_date, recorded_days = db.execute(
+        select(
+            func.min(HealthSample.local_date),
+            func.max(HealthSample.local_date),
+            func.count(func.distinct(HealthSample.local_date)),
+        ).where(
+            HealthSample.user_id == user.id,
+            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
+            HealthSample.value > 0,
+        )
+    ).one()
     return {
         "today": today_point.model_dump(mode="json"),
         "week": {
@@ -90,13 +230,12 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
         "protein_7d_average_g": serialize_decimal(
             sum(protein_values, Decimal()) / len(protein_values) if protein_values else None
         ),
-        "current_weight_kg": serialize_decimal(weights[-1] if weights else None),
-        "weight_change_kg": serialize_decimal(
-            weights[-1] - previous_weights[-1] if weights and previous_weights else None
-        ),
         "last_import_at": last_import.finished_at.isoformat()
         if last_import and last_import.finished_at
         else None,
+        "data_start_date": first_data_date.isoformat() if first_data_date else None,
+        "data_end_date": last_data_date.isoformat() if last_data_date else None,
+        "data_day_count": int(recorded_days or 0),
     }
 
 
@@ -170,9 +309,6 @@ def weekdays(
             point.deviation_kcal for point in available if point.deviation_kcal is not None
         ]
         proteins = [point.protein_g for point in available if point.protein_g is not None]
-        incomplete = sum(
-            point.tracking_status in {"probably_incomplete", "incomplete"} for point in available
-        )
         output.append(
             {
                 "weekday": weekday,
@@ -190,7 +326,6 @@ def weekdays(
                 "mean_protein_g": serialize_decimal(
                     sum(proteins, Decimal()) / len(proteins) if proteins else None
                 ),
-                "incomplete_share": incomplete / len(available) if available else None,
             }
         )
     return {"weekdays": output}
@@ -220,7 +355,6 @@ def trends(
                     "average_7d": serialize_decimal(moving_average(points, 7, index)),
                     "average_14d": serialize_decimal(moving_average(points, 14, index)),
                     "average_28d": serialize_decimal(moving_average(points, 28, index)),
-                    "weight_average_7d": serialize_decimal(weight_moving_average(points, 7, index)),
                 }
             )
             for candidate, original in zip(eligible, original_statuses, strict=True):
@@ -231,7 +365,6 @@ def trends(
                     "average_7d": serialize_decimal(moving_average(points, 7, index)),
                     "average_14d": serialize_decimal(moving_average(points, 14, index)),
                     "average_28d": serialize_decimal(moving_average(points, 28, index)),
-                    "weight_average_7d": serialize_decimal(weight_moving_average(points, 7, index)),
                 }
             )
         output.append(item)
@@ -274,7 +407,17 @@ def data_quality(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    requested_start = start
     start, end = _range(start, end, user.timezone, 90)
+    first_data_date = db.scalar(
+        select(func.min(HealthSample.local_date)).where(
+            HealthSample.user_id == user.id,
+            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
+            HealthSample.value > 0,
+        )
+    )
+    if requested_start is None and first_data_date is not None and first_data_date > start:
+        start = first_data_date
     points = daily_points(db, user, start, end)
     imports = list(
         db.scalars(
@@ -284,7 +427,13 @@ def data_quality(
             .limit(20)
         )
     )
+    recorded_days = sum(point.tracking_status != "no_data" for point in points)
     return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "total_days": len(points),
+        "recorded_days": recorded_days,
+        "coverage_ratio": recorded_days / len(points) if points else 0,
         "missing_days": [
             point.date.isoformat() for point in points if point.tracking_status == "no_data"
         ],
@@ -300,8 +449,16 @@ def data_quality(
                 "id": str(batch.id),
                 "status": batch.status,
                 "source_type": batch.source_type,
+                "client_identifier": batch.client_identifier,
                 "started_at": batch.started_at.isoformat(),
+                "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+                "received": batch.received,
+                "inserted": batch.inserted,
+                "updated": batch.updated,
+                "skipped": batch.skipped,
                 "failed": batch.failed,
+                "unknown_types": batch.unknown_types,
+                "error_message": batch.error_message,
             }
             for batch in imports
         ],

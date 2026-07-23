@@ -26,9 +26,12 @@ async function submit() {
 <template>
   <main class="login-page">
     <section class="card login-card" aria-labelledby="login-title">
-      <div class="brand-mark" aria-hidden="true">C</div>
+      <img class="login-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
       <h1 id="login-title">Willkommen bei CaloGraph</h1>
       <p>Deine Gesundheitsdaten bleiben auf deiner eigenen Infrastruktur.</p>
+      <div v-if="route.query.registered" class="login-success" role="status">
+        Konto erstellt. Du kannst dich jetzt anmelden.
+      </div>
       <form @submit.prevent="submit">
         <label class="field">Benutzername<input v-model="username" autocomplete="username" required /></label>
         <label class="field">Passwort<input v-model="password" type="password" autocomplete="current-password" required /></label>
@@ -40,4 +43,3 @@ async function submit() {
     </section>
   </main>
 </template>
-

@@ -32,12 +32,40 @@ class UserResponse(BaseModel):
     language: str
     timezone: str
     week_starts_on: int
-    preferred_weight_unit: Literal["kg", "lb"]
     raw_payload_retention_days: int
+    is_admin: bool
 
 
 class CsrfResponse(BaseModel):
     csrf_token: str
+
+
+class RegistrationRequest(BaseModel):
+    invitation_token: str = Field(min_length=20, max_length=512)
+    username: str = Field(
+        min_length=1,
+        max_length=190,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,189}$",
+    )
+    password: str = Field(min_length=12, max_length=1024)
+
+
+class InvitationCreateRequest(BaseModel):
+    expires_in_days: int = Field(default=7, ge=1, le=30)
+
+
+class InvitationCreatedResponse(BaseModel):
+    id: uuid.UUID
+    token: str
+    expires_at: datetime
+
+
+class InvitationResponse(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    expires_at: datetime
+    used_at: datetime | None
+    revoked_at: datetime | None
 
 
 class ImportSummary(BaseModel):
@@ -67,6 +95,37 @@ class ImportBatchResponse(BaseModel):
     failed: int
     unknown_types: list[str]
     error_message: str | None
+
+
+class ImportErrorResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    item_index: int | None
+    metric_type: str | None
+    error_code: str
+    safe_detail: str
+
+
+class ImportBatchDetailResponse(ImportBatchResponse):
+    errors: list[ImportErrorResponse] = Field(default_factory=list)
+
+
+class YazioStatusResponse(BaseModel):
+    configured: bool
+    sync_enabled: bool
+    sync_interval_minutes: int | None = None
+    sync_days: int | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    next_sync_at: datetime | None = None
+    last_error: str | None = None
+
+
+class YazioConnectionInput(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+    interval_hours: int = Field(default=6, ge=1, le=168)
+    sync_days: int = Field(default=7, ge=1, le=30)
 
 
 class TokenCreateRequest(BaseModel):
@@ -101,7 +160,6 @@ class TargetInput(BaseModel):
     carbs_g: Decimal | None = Field(default=None, ge=0)
     fat_g: Decimal | None = Field(default=None, ge=0)
     fiber_g: Decimal | None = Field(default=None, ge=0)
-    water_ml: Decimal | None = Field(default=None, ge=0)
 
 
 class TargetResponse(TargetInput):
@@ -114,7 +172,6 @@ class TargetResponse(TargetInput):
 class ProfileUpdate(BaseModel):
     timezone: str = Field(min_length=1, max_length=64)
     week_starts_on: int = Field(ge=0, le=6)
-    preferred_weight_unit: Literal["kg", "lb"] = "kg"
     raw_payload_retention_days: int = Field(default=0, ge=0, le=3650)
 
 
@@ -150,9 +207,6 @@ class DailyPoint(BaseModel):
     protein_g: Decimal | None
     carbs_g: Decimal | None
     fat_g: Decimal | None
-    active_energy_kcal: Decimal | None
-    steps: Decimal | None
-    weight_kg: Decimal | None
     tracking_status: TrackingStatus
     tracking_score: int
     tracking_reasons: list[str]

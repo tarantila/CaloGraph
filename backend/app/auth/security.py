@@ -37,6 +37,10 @@ def hash_api_token(raw: str) -> str:
     return _hmac_token(raw, settings.rate_limit_secret)
 
 
+def hash_invitation_token(raw: str) -> str:
+    return _hmac_token(raw, settings.session_secret)
+
+
 def create_session(db: Session, user: User) -> tuple[UserSession, str, str]:
     raw_token = secrets.token_urlsafe(48)
     csrf_token = secrets.token_urlsafe(32)
