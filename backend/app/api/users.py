@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import hash_invitation_token
+from app.config import settings
 from app.database import get_db
 from app.models import User, UserInvitation
 from app.schemas import (
@@ -69,6 +70,7 @@ def create_invitation(
     return InvitationCreatedResponse(
         id=invitation.id,
         token=raw,
+        invitation_url=f"{settings.calograph_public_url}/einladung/{raw}",
         expires_at=invitation.expires_at,
     )
 

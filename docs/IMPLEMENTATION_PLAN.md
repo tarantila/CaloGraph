@@ -1,51 +1,72 @@
-# CaloGraph – Implementierungsplan
+# CaloGraph implementation plan
 
-## Ziel
+## Goal
 
-CaloGraph ist ein deutschsprachiges, selbst gehostetes Ernährungsdashboard für Daten aus Apple Health und YAZIO. Aktivitäts-, Flüssigkeits- und Gewichtsdaten sind bewusst ausgeschlossen. Apple Health wird niemals serverseitig oder aus iCloud abgefragt; autorisierte iPhone-Exporter übertragen Daten über die Import-API.
+CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
+Activity, hydration, and weight data are deliberately excluded. Apple Health
+is never queried server-side or through iCloud; authorized iPhone exporters
+send data through the import API.
 
-## Architektur
+The dashboard currently uses German as its primary interface language. English
+localization and a per-account language preference are planned for a later
+development phase.
 
-- Vue-3-SPA hinter Nginx; `/api` wird an FastAPI weitergereicht.
-- FastAPI-Monolith mit getrennten API-, Auth-, Import-, Service- und Analytics-Schichten.
-- PostgreSQL als einzige persistente Laufzeitabhängigkeit.
-- Adapter normalisieren Health Auto Export, das CaloGraph-Syncformat, Apple-Health-XML und YAZIO-Exporter-JSON auf `health_samples`.
-- Serverseitige Analytics liefern tägliche Summen, Wochenbudgets, Trends, Kalender- und Datenqualitätswerte.
-- Mikronährstoff-Analytics vergleichen ausreichend abgedeckte Tagesmittel neutral mit EU-NRV-Orientierungswerten.
+## Architecture
 
-## Sicherheitsentscheidungen
+- Vue 3 SPA behind Nginx; `/api` is proxied to FastAPI.
+- FastAPI monolith with separate API, authentication, import, service, and
+  analytics layers.
+- PostgreSQL as the only persistent runtime dependency.
+- Adapters normalize Health Auto Export, the CaloGraph sync format, Apple
+  Health XML, and YAZIO exporter JSON into `health_samples`.
+- Server-side analytics provide daily totals, weekly budgets, trends,
+  calendar, and data-availability metrics.
+- Micronutrient analytics compare sufficiently covered daily averages with EU
+  NRV reference values using neutral language.
 
-- Argon2id-Passwörter, gehashte Import- und Session-Tokens, HttpOnly-Cookies und CSRF-Schutz.
-- Keine Gesundheitswerte in Logs; optionale Rohpayloads sind komprimiert und zeitlich begrenzt.
-- Begrenzte Payloads, defensive ZIP-Prüfung und XML-Parsing ohne DTD, Entities oder Netzwerk.
-- Frontend und Backend standardmäßig nur über `127.0.0.1:8180` erreichbar; PostgreSQL bleibt intern.
+## Security decisions
 
-## Umsetzung
+- Argon2id passwords, hashed import and session tokens, HttpOnly cookies, and
+  CSRF protection.
+- No health values in logs; optional raw payloads are compressed and
+  time-limited.
+- Bounded payloads, defensive ZIP checks, and XML parsing without DTDs,
+  entities, or network access.
+- Frontend and backend are exposed only through `127.0.0.1:8180` by default;
+  PostgreSQL remains internal.
 
-1. Repository, gepinnte Manifeste, Container und Migrationen.
-2. Authentifizierung, Importadapter, idempotente Speicherung und CLI.
-3. Analytics-API und transparenter Status der Datenverfügbarkeit.
-4. Deutsches responsives Dashboard mit Filtern und Importoberfläche.
-5. Tests, synthetische Beispieldaten, CI, Backup und Betriebsdokumentation.
-6. Benutzerverwaltung mit Einladungen, persönlichen Logins, eigener
-   YAZIO-Verbindung und strikt getrennten Gesundheitsdaten.
+## Implementation phases
 
-## Abgrenzung
+1. Repository, pinned manifests, containers, and migrations.
+2. Authentication, import adapters, idempotent storage, and CLI.
+3. Analytics API and transparent nutrition-data availability.
+4. Responsive German dashboard with filters and an import interface.
+5. Tests, synthetic sample data, CI, backups, and operations documentation.
+6. User management with invitations, personal logins, individual YAZIO
+   connections, and strictly isolated health data.
 
-Native iOS-App, CSV-Import, Benachrichtigungen und Datenexport sind vorbereitet,
-aber nicht Teil dieses MVP. Aktivitäts- und Flüssigkeitsauswertungen sind
-bewusst kein Produktziel. Auch Gewichtsdaten werden weder importiert noch
-ausgewertet. Manueller und automatischer YAZIO-Direktabruf sind
-wegen der nicht dokumentierten Schnittstelle ausdrücklich experimentell. Der
-Scheduler speichert jede Verbindung benutzerbezogen und verschlüsselt.
+## Scope boundaries
 
-## Umsetzungsstand
+A native iOS app, CSV import, notifications, data export, and interface
+localization are prepared or planned but are not part of the current MVP.
+Activity and hydration analytics are intentionally not product goals. Weight
+data is neither imported nor analyzed. Manual and scheduled direct YAZIO
+retrieval are explicitly experimental because they rely on an undocumented
+interface. The scheduler stores every connection per user with encrypted
+credentials.
 
-Die sechs Ausbauschritte sind umgesetzt. Der verschlüsselte, benutzerbezogene
-YAZIO-Scheduler läuft als eigener Compose-Dienst. Administratoren können
-widerrufbare Einmal-Einladungen erstellen; eingeladene Personen erhalten einen
-persönlichen Login, strikt getrennte Gesundheitsdaten und eine eigene
-YAZIO-Verbindung. Verifiziert wurden Ruff, mypy, 28 Backendtests, ESLint,
-Vue-Typecheck, 11 Frontendtests, der Vite-Produktionsbuild, die Docker-Images,
-Alembic gegen PostgreSQL 18.4 sowie ein vollständiger Backup-/Restore-Test. Die
-Beispielinstallation verwendet Port `127.0.0.1:8180`.
+## Current implementation status
+
+The six initial expansion phases are implemented. The encrypted, user-scoped
+YAZIO scheduler runs as a dedicated Compose service. Administrators can create
+revocable one-time invitations; invited users receive a personal login,
+strictly isolated health data, and their own YAZIO connection.
+
+The current release checks cover Ruff, mypy, 32 backend tests, ESLint, Vue
+type-checking, 15 frontend unit tests, three Playwright end-to-end scenarios,
+the Vite production build, Docker images, Alembic against PostgreSQL 18.4, and
+the documented backup/restore path. The example installation uses
+`127.0.0.1:8180`.
+
+The project remains work in progress while its public API, migrations,
+localization, and deployment workflow mature toward a stable `1.0` release.

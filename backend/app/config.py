@@ -1,4 +1,6 @@
+import ipaddress
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from pydantic import Field, field_validator
@@ -14,6 +16,7 @@ class Settings(BaseSettings):
     session_secret: str = Field(default="development-session-secret-change-me-32", min_length=32)
     rate_limit_secret: str = Field(default="development-rate-limit-secret-change-me", min_length=32)
     calograph_timezone: str = "Europe/Berlin"
+    calograph_public_url: str = "http://localhost:8180"
     cookie_secure: bool = False
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
@@ -36,6 +39,40 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError("RAW_PAYLOAD_RETENTION_DAYS must be zero or positive")
         return value
+
+    @field_validator("calograph_public_url")
+    @classmethod
+    def valid_public_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "CALOGRAPH_PUBLIC_URL must be an absolute HTTP(S) origin without a path"
+            )
+        return normalized
+
+    @field_validator("trusted_proxy_networks")
+    @classmethod
+    def valid_proxy_networks(cls, value: str) -> str:
+        entries = [item.strip() for item in value.split(",") if item.strip()]
+        if not entries:
+            raise ValueError("TRUSTED_PROXY_NETWORKS must contain at least one IP or network")
+        for entry in entries:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    "TRUSTED_PROXY_NETWORKS must contain comma-separated IP addresses or CIDRs"
+                ) from exc
+        return ",".join(entries)
 
     @field_validator("credential_encryption_key")
     @classmethod
@@ -66,13 +103,20 @@ class Settings(BaseSettings):
 
     @property
     def trusted_host_list(self) -> list[str]:
-        return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+        hosts = [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+        public_host = urlsplit(self.calograph_public_url).hostname
+        if public_host and public_host not in hosts:
+            hosts.append(public_host)
+        return hosts
 
     @property
     def trusted_origin_list(self) -> list[str]:
-        return [
+        origins = [
             item.strip().rstrip("/") for item in self.trusted_origins.split(",") if item.strip()
         ]
+        if self.calograph_public_url not in origins:
+            origins.append(self.calograph_public_url)
+        return origins
 
 
 @lru_cache

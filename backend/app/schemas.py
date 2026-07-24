@@ -57,6 +57,7 @@ class InvitationCreateRequest(BaseModel):
 class InvitationCreatedResponse(BaseModel):
     id: uuid.UUID
     token: str
+    invitation_url: str
     expires_at: datetime
 
 

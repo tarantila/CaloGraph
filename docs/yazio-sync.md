@@ -1,41 +1,39 @@
-# YAZIO-Import und Direktabruf
+# YAZIO import and direct synchronization
 
-## Einordnung
+## Context
 
-YAZIO stellt derzeit keine dokumentierte öffentliche Export-API für diesen
-Anwendungsfall bereit. CaloGraph kapselt die Integration daher in einem eigenen
-Adapter. Analytics und Datenbank hängen nicht vom konkreten Exporter ab; wenn
-sich dessen Format oder die Schnittstelle ändert, muss nur dieser Adapter
-angepasst werden.
+YAZIO currently provides no documented public export API for this use case.
+CaloGraph therefore isolates the integration in its own adapter. Analytics and
+the database do not depend on the concrete exporter; if its format or interface
+changes, only the adapter should need adjustment.
 
-Der stabile Standardweg bleibt:
+The stable default path remains:
 
 ```text
 YAZIO → Apple Health → Health Auto Export → CaloGraph
 ```
 
-Der experimentelle Weg ist:
+The experimental path is:
 
 ```text
-YAZIO → yazio-exporter → CaloGraph-YAZIO-Adapter
+YAZIO → yazio-exporter → CaloGraph YAZIO adapter
 ```
 
-## Vorhandene Varianten
+## Available methods
 
-### `days.json` oder `nutrients.json` hochladen
+### Upload `days.json` or `nutrients.json`
 
-1. Mit
-   [`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter)
-   eine `days.json` und optional eine `nutrients.json` erzeugen.
-2. In CaloGraph **Importe** öffnen.
-3. Die Dateien nacheinander auswählen und importieren.
+1. Use
+   [`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter) to
+   create `days.json` and, optionally, `nutrients.json`.
+2. Open **Importe** in CaloGraph.
+3. Select and import the files one after another.
 
-Unterstützt werden das originale Datumsobjekt des Exporters, eine Hülle der
-Form `{ "days": { ... } }` und die originale `nutrients.json`. Zusätzlich
-akzeptiert der Adapter einfache Tagesobjekte mit `energy`, `protein`, `carb`
-und `fat`.
+The adapter supports the exporter's original date object, a wrapper shaped as
+`{ "days": { ... } }`, and the original `nutrients.json`. It also accepts
+simple daily objects containing `energy`, `protein`, `carb`, and `fat`.
 
-### Direkt aus dem Backend abrufen
+### Retrieve data directly from the backend
 
 ```bash
 docker compose exec backend python -m app.cli sync-yazio \
@@ -43,8 +41,8 @@ docker compose exec backend python -m app.cli sync-yazio \
   --email name@example.com
 ```
 
-Ohne Datumsangaben werden die letzten 60 Tage einschließlich heute abgerufen.
-Für einen anderen Zeitraum:
+Without dates, the command retrieves the previous 60 days including today. Use
+an explicit range when required:
 
 ```bash
 docker compose exec backend python -m app.cli sync-yazio \
@@ -54,32 +52,33 @@ docker compose exec backend python -m app.cli sync-yazio \
   --end-date 2026-03-31
 ```
 
-Das YAZIO-Passwort wird interaktiv und verdeckt abgefragt. Bei diesem manuellen
-Abruf speichert CaloGraph weder Passwort noch Zugriffstoken. Zur Trennung mehrerer Konten wird aus der
-normalisierten E-Mail-Adresse nur eine gekürzte SHA-256-Kennung gebildet; die
-E-Mail-Adresse selbst landet nicht in den Gesundheitsdatensätzen.
+The YAZIO password is requested interactively without echo. CaloGraph stores
+neither the password nor the access token for this manual operation. To
+separate multiple accounts, only a shortened SHA-256 identifier derived from
+the normalized email address is used; the address itself is not stored in
+health samples.
 
-### Automatisch synchronisieren
+### Configure scheduled synchronization
 
-Für den unbeaufsichtigten Betrieb wird jede YAZIO-Verbindung einem
-CaloGraph-Benutzer zugeordnet. E-Mail-Adresse und Passwort liegen ausschließlich
-verschlüsselt in PostgreSQL; der separate Schlüssel bleibt in `.env`.
+For unattended operation, every YAZIO connection belongs to one CaloGraph
+user. Email and password are stored only in encrypted form in PostgreSQL; the
+separate key remains in `.env`.
 
-Einmalig einen Schlüssel erzeugen:
+Generate the key once:
 
 ```bash
 docker compose run --rm --no-deps backend \
   python -m app.cli generate-credential-key
 ```
 
-Den ausgegebenen Wert als `CREDENTIAL_ENCRYPTION_KEY` in `.env` eintragen und
-Backend sowie Scheduler neu erstellen:
+Set the resulting value as `CREDENTIAL_ENCRYPTION_KEY` in `.env`, then recreate
+the backend and scheduler:
 
 ```bash
 docker compose up -d --build backend yazio-scheduler
 ```
 
-Danach die persönliche Verbindung einrichten:
+Configure a personal connection:
 
 ```bash
 docker compose exec backend python -m app.cli configure-yazio \
@@ -87,74 +86,73 @@ docker compose exec backend python -m app.cli configure-yazio \
   --email name@example.com
 ```
 
-Das Passwort wird verdeckt abgefragt und vor dem Speichern durch einen
-echten YAZIO-Abruf geprüft. Standardmäßig synchronisiert der Scheduler alle
-sechs Stunden erneut die letzten sieben Tage. Auf jeden automatischen
-Folgetermin wird ein zufälliger Aufschlag von 1 bis 30 Minuten gerechnet, damit
-Abrufe nicht dauerhaft zu einer festen Uhrzeit stattfinden. Der Wert lässt sich
-über `YAZIO_SCHEDULER_JITTER_MINUTES` konfigurieren; `0` deaktiviert ihn. Dadurch
-werden nachträgliche Änderungen aktualisiert, unveränderte Werte übersprungen
-und neue Tage ergänzt. Die 26 zusätzlichen Mikronährstoffendpunkte werden wegen
-der höheren Abrufzahl höchstens einmal innerhalb von 24 Stunden abgefragt;
-Kalorien und Makronährstoffe bleiben im normalen Sechs-Stunden-Takt. Manuell
-gestartete Importe beginnen weiterhin sofort und schließen Mikronährstoffe ein.
+The password is requested without echo and verified through a real YAZIO
+request before it is stored. By default, the scheduler re-fetches the previous
+seven days every six hours. A random delay of one to 30 minutes is added to
+every scheduled follow-up so requests do not always occur at a fixed time.
+Configure the maximum through `YAZIO_SCHEDULER_JITTER_MINUTES`; set it to `0`
+to disable jitter.
 
-Angemeldete Benutzer können denselben persönlichen Abruf jederzeit über
-**Jetzt synchronisieren** im Datenstatus des Ernährungsüberblicks auslösen. Der
-Button verwendet ausschließlich die YAZIO-Verbindung des angemeldeten Kontos,
-ist CSRF-geschützt und auf zwei Starts pro Minute begrenzt.
+This overlapping window updates later changes, skips unchanged values, and
+adds new days. The 26 additional micronutrient endpoints are requested at most
+once every 24 hours because they generate substantially more calls. Calories
+and macronutrients remain on the normal six-hour schedule. Manually started
+imports still begin immediately and include micronutrients.
 
-Status anzeigen oder die Automatik deaktivieren:
+Authenticated users can start the same personal sync with
+**Jetzt synchronisieren** in the nutrition overview's data-status card. The
+button uses only the authenticated account's YAZIO connection, is protected by
+CSRF validation, and is limited to two starts per minute.
+
+Inspect status or disable automation:
 
 ```bash
 docker compose exec backend python -m app.cli yazio-status --username admin
 docker compose exec backend python -m app.cli disable-yazio --username admin
 ```
 
-Jeder Benutzer besitzt höchstens eine eigene YAZIO-Verbindung. Importierte
-Samples, Importläufe und Synchronisationsstatus bleiben über `user_id` strikt
-dem jeweiligen CaloGraph-Konto zugeordnet.
+Each user has at most one personal YAZIO connection. Imported samples, import
+batches, and synchronization status remain strictly associated with that
+CaloGraph account through `user_id`.
 
 ## Mapping
 
-| YAZIO-Feld | CaloGraph-Metrik | Einheit |
+| YAZIO field | CaloGraph metric | Unit |
 |---|---|---|
-| Summe `energy.energy` über alle Mahlzeiten | `dietary_energy_kcal` | kcal |
-| Summe `nutrient.protein` | `protein_g` | g |
-| Summe `nutrient.carb` | `carbohydrates_g` | g |
-| Summe `nutrient.fat` | `fat_g` | g |
-| `vitamin.a` bis `vitamin.k` | 13 kanonische Vitaminmetriken | mg oder µg |
-| `mineral.calcium` bis `mineral.choline` | 13 kanonische Mineralstoffmetriken | mg oder µg |
+| Sum of `energy.energy` across all meals | `dietary_energy_kcal` | kcal |
+| Sum of `nutrient.protein` | `protein_g` | g |
+| Sum of `nutrient.carb` | `carbohydrates_g` | g |
+| Sum of `nutrient.fat` | `fat_g` | g |
+| `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
+| `mineral.calcium` through `mineral.choline` | 13 canonical mineral metrics | mg or µg |
 
-Aktivität, Schritte und Wasser werden weder beim Direktabruf angefordert noch
-vom YAZIO-Adapter übernommen. Mahlzeiten, Produkte, Rezepte, Profilfelder und
-YAZIO-Ziele werden derzeit nicht persistiert. Auch bei aktivierter allgemeiner
-Rohpayload-Aufbewahrung speichert der YAZIO-Adapter nicht die vollständige
-Exportdatei. Ein erneuter Abruf desselben Tages aktualisiert die stabilen
-Tageswerte idempotent.
+Activity, steps, and water are neither requested by direct sync nor imported by
+the YAZIO adapter. Meals, products, recipes, profile fields, and YAZIO targets
+are not currently persisted. Even when general raw-payload retention is
+enabled, the YAZIO adapter does not store the complete export file. Re-fetching
+the same day updates stable daily values idempotently.
 
-Die Mikronährstoffe stammen aus den 26 separaten Tagesendpunkten von
-`yazio-exporter==0.2.0`. Fehlende Angaben eines Produkts können deshalb wie eine
-geringe Aufnahme aussehen. Die Analyse zeigt zusätzlich die Datenabdeckung und
-wertet Werte erst ab 70 Prozent Abdeckung als belastbaren Orientierungshinweis.
-EU-NRV-Werte aus Anhang XIII der Verordnung (EU) Nr. 1169/2011 dienen nur als
-neutrale Erwachsenen-Orientierung und nicht als medizinische Diagnose.
+Micronutrients come from the 26 separate daily endpoints provided by
+`yazio-exporter==0.2.0`. Missing product details can therefore look like low
+intake. The analysis reports data coverage separately and treats values as a
+reliable orientation only at 70 percent coverage or above. EU NRVs from Annex
+XIII of Regulation (EU) No 1169/2011 are a neutral adult reference, not a
+medical diagnosis.
 
-## Sicherheits- und Betriebsgrenzen
+## Security and operational limits
 
-- Der direkte Abruf verwendet die nicht dokumentierte YAZIO-API über die
-  fest gepinnte Abhängigkeit `yazio-exporter==0.2.0`.
-- Beim manuellen Abruf werden Zugangsdaten nur an den YAZIO-Endpunkt übertragen
-  und nicht persistiert. Für die automatische Synchronisierung werden sie mit
-  Fernet authentifiziert verschlüsselt; der Schlüssel wird getrennt in `.env`
-  gehalten.
-- Geht `CREDENTIAL_ENCRYPTION_KEY` verloren, können gespeicherte Verbindungen
-  nicht wiederhergestellt werden und müssen neu eingerichtet werden.
-- Wer sowohl Datenbank als auch `.env` lesen kann, kann auch die Zugangsdaten
-  entschlüsseln. Dateirechte und Backups müssen deshalb beide schützen.
-- Pro Direktabruf sind höchstens 366 Tage erlaubt.
-- Nicht dieselben Tage parallel aus Apple Health und YAZIO importieren. Die
-  Quellen bleiben für Nachvollziehbarkeit getrennt und werden daher nicht
-  quellenübergreifend dedupliziert.
-- Wenn die Schnittstelle nicht mehr funktioniert, bleibt der Apple-Health-Weg
-  unverändert nutzbar.
+- Direct retrieval uses YAZIO's undocumented API through the pinned
+  `yazio-exporter==0.2.0` dependency.
+- Manual retrieval sends credentials only to the YAZIO endpoint and does not
+  persist them. Scheduled sync stores them using authenticated Fernet
+  encryption, with the key kept separately in `.env`.
+- If `CREDENTIAL_ENCRYPTION_KEY` is lost, stored connections cannot be
+  recovered and must be configured again.
+- Anyone who can read both the database and `.env` can decrypt credentials.
+  File permissions and backups must protect both.
+- A single direct request is limited to 366 days.
+- Do not import the same days from Apple Health and YAZIO in parallel. Sources
+  remain separate for provenance and are not deduplicated across source
+  boundaries.
+- If the interface stops working, the Apple Health path remains available
+  unchanged.

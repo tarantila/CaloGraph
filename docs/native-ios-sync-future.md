@@ -1,14 +1,24 @@
-# Zukünftige native iOS-Synchronisierung
+# Future native iOS synchronization
 
-Die nicht im MVP enthaltene iOS-App soll das dokumentierte `calograph_sync_v1`-Format verwenden.
+The native iOS app, which is not part of the current MVP, should use the
+documented `calograph_sync_v1` format.
 
-- HealthKit-Leseberechtigungen nur für Energieaufnahme sowie unterstützte Makro- und Mikronährstoffe anfordern. Aktivität, Schritte, Trainingsminuten, Flüssigkeit, Gewicht und Körperfett bleiben außerhalb des CaloGraph-Umfangs.
-- Einverständnis je Datentyp erklären; niemals Daten ohne ausdrückliche Freigabe übertragen.
-- Inkrementelle Synchronisation mit `HKAnchoredObjectQuery` und sicher persistiertem Anchor umsetzen.
-- Import-Token ausschließlich im iOS Keychain speichern.
-- stabile HealthKit-UUID als externe Sample-ID übertragen; gelöschte Samples benötigen später ein explizites Tombstone-Protokoll.
-- Hintergrundübertragung mit `URLSession`, exponentiellem Backoff, Jitter und begrenzten Wiederholungen implementieren.
-- mindestens sieben Tage überlappend synchronisieren, lokalen Sync-Status und letzte Serverantwort anzeigen.
-- Tokenwiderruf, Gerätewechsel, Zeitzonenwechsel und Teilfehler verständlich behandeln.
+- Request HealthKit read permissions only for dietary energy and supported
+  macro- and micronutrients. Activity, steps, exercise minutes, hydration,
+  weight, and body fat remain outside CaloGraph's scope.
+- Explain consent for every data type and never transfer data without explicit
+  authorization.
+- Implement incremental synchronization with `HKAnchoredObjectQuery` and a
+  securely persisted anchor.
+- Store the import token only in the iOS Keychain.
+- Send the stable HealthKit UUID as the external sample ID. Deleted samples
+  will require an explicit tombstone protocol.
+- Implement background transfer with `URLSession`, exponential backoff,
+  jitter, and bounded retries.
+- Synchronize with at least seven overlapping days and display local sync
+  status and the latest server response.
+- Handle token revocation, device changes, time-zone changes, and partial
+  failures clearly.
 
-Eine native App darf nicht behaupten, HealthKit im Hintergrund jederzeit lesen zu können; iOS entscheidet über Ausführungszeit und Datenzugriff.
+A native app must not claim that it can read HealthKit in the background at any
+time. iOS controls execution timing and data access.

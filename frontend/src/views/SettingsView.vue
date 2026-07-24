@@ -125,11 +125,11 @@ async function saveYazio() {
   }
 }
 async function createInvitation() {
-  const result = await api<{ token: string }>('/users/invitations', {
+  const result = await api<{ token: string; invitation_url: string }>('/users/invitations', {
     method: 'POST',
     body: JSON.stringify({ expires_in_days: 7 }),
   })
-  invitationUrl.value = `${window.location.origin}/einladung/${result.token}`
+  invitationUrl.value = result.invitation_url
   await load()
 }
 async function copyInvitation() {

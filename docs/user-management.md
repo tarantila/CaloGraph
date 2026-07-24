@@ -1,46 +1,58 @@
-# Benutzerverwaltung
+# User management
 
-## Grundprinzip
+## Core model
 
-Jedes CaloGraph-Konto besitzt eigene Gesundheitswerte, Importläufe,
-Zielhistorien, Import-Tokens und höchstens eine persönliche YAZIO-Verbindung.
-Alle Lese- und Schreibabfragen werden über `user_id` auf das angemeldete Konto
-eingeschränkt. Ein Administrator sieht in der Benutzerverwaltung nur
-Kontodaten, nicht die Ernährungswerte anderer Benutzer.
+Every CaloGraph account owns its health values, import batches, target history,
+import tokens, and at most one personal YAZIO connection. All reads and writes
+are restricted to the authenticated account through `user_id`. In user
+management, an administrator sees account metadata but never another user's
+nutrition values.
 
-## Erster Administrator
+## First administrator
 
-Der erste über die CLI angelegte Benutzer wird automatisch Administrator:
+The first user created through the CLI becomes an administrator automatically:
 
 ```bash
 docker compose exec backend python -m app.cli create-user
 ```
 
-Weitere CLI-Benutzer erhalten nur mit `--admin` Administratorrechte. Bei einem
-Upgrade einer bestehenden Einzelbenutzerinstallation wird der älteste
-vorhandene Benutzer einmalig zum Administrator.
+Later CLI users receive administrator rights only with `--admin`. When an
+existing single-user installation is upgraded, the oldest existing user is
+promoted once.
 
-## Freund einladen
+## Invite another user
 
-Unter **Konto → Benutzerverwaltung** erzeugt der Administrator einen
-Einladungslink. Der Link:
+Under **Konto → Benutzerverwaltung**, an administrator creates an invitation
+link. The link:
 
-- ist standardmäßig sieben Tage gültig;
-- kann genau einmal verwendet werden;
-- kann vor Verwendung widerrufen werden;
-- wird nur direkt nach der Erstellung vollständig angezeigt.
+- is valid for seven days by default;
+- can be used exactly once;
+- can be revoked before use;
+- is shown in full only immediately after creation.
 
-Der Empfänger öffnet den Link, wählt Benutzername und ein mindestens zwölf
-Zeichen langes Passwort und meldet sich anschließend regulär an. Es werden
-keine E-Mail-Nachrichten durch CaloGraph versendet.
+The link always starts with the canonical `CALOGRAPH_PUBLIC_URL` configured by
+the operator. Set this value to the final HTTPS domain before creating links
+for other users.
 
-## Persönliches YAZIO
+The recipient opens the link, chooses a username and a password containing at
+least twelve characters, and then signs in normally. CaloGraph does not send
+email.
 
-Jeder Benutzer richtet unter **Konto → Persönliche YAZIO-Verbindung** die
-eigenen Zugangsdaten ein. CaloGraph prüft die Verbindung einmal gegen YAZIO und
-speichert E-Mail und Passwort anschließend mit dem
-`CREDENTIAL_ENCRYPTION_KEY` verschlüsselt. Automatische und manuelle Importe
-schreiben ausschließlich in dieses Benutzerkonto.
+## Personal YAZIO connection
 
-Da der YAZIO-Direktabruf eine nicht dokumentierte Schnittstelle verwendet,
-bleibt Apple Health der unabhängige Rückfallweg.
+Each user configures their own credentials under
+**Konto → Persönliche YAZIO-Verbindung**. CaloGraph verifies the connection
+against YAZIO once and then stores the email and password encrypted with
+`CREDENTIAL_ENCRYPTION_KEY`. Manual and scheduled imports write only to that
+user's account.
+
+Because direct YAZIO retrieval uses an undocumented interface, Apple Health
+remains the independent fallback path.
+
+## Interface language
+
+The dashboard currently uses German for every account. The data model already
+stores a language preference, but the application must not expose an English
+option until all navigation, forms, validation messages, charts, and
+accessibility labels are translated consistently. A per-account German/English
+selector is planned as a later internationalization phase.

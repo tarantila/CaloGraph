@@ -410,13 +410,19 @@ describe('main views', () => {
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
     const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }
-    apiMock.mockImplementation((path: string) => {
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/profile') return Promise.resolve(user)
       if (path === '/settings/targets') return Promise.resolve([currentTarget])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
       if (path === '/yazio/status') return Promise.resolve({ configured: false, sync_enabled: false, sync_interval_minutes: null, sync_days: null, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
       if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations' && options?.method === 'POST') {
+        return Promise.resolve({
+          token: 'invite_example',
+          invitation_url: 'https://nutrition.example.test/einladung/invite_example',
+        })
+      }
       if (path === '/users/invitations') return Promise.resolve([])
       return Promise.resolve({})
     })
@@ -450,5 +456,14 @@ describe('main views', () => {
     expect(accountWrapper.text()).not.toContain('Budget- und Zielhistorie')
     expect(accountWrapper.text()).not.toContain('Tracking-Vollständigkeit')
     expect(accountWrapper.text()).not.toContain('Gewichtseinheit')
+    const invitationButton = accountWrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Einladungslink erzeugen')
+    expect(invitationButton).toBeDefined()
+    await invitationButton!.trigger('click')
+    await flushPromises()
+    expect(accountWrapper.text()).toContain(
+      'https://nutrition.example.test/einladung/invite_example',
+    )
   })
 })

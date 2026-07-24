@@ -1,38 +1,56 @@
 # Changelog
 
-Alle wesentlichen Änderungen an CaloGraph werden in dieser Datei dokumentiert.
-Das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
+All notable changes to CaloGraph are documented in this file. The project
+follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added a dashboard screenshot to the README.
+
+### Changed
+
+- Standardized public project documentation on English while keeping the
+  application interface German.
+- Renamed the Compose files to the conventional `docker-compose.yml` and
+  `docker-compose.dev.yml` filenames.
+- Documented the work-in-progress status and planned per-account language
+  selection.
+- Added a canonical `CALOGRAPH_PUBLIC_URL` for externally shared links,
+  including user invitations.
+- Restricted Uvicorn forwarded-header handling to configured proxy networks
+  instead of trusting every sender.
+
 ## [0.1.1] - 2026-07-23
 
-### Hinzugefügt
+### Added
 
-- Persönliche Benutzerkonten mit Einladungen und strikt getrennten Ernährungsdaten.
-- Manueller und automatischer YAZIO-Sync mit verschlüsselten Zugangsdaten,
-  Sechs-Stunden-Intervall und zufälliger zeitlicher Streuung.
-- Mikronährstoffanalyse für Vitamine und Mineralstoffe mit Datenabdeckung und
-  neutralem EU-NRV-Vergleich.
-- Historisierte Kalorien- und Makronährstoffbudgets sowie korrekte Tages- und
-  Wochenberechnungen.
-- Betriebs-, Backup-, Wiederherstellungs- und Update-Dokumentation samt
-  Hilfsskripten.
+- Personal user accounts with invitations and strictly isolated nutrition data.
+- Manual and scheduled YAZIO sync with encrypted credentials, a six-hour
+  interval, and randomized scheduling.
+- Micronutrient analysis for vitamins and minerals with data coverage and a
+  neutral EU NRV comparison.
+- Versioned calorie and macronutrient budgets with accurate daily and weekly
+  calculations.
+- Operations, backup, restore, and update documentation with supporting
+  scripts.
 
-### Geändert
+### Changed
 
-- Ernährungsübersicht, Wochenansicht, Kalender, Trends und Datenqualität wurden
-  visuell und inhaltlich überarbeitet.
-- Datenstatus bewertet nur noch, ob Ernährungsdaten vorhanden sind; niedrige
-  Werte werden nicht als unvollständig abgewertet.
-- Aktivitäts-, Flüssigkeits- und Gewichtsdaten wurden aus Import, Auswertung und
-  Oberfläche entfernt.
-- Branding und Anwendungssymbole wurden durch die CaloGraph-Logos ersetzt.
+- Redesigned the nutrition overview, weekly view, calendar, trends, and data
+  quality screens.
+- Data status now reports whether nutrition data exists and no longer treats
+  low values as incomplete.
+- Removed activity, hydration, and weight data from import, analysis, and the
+  interface.
+- Replaced placeholder branding and application icons with the CaloGraph
+  assets.
 
-### Sicherheit
+### Security
 
-- YAZIO-Zugangsdaten werden verschlüsselt gespeichert.
-- Importdaten, Ziele und Analysen sind konsequent einem Benutzer zugeordnet.
+- YAZIO credentials are stored encrypted.
+- Imports, targets, and analytics are consistently scoped to their user.
 
 [Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/tarantila/CaloGraph/compare/b4ca2cf...v0.1.1

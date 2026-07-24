@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 from app.api import analytics
+from app.config import settings
 from app.models import User
 
 
@@ -217,7 +218,9 @@ def test_admin_invitation_creates_isolated_personal_account(
     client: TestClient,
     user: User,
     db,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test")
     user.is_admin = True
     db.commit()
     login = client.post(
@@ -249,6 +252,9 @@ def test_admin_invitation_creates_isolated_personal_account(
     )
 
     assert invited.status_code == 201
+    assert invited.json()["invitation_url"] == (
+        f"https://nutrition.example.test/einladung/{invited.json()['token']}"
+    )
     assert registered.status_code == 201
     assert registered.json()["is_admin"] is False
     assert reused.status_code == 400

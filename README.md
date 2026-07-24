@@ -4,41 +4,62 @@
 
 # CaloGraph
 
-CaloGraph ist ein selbst gehostetes, deutschsprachiges Ernährungsdashboard für Daten aus Apple Health und YAZIO. Es setzt einzelne Tage in den Kontext von Wochenbudgets, Trends, Mikronährstoffen und Datenabdeckung – ohne moralische Bewertung und ohne externe Telemetrie. Aktivitäts-, Flüssigkeits- und Gewichtsdaten gehören bewusst nicht zum Funktionsumfang.
+CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
+It puts individual days into the context of weekly budgets, trends,
+micronutrients, and data coverage without moral judgment or external telemetry.
+Activity, hydration, and weight data are deliberately outside the scope of the
+project.
 
-> **Wichtige Einschränkung:** Ein Server kann Apple Health beziehungsweise HealthKit nicht aus iCloud abrufen. Eine autorisierte iPhone-App wie Health Auto Export muss die Daten per HTTPS an CaloGraph senden. Alternativ kann ein historischer Apple-Health-Export als XML oder ZIP hochgeladen werden.
+![CaloGraph nutrition dashboard with calorie, macronutrient, weekly summary, and data status views](docs/assets/dashboard-overview.png)
 
-## Funktionen
+> [!WARNING]
+> **Work in progress:** CaloGraph is under active development. Version `0.x`
+> releases may contain incomplete features, breaking changes, or migration
+> issues. Keep tested backups and review the changelog before updating. It is
+> not medical software and must not be used for diagnosis or treatment.
 
-- Tageswerte für Kalorien, Eiweiß, Kohlenhydrate und Fett
-- Mikronährstoffanalyse für 13 Vitamine und 13 Mineralstoffe mit Datenabdeckung und neutralem EU-NRV-Vergleich
-- historisierte Ernährungsziele und korrekte Wochenbudgets
-- 7-, 14- und 28-Tage-Mittelwerte ohne Umdeutung fehlender Tage zu null
-- Wochentagsanalyse mit Mittelwert, Median und Perzentilen
-- barrierearme Kalenderansicht mit abgestuften Abweichungen vom Kalorienbudget
-- verständliche Kennzeichnung vorhandener und fehlender Ernährungsdaten
-- idempotenter REST-Import für Health Auto Export v2 und das CaloGraph-Syncformat
-- sicherer historischer Apple-Health-XML-/ZIP-Import
-- experimenteller YAZIO-JSON-Import, manueller Direktabruf sowie verschlüsselter automatischer und per Dashboard auslösbarer Sync
-- lokaler Login, CSRF-Schutz und gehashte Import-Tokens
-- vollständig lokaler Docker-Compose-Betrieb ohne Drittanbieter-Analytics
+> [!IMPORTANT]
+> A server cannot retrieve Apple Health or HealthKit data from iCloud. An
+> authorized iPhone app such as Health Auto Export must send the data to
+> CaloGraph over HTTPS. A historical Apple Health export can alternatively be
+> uploaded as XML or ZIP.
 
-## Architektur
+## Features
+
+- Daily calories, protein, carbohydrates, and fat
+- Micronutrient analysis for 13 vitamins and 13 minerals, including source
+  coverage and a neutral EU NRV comparison
+- Versioned nutrition targets and accurate weekly budgets
+- 7-, 14-, and 28-day averages without treating missing days as zero
+- Weekday analysis with mean, median, and percentiles
+- Accessible calendar view with graded calorie-budget deviations
+- Clear distinction between recorded and missing nutrition data
+- Idempotent REST imports for Health Auto Export v2 and the CaloGraph sync format
+- Defensive historical Apple Health XML/ZIP imports
+- Experimental YAZIO JSON import, manual retrieval, encrypted scheduled sync,
+  and dashboard-triggered sync
+- Local authentication, CSRF protection, and hashed import tokens
+- Fully local Docker Compose deployment without third-party analytics
+
+## Architecture
 
 ```text
-YAZIO → Apple Health auf dem iPhone → iPhone-Exporter → HTTPS/JSON
+YAZIO → Apple Health on iPhone → iPhone exporter → HTTPS/JSON
                                                         ↓
 Browser → Nginx/Vue (127.0.0.1:8180) → FastAPI → PostgreSQL
-                 Apple-Health-XML/ZIP ↗
-                      YAZIO days.json ↗
-                  YAZIO-Direktabruf ──↗
+                   Apple Health XML/ZIP ↗
+                        YAZIO days.json ↗
+                    direct YAZIO sync ──↗
 ```
 
-Die Importadapter normalisieren alle Quellen in dieselbe `health_samples`-Struktur. Analytics und Frontend kennen das ursprüngliche Exportformat nicht. Details stehen in [docs/architecture.md](docs/architecture.md).
+Import adapters normalize every source into the same `health_samples` model.
+Analytics and the frontend do not depend on the original export format. See
+[docs/architecture.md](docs/architecture.md) for details.
 
-## Schnellstart
+## Quick start
 
-Voraussetzungen: Docker Engine mit Docker Compose v2. PostgreSQL oder Node müssen auf dem Host nicht installiert sein.
+Requirements: Docker Engine with Docker Compose v2. PostgreSQL and Node do not
+need to be installed on the host.
 
 ```bash
 cp .env.example .env
@@ -47,54 +68,68 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Erzeuge für `POSTGRES_PASSWORD`, `SESSION_SECRET` und `RATE_LIMIT_SECRET` jeweils unabhängige zufällige Werte. `SESSION_SECRET` und `RATE_LIMIT_SECRET` müssen mindestens 32 Zeichen lang sein. Für den automatischen YAZIO-Sync wird zusätzlich ein eigener `CREDENTIAL_ENCRYPTION_KEY` benötigt; die Erzeugung ist in [docs/yazio-sync.md](docs/yazio-sync.md) beschrieben.
+Generate independent random values for `POSTGRES_PASSWORD`, `SESSION_SECRET`,
+and `RATE_LIMIT_SECRET`. Both application secrets must contain at least 32
+characters. Scheduled YAZIO sync additionally requires a dedicated
+`CREDENTIAL_ENCRYPTION_KEY`; generation is documented in
+[docs/yazio-sync.md](docs/yazio-sync.md).
 
-Der Backend-Container führt ausstehende Alembic-Migrationen vor dem Start kontrolliert aus. Die Anwendung ist anschließend unter [http://127.0.0.1:8180](http://127.0.0.1:8180) erreichbar.
+`CALOGRAPH_PUBLIC_URL` is the canonical browser address used for links that
+leave the application, especially user invitations. Keep the local default for
+a loopback-only installation. When using a reverse proxy, set it to the final
+HTTPS origin, for example `https://nutrition.example.com`. Its hostname and
+origin are automatically added to the request allowlists.
 
-### Ersten Benutzer anlegen
+The backend container applies pending Alembic migrations before it starts. The
+application is then available at
+[http://127.0.0.1:8180](http://127.0.0.1:8180).
+
+### Create the first user
 
 ```bash
 docker compose exec backend python -m app.cli create-user
 ```
 
-Der Befehl fragt Benutzername und Passwort interaktiv ab. Ein Initialkennwort muss mindestens zwölf Zeichen lang sein.
-Der erste Benutzer wird automatisch Administrator und kann anschließend unter
-**Konto → Benutzerverwaltung** einmalige Einladungslinks erstellen.
+The command prompts for a username and password. Initial passwords must contain
+at least twelve characters. The first user becomes an administrator
+automatically and can create one-time invitation links under
+**Konto → Benutzerverwaltung**.
 
-### Import-Token erzeugen
+### Create an import token
 
 ```bash
 docker compose exec backend python -m app.cli create-import-token
 ```
 
-Das Token wird nur einmal angezeigt und in der Datenbank ausschließlich als HMAC-SHA-256-Hash gespeichert. Es kann später unter **Konto → Import-Tokens** widerrufen werden.
+The token is displayed once and stored only as an HMAC-SHA-256 hash. It can be
+revoked later under **Konto → Import-Tokens**.
 
-## iPhone-Import
+## iPhone import
 
-In Health Auto Export eine REST-API-Automation mit folgenden Werten anlegen:
+Create a REST API automation in Health Auto Export with these settings:
 
-- Datenart: Health Metrics
-- Metriken: nur Ernährung; Aktivität, Schritte, Flüssigkeit und Gewicht nicht auswählen
+- Data type: Health Metrics
+- Metrics: nutrition only; do not select activity, steps, hydration, or weight
 - Format: JSON, Export Version 2
-- Zusammenfassung: aus, soweit die Datenmenge praktikabel bleibt
-- Zeitraum: vorherige sieben Tage, damit verspätete Änderungen erneut übertragen werden
-- URL: `https://dein-host.example/api/v1/import/apple-health`
-- Header: `Authorization: Bearer cg_DEIN_TOKEN`
-- optional: `X-Client-Identifier: mein-iphone`
+- Summary: disabled where the data volume permits
+- Range: previous seven days, so delayed changes are sent again
+- URL: `https://your-host.example/api/v1/import/apple-health`
+- Header: `Authorization: Bearer cg_YOUR_TOKEN`
+- Optional: `X-Client-Identifier: my-iphone`
 
-Ein funktionierender Aufruf mit offensichtlich fiktiven Daten:
+Example request using deliberately fake data:
 
 ```bash
 curl --fail-with-body \
   --request POST \
   --header 'Authorization: Bearer cg_FAKE_EXAMPLE_TOKEN_DO_NOT_USE' \
   --header 'Content-Type: application/json' \
-  --header 'X-Client-Identifier: beispiel-iphone' \
+  --header 'X-Client-Identifier: example-iphone' \
   --data-binary @examples/health-auto-export-v2.json \
   https://calograph.example/api/v1/import/apple-health
 ```
 
-Payloads können ohne Speicherung geprüft werden:
+Payloads can be validated without storing them:
 
 ```bash
 curl --fail-with-body \
@@ -105,26 +140,33 @@ curl --fail-with-body \
   https://calograph.example/api/v1/import/apple-health/validate
 ```
 
-Das neutrale Format für eine spätere eigene iOS-App ist in [docs/import-api.md](docs/import-api.md) beschrieben.
+The source-neutral format intended for a future native iOS app is documented in
+[docs/import-api.md](docs/import-api.md).
 
-## Historischer Import
+## Historical import
 
-In Apple Health **Profil → Gesundheitsdaten exportieren** wählen. Die erhaltene ZIP-Datei oder die enthaltene `export.xml` kann unter **Importe** hochgeladen werden. CaloGraph prüft Dateigröße, Pfade, Kompressionsverhältnis und XML-Sicherheit. Der Parser arbeitet streamend; eine wiederholte Ausführung erzeugt keine Duplikate.
+In Apple Health, select **Profile → Export All Health Data**. Upload the
+resulting ZIP or its `export.xml` file under **Importe**. CaloGraph validates
+file sizes, paths, compression ratios, and XML safety. Parsing is streamed, and
+repeated imports do not create duplicates.
 
-Ein vollständig synthetisches XML-Beispiel liegt unter `examples/apple-health-export.xml`.
+A completely synthetic example is available at
+`examples/apple-health-export.xml`.
 
-Apple Health liefert Messwerte, aber häufig keine Lebensmittel-, Rezept- oder Mahlzeitennamen. CaloGraph erwartet diese Angaben daher nicht.
+Apple Health supplies measurements and their sources, but often does not
+include reliable food, recipe, or meal names. CaloGraph therefore does not
+require them.
 
-## Experimenteller YAZIO-Import
+## Experimental YAZIO import
 
-CaloGraph kann die `days.json` von
-[`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter)
-über die Seite **Importe** einlesen. Kalorien, Makro- und unterstützte
-Mikronährstoffe werden je Tag aggregiert; Produkt-, Rezept- und Mahlzeitennamen
-werden nicht gespeichert. Der Direktabruf übernimmt 13 Vitamine und 13
-Mineralstoffe über die separaten Nährstoffendpunkte des Exporters.
+CaloGraph can import `days.json` and `nutrients.json` files produced by
+[`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter) from
+the **Importe** page. Calories, macronutrients, and supported micronutrients are
+aggregated per day. Product, recipe, and meal names are not stored. Direct sync
+retrieves 13 vitamins and 13 minerals through the exporter's separate nutrient
+endpoints.
 
-Ein manueller Direktabruf der letzten 60 Tage ist ebenfalls möglich:
+A manual direct import retrieves the previous 60 days by default:
 
 ```bash
 docker compose exec backend python -m app.cli sync-yazio \
@@ -132,29 +174,30 @@ docker compose exec backend python -m app.cli sync-yazio \
   --email name@example.com
 ```
 
-Das Passwort wird verdeckt abgefragt. Passwort und Zugriffstoken bleiben nur für
-die Dauer des Befehls im Arbeitsspeicher. Ein historischer Bereich kann mit
-`--from-date YYYY-MM-DD --end-date YYYY-MM-DD` abgerufen werden; pro Aufruf sind
-höchstens 366 Tage erlaubt.
+The password is requested without echo. Passwords and access tokens remain in
+memory only for the duration of this command. Use
+`--from-date YYYY-MM-DD --end-date YYYY-MM-DD` for a historical range; one
+request is limited to 366 days.
 
-Dieser Weg nutzt eine nicht dokumentierte YAZIO-Schnittstelle und kann nach
-Änderungen auf Anbieterseite ausfallen. Health Auto Export bleibt deshalb der
-empfohlene Standard. Dieselben Tage sollten nicht gleichzeitig aus Apple Health
-und direkt aus YAZIO importiert werden, weil getrennte Quellen bewusst nicht
-quellenübergreifend dedupliziert werden. Details stehen in
-[docs/yazio-sync.md](docs/yazio-sync.md).
+This integration relies on an undocumented YAZIO interface and may stop working
+after provider-side changes. Health Auto Export remains the recommended
+default. Do not import the same days from Apple Health and directly from YAZIO,
+because separate sources are intentionally not deduplicated across source
+boundaries. See [docs/yazio-sync.md](docs/yazio-sync.md).
 
-## Demodaten
+## Demo data
 
-Nach der Benutzeranlage können 120 vollständig synthetische Tage erzeugt werden:
+After creating a user, generate 120 completely synthetic days:
 
 ```bash
 docker compose exec backend python -m app.cli seed-demo-data --username admin
 ```
 
-Der Seed enthält Wochenendmuster, Datenlücken, unterschiedlich große Esstage, eine Zieländerung und den Berliner Wechsel zur Sommerzeit. Er läuft niemals automatisch.
+The seed includes weekend patterns, missing days, varied intake, a target
+change, and the daylight-saving-time transition in Berlin. It never runs
+automatically.
 
-## Entwicklung und Qualität
+## Development and quality
 
 ```bash
 make dev
@@ -166,7 +209,7 @@ make build
 make e2e
 ```
 
-Alternativ lokal im jeweiligen Verzeichnis:
+Alternatively, run the tools inside their respective directories:
 
 ```bash
 cd backend
@@ -183,67 +226,78 @@ npm run test:unit
 npm run build
 ```
 
-Die OpenAPI-Dokumentation liegt nach dem Start unter `/api/docs`.
+OpenAPI documentation is exposed at `/api/docs` while the application is
+running.
 
-## Migrationen und Updates
+## Migrations and updates
 
 ```bash
-BACKUP_DIR=/sicherer/verschluesselter/pfad \
+BACKUP_DIR=/secure/encrypted/path \
   BACKUP_SECRETS=1 \
   scripts/update-containers.sh
 ```
 
-Das Skript erstellt zuerst ein geprüftes Datenbankbackup. `BACKUP_SECRETS=1`
-darf nur mit einem verschlüsselten Backupziel verwendet werden und sichert dann
-zusätzlich die für YAZIO und Sitzungen benötigte `.env`. Details und Restore
-stehen in [docs/backup-restore.md](docs/backup-restore.md).
+The script first creates and validates a database backup.
+`BACKUP_SECRETS=1` must only be used with encrypted backup storage; it also
+backs up the `.env` file required for sessions and YAZIO credentials. Restore
+instructions are in [docs/backup-restore.md](docs/backup-restore.md).
 
-Das Backend startet nicht, wenn Migrationen fehlschlagen.
+The backend refuses to start when migrations fail.
 
-## Datenschutz und Betrieb
+## Privacy and operations
 
-- Gesundheitswerte und Payloads erscheinen nicht in normalen Logs.
-- Rohpayload-Speicherung für JSON-Importe ist standardmäßig deaktiviert (`RAW_PAYLOAD_RETENTION_DAYS=0`); große XML-/ZIP-Uploads werden nicht zusätzlich in der Datenbank dupliziert.
-- PostgreSQL besitzt kein Host-Port-Mapping.
-- Frontend ist standardmäßig nur an `127.0.0.1:8180` gebunden.
-- TLS wird am vorgeschalteten Reverse Proxy terminiert; erst dann `COOKIE_SECURE=true` und `ENABLE_HSTS=true` setzen.
-- Keine CDN-Abhängigkeit, Telemetrie, externe Analytics oder Datenübertragung an Dritte.
+- Health values and payloads are excluded from normal logs.
+- Raw JSON payload retention is disabled by default
+  (`RAW_PAYLOAD_RETENTION_DAYS=0`); large XML/ZIP uploads are not duplicated in
+  the database.
+- PostgreSQL has no host port mapping.
+- The frontend binds to `127.0.0.1:8180` by default.
+- TLS terminates at a reverse proxy; only then enable `COOKIE_SECURE=true` and
+  `ENABLE_HSTS=true`.
+- Forwarded headers are accepted only from `TRUSTED_PROXY_NETWORKS`. The
+  Compose default covers standard Docker bridge networks and should be narrowed
+  to the actual `calograph_internal` subnet where practical.
+- No CDN dependencies, telemetry, external analytics, or third-party data
+  transfer.
 
-Siehe [SECURITY.md](SECURITY.md), [docs/threat-model.md](docs/threat-model.md) und [docs/reverse-proxy.md](docs/reverse-proxy.md).
+See [SECURITY.md](SECURITY.md), [docs/threat-model.md](docs/threat-model.md),
+and [docs/reverse-proxy.md](docs/reverse-proxy.md).
 
-## Dokumentation
+## Documentation
 
-- [Architektur](docs/architecture.md)
-- [Datenmodell](docs/data-model.md)
-- [Import-API](docs/import-api.md)
-- [Apple-Health-/Exporter-Einrichtung](docs/apple-health-setup.md)
-- [Analytics-Definitionen](docs/analytics-definitions.md)
-- [Threat Model](docs/threat-model.md)
-- [Backup und Restore](docs/backup-restore.md)
-- [Produktiver Docker-Betrieb](docs/production.md)
-- [Benutzerverwaltung](docs/user-management.md)
-- [Reverse Proxy](docs/reverse-proxy.md)
-- [Zukünftige native iOS-Synchronisierung](docs/native-ios-sync-future.md)
+- [Architecture](docs/architecture.md)
+- [Data model](docs/data-model.md)
+- [Import API](docs/import-api.md)
+- [Apple Health and exporter setup](docs/apple-health-setup.md)
+- [Analytics definitions](docs/analytics-definitions.md)
+- [Threat model](docs/threat-model.md)
+- [Backup and restore](docs/backup-restore.md)
+- [Production Docker operation](docs/production.md)
+- [User management](docs/user-management.md)
+- [Reverse proxy](docs/reverse-proxy.md)
+- [Future native iOS sync](docs/native-ios-sync-future.md)
 
-## Markenassets
+## Brand assets
 
-Die originalen CaloGraph-Logos liegen unter
+The original CaloGraph logos are stored in
 [`frontend/public/branding`](frontend/public/branding):
 
-- `calograph-logo-long.png` – horizontales Logo
-- `calograph-app-logo.png` – App- und Store-Logo
-- `calograph-icon.png` – freigestelltes Farbsymbol
-- `calograph-logo-monochrome.png` – monochrome Variante
+- `calograph-logo-long.png` — horizontal logo
+- `calograph-app-logo.png` — app and store logo
+- `calograph-icon.png` — isolated color icon
+- `calograph-logo-monochrome.png` — monochrome variant
 
-Für das Frontend werden eine optimierte 256-Pixel-App-Variante und ein
-theme-unabhängiger README-Banner aus diesen Originaldateien erzeugt.
+The frontend uses an optimized 256-pixel app image and a theme-independent
+README banner derived from these originals.
 
-## Bekannte Grenzen des MVP
+## Current limitations and roadmap
 
-- keine native iOS-App und kein Zugriff auf eine angebliche Apple-Health-Cloud-API
-- die automatische YAZIO-Synchronisierung nutzt eine nicht dokumentierte
-  Schnittstelle und kann durch Änderungen bei YAZIO ausfallen
-- kein CSV-Importer
-- keine Mahlzeitenanalyse ohne entsprechende Quelldaten
-- keine medizinischen Diagnosen oder automatische Ernährungsberatung
-- horizontaler Multi-Host-Betrieb und Kubernetes sind nicht vorgesehen
+- The dashboard UI is currently German. English localization and a per-account
+  language preference are planned, but not implemented yet.
+- No native iOS app and no access to a supposed Apple Health cloud API.
+- Scheduled YAZIO sync uses an undocumented interface and may break after
+  changes made by YAZIO.
+- No CSV importer.
+- No meal analysis without corresponding source data.
+- No medical diagnosis or automated nutrition advice.
+- Horizontal multi-host deployment and Kubernetes are not planned.

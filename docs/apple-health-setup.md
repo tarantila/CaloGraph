@@ -1,19 +1,26 @@
-# Apple Health einrichten
+# Apple Health setup
 
-## Automatische Übertragung
+## Automatic transfer
 
-1. Health Auto Export auf dem iPhone installieren und HealthKit-Zugriff nur für gewünschte Kategorien erlauben.
-2. In CaloGraph ein gerätespezifisches Import-Token erzeugen.
-3. Eine REST-API-Automation mit JSON, Export Version 2 und dem Importendpunkt anlegen.
-4. `Authorization` auf `Bearer <Token>` setzen.
-5. Zunächst den Validierungsendpunkt testen, danach den normalen Importendpunkt verwenden.
-6. Einen überlappenden Zeitraum von sieben Tagen übertragen, um verspätete Daten zu erfassen.
+1. Install Health Auto Export on the iPhone and grant HealthKit access only to
+   the required nutrition categories.
+2. Create a device-specific import token in CaloGraph.
+3. Create a REST API automation using JSON, Export Version 2, and the import
+   endpoint.
+4. Set `Authorization` to `Bearer <Token>`.
+5. Test the validation endpoint first, then switch to the normal import
+   endpoint.
+6. Send an overlapping seven-day range to capture delayed changes.
 
-iOS kann Exporte verzögern, wenn das Gerät gesperrt, der Stromsparmodus aktiv oder Hintergrundaktualisierung deaktiviert ist. CaloGraph kann diese Plattformbeschränkungen nicht umgehen.
+iOS may delay exports while the device is locked, Low Power Mode is active, or
+Background App Refresh is disabled. CaloGraph cannot bypass these platform
+restrictions.
 
-## Historische Daten
+## Historical data
 
-Apple Health öffnen, das Profilbild wählen und **Alle Gesundheitsdaten exportieren** ausführen. Das ZIP unverändert in der CaloGraph-Importansicht auswählen. Keine Exportdatei an Dritte senden.
+Open Apple Health, select the profile picture, and choose **Export All Health
+Data**. Upload the ZIP unchanged through the CaloGraph import view. Never send
+an export file to third parties.
 
-Apple Health enthält Messwerte und Quellen, aber nicht zuverlässig Lebensmittel-, Rezept- oder Mahlzeitennamen.
-
+Apple Health includes measurements and sources, but does not reliably include
+food, recipe, or meal names.

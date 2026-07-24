@@ -23,5 +23,4 @@ WORKDIR /app
 COPY --from=base --chown=calograph:calograph /app /app
 USER calograph
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips='*'"]
-
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=\"${TRUSTED_PROXY_NETWORKS:-127.0.0.1/32}\""]

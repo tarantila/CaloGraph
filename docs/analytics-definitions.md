@@ -1,43 +1,49 @@
-# Analytics-Definitionen
+# Analytics definitions
 
-## Tage und Wochen
+## Days and weeks
 
-Ein Sample wird dem lokalen Datum seines Startzeitpunkts in der Benutzerzeitzone zugeordnet. Wochen beginnen standardmäßig am Montag. Das Wochenbudget ist die Summe der je Tag gültigen Budgetversion; die Abweichung ist Aufnahme minus Budget.
+A sample is assigned to the local date of its start time in the user's time
+zone. Weeks start on Monday by default. A weekly budget is the sum of the
+budget version valid on each day; deviation is intake minus budget.
 
-## Fehlende Werte
+## Missing values
 
-Tage ohne Messung bleiben `null`. Sie werden weder als null Kalorien noch automatisch als vollständiger Fastentag interpretiert. Gleitende 7-, 14- und 28-Kalendertagesmittel nutzen standardmäßig nur vorhandene Tage mit Status `complete` oder `probably_complete`.
+Days without measurements remain `null`. They are not interpreted as zero
+calories or automatically treated as complete fasting days. Rolling 7-, 14-,
+and 28-calendar-day averages use only recorded days with a status of `complete`
+or `probably_complete` by default.
 
-## Datenverfügbarkeit
+## Data availability
 
-Ein Tag gilt als erfasst, sobald ein Kalorienwert importiert wurde. Die Höhe des
-Werts, das Kalorienbudget, die Zahl der Mahlzeiten und vorhandene
-Makronährstoffe beeinflussen diesen Status nicht. Ernährungsdaten ohne
-Kalorienwert werden separat ausgewiesen; ohne Ernährungssample gilt `no_data`.
-Eine manuelle Markierung hat Vorrang.
+A day is recorded as soon as a calorie value has been imported. The value's
+size, the calorie budget, number of meals, and availability of macronutrients
+do not affect this status. Nutrition data without a calorie value is reported
+separately; a day without any nutrition sample has the status `no_data`. A
+manual override takes precedence.
 
-Die Standardansicht des Datenstatus beginnt mit dem ersten tatsächlich
-vorhandenen Ernährungstag. Dadurch werden Kalendertage vor der ersten Nutzung
-nicht fälschlich als Lücken gewertet. Tage nach diesem Start ohne
-Ernährungsdaten bleiben sichtbar. Jeder importierte Kalorienwert fließt in
-Trendmittelwerte ein, auch wenn er deutlich unter dem Budget oder den
-persönlichen Durchschnittswerten liegt.
+The default data-status range starts with the first day that actually contains
+nutrition data. Calendar days before the user began tracking are therefore not
+reported as gaps. Days without nutrition data after this starting point remain
+visible. Every imported calorie value contributes to trend averages, even when
+it is substantially below the budget or the user's personal average.
 
-## Mikronährstoffe
+## Micronutrients
 
-Die Mikronährstoffanalyse berechnet je Nährstoff die Summe des gewählten
-Zeitraums geteilt durch die Ernährungstage derselben Quelle. Fehlende
-Nährstoffwerte eines Ernährungstags gehen als null in das Tagesmittel ein; der
-Anteil der Tage mit einem tatsächlich gelieferten Wert wird deshalb separat als
-Datenabdeckung angezeigt.
+For each nutrient, micronutrient analysis divides the selected range total by
+the nutrition days from the same source. Missing nutrient values on a nutrition
+day contribute zero to the daily average. The proportion of days that
+explicitly supplied a value is therefore displayed separately as data
+coverage.
 
-Ab mindestens 70 Prozent Datenabdeckung wird das Mittel mit dem
-Nährstoffbezugswert für Erwachsene aus Anhang XIII der Verordnung (EU)
-Nr. 1169/2011 verglichen. Unter 80 Prozent wird neutral als „unter
-Orientierung“ markiert. Dieser Status ist kein Nachweis eines Mangels und keine
-Empfehlung für Nahrungsergänzungsmittel. Cholin wird ohne Prozentvergleich
-angezeigt, weil die verwendete EU-Tabelle dafür keinen NRV enthält.
+At 70 percent coverage or above, the average is compared with the adult
+nutrient reference value in Annex XIII of Regulation (EU) No 1169/2011. Values
+below 80 percent are neutrally labeled "below reference." This status is not
+evidence of a deficiency and is not a supplement recommendation. Choline is
+shown without a percentage comparison because the EU table used here does not
+define an NRV for it.
 
-## Kalender
+## Calendar
 
-Abweichungen relativ zum gültigen Ziel: unter −15 %, −15 bis −5 %, −5 bis +5 %, +5 bis +15 % und über +15 %. Unvollständige und fehlende Tage erhalten eigene Klassen. Text und Symbole ergänzen die Farbe.
+Deviations relative to the applicable budget are grouped into below −15%,
+−15% to −5%, −5% to +5%, +5% to +15%, and above +15%. Missing and incomplete
+days receive their own classes. Text and symbols supplement color.

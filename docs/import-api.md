@@ -1,14 +1,18 @@
-# Import-API
+# Import API
 
-## Authentifizierung
+## Authentication
 
-JSON-Importe verwenden `Authorization: Bearer cg_…`. Tokens besitzen nur den Scope `import`, werden einmal angezeigt und ausschließlich gehasht gespeichert.
+JSON imports use `Authorization: Bearer cg_…`. Tokens carry only the `import`
+scope, are shown once, and are stored exclusively as hashes.
 
 ## Health Auto Export v2
 
-`POST /api/v1/import/apple-health` akzeptiert sowohl `{ "metrics": [...] }` als auch `{ "data": { "metrics": [...] } }`. Ein Punkt enthält typischerweise `qty`, `date` oder `startDate`, optional `endDate`, `id`, `source` und `sourceBundle`.
+`POST /api/v1/import/apple-health` accepts both `{ "metrics": [...] }` and
+`{ "data": { "metrics": [...] } }`. A data point typically contains `qty`,
+`date` or `startDate`, and may include `endDate`, `id`, `source`, and
+`sourceBundle`.
 
-## Neutrales CaloGraph-Syncformat v1
+## Source-neutral CaloGraph sync format v1
 
 ```json
 {
@@ -28,33 +32,34 @@ JSON-Importe verwenden `Authorization: Bearer cg_…`. Tokens besitzen nur den S
 }
 ```
 
-## YAZIO-Exporter-JSON
+## YAZIO exporter JSON
 
-`POST /api/v1/import/yazio` akzeptiert die `days.json` und
-`nutrients.json` von `yazio-exporter`.
-Eine Prüfung ohne Speicherung ist über
-`POST /api/v1/import/yazio/validate` möglich. Beide Endpunkte verwenden wie der
-Apple-Health-JSON-Import ein Import-Token.
+`POST /api/v1/import/yazio` accepts `days.json` and `nutrients.json` produced by
+`yazio-exporter`. Use `POST /api/v1/import/yazio/validate` to validate without
+storing data. Both endpoints use an import token like the Apple Health JSON
+endpoint.
 
-Im Browser können dieselben Dateien unter **Importe** hochgeladen werden.
-CaloGraph aggregiert die vier Makronährstofffelder über alle Mahlzeiten und
-übernimmt die unterstützten Vitamine und Mineralstoffe als Tageswerte.
-Aktivitätsenergie, Schritte und Wasser werden bewusst nicht verarbeitet. Namen
-von Mahlzeiten, Produkten und Rezepten werden nicht gespeichert.
+The same files can be uploaded under **Importe** in the browser. CaloGraph
+aggregates the four macronutrient fields across all meals and imports supported
+vitamins and minerals as daily values. Activity energy, steps, and water are
+deliberately ignored. Meal, product, and recipe names are not stored.
 
-Zeitstempel benötigen einen UTC-Offset. Einheiten werden kontrolliert in kcal,
-g, mg und µg konvertiert. Negative, unendliche oder nicht
-numerische Werte werden abgewiesen.
+Timestamps require a UTC offset. Units are converted in a controlled manner to
+kcal, g, mg, and µg. Negative, infinite, and non-numeric values are rejected.
 
-## Idempotenz
+## Idempotency
 
-Bei stabiler `id` aktualisiert ein erneuter Import den bestehenden Datensatz. Ohne ID entsteht ein SHA-256-Fingerprint aus Benutzer, Adapter, Metrik, Zeiten, Wert, Einheit und Quellenkennung. Derselbe Payload kann beliebig oft übertragen werden.
+With a stable `id`, a later import updates the existing record. Without an ID,
+CaloGraph creates a SHA-256 fingerprint from user, adapter, metric, timestamps,
+value, unit, and source identifier. The same payload can be sent repeatedly.
 
-`POST /api/v1/import/apple-health/validate` führt Mapping und Validierung ohne Persistenz aus. Antworten enthalten Batch-ID, Status und Zähler für empfangene, neue, aktualisierte, übersprungene, fehlerhafte und unbekannte Datensätze.
+`POST /api/v1/import/apple-health/validate` performs mapping and validation
+without persistence. Responses contain the batch ID, status, and counts for
+received, inserted, updated, skipped, failed, and unknown records.
 
-Angemeldete Benutzer sehen ihre letzten Importläufe über `GET /api/v1/imports`.
-`GET /api/v1/imports/{batch_id}` ergänzt bis zu 100 sichere Fehlerdetails mit
-Eintragsposition, Metrik, Fehlercode und verständlicher Beschreibung. Beide
-Endpunkte sind strikt auf die Importläufe des angemeldeten Benutzers begrenzt.
+Authenticated users can view their latest runs through `GET /api/v1/imports`.
+`GET /api/v1/imports/{batch_id}` adds up to 100 safe error details with item
+position, metric, error code, and a readable description. Both endpoints are
+strictly restricted to the authenticated user's import batches.
 
-Gesundheitswerte werden nicht in Fehlerantworten oder normalen Logs ausgegeben.
+Health values are never included in error responses or normal logs.

@@ -1,7 +1,7 @@
 .PHONY: dev up down logs migrate test lint typecheck frontend-test e2e build backup backup-secrets update
 
 dev:
-	docker compose -f compose.yaml -f compose.dev.yaml up --build
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 up:
 	docker compose up -d --build

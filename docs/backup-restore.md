@@ -1,112 +1,106 @@
-# Backup, Restore und Updates
+# Backup, restore, and updates
 
-## Was gesichert werden muss
+## What must be backed up
 
-Eine vollständige CaloGraph-Sicherung besteht aus zwei getrennt zu schützenden
-Teilen:
+A complete CaloGraph backup consists of two separately protected parts:
 
-1. dem PostgreSQL-Dump mit Gesundheitsdaten, Konten und verschlüsselten
-   YAZIO-Zugangsdaten;
-2. der `.env` mit Datenbank-, Session-, Rate-Limit- und
-   `CREDENTIAL_ENCRYPTION_KEY`.
+1. the PostgreSQL dump containing health data, accounts, and encrypted YAZIO
+   credentials;
+2. the `.env` file containing the database, session, rate-limit, and
+   `CREDENTIAL_ENCRYPTION_KEY` secrets.
 
-Ohne den ursprünglichen `CREDENTIAL_ENCRYPTION_KEY` können die in der Datenbank
-gespeicherten YAZIO-Zugangsdaten nicht wieder entschlüsselt werden. Datenbank
-und `.env` gemeinsam ermöglichen dagegen die Entschlüsselung. Beide Sicherungen
-gehören deshalb auf verschlüsselten Speicher mit restriktiven Berechtigungen,
-idealerweise zusätzlich außerhalb des Docker-Hosts.
+Stored YAZIO credentials cannot be decrypted without the original
+`CREDENTIAL_ENCRYPTION_KEY`. Conversely, anyone who obtains both the database
+and `.env` can decrypt them. Store both backups on encrypted storage with
+restrictive permissions, ideally with an additional copy outside the Docker
+host.
 
-## Datenbank sichern und prüfen
-
-```bash
-BACKUP_DIR=/sicherer/verschluesselter/pfad scripts/backup-postgres.sh
-scripts/verify-backup.sh /sicherer/verschluesselter/pfad/calograph-ZEITSTEMPEL.dump
-```
-
-Das Backupskript:
-
-- verwendet `pg_dump --format=custom`;
-- schreibt atomar über eine zufällige temporäre Datei;
-- setzt Verzeichnisrechte `0700` und Dateirechte `0600`;
-- lässt `pg_restore --list` vor der Freigabe laufen;
-- erzeugt eine SHA-256-Datei zur späteren Erkennung von Übertragungsfehlern.
-
-Die Prüfsumme erkennt versehentliche Beschädigung, ist aber keine
-kryptografische Authentifizierung gegen einen Angreifer mit Schreibzugriff.
-
-## Geheimnisse separat sichern
-
-Nur wenn `BACKUP_DIR` tatsächlich verschlüsselt und geschützt ist:
+## Create and verify a database backup
 
 ```bash
-BACKUP_DIR=/sicherer/verschluesselter/pfad scripts/backup-secrets.sh
+BACKUP_DIR=/secure/encrypted/path scripts/backup-postgres.sh
+scripts/verify-backup.sh /secure/encrypted/path/calograph-TIMESTAMP.dump
 ```
 
-Die erzeugte Datei ist eine Kopie der `.env` und muss wie ein Passworttresor
-behandelt werden. Nach der Sicherung sollten Datenbankdump und
-Geheimnissicherung zusätzlich auf ein zweites, getrenntes Medium kopiert
-werden.
+The backup script:
 
-## Wiederherstellung
+- uses `pg_dump --format=custom`;
+- writes atomically through a randomized temporary file;
+- sets directory permissions to `0700` and file permissions to `0600`;
+- runs `pg_restore --list` before releasing the backup;
+- creates a SHA-256 file for detecting later transfer corruption.
 
-Der Restore überschreibt die aktuelle CaloGraph-Datenbank. Deshalb verlangt das
-Skript eine bewusste Bestätigung:
+The checksum detects accidental damage. It is not cryptographic authentication
+against an attacker who can modify both files.
+
+## Back up secrets separately
+
+Only when `BACKUP_DIR` is actually encrypted and protected:
+
+```bash
+BACKUP_DIR=/secure/encrypted/path scripts/backup-secrets.sh
+```
+
+The resulting file is a copy of `.env` and must be handled like a password
+vault. Copy both the database dump and the secrets backup to a second,
+independent medium after creation.
+
+## Restore
+
+Restore replaces the current CaloGraph database, so the script requires an
+explicit confirmation:
 
 ```bash
 CONFIRM_RESTORE=calograph \
-  scripts/restore-postgres.sh /sicherer/pfad/calograph-ZEITSTEMPEL.dump
+  scripts/restore-postgres.sh /secure/path/calograph-TIMESTAMP.dump
 ```
 
-Das Skript validiert Dump und Prüfsumme, stoppt Frontend, Backend und
-YAZIO-Scheduler, stellt die Datenbank mit `--clean --if-exists --no-owner`
-wieder her, führt ausstehende Alembic-Migrationen aus und startet alle Dienste.
-Die `.env` wird absichtlich nicht automatisch überschrieben.
+The script validates the dump and checksum, stops the frontend, backend, and
+YAZIO scheduler, restores the database with
+`--clean --if-exists --no-owner`, applies pending Alembic migrations, and
+starts all services. It deliberately does not overwrite `.env`.
 
-Vor einem Restore auf einem neuen Host:
+Before restoring to a new host:
 
-1. Repository und Docker installieren.
-2. Die passende Geheimnissicherung bewusst als `.env` ablegen und
-   `chmod 600 .env` setzen.
-3. PostgreSQL mit derselben Hauptversion starten.
-4. Restore-Skript ausführen.
-5. Anmeldung, Datenstatus, letzte YAZIO-Synchronisierung und einen manuellen
-   Sync prüfen.
+1. Install the repository and Docker.
+2. Deliberately restore the matching secrets backup as `.env` and run
+   `chmod 600 .env`.
+3. Start the same PostgreSQL major version.
+4. Run the restore script.
+5. Verify login, data status, the last YAZIO sync, and one manual sync.
 
-PostgreSQL 18 speichert den versionsspezifischen Cluster unterhalb des auf
-`/var/lib/postgresql` eingehängten Volumes. Bei einem Wechsel der
-PostgreSQL-Hauptversion ist Dump/Restore oder `pg_upgrade` erforderlich; nur
-den Image-Tag zu ändern reicht nicht.
+PostgreSQL 18 stores its version-specific cluster below the mounted
+`/var/lib/postgresql` volume. Changing the PostgreSQL major version requires
+dump/restore or `pg_upgrade`; changing only the image tag is insufficient.
 
-## Wiederherstellung regelmäßig testen
+## Test restoration regularly
 
-Mindestens vierteljährlich sollte ein aktueller Dump auf einem isolierten
-Testsystem wiederhergestellt werden. Ein erfolgreiches `pg_dump` allein beweist
-nicht, dass Zugang, `.env`, Verschlüsselungsschlüssel und Anwendung gemeinsam
-wiederherstellbar sind.
+Restore a current dump to an isolated test system at least quarterly. A
+successful `pg_dump` alone does not prove that application access, `.env`,
+encryption keys, and the database can be restored together.
 
-## Container aktualisieren
+## Update containers
 
-Nachdem der gewünschte Quellcode lokal vorliegt:
+After selecting the desired source revision locally:
 
 ```bash
-BACKUP_DIR=/sicherer/verschluesselter/pfad \
+BACKUP_DIR=/secure/encrypted/path \
   BACKUP_SECRETS=1 \
   scripts/update-containers.sh
 ```
 
-`BACKUP_SECRETS=1` nur für ein verschlüsseltes Ziel verwenden. Das Skript prüft
-Compose, erstellt und validiert zuerst das Backup, aktualisiert das gepinnte
-PostgreSQL-Image, baut Backend und Frontend mit aktuellen Basisimages neu und
-wartet anschließend auf gesunde Dienste. Es führt absichtlich kein `git pull`
-aus; die Auswahl des zu installierenden Commits bleibt eine separate,
-kontrollierte Aktion.
+Use `BACKUP_SECRETS=1` only with encrypted storage. The script validates the
+Compose configuration, creates and verifies the backup first, pulls the pinned
+PostgreSQL image, rebuilds backend and frontend with current base images, and
+waits for healthy services. It intentionally does not run `git pull`; selecting
+the commit to install remains a separate, controlled action.
 
-Nach jedem Update:
+After every update:
 
 ```bash
 docker compose ps
 docker compose logs --no-color --tail=100 backend yazio-scheduler
-docker compose exec backend python -m app.cli yazio-status --username DEIN_BENUTZER
+docker compose exec backend python -m app.cli yazio-status --username YOUR_USER
 ```
 
-Ein Alembic-Downgrade ist kein Ersatz für ein Backup.
+An Alembic downgrade is not a substitute for a backup.
