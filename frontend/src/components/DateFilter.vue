@@ -21,6 +21,7 @@ async function applyPreset() {
   else if (preset.value === 'month') from = new Date(today.getFullYear(), today.getMonth(), 1)
   else if (preset.value === '30') from.setDate(today.getDate() - 29)
   else if (preset.value === '90') from.setDate(today.getDate() - 89)
+  else if (preset.value === '180') from.setDate(today.getDate() - 179)
   else if (preset.value === 'year') from = new Date(today.getFullYear(), 0, 1)
   else return
   emit('update:start', iso(from))
@@ -32,7 +33,7 @@ async function applyPreset() {
 
 <template>
   <div class="filters" aria-label="Datumsfilter">
-    <label class="field">Zeitraum<select v-model="preset" @change="applyPreset"><option value="custom">Benutzerdefiniert</option><option value="week">Aktuelle Woche</option><option value="last-week">Letzte Woche</option><option value="month">Aktueller Monat</option><option value="30">Letzte 30 Tage</option><option value="90">Letzte 90 Tage</option><option value="year">Aktuelles Jahr</option></select></label>
+    <label class="field">Zeitraum<select v-model="preset" @change="applyPreset"><option value="custom">Benutzerdefiniert</option><option value="week">Aktuelle Woche</option><option value="last-week">Letzte Woche</option><option value="month">Aktueller Monat</option><option value="30">Letzte 30 Tage</option><option value="90">Letzte 90 Tage</option><option value="180">Letzte 180 Tage</option><option value="year">Aktuelles Jahr</option></select></label>
     <label class="field">Von <input v-model="startModel" type="date" /></label>
     <label class="field">Bis <input v-model="endModel" type="date" /></label>
     <button class="button secondary" type="button" @click="emit('apply')">Anwenden</button>

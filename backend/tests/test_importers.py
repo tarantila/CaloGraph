@@ -187,8 +187,9 @@ def test_yazio_empty_nutrition_day_omits_zero_placeholders() -> None:
 def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:
     result = parse_yazio_export(
         {
-            "vitamin.d": {"2026-07-20": 12.5},
-            "mineral.iron": {"2026-07-20": 8.4},
+            "vitamin.d": {"2026-07-20": 0.0000125},
+            "mineral.iron": {"2026-07-20": 0.0084},
+            "mineral.calcium": {"2026-07-20": 0.1525},
             "unknown.nutrient": {"2026-07-20": 99},
         },
         "Europe/Berlin",
@@ -197,8 +198,11 @@ def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:
     by_metric = {sample.metric_type: sample for sample in result.samples}
     assert by_metric["vitamin_d_ug"].value == Decimal("12.5")
     assert by_metric["vitamin_d_ug"].unit == "ug"
+    assert by_metric["vitamin_d_ug"].original_value == Decimal("0.0000125")
+    assert by_metric["vitamin_d_ug"].original_unit == "g"
     assert by_metric["iron_mg"].value == Decimal("8.4")
     assert by_metric["iron_mg"].unit == "mg"
+    assert by_metric["calcium_mg"].value == Decimal("152.5")
     assert "unknown.nutrient" not in by_metric
 
 

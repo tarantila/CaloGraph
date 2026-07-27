@@ -78,7 +78,7 @@ def test_manual_sync_imports_only_for_connection_user(
     def fake_fetch(email, password, start_day, end_day, include_micronutrients):
         assert email == "owner@example.com"
         assert password == "yazio-password"
-        assert start_day.isoformat() == "2026-07-17"
+        assert start_day.isoformat() == "2026-05-25"
         assert end_day.isoformat() == "2026-07-23"
         assert include_micronutrients is True
         return {
@@ -100,6 +100,7 @@ def test_manual_sync_imports_only_for_connection_user(
 
     summary = run_manual_yazio_sync(
         user.id,
+        sync_days=60,
         fetcher=fake_fetch,
         now=attempted_at,
     )
@@ -125,7 +126,9 @@ def test_manual_sync_imports_only_for_connection_user(
     def fake_scheduled_fetch(
         email, password, start_day, end_day, include_micronutrients
     ):
-        del email, password, start_day, end_day
+        del email, password
+        assert start_day.isoformat() == "2026-07-17"
+        assert end_day.isoformat() == "2026-07-23"
         assert include_micronutrients is False
         return {
             "2026-07-23": {
@@ -210,9 +213,10 @@ def test_yazio_api_status_and_manual_sync_are_user_scoped(
 
     called_for = None
 
-    def fake_manual_sync(user_id):
+    def fake_manual_sync(user_id, *, sync_days=None):
         nonlocal called_for
         called_for = user_id
+        assert sync_days == 60
         return ImportSummary(
             status="completed",
             received=7,
@@ -223,7 +227,7 @@ def test_yazio_api_status_and_manual_sync_are_user_scoped(
 
     monkeypatch.setattr(yazio_api, "run_manual_yazio_sync", fake_manual_sync)
     response = client.post(
-        "/api/v1/yazio/sync",
+        "/api/v1/yazio/sync?days=60",
         headers={"X-CSRF-Token": csrf},
     )
 

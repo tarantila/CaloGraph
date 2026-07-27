@@ -118,6 +118,9 @@ def parse_yazio_export(
         result.received += 1
         try:
             raw_value = decimal_value(value)
+            # YAZIO's specific-nutrient endpoint returns every nutrient as
+            # grams, including vitamins normally displayed as micrograms.
+            normalized = normalize_value(raw_value, "g", definition.unit)
         except (TypeError, ValueError) as exc:
             result.errors.append(
                 (item_index, nutrient_id, "invalid_sample", str(exc))
@@ -127,10 +130,10 @@ def parse_yazio_export(
         result.samples.append(
             CanonicalSample(
                 metric_type=definition.metric_type,
-                value=raw_value,
+                value=normalized,
                 unit=definition.unit,
                 original_value=raw_value,
-                original_unit=definition.unit,
+                original_unit="g",
                 start_at=at,
                 end_at=at,
                 timezone=timezone,

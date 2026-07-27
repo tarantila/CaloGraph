@@ -104,6 +104,11 @@ Authenticated users can start the same personal sync with
 button uses only the authenticated account's YAZIO connection, is protected by
 CSRF validation, and is limited to two starts per minute.
 
+The micronutrient analysis also offers an explicit 60-day history backfill.
+This is intended for the first import or after micronutrient support is added
+to an existing installation. It does not change the configured seven-day
+window used by scheduled synchronization.
+
 Inspect status or disable automation:
 
 ```bash
@@ -125,6 +130,10 @@ CaloGraph account through `user_id`.
 | Sum of `nutrient.fat` | `fat_g` | g |
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
 | `mineral.calcium` through `mineral.choline` | 13 canonical mineral metrics | mg or µg |
+
+YAZIO's specific-nutrient endpoint returns these vitamin and mineral values in
+grams. The adapter preserves that source unit and converts each value to the
+canonical mg or µg unit before storing and analyzing it.
 
 Activity, steps, and water are neither requested by direct sync nor imported by
 the YAZIO adapter. Meals, products, recipes, profile fields, and YAZIO targets

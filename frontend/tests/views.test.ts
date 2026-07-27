@@ -12,12 +12,14 @@ vi.mock('../src/api', () => ({
 
 import CalendarView from '../src/views/CalendarView.vue'
 import ChartPanel from '../src/components/ChartPanel.vue'
+import DailyView from '../src/views/DailyView.vue'
 import ImportsView from '../src/views/ImportsView.vue'
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
 import OverviewView from '../src/views/OverviewView.vue'
 import QualityView from '../src/views/QualityView.vue'
 import SettingsView from '../src/views/SettingsView.vue'
 import TrendsView from '../src/views/TrendsView.vue'
+import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
 
 const user = {
@@ -298,13 +300,120 @@ describe('main views', () => {
     expect(wrapper.text()).not.toContain('0 kcal')
   })
 
-  it('adds textual meaning to calendar classifications', async () => {
+  it('uses budget thresholds, calculates numeric averages, and navigates by month', async () => {
     apiMock.mockResolvedValue({
-      days: [{ date: '2026-07-18', calories_kcal: 2000, tracking_status: 'complete', classification: 'on_target' }],
+      days: [
+        { date: '2026-07-18', calories_kcal: '1600.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'under_budget' },
+        { date: '2026-07-19', calories_kcal: '2000.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'over_budget' },
+        { date: '2026-07-20', calories_kcal: '2400.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'above_maintenance' },
+      ],
     })
     const wrapper = mount(CalendarView)
     await flushPromises()
-    expect(wrapper.text()).toContain('Budget nahezu ausgeschöpft')
+    expect(wrapper.text()).toContain('Im Budget')
+    expect(wrapper.text()).toContain('Über Budget')
+    expect(wrapper.text()).toContain('Über Erhaltungsbedarf')
+    expect(wrapper.text()).toContain('2.000 kcal')
+    expect(wrapper.text()).not.toContain('NaN')
+    expect(wrapper.findAll('.calendar-day.under_budget')).toHaveLength(1)
+    expect(wrapper.findAll('.calendar-day.over_budget')).toHaveLength(1)
+    expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(1)
+    expect(apiMock.mock.calls[0][0]).toMatch(
+      /^\/analytics\/calendar\?start=\d{4}-\d{2}-01&end=\d{4}-\d{2}-\d{2}$/,
+    )
+
+    const initialPath = apiMock.mock.calls[0][0]
+    await wrapper.find('button[aria-label="Vorheriger Monat"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledTimes(2)
+    expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
+  })
+
+  it('calculates daily averages from decimal strings without rendering NaN', async () => {
+    apiMock.mockResolvedValue([
+      {
+        date: '2026-07-18',
+        calories_kcal: '1600.000',
+        target_kcal: '2000.000',
+        maintenance_kcal: null,
+        deviation_kcal: '-400.000',
+        protein_g: '120.000',
+        carbs_g: '180.000',
+        fat_g: '60.000',
+        tracking_status: 'complete',
+        tracking_score: 1,
+        tracking_reasons: [],
+      },
+      {
+        date: '2026-07-19',
+        calories_kcal: '2000.000',
+        target_kcal: '2000.000',
+        maintenance_kcal: null,
+        deviation_kcal: '0.000',
+        protein_g: '140.000',
+        carbs_g: '220.000',
+        fat_g: '70.000',
+        tracking_status: 'complete',
+        tracking_score: 1,
+        tracking_reasons: [],
+      },
+    ])
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: DailyView }],
+    })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(DailyView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('1.800 kcal')
+    expect(wrapper.text()).not.toContain('NaN')
+    expect(apiMock.mock.calls[0][0]).toMatch(
+      /^\/analytics\/daily\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
+    )
+  })
+
+  it('filters weekday analysis by week or a custom date range', async () => {
+    apiMock.mockResolvedValue({
+      weekdays: [
+        {
+          weekday: 0,
+          label: 'Montag',
+          count: 4,
+          mean_kcal: 1900,
+          median_kcal: 1880,
+          p25_kcal: 1800,
+          p75_kcal: 2000,
+          mean_deviation_kcal: -100,
+          mean_protein_g: 130,
+        },
+      ],
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: WeekdaysView }],
+    })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(WeekdaysView, {
+      global: { plugins: [router], stubs: { ChartPanel: true } },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Aktuelle Woche')
+    expect(wrapper.text()).toContain('Letzte Woche')
+    expect(wrapper.text()).toContain('Letzte 180 Tage')
+    expect(apiMock.mock.calls[0][0]).toMatch(
+      /^\/analytics\/weekdays\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
+    )
+    const initialPath = apiMock.mock.calls[0][0]
+    await wrapper.find('select').setValue('last-week')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledTimes(2)
+    expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
   })
 
   it('renders import batch errors and status counts', async () => {
@@ -354,6 +463,10 @@ describe('main views', () => {
       available_sources: [
         { source_type: 'yazio_export_v1', last_updated_at: '2026-07-23T10:30:00Z' },
       ],
+      definition: {
+        coverage_threshold: 0.7,
+        orientation_threshold_percent: 80,
+      },
       nutrients: [
         {
           id: 'mineral.iron',
@@ -400,16 +513,21 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Mikronährstoffanalyse')
     expect(wrapper.text()).toContain('Eisen')
     expect(wrapper.text()).toContain('Unter Orientierung')
-    expect(wrapper.text()).toContain('Datenbasis zu klein')
-    expect(wrapper.text()).toContain('Datenabdeckung 100')
+    expect(wrapper.text()).toContain('Noch zu wenige Angaben')
+    expect(wrapper.text()).toContain('Anteil am EU-Referenzwert')
+    expect(wrapper.text()).toContain('5 von 20 Tagen mit Angaben (25 %) · mindestens 14 nötig')
+    expect(wrapper.text()).toContain('60 Tage aus YAZIO nachladen')
     expect(wrapper.text()).toContain('keine Diagnose')
+    expect(wrapper.text().indexOf('Mineralstoffe')).toBeLessThan(
+      wrapper.text().indexOf('So ist die Auswertung zu lesen'),
+    )
   })
 
   it('keeps budgets and account settings on separate pages and updates today’s budget', async () => {
     const now = new Date()
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
-    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }
+    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/profile') return Promise.resolve(user)
       if (path === '/settings/targets') return Promise.resolve([currentTarget])
@@ -431,6 +549,7 @@ describe('main views', () => {
     await flushPromises()
     expect(targetsWrapper.text()).toContain('Budget- und Zielhistorie')
     expect(targetsWrapper.text()).toContain('2.100 kcal')
+    expect(targetsWrapper.text()).toContain('2.600 kcal')
     expect(targetsWrapper.text()).not.toContain('2100.000')
     expect(targetsWrapper.text()).not.toContain('Persönliche YAZIO-Verbindung')
     const calories = targetsWrapper.find('input[type="number"]')
@@ -442,6 +561,7 @@ describe('main views', () => {
       body: JSON.stringify({
         valid_from: today,
         calories_kcal: 2300,
+        maintenance_kcal: 2600,
         protein_g: 140,
         carbs_g: null,
         fat_g: null,

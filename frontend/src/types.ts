@@ -19,6 +19,7 @@ export interface DailyPoint {
   date: string
   calories_kcal: number | null
   target_kcal: number | null
+  maintenance_kcal: number | null
   deviation_kcal: number | null
   protein_g: number | null
   carbs_g: number | null
@@ -75,6 +76,7 @@ export interface Target {
   valid_from: string
   valid_to: string | null
   calories_kcal: number
+  maintenance_kcal: number | null
   protein_g: number
   carbs_g: number | null
   fat_g: number | null

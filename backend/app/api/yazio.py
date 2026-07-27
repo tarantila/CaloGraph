@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -83,12 +83,13 @@ def yazio_status(
 
 @router.post("/sync", response_model=ImportSummary)
 def sync_yazio_now(
+    days: int | None = Query(default=None, ge=1, le=366),
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> ImportSummary:
     check_rate_limit(db, "yazio-manual-sync", str(user.id), 2)
     try:
-        return run_manual_yazio_sync(user.id)
+        return run_manual_yazio_sync(user.id, sync_days=days)
     except YazioConnectionNotConfigured as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except YazioSyncError as exc:

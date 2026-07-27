@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.analytics.service import daily_points, percentile
-from app.api.analytics import micronutrients
+from app.api.analytics import calendar, micronutrients
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
 from app.models import NutritionTarget, User
@@ -87,6 +87,40 @@ def test_low_calorie_day_is_accepted_as_recorded_data(
     assert point.tracking_status == "complete"
     assert point.tracking_score == 1
     assert point.tracking_reasons == ["Kalorienwert vorhanden"]
+
+
+def test_calendar_uses_budget_and_maintenance_thresholds(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.maintenance_kcal = Decimal("2200")
+    samples = [
+        metric(1, "dietary_energy_kcal", "2000"),
+        metric(2, "dietary_energy_kcal", "2200"),
+        metric(3, "dietary_energy_kcal", "2201"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test",
+        "test",
+    )
+
+    result = calendar(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 3),
+        user=user,
+        db=db,
+    )
+
+    assert [day["classification"] for day in result["days"]] == [
+        "under_budget",
+        "over_budget",
+        "above_maintenance",
+    ]
+    assert Decimal(result["days"][0]["maintenance_kcal"]) == Decimal("2200")
 
 
 def test_percentiles() -> None:

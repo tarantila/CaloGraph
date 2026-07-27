@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  PhArrowsClockwise,
   PhCheckCircle,
   PhDatabase,
   PhInfo,
@@ -40,6 +41,10 @@ interface MicronutrientResponse {
   last_updated_at: string | null
   available_sources: Array<{ source_type: string; last_updated_at: string | null }>
   nutrients: Nutrient[]
+  definition?: {
+    coverage_threshold: number
+    orientation_threshold_percent: number
+  }
 }
 
 const route = useRoute()
@@ -52,10 +57,14 @@ const source = ref(String(route.query.source ?? 'yazio_export_v1'))
 const result = ref<MicronutrientResponse | null>(null)
 const error = ref('')
 const loading = ref(true)
+const syncingHistory = ref(false)
+const syncMessage = ref('')
+const syncError = ref('')
 
 const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 2 })
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const percent = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 })
+const referencePercent = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
 
 const sourceLabels: Record<string, string> = {
   yazio_export_v1: 'YAZIO',
@@ -133,9 +142,15 @@ function amountLabel(item: Nutrient) {
     : `${number.format(item.average_daily)} ${unitLabel(item.unit)}`
 }
 
+function referenceAmountLabel(item: Nutrient) {
+  return item.eu_nrv == null
+    ? 'Kein EU-Referenzwert festgelegt'
+    : `EU-Referenzwert ${number.format(item.eu_nrv)} ${unitLabel(item.unit)}`
+}
+
 function statusLabel(item: Nutrient) {
   if (item.status === 'no_data') return 'Keine Daten'
-  if (item.status === 'insufficient_data') return 'Datenbasis zu klein'
+  if (item.status === 'insufficient_data') return 'Noch zu wenige Angaben'
   if (item.status === 'below_orientation') return 'Unter Orientierung'
   return 'Orientierung erreicht'
 }
@@ -143,7 +158,46 @@ function statusLabel(item: Nutrient) {
 function nrvLabel(item: Nutrient) {
   if (item.eu_nrv == null) return 'Kein EU-NRV'
   if (item.percent_of_nrv == null) return '–'
-  return `${integer.format(item.percent_of_nrv)} %`
+  if (item.percent_of_nrv > 0 && item.percent_of_nrv < 0.1) return '< 0,1 %'
+  return `${referencePercent.format(item.percent_of_nrv)} %`
+}
+
+function requiredCoverageDays() {
+  const recordedDays = result.value?.recorded_days ?? 0
+  const threshold = result.value?.definition?.coverage_threshold ?? 0.7
+  return Math.ceil(recordedDays * threshold)
+}
+
+function coverageLabel(item: Nutrient) {
+  const recordedDays = result.value?.recorded_days ?? 0
+  if (!recordedDays) return 'Noch keine Ernährungstage im Zeitraum'
+  const coverage = percent.format(item.coverage_ratio)
+  const base = `${item.days_with_value} von ${recordedDays} Tagen mit Angaben (${coverage})`
+  const requiredDays = requiredCoverageDays()
+  return item.days_with_value < requiredDays
+    ? `${base} · mindestens ${requiredDays} nötig`
+    : base
+}
+
+async function syncYazioHistory() {
+  syncingHistory.value = true
+  syncMessage.value = ''
+  syncError.value = ''
+  try {
+    const summary = await api<{ inserted: number; updated: number; skipped: number }>(
+      '/yazio/sync?days=60',
+      { method: 'POST' },
+    )
+    syncMessage.value = `${integer.format(summary.inserted + summary.updated)} Werte wurden neu übernommen oder aktualisiert.`
+    await load()
+  } catch (cause) {
+    syncError.value =
+      cause instanceof ApiError
+        ? cause.message
+        : 'Die YAZIO-Historie konnte nicht nachgeladen werden.'
+  } finally {
+    syncingHistory.value = false
+  }
 }
 </script>
 
@@ -200,15 +254,6 @@ function nrvLabel(item: Nutrient) {
       </article>
     </section>
 
-    <section class="card quality-explainer micronutrient-explainer">
-      <span class="quality-explainer-icon"><PhInfo :size="22" weight="fill" /></span>
-      <div>
-        <h2>So ist die Auswertung zu lesen</h2>
-        <p>Die Tagesmittel werden mit den EU-Nährstoffbezugswerten für Erwachsene verglichen. „Unter Orientierung“ bedeutet weniger als 80 % dieses Bezugswerts bei mindestens 70 % Datenabdeckung. Das ist keine Diagnose eines Mangels: Produktdaten können unvollständig sein, individuelle Bedarfe unterscheiden sich und Blutwerte werden hier nicht bewertet.</p>
-        <a href="https://eur-lex.europa.eu/legal-content/DE-EN/ALL/?uri=CELEX:32011R1169" target="_blank" rel="noreferrer">Referenz: Verordnung (EU) Nr. 1169/2011, Anhang XIII</a>
-      </div>
-    </section>
-
     <div class="micronutrient-columns">
       <section class="card micronutrient-card">
         <div class="section-card-header">
@@ -217,20 +262,25 @@ function nrvLabel(item: Nutrient) {
         <div class="nutrient-list">
           <article v-for="item in vitamins" :key="item.id" class="nutrient-row">
             <div class="nutrient-row-top">
-              <div><strong>{{ item.label }}</strong><small>{{ item.days_with_value }} von {{ result.recorded_days }} Tagen erfasst</small></div>
-              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>{{ nrvLabel(item) }}</small></div>
+              <div><strong>{{ item.label }}</strong><small>{{ referenceAmountLabel(item) }}</small></div>
+              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>Ø pro Ernährungstag</small></div>
+            </div>
+            <div v-if="item.percent_of_nrv != null" class="nutrient-progress-heading">
+              <span>Anteil am EU-Referenzwert</span>
+              <strong>{{ nrvLabel(item) }}</strong>
             </div>
             <progress
-              v-if="item.eu_nrv != null"
+              v-if="item.percent_of_nrv != null"
               :class="['nutrient-progress', item.status]"
               :value="Math.min(item.percent_of_nrv ?? 0, 150)"
               max="150"
+              :aria-label="`${item.label}: ${nrvLabel(item)} des EU-Referenzwerts`"
             >
               {{ nrvLabel(item) }}
             </progress>
             <div class="nutrient-row-meta">
               <span :class="['nutrient-status', item.status]">{{ statusLabel(item) }}</span>
-              <span>Datenabdeckung {{ percent.format(item.coverage_ratio) }}</span>
+              <span>{{ coverageLabel(item) }}</span>
             </div>
           </article>
         </div>
@@ -243,25 +293,50 @@ function nrvLabel(item: Nutrient) {
         <div class="nutrient-list">
           <article v-for="item in minerals" :key="item.id" class="nutrient-row">
             <div class="nutrient-row-top">
-              <div><strong>{{ item.label }}</strong><small>{{ item.days_with_value }} von {{ result.recorded_days }} Tagen erfasst</small></div>
-              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>{{ nrvLabel(item) }}</small></div>
+              <div><strong>{{ item.label }}</strong><small>{{ referenceAmountLabel(item) }}</small></div>
+              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>Ø pro Ernährungstag</small></div>
+            </div>
+            <div v-if="item.percent_of_nrv != null" class="nutrient-progress-heading">
+              <span>Anteil am EU-Referenzwert</span>
+              <strong>{{ nrvLabel(item) }}</strong>
             </div>
             <progress
-              v-if="item.eu_nrv != null"
+              v-if="item.percent_of_nrv != null"
               :class="['nutrient-progress', item.status]"
               :value="Math.min(item.percent_of_nrv ?? 0, 150)"
               max="150"
+              :aria-label="`${item.label}: ${nrvLabel(item)} des EU-Referenzwerts`"
             >
               {{ nrvLabel(item) }}
             </progress>
             <div class="nutrient-row-meta">
               <span :class="['nutrient-status', item.status]">{{ statusLabel(item) }}</span>
-              <span>Datenabdeckung {{ percent.format(item.coverage_ratio) }}</span>
+              <span>{{ coverageLabel(item) }}</span>
             </div>
           </article>
         </div>
       </section>
     </div>
+
+    <section class="card quality-explainer micronutrient-explainer">
+      <span class="quality-explainer-icon"><PhInfo :size="22" weight="fill" /></span>
+      <div>
+        <h2>So ist die Auswertung zu lesen</h2>
+        <p>Der Balken zeigt den berechneten Anteil am EU-Nährstoffbezugswert für Erwachsene. 100 % entsprechen dem Referenzwert; die Balkenskala reicht bis 150 %. Das Tagesmittel teilt die gemeldete Summe durch alle Ernährungstage im Zeitraum.</p>
+        <p>„Noch zu wenige Angaben“ bedeutet: YAZIO hat diesen Nährstoff an weniger als 70 % der Ernährungstage geliefert. Bei {{ result.recorded_days }} Ernährungstagen sind Angaben an mindestens {{ requiredCoverageDays() }} Tagen nötig. Das sagt nichts darüber aus, ob du zu wenig davon gegessen hast.</p>
+        <p>„Unter Orientierung“ bedeutet weniger als 80 % des Referenzwerts bei ausreichender Datenabdeckung. Das ist keine Diagnose eines Mangels: Produktdaten können unvollständig sein, individuelle Bedarfe unterscheiden sich und Blutwerte werden hier nicht bewertet.</p>
+        <a href="https://eur-lex.europa.eu/legal-content/DE-EN/ALL/?uri=CELEX:32011R1169" target="_blank" rel="noreferrer">Referenz: Verordnung (EU) Nr. 1169/2011, Anhang XIII</a>
+        <div v-if="source === 'yazio_export_v1'" class="micronutrient-backfill">
+          <p>Fehlen ältere Mikronährstoffwerte, kannst du einmalig die letzten 60 Tage nachladen. Die automatische Synchronisierung bleibt weiterhin auf den kurzen Zeitraum aus deinen Kontoeinstellungen begrenzt.</p>
+          <button class="button secondary" type="button" :disabled="syncingHistory" @click="syncYazioHistory">
+            <PhArrowsClockwise :size="16" weight="bold" aria-hidden="true" />
+            {{ syncingHistory ? 'YAZIO-Historie wird geladen …' : '60 Tage aus YAZIO nachladen' }}
+          </button>
+          <small v-if="syncMessage" class="micronutrient-sync-message">{{ syncMessage }}</small>
+          <small v-if="syncError" class="micronutrient-sync-message error">{{ syncError }}</small>
+        </div>
+      </div>
+    </section>
 
     <p class="micronutrient-source-note">
       Quelle: {{ sourceLabel(result.source ?? source) }} · Fehlende Mikronährstoffangaben werden im Tagesmittel als 0 berücksichtigt und über die Datenabdeckung sichtbar gemacht.

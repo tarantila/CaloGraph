@@ -96,6 +96,7 @@ def daily_points(
         calories = values.get("dietary_energy_kcal")
         target = _target_for(targets, day)
         target_kcal = target.calories_kcal if target else None
+        maintenance_kcal = target.maintenance_kcal if target else None
         status, score, reasons = tracking_status(
             calories=calories,
             nutrition_count=nutrition_counts.get(day, 0),
@@ -108,6 +109,7 @@ def daily_points(
                 date=day,
                 calories_kcal=calories,
                 target_kcal=target_kcal,
+                maintenance_kcal=maintenance_kcal,
                 deviation_kcal=(calories - target_kcal)
                 if calories is not None and target_kcal
                 else None,

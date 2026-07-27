@@ -7,9 +7,11 @@ import {
 } from '@phosphor-icons/vue'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { api, ApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import DateFilter from '../components/DateFilter.vue'
 
 interface Weekday {
   weekday: number
@@ -23,14 +25,48 @@ interface Weekday {
   mean_protein_g: number | null
 }
 
+const route = useRoute()
+const router = useRouter()
+const currentDate = new Date()
+const defaultStartDate = new Date(currentDate)
+defaultStartDate.setDate(currentDate.getDate() - 179)
+const iso = (value: Date) => {
+  const year = value.getFullYear()
+  const month = `${value.getMonth() + 1}`.padStart(2, '0')
+  const day = `${value.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const start = ref(String(route.query.start ?? iso(defaultStartDate)))
+const end = ref(String(route.query.end ?? iso(currentDate)))
 const weekdays = ref<Weekday[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 
-onMounted(async () => {
+function numericValue(value: number | null) {
+  if (value == null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+async function load() {
+  error.value = ''
+  loading.value = true
+  await router.replace({ query: { start: start.value, end: end.value } })
   try {
-    weekdays.value = (await api<{ weekdays: Weekday[] }>('/analytics/weekdays')).weekdays
+    const result = await api<{ weekdays: Weekday[] }>(
+      `/analytics/weekdays?start=${start.value}&end=${end.value}`,
+    )
+    weekdays.value = result.weekdays.map((item) => ({
+      ...item,
+      count: Number(item.count),
+      mean_kcal: numericValue(item.mean_kcal),
+      median_kcal: numericValue(item.median_kcal),
+      p25_kcal: numericValue(item.p25_kcal),
+      p75_kcal: numericValue(item.p75_kcal),
+      mean_deviation_kcal: numericValue(item.mean_deviation_kcal),
+      mean_protein_g: numericValue(item.mean_protein_g),
+    }))
   } catch (cause) {
     error.value =
       cause instanceof ApiError
@@ -39,7 +75,8 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+onMounted(load)
 
 const recorded = computed(() => weekdays.value.filter((item) => item.count > 0))
 const highestDay = computed(() =>
@@ -108,7 +145,7 @@ const option = computed<EChartsOption>(() => ({
 <template>
   <div class="page-heading">
     <div><h1>Wochentagsanalyse</h1><p>Wiederkehrende Muster von Montag bis Sonntag auf Basis erfasster Tage.</p></div>
-    <span class="page-context">{{ totalDays }} ausgewertete Tage</span>
+    <DateFilter v-model:start="start" v-model:end="end" @apply="load" />
   </div>
 
   <div v-if="error" class="card error" role="alert">{{ error }}</div>

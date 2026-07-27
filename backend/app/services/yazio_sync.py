@@ -227,9 +227,12 @@ def run_scheduled_yazio_sync(
 def run_manual_yazio_sync(
     user_id: UUID,
     *,
+    sync_days: int | None = None,
     fetcher: YazioFetcher = fetch_yazio_payload,
     now: datetime | None = None,
 ) -> ImportSummary:
+    if sync_days is not None and not 1 <= sync_days <= 366:
+        raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
     with SessionLocal() as db:
         connection_id = db.scalar(
             select(YazioConnection.id).where(YazioConnection.user_id == user_id)
@@ -244,6 +247,7 @@ def run_manual_yazio_sync(
         fetcher=fetcher,
         now=now,
         require_enabled=False,
+        sync_days_override=sync_days,
     )
     if summary is None:
         raise YazioSyncError(
@@ -258,6 +262,7 @@ def _run_yazio_connection_sync(
     fetcher: YazioFetcher,
     now: datetime | None,
     require_enabled: bool,
+    sync_days_override: int | None = None,
 ) -> ImportSummary | None:
     attempted_at = now or datetime.now(UTC)
     with SessionLocal() as db:
@@ -280,7 +285,7 @@ def _run_yazio_connection_sync(
             _record_failure(connection_id, attempted_at, exc)
             return None
         timezone = user.timezone
-        sync_days = connection.sync_days
+        sync_days = sync_days_override or connection.sync_days
         source_identifier = connection.source_identifier
         username = user.username
         last_micronutrient_sync_at = connection.last_micronutrient_sync_at

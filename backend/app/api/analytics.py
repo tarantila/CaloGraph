@@ -382,20 +382,18 @@ def calendar(
     output = []
     for point in daily_points(db, user, start, end):
         classification = "no_data"
-        if point.tracking_status in {"probably_incomplete", "incomplete"}:
-            classification = "probably_incomplete"
-        elif point.deviation_kcal is not None and point.target_kcal:
-            ratio = point.deviation_kcal / point.target_kcal
-            if ratio < Decimal("-0.15"):
-                classification = "well_below"
-            elif ratio < Decimal("-0.05"):
-                classification = "slightly_below"
-            elif ratio <= Decimal("0.05"):
-                classification = "on_target"
-            elif ratio <= Decimal("0.15"):
-                classification = "slightly_above"
+        if point.calories_kcal is not None and point.target_kcal is not None:
+            if point.calories_kcal <= point.target_kcal:
+                classification = "under_budget"
+            elif (
+                point.maintenance_kcal is not None
+                and point.calories_kcal > point.maintenance_kcal
+            ):
+                classification = "above_maintenance"
             else:
-                classification = "well_above"
+                classification = "over_budget"
+        elif point.tracking_status in {"probably_incomplete", "incomplete"}:
+            classification = "probably_incomplete"
         output.append({**point.model_dump(mode="json"), "classification": classification})
     return {"days": output}
 

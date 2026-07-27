@@ -6,8 +6,10 @@
 - `user_invitations`: hashed one-time invitation tokens, expiration, creator,
   recipient, and revocation.
 - `api_tokens`: label, prefix, HMAC hash, scopes, expiration, and revocation.
-- `nutrition_targets`: versioned targets using the half-open interval
-  `valid_from <= day < valid_to`.
+- `nutrition_targets`: versioned calorie budgets, optional maintenance-calorie
+  estimates, and nutrient targets using the half-open interval
+  `valid_from <= day < valid_to`. A maintenance estimate cannot be lower than
+  the calorie budget.
 - `tracking_quality_settings`: legacy settings from the former completeness
   heuristic; no longer used for new analysis.
 - `health_samples`: canonical and original values, UTC timestamps, local date,

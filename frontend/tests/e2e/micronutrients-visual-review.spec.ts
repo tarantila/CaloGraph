@@ -95,6 +95,10 @@ test('micronutrient analysis shows source coverage and neutral orientation', asy
               last_updated_at: '2026-07-23T12:30:00Z',
             },
           ],
+          definition: {
+            coverage_threshold: 0.7,
+            orientation_threshold_percent: 80,
+          },
           nutrients,
         },
       })
@@ -110,10 +114,13 @@ test('micronutrient analysis shows source coverage and neutral orientation', asy
   await expect(page.getByRole('heading', { name: 'Mineralstoffe' })).toBeVisible()
   await expect(page.getByText('Vitamin D', { exact: true })).toBeVisible()
   await expect(page.getByText('Eisen', { exact: true })).toBeVisible()
-  await expect(page.getByText('Kein EU-NRV')).toBeVisible()
+  await expect(page.getByText('Kein EU-Referenzwert festgelegt')).toBeVisible()
   await expect(page.getByText('Unter Orientierung').first()).toBeVisible()
-  await expect(page.getByText('Datenbasis zu klein')).toBeVisible()
+  await expect(page.getByText('Noch zu wenige Angaben', { exact: true })).toBeVisible()
+  await expect(page.getByText('Anteil am EU-Referenzwert').first()).toBeVisible()
+  await expect(page.getByText(/mindestens 21 nötig/).first()).toBeVisible()
   await expect(page.getByText(/keine Diagnose/i)).toBeVisible()
+  await expect(page.getByRole('button', { name: '60 Tage aus YAZIO nachladen' })).toBeVisible()
   await expect(page.locator('.nutrient-progress')).toHaveCount(3)
 
   await page.screenshot({

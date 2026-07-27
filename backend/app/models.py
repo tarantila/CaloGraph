@@ -138,6 +138,10 @@ class NutritionTarget(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "valid_from", name="uq_target_user_valid_from"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="ck_target_date_range"),
+        CheckConstraint(
+            "maintenance_kcal IS NULL OR maintenance_kcal >= calories_kcal",
+            name="ck_target_maintenance_at_least_budget",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -147,6 +151,7 @@ class NutritionTarget(Base):
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
     calories_kcal: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    maintenance_kcal: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     protein_g: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     carbs_g: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     fat_g: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
@@ -249,7 +254,7 @@ class HealthSample(Base):
     metric_type: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[Decimal] = mapped_column(Numeric(20, 6))
     unit: Mapped[str] = mapped_column(String(32))
-    original_value: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    original_value: Mapped[Decimal] = mapped_column(Numeric(24, 12))
     original_unit: Mapped[str] = mapped_column(String(64))
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

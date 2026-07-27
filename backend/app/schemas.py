@@ -1,9 +1,9 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProblemDetail(BaseModel):
@@ -157,10 +157,24 @@ class TokenResponse(BaseModel):
 class TargetInput(BaseModel):
     valid_from: date
     calories_kcal: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
+    maintenance_kcal: Decimal | None = Field(
+        default=None, gt=0, max_digits=12, decimal_places=3
+    )
     protein_g: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     carbs_g: Decimal | None = Field(default=None, ge=0)
     fat_g: Decimal | None = Field(default=None, ge=0)
     fiber_g: Decimal | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def maintenance_is_not_below_budget(self) -> Self:
+        if (
+            self.maintenance_kcal is not None
+            and self.maintenance_kcal < self.calories_kcal
+        ):
+            raise ValueError(
+                "Der Erhaltungsbedarf darf nicht unter dem Kalorienbudget liegen"
+            )
+        return self
 
 
 class TargetResponse(TargetInput):
@@ -204,6 +218,7 @@ class DailyPoint(BaseModel):
     date: date
     calories_kcal: Decimal | None
     target_kcal: Decimal | None
+    maintenance_kcal: Decimal | None
     deviation_kcal: Decimal | None
     protein_g: Decimal | None
     carbs_g: Decimal | None

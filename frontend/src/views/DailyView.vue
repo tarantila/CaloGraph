@@ -27,6 +27,12 @@ const error = ref('')
 const loading = ref(true)
 const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
 
+function numericValue(value: number | null | undefined) {
+  if (value == null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 async function load() {
   error.value = ''
   loading.value = true
@@ -44,14 +50,19 @@ async function load() {
   }
 }
 onMounted(load)
-const display = (value: number | null, unit = '') => (value == null ? '–' : `${number.format(value)}${unit}`)
-const recordedPoints = computed(() => points.value.filter((point) => point.calories_kcal != null))
-const averageCalories = computed(() =>
-  recordedPoints.value.length
-    ? recordedPoints.value.reduce((sum, point) => sum + (point.calories_kcal ?? 0), 0) /
-      recordedPoints.value.length
-    : null,
+const display = (value: number | null, unit = '') => {
+  const parsed = numericValue(value)
+  return parsed == null ? '–' : `${number.format(parsed)}${unit}`
+}
+const recordedPoints = computed(() =>
+  points.value.filter((point) => numericValue(point.calories_kcal) != null),
 )
+const averageCalories = computed(() => {
+  const values = recordedPoints.value
+    .map((point) => numericValue(point.calories_kcal))
+    .filter((value): value is number => value != null)
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+})
 const missingPoints = computed(() =>
   points.value.filter((point) => point.tracking_status === 'no_data'),
 )

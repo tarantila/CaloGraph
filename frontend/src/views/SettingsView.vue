@@ -9,7 +9,7 @@ interface Token { id: string; label: string; token_prefix: string; created_at: s
 interface Invitation { id: string; created_at: string; expires_at: string; used_at: string | null; revoked_at: string | null }
 const props = defineProps<{ section: 'targets' | 'account' }>()
 const profile = reactive({ timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
-const target = reactive({ valid_from: new Date().toISOString().slice(0, 10), calories_kcal: 2200, protein_g: 140, carbs_g: null as number | null, fat_g: null as number | null, fiber_g: null as number | null })
+const target = reactive({ valid_from: new Date().toISOString().slice(0, 10), calories_kcal: 2200, maintenance_kcal: null as number | null, protein_g: 140, carbs_g: null as number | null, fat_g: null as number | null, fiber_g: null as number | null })
 const targets = ref<Target[]>([])
 const tokens = ref<Token[]>([])
 const tokenLabel = ref('iPhone')
@@ -40,6 +40,7 @@ async function loadTargets() {
   const currentTarget = targetResult.find((item) => item.valid_to == null) ?? targetResult[0]
   if (currentTarget) {
     target.calories_kcal = Number(currentTarget.calories_kcal)
+    target.maintenance_kcal = currentTarget.maintenance_kcal == null ? null : Number(currentTarget.maintenance_kcal)
     target.protein_g = Number(currentTarget.protein_g)
     target.carbs_g = currentTarget.carbs_g == null ? null : Number(currentTarget.carbs_g)
     target.fat_g = currentTarget.fat_g == null ? null : Number(currentTarget.fat_g)
@@ -95,9 +96,13 @@ async function saveTarget() {
   message.value = ''
   try {
     const existing = targets.value.some((item) => item.valid_from === target.valid_from)
+    const payload = {
+      ...target,
+      maintenance_kcal: target.maintenance_kcal || null,
+    }
     await api(
       existing ? `/settings/targets/${target.valid_from}` : '/settings/targets',
-      { method: existing ? 'PUT' : 'POST', body: JSON.stringify(target) },
+      { method: existing ? 'PUT' : 'POST', body: JSON.stringify(payload) },
     )
     message.value = `Budget und Ziele ab ${new Date(`${target.valid_from}T12:00:00`).toLocaleDateString('de-DE')} gespeichert.`
     await loadTargets()
@@ -166,6 +171,7 @@ async function revokeInvitation(id: string) {
           <form class="form-grid" @submit.prevent="saveTarget">
             <label class="field">Gültig ab<input v-model="target.valid_from" type="date" required /></label>
             <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" min="1" step="1" required /></label>
+            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
             <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" min="0" step="1" required /></label>
             <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" min="0" step="1" /></label>
             <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" min="0" step="1" /></label>
@@ -179,6 +185,7 @@ async function revokeInvitation(id: string) {
         <section class="card form-card budget-help">
           <h2>So wird die Änderung verwendet</h2>
           <p>Das Kalorienbudget ist deine tägliche Obergrenze. Das Proteinziel wird als Wert behandelt, den du möglichst erreichen möchtest.</p>
+          <p>Der optionale Erhaltungsbedarf liegt mindestens auf Höhe des Budgets. Im Kalender werden Tage bis zum Budget grün, Überschreitungen bis zum Erhaltungsbedarf orange und Werte darüber rot dargestellt.</p>
           <p>Mit „Gültig ab“ bestimmst du den ersten Tag der neuen Werte. Gibt es für dieses Datum bereits eine Version, wird sie aktualisiert. Frühere Auswertungen behalten die damals gültigen Werte.</p>
         </section>
       </div>
@@ -189,15 +196,16 @@ async function revokeInvitation(id: string) {
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Gültig ab</th><th>Gültig bis</th><th class="number">Kalorienbudget</th><th class="number">Proteinziel</th></tr></thead>
+            <thead><tr><th>Gültig ab</th><th>Gültig bis</th><th class="number">Kalorienbudget</th><th class="number">Erhaltungsbedarf</th><th class="number">Proteinziel</th></tr></thead>
             <tbody>
               <tr v-for="item in targets" :key="item.id">
                 <td>{{ item.valid_from }}</td>
                 <td>{{ item.valid_to ?? 'aktuell' }}</td>
                 <td class="number">{{ integer.format(Number(item.calories_kcal)) }} kcal</td>
+                <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} kcal` }}</td>
                 <td class="number">{{ integer.format(Number(item.protein_g)) }} g</td>
               </tr>
-              <tr v-if="!targets.length"><td colspan="4" class="empty">Noch keine Budgets oder Ziele vorhanden.</td></tr>
+              <tr v-if="!targets.length"><td colspan="5" class="empty">Noch keine Budgets oder Ziele vorhanden.</td></tr>
             </tbody>
           </table>
         </div>

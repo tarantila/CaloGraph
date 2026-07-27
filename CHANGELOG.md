@@ -5,9 +5,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-27
+
 ### Added
 
 - Added a dashboard screenshot to the README.
+- Added an explicit 60-day YAZIO history backfill to the micronutrient
+  analysis.
+- Added an optional, versioned maintenance-calorie estimate to budget settings.
 
 ### Changed
 
@@ -21,6 +26,22 @@ follows [Semantic Versioning](https://semver.org/).
   including user invitations.
 - Restricted Uvicorn forwarded-header handling to configured proxy networks
   instead of trusting every sender.
+- Moved the micronutrient explanation below the values and made the EU
+  reference bars and coverage requirements explicit.
+- Changed the calendar to calendar-month navigation with budget-based
+  green/orange/red classifications and clearer summary metrics.
+- Added week and custom date ranges to weekday analysis and moved the calendar
+  directly below weekday analysis in the sidebar.
+- Reworked the public entry screen into a minimal sign-in method selection;
+  credentials appear only after choosing password sign-in.
+
+### Fixed
+
+- Corrected YAZIO micronutrient values from their gram source unit to canonical
+  milligrams or micrograms, including a migration for existing samples.
+- Corrected calendar average calculations for decimal values returned by the
+  API.
+- Corrected the daily calorie average for decimal values returned by the API.
 
 ## [0.1.1] - 2026-07-23
 
@@ -52,5 +73,6 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tarantila/CaloGraph/compare/b4ca2cf...v0.1.1

@@ -46,6 +46,7 @@ def test_existing_target_version_can_be_updated(
         json={
             "valid_from": "2024-01-01",
             "calories_kcal": 2500,
+            "maintenance_kcal": 2800,
             "protein_g": 150,
             "carbs_g": 260,
             "fat_g": 80,
@@ -55,9 +56,23 @@ def test_existing_target_version_can_be_updated(
 
     assert response.status_code == 200
     assert response.json()["calories_kcal"] == "2500.000"
+    assert response.json()["maintenance_kcal"] == "2800.000"
     saved = client.get("/api/v1/settings/targets")
     assert saved.status_code == 200
     assert saved.json()[0]["calories_kcal"] == "2500.000"
+    assert saved.json()[0]["maintenance_kcal"] == "2800.000"
+
+    invalid = client.put(
+        "/api/v1/settings/targets/2024-01-01",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2024-01-01",
+            "calories_kcal": 2500,
+            "maintenance_kcal": 2400,
+            "protein_g": 150,
+        },
+    )
+    assert invalid.status_code == 422
 
 
 def test_dashboard_week_budget_always_covers_monday_to_sunday(

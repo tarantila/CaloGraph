@@ -29,9 +29,9 @@ const navigation = [
   { to: { name: 'daily' }, label: 'Tagesverlauf', icon: PhListBullets },
   { to: { name: 'weekly' }, label: 'Wochen', icon: PhChartBar },
   { to: { name: 'weekdays' }, label: 'Wochentage', icon: PhCalendarBlank },
+  { to: { name: 'calendar' }, label: 'Kalender', icon: PhCalendarBlank },
   { to: { name: 'trends' }, label: 'Trends', icon: PhChartLineUp },
   { to: { name: 'micronutrients' }, label: 'Mikronährstoffe', icon: PhChartBar },
-  { to: { name: 'calendar' }, label: 'Kalender', icon: PhCalendarBlank },
   { to: { name: 'quality' }, label: 'Datenstatus', icon: PhDatabase },
   { to: { name: 'imports' }, label: 'Datenimport', icon: PhDownloadSimple },
   { to: { name: 'targets' }, label: 'Budgets & Ziele', icon: PhTarget },
@@ -69,7 +69,7 @@ async function signOut() {
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
-        <small>CaloGraph v0.1.1</small>
+        <small>CaloGraph v0.1.2</small>
         <button class="sidebar-signout" type="button" @click="signOut">
           <PhSignOut :size="18" aria-hidden="true" />
           Abmelden

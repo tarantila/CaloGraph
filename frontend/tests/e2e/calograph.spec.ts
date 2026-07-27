@@ -27,6 +27,7 @@ test('login, idempotent import and dashboard', async ({ page, request }) => {
   expect((await second.json()).skipped).toBe(6)
 
   await page.goto('/login')
+  await page.getByRole('button', { name: 'Mit Passwort anmelden' }).click()
   await page.getByLabel('Benutzername').fill(username)
   await page.getByLabel('Passwort').fill(password)
   await page.getByRole('button', { name: 'Anmelden' }).click()
