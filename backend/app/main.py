@@ -48,8 +48,13 @@ async def security_and_request_id(
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    response.headers["Cache-Control"] = "private, no-store"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     if settings.enable_hsts:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -67,6 +72,7 @@ async def security_and_request_id(
 async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
+        headers=exc.headers,
         content={
             "type": "about:blank",
             "title": "Anfrage fehlgeschlagen",

@@ -1,15 +1,20 @@
 services:
   backend:
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.1.2}
     build:
-      target: development
+      target: backend-development
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     volumes:
       - ./backend:/app
     read_only: false
 
+  yazio-scheduler:
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.1.2}
+
   frontend:
+    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.1.2}
     build:
-      target: development
+      target: frontend-development
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
     volumes:
       - ./frontend:/app

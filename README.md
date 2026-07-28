@@ -94,6 +94,15 @@ The backend container applies pending Alembic migrations before it starts. The
 application is then available at
 [http://127.0.0.1:8180](http://127.0.0.1:8180).
 
+Both application images are built from the central multi-stage
+[`Dockerfile`](Dockerfile). Compose selects separate backend and frontend
+targets, so the final images still contain only their respective runtime. Both
+run as non-root users. Backend process settings such as `WEB_CONCURRENCY`,
+`UVICORN_LOG_LEVEL`, and the Uvicorn timeouts can be overridden in `.env`
+without rebuilding the image. Build labels and the backend UID/GID can
+optionally be overridden with `CALOGRAPH_VERSION`, `CALOGRAPH_UID`, and
+`CALOGRAPH_GID`.
+
 ### Create the first user
 
 ```bash

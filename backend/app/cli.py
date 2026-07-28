@@ -22,6 +22,7 @@ from app.services.credential_crypto import (
     generate_credential_key,
 )
 from app.services.import_service import persist_import, purge_expired_raw_payloads
+from app.services.rate_limit import purge_expired_rate_limit_buckets
 from app.services.yazio_sync import (
     YazioSyncError,
     configure_yazio_connection,
@@ -314,9 +315,20 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         settings.yazio_scheduler_poll_seconds,
         settings.yazio_scheduler_jitter_minutes,
     )
+    last_rate_limit_cleanup = 0.0
     while True:
         try:
             attempted, succeeded = run_due_yazio_syncs()
+            monotonic_now = time.monotonic()
+            if monotonic_now - last_rate_limit_cleanup >= 3600:
+                with SessionLocal() as db:
+                    deleted = purge_expired_rate_limit_buckets(
+                        db,
+                        settings.rate_limit_retention_hours,
+                    )
+                last_rate_limit_cleanup = monotonic_now
+                if deleted:
+                    logger.info("rate_limit_cleanup deleted=%s", deleted)
         except Exception:
             logger.exception("yazio_scheduler_cycle_failed")
             if args.once:

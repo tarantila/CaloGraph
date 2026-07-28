@@ -5,6 +5,45 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated backend and frontend container builds into a central,
+  multi-stage Dockerfile with separate development, test, and runtime targets.
+- Made backend image metadata, runtime UID/GID, worker count, logging, and
+  Uvicorn timeouts configurable through Docker Compose.
+- Routed containerized backend checks through a development-only image that
+  includes the test, lint, and type-check dependencies.
+- Excluded environment-specific `.env` variants from the shared Docker build
+  context so frontend values cannot be embedded into production assets.
+- Switched the frontend runtime to the purpose-built, unprivileged NGINX image
+  and moved all writable PID and temporary paths to its ephemeral `/tmp`.
+
+### Security
+
+- Split login throttling into independent IP and account buckets, normalized
+  IPv6 clients to `/64`, and made PostgreSQL counter updates atomic.
+- Removed the login timing oracle with a dummy Argon2 verification, added
+  temporary password-change throttling, pseudonymous authentication events,
+  `Retry-After` responses, and automatic cleanup of expired buckets.
+- Bounded historical imports with a 500-MiB upload limit, a single ephemeral
+  tmpfs spool, proxy concurrency and application rate limits, streamed XML,
+  capped parser diagnostics, and bulk database writes in 500-record batches.
+- Preserved completed import checkpoints under the explicit `partial_failed`
+  status so interrupted Apple Health imports can be retried idempotently.
+- Wrapped the unofficial YAZIO client in a CaloGraph-owned transport with
+  explicit network timeouts, rejected redirects, no authentication retries,
+  and parent-enforced operation deadlines.
+- Added independent per-user and per-IP limits for YAZIO credential setup and
+  manual sync, PostgreSQL advisory-lock concurrency control, a temporary
+  provider circuit breaker, account-specific credential-failure pauses, and a
+  `YAZIO_ENABLED` operational kill switch without introducing Redis.
+- Made the runtime environment explicit and added fail-closed production
+  validation for HTTPS, secure cookies, HSTS, secrets, database credentials,
+  request allowlists, YAZIO encryption, and upload-capacity relationships.
+- Replaced the fixed Nginx upload ceiling and backend tmpfs size with validated
+  byte settings while preserving the 500-MiB Apple Health and 2-GiB streamed
+  ZIP defaults.
+
 ## [0.1.2] - 2026-07-27
 
 ### Added

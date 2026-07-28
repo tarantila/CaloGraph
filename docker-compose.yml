@@ -28,9 +28,15 @@ services:
     stop_grace_period: 1m
 
   backend:
+    image: calograph-backend:${CALOGRAPH_VERSION:-0.1.2}
     build:
-      context: ./backend
-      target: runtime
+      context: .
+      dockerfile: Dockerfile
+      target: backend-runtime
+      args:
+        APP_VERSION: ${CALOGRAPH_VERSION:-0.1.2}
+        APP_UID: ${CALOGRAPH_UID:-10001}
+        APP_GID: ${CALOGRAPH_GID:-10001}
     restart: unless-stopped
     environment:
       ENVIRONMENT: ${ENVIRONMENT:?Set ENVIRONMENT to development, test, or production in .env}
@@ -57,6 +63,12 @@ services:
       IMPORT_BATCH_SIZE: ${IMPORT_BATCH_SIZE:-500}
       RAW_PAYLOAD_RETENTION_DAYS: ${RAW_PAYLOAD_RETENTION_DAYS:-0}
       LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}
+      LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
+      LOGIN_IP_RATE_LIMIT: ${LOGIN_IP_RATE_LIMIT:-30}
+      LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS:-300}
+      PASSWORD_CHANGE_RATE_LIMIT: ${PASSWORD_CHANGE_RATE_LIMIT:-5}
+      PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS: ${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS:-900}
+      RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
       IMPORT_RATE_LIMIT: ${IMPORT_RATE_LIMIT:-30}
       IMPORT_RATE_LIMIT_WINDOW_SECONDS: ${IMPORT_RATE_LIMIT_WINDOW_SECONDS:-60}
       IMPORT_IP_RATE_LIMIT: ${IMPORT_IP_RATE_LIMIT:-60}
@@ -77,6 +89,13 @@ services:
       YAZIO_CIRCUIT_WINDOW_SECONDS: ${YAZIO_CIRCUIT_WINDOW_SECONDS:-600}
       YAZIO_SCHEDULER_POLL_SECONDS: ${YAZIO_SCHEDULER_POLL_SECONDS:-60}
       YAZIO_SCHEDULER_JITTER_MINUTES: ${YAZIO_SCHEDULER_JITTER_MINUTES:-30}
+      ASGI_APP: ${ASGI_APP:-app.main:app}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      UVICORN_LOG_LEVEL: ${UVICORN_LOG_LEVEL:-info}
+      UVICORN_TIMEOUT_KEEP_ALIVE: ${UVICORN_TIMEOUT_KEEP_ALIVE:-5}
+      UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN: ${UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN:-30}
+      UVICORN_ACCESS_LOG: ${UVICORN_ACCESS_LOG:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,7 +118,7 @@ services:
       - /tmp:size=${BACKEND_TMPFS_BYTES:-629145600},mode=1777
 
   yazio-scheduler:
-    image: calograph-backend
+    image: calograph-backend:${CALOGRAPH_VERSION:-0.1.2}
     restart: unless-stopped
     command: ["python", "-m", "app.cli", "run-yazio-scheduler"]
     environment:
@@ -118,8 +137,19 @@ services:
       NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
       BACKEND_TMPFS_BYTES: ${BACKEND_TMPFS_BYTES:-629145600}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set RATE_LIMIT_SECRET in .env}
+      YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
+      YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
+      YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
+      YAZIO_LOGIN_DEADLINE_SECONDS: ${YAZIO_LOGIN_DEADLINE_SECONDS:-25}
+      YAZIO_OPERATION_DEADLINE_SECONDS: ${YAZIO_OPERATION_DEADLINE_SECONDS:-300}
+      YAZIO_REQUEST_WORKERS: ${YAZIO_REQUEST_WORKERS:-3}
+      YAZIO_MAX_PARALLEL_OPERATIONS: ${YAZIO_MAX_PARALLEL_OPERATIONS:-2}
+      YAZIO_CIRCUIT_FAILURE_LIMIT: ${YAZIO_CIRCUIT_FAILURE_LIMIT:-5}
+      YAZIO_CIRCUIT_WINDOW_SECONDS: ${YAZIO_CIRCUIT_WINDOW_SECONDS:-600}
       YAZIO_SCHEDULER_POLL_SECONDS: ${YAZIO_SCHEDULER_POLL_SECONDS:-60}
       YAZIO_SCHEDULER_JITTER_MINUTES: ${YAZIO_SCHEDULER_JITTER_MINUTES:-30}
+      RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
     depends_on:
       backend:
         condition: service_healthy
@@ -143,10 +173,17 @@ services:
       - /tmp:size=64m,mode=1777
 
   frontend:
+    image: calograph-frontend:${CALOGRAPH_VERSION:-0.1.2}
     build:
-      context: ./frontend
-      target: runtime
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-runtime
+      args:
+        APP_VERSION: ${CALOGRAPH_VERSION:-0.1.2}
     restart: unless-stopped
+    environment:
+      ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
+      NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
     ports:
       - "127.0.0.1:${CALOGRAPH_PORT:-8180}:8080"
     depends_on:
@@ -164,24 +201,52 @@ services:
     stop_grace_period: 30s
     read_only: true
     tmpfs:
-      - /var/cache/nginx:size=32m,mode=1777
-      - /var/run:size=4m,mode=1777
+      - /tmp:size=64m,mode=1777
 
   frontend-ci:
     profiles: [test]
     build:
-      context: ./frontend
-      target: build
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-build
     command: ["npm", "run", "test:unit"]
+    networks: [internal]
+
+  backend-ci:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
+    environment:
+      ENVIRONMENT: test
+    command: ["pytest"]
+    networks: [internal]
+
+  backend-postgres-ci:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
+    environment:
+      ENVIRONMENT: test
+      CALOGRAPH_POSTGRES_TEST_URL: ${DATABASE_URL:-postgresql+psycopg://calograph:calograph@postgres:5432/calograph}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["pytest", "tests/test_rate_limit_postgres.py"]
     networks: [internal]
 
   e2e:
     profiles: [test]
     build:
-      context: ./frontend
-      target: e2e
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-e2e
     environment:
       BASE_URL: http://frontend:8080
+      EXPECT_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
     command: ["npx", "playwright", "test"]
     depends_on:
       frontend:

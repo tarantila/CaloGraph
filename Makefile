@@ -16,14 +16,14 @@ migrate:
 	docker compose run --rm backend alembic upgrade head
 
 test:
-	docker compose run --rm backend pytest
+	docker compose --profile test run --rm --build backend-ci pytest
 
 lint:
-	docker compose run --rm backend ruff check app tests
+	docker compose --profile test run --rm --build backend-ci ruff check app tests
 	docker compose run --rm frontend-ci npm run lint
 
 typecheck:
-	docker compose run --rm backend mypy app
+	docker compose --profile test run --rm --build backend-ci mypy app
 	docker compose run --rm frontend-ci npm run typecheck
 
 frontend-test:
