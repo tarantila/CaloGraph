@@ -53,6 +53,7 @@ const loading = ref(true)
 const syncingYazio = ref(false)
 const syncFeedback = ref('')
 const syncFailed = ref(false)
+const highlightOverBudget = ref(false)
 
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const decimal = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
@@ -355,6 +356,26 @@ const tooltip = {
   textStyle: { color: '#f3f6fb' },
 }
 
+const calorieBarData = computed(() =>
+  trends.value.map((item) => {
+    if (item.calories_kcal == null) return null
+
+    const calories = Number(item.calories_kcal)
+    const budget = Number(item.target_kcal)
+    const isOverBudget =
+      item.target_kcal != null && Number.isFinite(budget) && calories > budget
+
+    if (highlightOverBudget.value && isOverBudget) {
+      return {
+        value: calories,
+        itemStyle: { color: '#fb7185', borderRadius: [5, 5, 0, 0] },
+      }
+    }
+
+    return calories
+  }),
+)
+
 const calorieChart = computed<EChartsOption>(() => ({
   animationDuration: 500,
   tooltip: { ...tooltip, trigger: 'axis', valueFormatter: (value) => `${integer.format(Number(value))} kcal` },
@@ -394,7 +415,7 @@ const calorieChart = computed<EChartsOption>(() => ({
       name: 'Aufnahme',
       type: 'bar',
       barMaxWidth: 26,
-      data: trends.value.map((item) => item.calories_kcal),
+      data: calorieBarData.value,
       itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
       emphasis: { itemStyle: { color: '#a78bfa' } },
     },
@@ -497,6 +518,7 @@ const macroChart = computed<EChartsOption>(() => ({
           {{ period.label }}
         </button>
       </div>
+      <span class="dashboard-period-range" aria-live="polite">{{ rangeLabel }}</span>
     </div>
   </div>
 
@@ -564,7 +586,18 @@ const macroChart = computed<EChartsOption>(() => ({
         :empty="!trends.some((item) => item.calories_kcal != null)"
         :height="318"
       >
-        <template #header-actions><span class="chart-range">{{ rangeLabel }}</span></template>
+        <template #header-actions>
+          <div class="chart-header-actions">
+            <label class="chart-highlight-toggle">
+              <input
+                v-model="highlightOverBudget"
+                type="checkbox"
+                role="switch"
+              />
+              <span>Über Budget hervorheben</span>
+            </label>
+          </div>
+        </template>
       </ChartPanel>
       <ChartPanel
         title="Makronährstoff-Verteilung"

@@ -42,6 +42,26 @@ function calorieValue(day: DailyPoint) {
   return Number.isFinite(value) ? value : null
 }
 
+function budgetValue(day: DailyPoint) {
+  if (day.target_kcal == null) return null
+  const value = Number(day.target_kcal)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+function calorieProgress(day: DailyPoint) {
+  const calories = calorieValue(day)
+  const budget = budgetValue(day)
+  if (calories == null || budget == null) return null
+  return Math.min(Math.max(calories / budget, 0), 1)
+}
+
+function calorieProgressLabel(day: DailyPoint) {
+  const calories = calorieValue(day)
+  const budget = budgetValue(day)
+  if (calories == null || budget == null) return ''
+  return `${format.format(calories)} von ${format.format(budget)} kcal Tagesbudget`
+}
+
 function monthRange() {
   const start = new Date(selectedMonth.value.getFullYear(), selectedMonth.value.getMonth(), 1)
   const isCurrent =
@@ -186,6 +206,16 @@ const averageCalories = computed(() => {
             kcal
           </small>
           <StatusBadge v-if="day.tracking_status !== 'complete' && day.tracking_status !== 'no_data'" :status="day.tracking_status" />
+          <progress
+            v-if="calorieProgress(day) != null"
+            class="calendar-calorie-progress"
+            :value="calorieProgress(day)!"
+            max="1"
+            :aria-label="calorieProgressLabel(day)"
+            :title="calorieProgressLabel(day)"
+          >
+            {{ format.format(calorieProgress(day)! * 100) }} %
+          </progress>
         </article>
         <div v-if="!days.length" class="empty">Für diesen Monat liegen keine Kalendertage vor.</div>
       </div>

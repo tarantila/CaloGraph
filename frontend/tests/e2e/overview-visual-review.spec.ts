@@ -107,6 +107,7 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
     if (path.endsWith('/yazio/status')) {
       return route.fulfill({
         json: {
+          available: true,
           configured: true,
           sync_enabled: true,
           sync_interval_minutes: 360,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
 import { useAuthStore } from '../stores/auth'
@@ -7,6 +7,50 @@ import type { Target, User, YazioStatus } from '../types'
 
 interface Token { id: string; label: string; token_prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
 interface Invitation { id: string; created_at: string; expires_at: string; used_at: string | null; revoked_at: string | null }
+const fallbackTimezones = [
+  'UTC',
+  'Europe/Berlin',
+  'Europe/Vienna',
+  'Europe/Zurich',
+  'Europe/Amsterdam',
+  'Europe/Paris',
+  'Europe/London',
+  'Europe/Madrid',
+  'Europe/Rome',
+  'Europe/Warsaw',
+  'Europe/Athens',
+  'Europe/Helsinki',
+  'Europe/Bucharest',
+  'Europe/Kyiv',
+  'Europe/Istanbul',
+  'Africa/Cairo',
+  'Africa/Johannesburg',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Bangkok',
+  'Asia/Singapore',
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+  'America/St_Johns',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'America/Sao_Paulo',
+]
+
+function supportedTimezones() {
+  try {
+    return Intl.supportedValuesOf('timeZone')
+  } catch {
+    return fallbackTimezones
+  }
+}
+
 const props = defineProps<{ section: 'targets' | 'account' }>()
 const profile = reactive({ timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
 const target = reactive({ valid_from: new Date().toISOString().slice(0, 10), calories_kcal: 2200, maintenance_kcal: null as number | null, protein_g: 140, carbs_g: null as number | null, fat_g: null as number | null, fiber_g: null as number | null })
@@ -27,6 +71,21 @@ const error = ref('')
 const loading = ref(true)
 const savingTarget = ref(false)
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
+const timezoneOptions = computed(() =>
+  [...new Set(['UTC', profile.timezone, ...supportedTimezones()])].sort((left, right) =>
+    left.localeCompare(right, 'de'),
+  ),
+)
+const yazioCredentialsComplete = computed(
+  () => Boolean(yazioEmail.value.trim()) && Boolean(yazioPassword.value),
+)
+const yazioAvailable = computed(() => yazio.value?.available !== false)
+const yazioStatusLabel = computed(() => {
+  if (!yazioAvailable.value) return 'serverseitig deaktiviert'
+  if (!yazio.value?.configured) return 'noch nicht eingerichtet'
+  if (!yazio.value.sync_enabled) return 'pausiert · Zugangsdaten aktualisieren'
+  return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
+})
 
 function today() {
   const current = new Date()
@@ -116,15 +175,20 @@ async function saveTarget() {
 async function createToken() { const result = await api<{ token: string }>('/settings/tokens', { method: 'POST', body: JSON.stringify({ label: tokenLabel.value }) }); newToken.value = result.token; await load() }
 async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { method: 'DELETE' }); await load() }
 async function saveYazio() {
+  if (!yazioCredentialsComplete.value) return
   savingYazio.value = true
   message.value = ''
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {
       method: 'PUT',
-      body: JSON.stringify({ email: yazioEmail.value, password: yazioPassword.value, interval_hours: 6, sync_days: 7 }),
+      body: JSON.stringify({ email: yazioEmail.value.trim(), password: yazioPassword.value, interval_hours: 6, sync_days: 7 }),
     })
+    yazioEmail.value = ''
     yazioPassword.value = ''
     message.value = 'Persönliche YAZIO-Verbindung gespeichert.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'YAZIO-Verbindung konnte nicht gespeichert werden.'
   } finally {
     savingYazio.value = false
   }
@@ -216,21 +280,59 @@ async function revokeInvitation(id: string) {
       <section class="card form-card">
         <h2>Profil</h2>
         <form class="form-grid" @submit.prevent="saveProfile">
-          <label class="field">IANA-Zeitzone<input v-model="profile.timezone" required /></label>
+          <label class="field">
+            Zeitzone
+            <select v-model="profile.timezone" name="timezone" required>
+              <option v-for="timezone in timezoneOptions" :key="timezone" :value="timezone">
+                {{ timezone.replaceAll('_', ' ') }}
+              </option>
+            </select>
+            <small>Bestimmt Tagesgrenzen und Uhrzeiten in deinen Auswertungen.</small>
+          </label>
           <label class="field">Wochenbeginn<select v-model.number="profile.week_starts_on"><option :value="0">Montag</option><option :value="6">Sonntag</option></select></label>
           <label class="field">JSON-Rohimporte aufbewahren (Tage)<input v-model.number="profile.raw_payload_retention_days" type="number" min="0" max="3650" /><small>0 deaktiviert die Speicherung vollständig. Große XML-/ZIP-Dateien werden nicht zusätzlich dupliziert.</small></label>
           <button class="button" type="submit">Profil speichern</button>
         </form>
       </section>
 
-      <section class="card form-card" style="margin-top: 1rem">
+      <section class="card form-card yazio-connection-card" style="margin-top: 1rem">
         <h2>Persönliche YAZIO-Verbindung</h2>
         <p>Diese Zugangsdaten gehören nur zu deinem CaloGraph-Konto und werden verschlüsselt gespeichert. Ein erneutes Speichern ersetzt ausschließlich deine eigene Verbindung.</p>
-        <p><strong>Status:</strong> {{ yazio?.configured ? `aktiv · alle ${(yazio.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.sync_days ?? 7} Tage` : 'noch nicht eingerichtet' }}</p>
+        <p><strong>Status:</strong> {{ yazioStatusLabel }}</p>
         <form class="form-grid" @submit.prevent="saveYazio">
-          <label class="field">YAZIO-E-Mail<input v-model="yazioEmail" type="email" autocomplete="email" required /></label>
-          <label class="field">YAZIO-Passwort<input v-model="yazioPassword" type="password" autocomplete="current-password" required /></label>
-          <button class="button" type="submit" :disabled="savingYazio">{{ savingYazio ? 'Verbindung wird geprüft …' : 'YAZIO verbinden' }}</button>
+          <label class="field">
+            YAZIO-E-Mail
+            <input
+              v-model="yazioEmail"
+              name="yazio-email"
+              type="email"
+              autocomplete="email"
+              :disabled="!yazioAvailable"
+              :placeholder="yazio?.configured ? 'E-Mail-Adresse ist gespeichert' : 'name@example.com'"
+              required
+            />
+            <small v-if="yazio?.configured">Gespeichert · zum Ändern erneut eingeben</small>
+          </label>
+          <label class="field">
+            YAZIO-Passwort
+            <input
+              v-model="yazioPassword"
+              name="yazio-password"
+              type="password"
+              autocomplete="current-password"
+              :disabled="!yazioAvailable"
+              :placeholder="yazio?.configured ? 'Passwort ist gespeichert' : 'YAZIO-Passwort'"
+              required
+            />
+            <small v-if="yazio?.configured">Gespeichert · wird niemals angezeigt</small>
+          </label>
+          <button
+            class="button"
+            type="submit"
+            :disabled="savingYazio || !yazioCredentialsComplete || !yazioAvailable"
+          >
+            {{ savingYazio ? 'Verbindung wird geprüft …' : yazio?.configured ? 'Verbindung aktualisieren' : 'YAZIO verbinden' }}
+          </button>
         </form>
       </section>
 

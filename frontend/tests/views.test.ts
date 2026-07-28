@@ -54,6 +54,7 @@ describe('main views', () => {
       if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
         return Promise.resolve({
+          available: true,
           configured: false,
           sync_enabled: false,
           sync_interval_minutes: null,
@@ -108,6 +109,7 @@ describe('main views', () => {
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
         return Promise.resolve({
+          available: true,
           configured: true,
           sync_enabled: true,
           sync_interval_minutes: 360,
@@ -151,7 +153,7 @@ describe('main views', () => {
       { date: '2026-07-20', calories_kcal: 1900, target_kcal: 2300 },
       { date: '2026-07-21', calories_kcal: 2000, target_kcal: 2300 },
       { date: '2026-07-22', calories_kcal: 1950, target_kcal: 2100 },
-      { date: '2026-07-23', calories_kcal: 2050, target_kcal: 2100 },
+      { date: '2026-07-23', calories_kcal: 2150, target_kcal: 2100 },
     ].map((point) => ({
       ...point,
       deviation_kcal: point.calories_kcal - point.target_kcal,
@@ -181,11 +183,20 @@ describe('main views', () => {
         ])
       }
       if (path === '/imports') return Promise.resolve([])
-      if (path === '/yazio/status') return Promise.resolve({ configured: false })
+      if (path === '/yazio/status') return Promise.resolve({ available: true, configured: false })
       return Promise.resolve({ points })
     })
 
-    const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
+    const wrapper = mount(OverviewView, {
+      global: {
+        stubs: {
+          ChartPanel: {
+            props: ['title', 'option', 'empty', 'height'],
+            template: '<section><slot name="header-actions" /></section>',
+          },
+        },
+      },
+    })
     await flushPromises()
     const caloriePanel = wrapper
       .findAllComponents(ChartPanel)
@@ -197,6 +208,27 @@ describe('main views', () => {
 
     expect(budgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
     expect(budgetSeries?.step).toBe('middle')
+    expect(wrapper.get('.dashboard-period-range').text()).toBe(
+      '20. Juli – 23. Juli 2026 · 4/4 mit Daten',
+    )
+
+    const highlightSwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
+    expect(highlightSwitch.element.checked).toBe(false)
+    await highlightSwitch.setValue(true)
+
+    const highlightedOption = caloriePanel!.props('option') as {
+      series: Array<{
+        name: string
+        data: Array<number | null | { value: number; itemStyle: { color: string } }>
+      }>
+    }
+    const intakeSeries = highlightedOption.series.find((series) => series.name === 'Aufnahme')
+
+    expect(intakeSeries?.data.slice(0, 3)).toEqual([1900, 2000, 1950])
+    expect(intakeSeries?.data[3]).toMatchObject({
+      value: 2150,
+      itemStyle: { color: '#fb7185' },
+    })
   })
 
   it('keeps the trends page focused on nutrition without weight tracking', async () => {
@@ -267,6 +299,7 @@ describe('main views', () => {
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
         return Promise.resolve({
+          available: true,
           configured: true,
           sync_enabled: true,
           sync_interval_minutes: 360,
@@ -318,6 +351,16 @@ describe('main views', () => {
     expect(wrapper.findAll('.calendar-day.under_budget')).toHaveLength(1)
     expect(wrapper.findAll('.calendar-day.over_budget')).toHaveLength(1)
     expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(1)
+    const calorieProgress = wrapper.findAll<HTMLProgressElement>(
+      'progress.calendar-calorie-progress',
+    )
+    expect(calorieProgress).toHaveLength(3)
+    expect(Number(calorieProgress[0].attributes('value'))).toBeCloseTo(1600 / 1800)
+    expect(calorieProgress[1].attributes('value')).toBe('1')
+    expect(calorieProgress[2].attributes('value')).toBe('1')
+    expect(calorieProgress[0].attributes('aria-label')).toBe(
+      '1.600 von 1.800 kcal Tagesbudget',
+    )
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/calendar\?start=\d{4}-\d{2}-01&end=\d{4}-\d{2}-\d{2}$/,
     )
@@ -533,7 +576,7 @@ describe('main views', () => {
       if (path === '/settings/targets') return Promise.resolve([currentTarget])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
-      if (path === '/yazio/status') return Promise.resolve({ configured: false, sync_enabled: false, sync_interval_minutes: null, sync_days: null, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
+      if (path === '/yazio/status') return Promise.resolve({ available: true, configured: true, sync_enabled: true, sync_interval_minutes: 360, sync_days: 7, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations' && options?.method === 'POST') {
         return Promise.resolve({
@@ -576,6 +619,20 @@ describe('main views', () => {
     expect(accountWrapper.text()).not.toContain('Budget- und Zielhistorie')
     expect(accountWrapper.text()).not.toContain('Tracking-Vollständigkeit')
     expect(accountWrapper.text()).not.toContain('Gewichtseinheit')
+    const timezoneSelect = accountWrapper.get<HTMLSelectElement>('select[name="timezone"]')
+    expect(timezoneSelect.element.value).toBe('Europe/Berlin')
+    expect(timezoneSelect.findAll('option').length).toBeGreaterThan(20)
+    expect(
+      accountWrapper.get('input[name="yazio-email"]').attributes('placeholder'),
+    ).toBe('E-Mail-Adresse ist gespeichert')
+    expect(
+      accountWrapper.get('input[name="yazio-password"]').attributes('placeholder'),
+    ).toBe('Passwort ist gespeichert')
+    expect(accountWrapper.text()).toContain('Verbindung aktualisieren')
+    expect(
+      accountWrapper.get<HTMLButtonElement>('.yazio-connection-card button[type="submit"]')
+        .element.disabled,
+    ).toBe(true)
     const invitationButton = accountWrapper
       .findAll('button')
       .find((button) => button.text() === 'Einladungslink erzeugen')
