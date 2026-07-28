@@ -112,6 +112,7 @@ class ImportBatchDetailResponse(ImportBatchResponse):
 
 
 class YazioStatusResponse(BaseModel):
+    available: bool = True
     configured: bool
     sync_enabled: bool
     sync_interval_minutes: int | None = None

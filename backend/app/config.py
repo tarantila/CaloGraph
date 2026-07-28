@@ -66,6 +66,17 @@ class Settings(BaseSettings):
         le=604_800,
     )
     credential_encryption_key: str = ""
+    yazio_enabled: bool = True
+    yazio_connect_timeout_seconds: float = Field(default=3.05, ge=0.1, le=30)
+    yazio_read_timeout_seconds: float = Field(default=15, ge=1, le=120)
+    yazio_login_deadline_seconds: int = Field(default=25, ge=5, le=120)
+    yazio_operation_deadline_seconds: int = Field(default=300, ge=30, le=1_800)
+    yazio_request_workers: int = Field(default=3, ge=1, le=10)
+    yazio_rate_limit: int = Field(default=2, ge=1, le=100)
+    yazio_rate_limit_window_seconds: int = Field(default=600, ge=60, le=86_400)
+    yazio_max_parallel_operations: int = Field(default=2, ge=1, le=8)
+    yazio_circuit_failure_limit: int = Field(default=5, ge=1, le=100)
+    yazio_circuit_window_seconds: int = Field(default=600, ge=60, le=86_400)
     yazio_scheduler_poll_seconds: int = 60
     yazio_scheduler_jitter_minutes: int = 30
 

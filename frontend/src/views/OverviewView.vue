@@ -121,7 +121,12 @@ onMounted(async () => {
 })
 
 async function syncYazioNow() {
-  if (syncingYazio.value || !yazioStatus.value?.configured) return
+  if (
+    syncingYazio.value ||
+    !yazioStatus.value?.available ||
+    !yazioStatus.value.configured ||
+    !yazioStatus.value.sync_enabled
+  ) return
   syncingYazio.value = true
   syncFeedback.value = ''
   syncFailed.value = false
@@ -249,7 +254,9 @@ const sourceDescription = computed(() =>
     : 'Noch kein Import vorhanden',
 )
 const syncScheduleLabel = computed(() => {
+  if (yazioStatus.value?.available === false) return 'YAZIO ist auf diesem Server deaktiviert'
   if (!yazioStatus.value?.configured) return 'Keine persönliche YAZIO-Verbindung eingerichtet'
+  if (!yazioStatus.value.sync_enabled) return 'Automatik pausiert · Zugangsdaten aktualisieren'
   const minutes = yazioStatus.value.sync_interval_minutes
   const interval =
     minutes == null
@@ -655,7 +662,7 @@ const macroChart = computed<EChartsOption>(() => ({
           <button
             type="button"
             class="yazio-sync-button"
-            :disabled="syncingYazio || !yazioStatus?.configured"
+            :disabled="syncingYazio || !yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled"
             :aria-busy="syncingYazio"
             @click="syncYazioNow"
           >

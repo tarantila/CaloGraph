@@ -101,8 +101,10 @@ imports still begin immediately and include micronutrients.
 
 Authenticated users can start the same personal sync with
 **Jetzt synchronisieren** in the nutrition overview's data-status card. The
-button uses only the authenticated account's YAZIO connection, is protected by
-CSRF validation, and is limited to two starts per minute.
+button uses only the authenticated account's YAZIO connection and is protected
+by CSRF validation. Saving credentials and starting a manual sync share a
+default limit of two attempts per ten minutes, independently enforced for the
+authenticated CaloGraph user and the normalized client IP network.
 
 The micronutrient analysis also offers an explicit 60-day history backfill.
 This is intended for the first import or after micronutrient support is added
@@ -152,6 +154,26 @@ medical diagnosis.
 
 - Direct retrieval uses YAZIO's undocumented API through the pinned
   `yazio-exporter==0.2.0` dependency.
+- CaloGraph owns the network transport around the exporter. Every request uses
+  an explicit connect/read timeout, redirects are rejected, and authentication
+  is never retried automatically.
+- Each login runs in an isolated child process with a 25-second absolute
+  deadline. A complete data retrieval has a five-minute absolute deadline. The
+  parent process terminates the child when that deadline is exceeded.
+- Credentials are passed to the isolated process through standard input, never
+  through command-line arguments or environment variables. Provider responses
+  and transport errors are reduced to bounded, non-sensitive messages.
+- PostgreSQL advisory locks permit only one active YAZIO operation per
+  CaloGraph user and two active operations across the deployment by default.
+  This coordination works across backend workers and the scheduler without
+  Redis.
+- Five provider or deadline failures in a ten-minute window temporarily open a
+  shared circuit breaker. Authentication failures do not open the circuit. An
+  authentication failure pauses that user's scheduled sync until the
+  credentials are saved and verified again.
+- Set `YAZIO_ENABLED=false` to disable credential setup, manual retrieval, and
+  scheduled synchronization immediately. Existing encrypted credentials
+  remain stored so the feature can be re-enabled later.
 - Manual retrieval sends credentials only to the YAZIO endpoint and does not
   persist them. Scheduled sync stores them using authenticated Fernet
   encryption, with the key kept separately in `.env`.
@@ -160,6 +182,10 @@ medical diagnosis.
 - Anyone who can read both the database and `.env` can decrypt credentials.
   File permissions and backups must protect both.
 - A single direct request is limited to 366 days.
+- The timeout, concurrency, rate-limit, and circuit-breaker defaults are
+  configurable through the documented `YAZIO_*` values in `.env`. Raising
+  these limits can increase both local resource use and the number of requests
+  sent to the provider.
 - Do not import the same days from Apple Health and YAZIO in parallel. Sources
   remain separate for provenance and are not deduplicated across source
   boundaries.

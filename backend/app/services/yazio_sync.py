@@ -2,6 +2,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -12,7 +13,6 @@ from sqlalchemy import or_, select
 from app.config import settings
 from app.database import SessionLocal
 from app.importers.yazio import parse_yazio_export
-from app.micronutrients import YAZIO_MICRONUTRIENT_IDS
 from app.models import User, YazioConnection
 from app.schemas import ImportSummary
 from app.services.credential_crypto import (
@@ -21,11 +21,27 @@ from app.services.credential_crypto import (
     encrypt_credential,
 )
 from app.services.import_service import persist_import
+from app.services.rate_limit import (
+    RateLimitExceeded,
+    check_rate_limit,
+    clear_rate_limit,
+    ensure_rate_limit_available,
+)
+from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+from app.services.yazio_transport import (
+    YazioTransportAuthenticationError,
+    YazioTransportDeadlineError,
+    YazioTransportError,
+    fetch_yazio_payload_transport,
+    validate_yazio_credentials_transport,
+)
 
 logger = logging.getLogger("calograph.yazio_sync")
 
 YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)
+YAZIO_CIRCUIT_ACTION = "yazio-provider-failure"
+YAZIO_CIRCUIT_KEY = "provider:yzapi.yazio.com"
 
 
 class YazioSyncError(RuntimeError):
@@ -34,6 +50,28 @@ class YazioSyncError(RuntimeError):
 
 class YazioConnectionNotConfigured(YazioSyncError):
     pass
+
+
+class YazioDisabled(YazioSyncError):
+    pass
+
+
+class YazioAuthenticationError(YazioSyncError):
+    pass
+
+
+class YazioOperationDeadlineExceeded(YazioSyncError):
+    pass
+
+
+class YazioOperationCapacityExceeded(YazioSyncError):
+    pass
+
+
+class YazioCircuitOpen(YazioSyncError):
+    def __init__(self, retry_after: int) -> None:
+        self.retry_after = retry_after
+        super().__init__("YAZIO ist nach mehreren Providerfehlern vorübergehend pausiert.")
 
 
 def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
@@ -46,60 +84,111 @@ def yazio_account_hash(email: str) -> str:
     return hashlib.sha256(email.strip().casefold().encode()).hexdigest()
 
 
+def _require_yazio_enabled() -> None:
+    if not settings.yazio_enabled:
+        raise YazioDisabled("Die YAZIO-Funktion ist auf diesem Server deaktiviert.")
+
+
+def _ensure_yazio_circuit_closed() -> None:
+    with SessionLocal() as db:
+        try:
+            ensure_rate_limit_available(
+                db,
+                YAZIO_CIRCUIT_ACTION,
+                YAZIO_CIRCUIT_KEY,
+                settings.yazio_circuit_failure_limit,
+                settings.yazio_circuit_window_seconds,
+            )
+        except RateLimitExceeded as exc:
+            raise YazioCircuitOpen(exc.retry_after) from exc
+
+
+def _record_yazio_provider_failure() -> None:
+    with SessionLocal() as db, suppress(RateLimitExceeded):
+        check_rate_limit(
+            db,
+            YAZIO_CIRCUIT_ACTION,
+            YAZIO_CIRCUIT_KEY,
+            settings.yazio_circuit_failure_limit,
+            settings.yazio_circuit_window_seconds,
+        )
+
+
+def _clear_yazio_provider_failures() -> None:
+    with SessionLocal() as db:
+        clear_rate_limit(db, YAZIO_CIRCUIT_ACTION, YAZIO_CIRCUIT_KEY)
+
+
+def validate_yazio_credentials(
+    email: str,
+    password: str,
+    *,
+    operation_key: object | None = None,
+) -> None:
+    _require_yazio_enabled()
+    _ensure_yazio_circuit_closed()
+    try:
+        with yazio_operation_slot(operation_key or yazio_account_hash(email)):
+            validate_yazio_credentials_transport(email, password)
+    except YazioOperationBusy as exc:
+        raise YazioOperationCapacityExceeded(
+            "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
+        ) from exc
+    except YazioTransportAuthenticationError as exc:
+        raise YazioAuthenticationError(
+            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
+        ) from exc
+    except YazioTransportDeadlineError as exc:
+        _record_yazio_provider_failure()
+        raise YazioOperationDeadlineExceeded(
+            "YAZIO hat nicht rechtzeitig geantwortet."
+        ) from exc
+    except YazioTransportError as exc:
+        _record_yazio_provider_failure()
+        raise YazioSyncError(
+            "YAZIO ist vorübergehend nicht erreichbar."
+        ) from exc
+    _clear_yazio_provider_failures()
+
+
 def fetch_yazio_payload(
     email: str,
     password: str,
     start_day: date,
     end_day: date,
     include_micronutrients: bool = True,
+    *,
+    operation_key: object | None = None,
 ) -> dict[str, Any]:
+    _require_yazio_enabled()
+    _ensure_yazio_circuit_closed()
     try:
-        from yazio_exporter.auth import login  # type: ignore[import-untyped]
-        from yazio_exporter.client import YazioClient  # type: ignore[import-untyped]
-        from yazio_exporter.export_days import (  # type: ignore[import-untyped]
-            fetch_days_concurrent,
-        )
-        from yazio_exporter.export_nutrients import (  # type: ignore[import-untyped]
-            fetch_multiple,
-        )
-        from yazio_exporter.utils import serialize_day_data  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise YazioSyncError(
-            "Der YAZIO-Exporter ist in diesem Backend nicht installiert."
-        ) from exc
-
-    client = YazioClient()
-    try:
-        token = login(email, password, client=client)
-        client.set_token(token)
-        dates = [
-            (start_day + timedelta(days=offset)).isoformat()
-            for offset in range((end_day - start_day).days + 1)
-        ]
-        raw_days = fetch_days_concurrent(client, dates, ["daily_summary"])
-        micronutrients = (
-            fetch_multiple(
-                client,
-                list(YAZIO_MICRONUTRIENT_IDS),
-                start_day.isoformat(),
-                end_day.isoformat(),
+        with yazio_operation_slot(operation_key or yazio_account_hash(email)):
+            result = fetch_yazio_payload_transport(
+                email,
+                password,
+                start_day,
+                end_day,
+                include_micronutrients,
             )
-            if include_micronutrients
-            else None
-        )
-        return {
-            "days": {
-                day: serialize_day_data(day_data) for day, day_data in raw_days.items()
-            },
-            **({"nutrients": micronutrients} if micronutrients is not None else {}),
-        }
-    except Exception as exc:
-        raise YazioSyncError(
-            f"YAZIO-Abruf fehlgeschlagen ({type(exc).__name__}). "
-            "Zugangsdaten und Erreichbarkeit prüfen."
+    except YazioOperationBusy as exc:
+        raise YazioOperationCapacityExceeded(
+            "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
         ) from exc
-    finally:
-        client.session.close()
+    except YazioTransportAuthenticationError as exc:
+        raise YazioAuthenticationError(
+            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+        ) from exc
+    except YazioTransportDeadlineError as exc:
+        _record_yazio_provider_failure()
+        raise YazioOperationDeadlineExceeded(
+            "YAZIO-Abruf hat die maximale Laufzeit überschritten."
+        ) from exc
+    except YazioTransportError as exc:
+        _record_yazio_provider_failure()
+        raise YazioSyncError("YAZIO ist vorübergehend nicht erreichbar.") from exc
+    _clear_yazio_provider_failures()
+    return result
 
 
 def import_yazio_payload(
@@ -129,17 +218,27 @@ def sync_yazio_user(
     start_day: date,
     end_day: date,
     source_identifier: str | None = None,
-    fetcher: YazioFetcher = fetch_yazio_payload,
+    fetcher: YazioFetcher | None = None,
     *,
     include_micronutrients: bool = True,
 ) -> ImportSummary:
-    payload = fetcher(
-        email,
-        password,
-        start_day,
-        end_day,
-        include_micronutrients,
-    )
+    if fetcher is None:
+        payload = fetch_yazio_payload(
+            email,
+            password,
+            start_day,
+            end_day,
+            include_micronutrients,
+            operation_key=user.id,
+        )
+    else:
+        payload = fetcher(
+            email,
+            password,
+            start_day,
+            end_day,
+            include_micronutrients,
+        )
     identifier = source_identifier or f"yazio:{yazio_account_hash(email)[:16]}"
     return import_yazio_payload(user, payload, identifier)
 
@@ -152,6 +251,7 @@ def configure_yazio_connection(
     sync_interval_minutes: int = 360,
     sync_days: int = 7,
 ) -> YazioConnection:
+    _require_yazio_enabled()
     if not 60 <= sync_interval_minutes <= 10080:
         raise ValueError("Das Sync-Intervall muss zwischen 60 und 10080 Minuten liegen.")
     if not 1 <= sync_days <= 366:
@@ -213,14 +313,17 @@ def due_yazio_connection_ids(
 def run_scheduled_yazio_sync(
     connection_id: UUID,
     *,
-    fetcher: YazioFetcher = fetch_yazio_payload,
+    fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
 ) -> ImportSummary | None:
+    if not settings.yazio_enabled:
+        return None
     return _run_yazio_connection_sync(
         connection_id,
         fetcher=fetcher,
         now=now,
         require_enabled=True,
+        raise_errors=False,
     )
 
 
@@ -228,9 +331,10 @@ def run_manual_yazio_sync(
     user_id: UUID,
     *,
     sync_days: int | None = None,
-    fetcher: YazioFetcher = fetch_yazio_payload,
+    fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
 ) -> ImportSummary:
+    _require_yazio_enabled()
     if sync_days is not None and not 1 <= sync_days <= 366:
         raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
     with SessionLocal() as db:
@@ -246,8 +350,9 @@ def run_manual_yazio_sync(
         connection_id,
         fetcher=fetcher,
         now=now,
-        require_enabled=False,
+        require_enabled=True,
         sync_days_override=sync_days,
+        raise_errors=True,
     )
     if summary is None:
         raise YazioSyncError(
@@ -259,10 +364,11 @@ def run_manual_yazio_sync(
 def _run_yazio_connection_sync(
     connection_id: UUID,
     *,
-    fetcher: YazioFetcher,
+    fetcher: YazioFetcher | None,
     now: datetime | None,
     require_enabled: bool,
     sync_days_override: int | None = None,
+    raise_errors: bool = False,
 ) -> ImportSummary | None:
     attempted_at = now or datetime.now(UTC)
     with SessionLocal() as db:
@@ -283,6 +389,10 @@ def _run_yazio_connection_sync(
             password = decrypt_credential(connection.encrypted_password)
         except CredentialEncryptionError as exc:
             _record_failure(connection_id, attempted_at, exc)
+            if raise_errors:
+                raise YazioSyncError(
+                    "Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden."
+                ) from exc
             return None
         timezone = user.timezone
         sync_days = sync_days_override or connection.sync_days
@@ -312,7 +422,7 @@ def _run_yazio_connection_sync(
             start_day,
             end_day,
             source_identifier,
-            fetcher,
+            fetcher=fetcher,
             include_micronutrients=include_micronutrients,
         )
     except Exception as exc:
@@ -322,6 +432,12 @@ def _run_yazio_connection_sync(
             connection_id,
             type(exc).__name__,
         )
+        if raise_errors:
+            if isinstance(exc, YazioSyncError):
+                raise
+            raise YazioSyncError(
+                "Die YAZIO-Synchronisierung ist unerwartet fehlgeschlagen."
+            ) from exc
         return None
 
     completed_at = datetime.now(UTC)
@@ -349,9 +465,11 @@ def _run_yazio_connection_sync(
 
 def run_due_yazio_syncs(
     *,
-    fetcher: YazioFetcher = fetch_yazio_payload,
+    fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
 ) -> tuple[int, int]:
+    if not settings.yazio_enabled:
+        return 0, 0
     connection_ids = due_yazio_connection_ids(now)
     succeeded = 0
     for connection_id in connection_ids:
@@ -370,11 +488,16 @@ def _record_failure(
         if connection is None:
             return
         retry_minutes = min(connection.sync_interval_minutes, 60)
-        if isinstance(error, (CredentialEncryptionError, YazioSyncError)):
+        if isinstance(error, YazioAuthenticationError):
+            connection.sync_enabled = False
             connection.last_error = str(error)[:500]
+            connection.next_sync_at = None
+        elif isinstance(error, (CredentialEncryptionError, YazioSyncError)):
+            connection.last_error = str(error)[:500]
+            connection.next_sync_at = _next_sync_at(attempted_at, retry_minutes)
         else:
             connection.last_error = (
                 f"Unerwarteter Fehler bei der Synchronisierung ({type(error).__name__})."
             )
-        connection.next_sync_at = _next_sync_at(attempted_at, retry_minutes)
+            connection.next_sync_at = _next_sync_at(attempted_at, retry_minutes)
         db.commit()

@@ -20,12 +20,22 @@ backups, and the availability of the private application.
   logged instead of user data.
 - **YAZIO credentials:** manual retrieval does not persist credentials.
   Scheduled sync stores each user's email and password using authenticated
-  Fernet encryption. The key exists only in `.env`, is not passed in process
-  arguments, and must be protected and backed up together with database
-  backups.
+  Fernet encryption. The key exists only in `.env` and must be protected and
+  backed up together with database backups. Credentials reach the isolated
+  transport process through standard input rather than process arguments or
+  environment variables.
 - **Unofficial third-party interface:** isolated adapter, pinned exporter
-  version, bounded retrieval periods, and Apple Health as an independent
-  fallback path.
+  version, fixed provider endpoint, explicit network timeouts, rejected
+  redirects, no authentication retries, parent-enforced operation deadlines,
+  bounded retrieval periods, and Apple Health as an independent fallback path.
+- **YAZIO resource exhaustion and credential stuffing:** independent
+  PostgreSQL-backed limits for the authenticated user and normalized client IP
+  protect credential setup and manual synchronization. Deployment-wide
+  advisory locks allow one active operation per user and two in total.
+  Repeated provider or deadline failures open a temporary shared circuit
+  breaker, while authentication failures pause only the affected scheduled
+  connection. `YAZIO_ENABLED` provides an operational kill switch without
+  adding Redis or a general-purpose queue.
 - **Duplicate sources:** do not use Apple Health and YAZIO for the same time
   range. Cross-source deduplication would hide provenance.
 - **Manipulated JSON:** Pydantic and adapter validation, finite non-negative

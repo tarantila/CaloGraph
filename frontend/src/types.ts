@@ -61,6 +61,7 @@ export interface ImportSummary {
 }
 
 export interface YazioStatus {
+  available: boolean
   configured: boolean
   sync_enabled: boolean
   sync_interval_minutes: number | null

@@ -190,7 +190,10 @@ This integration relies on an undocumented YAZIO interface and may stop working
 after provider-side changes. Health Auto Export remains the recommended
 default. Do not import the same days from Apple Health and directly from YAZIO,
 because separate sources are intentionally not deduplicated across source
-boundaries. See [docs/yazio-sync.md](docs/yazio-sync.md).
+boundaries. Explicit request and operation deadlines, per-user and per-IP rate
+limits, PostgreSQL-backed concurrency control, a temporary circuit breaker, and
+the `YAZIO_ENABLED` kill switch protect direct access without requiring Redis.
+See [docs/yazio-sync.md](docs/yazio-sync.md).
 
 ## Demo data
 

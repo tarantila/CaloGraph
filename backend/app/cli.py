@@ -25,9 +25,9 @@ from app.services.import_service import persist_import, purge_expired_raw_payloa
 from app.services.yazio_sync import (
     YazioSyncError,
     configure_yazio_connection,
-    fetch_yazio_payload,
     run_due_yazio_syncs,
     sync_yazio_user,
+    validate_yazio_credentials,
 )
 
 logger = logging.getLogger("calograph.cli")
@@ -240,13 +240,10 @@ def configure_yazio(args: argparse.Namespace) -> None:
     if not email or not password:
         raise SystemExit("YAZIO-E-Mail-Adresse und Passwort sind erforderlich.")
     try:
-        today = datetime.now(ZoneInfo(user.timezone)).date()
-        fetch_yazio_payload(
+        validate_yazio_credentials(
             email,
             password,
-            today,
-            today,
-            include_micronutrients=False,
+            operation_key=user.id,
         )
         connection = configure_yazio_connection(
             user,

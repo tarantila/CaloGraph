@@ -44,7 +44,9 @@ Each user configures their own credentials under
 **Konto → Persönliche YAZIO-Verbindung**. CaloGraph verifies the connection
 against YAZIO once and then stores the email and password encrypted with
 `CREDENTIAL_ENCRYPTION_KEY`. Manual and scheduled imports write only to that
-user's account.
+user's account. If YAZIO later rejects the stored credentials, CaloGraph pauses
+automatic synchronization for that account. Saving and successfully verifying
+the credentials again resumes the personal schedule.
 
 Because direct YAZIO retrieval uses an undocumented interface, Apple Health
 remains the independent fallback path.

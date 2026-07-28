@@ -14,9 +14,11 @@ from app.services.credential_crypto import (
     encrypt_credential,
 )
 from app.services.yazio_sync import (
+    YazioAuthenticationError,
     YazioSyncError,
     configure_yazio_connection,
     due_yazio_connection_ids,
+    run_due_yazio_syncs,
     run_manual_yazio_sync,
     run_scheduled_yazio_sync,
 )
@@ -187,6 +189,107 @@ def test_scheduled_sync_records_safe_failure(
     assert stored.last_attempt_at is not None
     retry_delay = stored.next_sync_at - stored.last_attempt_at
     assert timedelta(hours=1, minutes=1) <= retry_delay <= timedelta(hours=1, minutes=30)
+
+
+def test_authentication_failure_disables_automatic_retries(
+    db: Session, user: User, monkeypatch
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "yazio-password",
+    )
+
+    def invalid_credentials(
+        email, password, start_day, end_day, include_micronutrients
+    ):
+        del email, password, start_day, end_day, include_micronutrients
+        raise YazioAuthenticationError(
+            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+        )
+
+    assert (
+        run_scheduled_yazio_sync(connection.id, fetcher=invalid_credentials) is None
+    )
+
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.sync_enabled is False
+    assert stored.next_sync_at is None
+    assert "Zugangsdaten aktualisieren" in (stored.last_error or "")
+    assert connection.id not in due_yazio_connection_ids()
+
+
+def test_yazio_feature_flag_stops_api_and_scheduler(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "yazio_enabled", False)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    status = client.get("/api/v1/yazio/status")
+    response = client.put(
+        "/api/v1/yazio/connection",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "email": "owner@example.com",
+            "password": "yazio-password",
+            "interval_hours": 6,
+            "sync_days": 7,
+        },
+    )
+
+    assert status.status_code == 200
+    assert status.json()["available"] is False
+    assert response.status_code == 503
+    assert run_due_yazio_syncs() == (0, 0)
+
+
+def test_yazio_connection_attempts_are_rate_limited(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    _configure_key(monkeypatch)
+    monkeypatch.setattr(settings, "yazio_rate_limit", 2)
+    monkeypatch.setattr(settings, "yazio_rate_limit_window_seconds", 600)
+    monkeypatch.setattr(
+        yazio_api,
+        "validate_yazio_credentials",
+        lambda *_args, **_kwargs: None,
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+    payload = {
+        "email": "owner@example.com",
+        "password": "yazio-password",
+        "interval_hours": 6,
+        "sync_days": 7,
+    }
+
+    responses = [
+        client.put(
+            "/api/v1/yazio/connection",
+            headers={"X-CSRF-Token": csrf},
+            json=payload,
+        )
+        for _ in range(3)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200, 429]
+    assert responses[0].json()["available"] is True
+    assert "Retry-After" in responses[-1].headers
 
 
 def test_yazio_api_status_and_manual_sync_are_user_scoped(
