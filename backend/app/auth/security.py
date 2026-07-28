@@ -12,6 +12,9 @@ from app.config import settings
 from app.models import ApiToken, User, UserSession
 
 password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
+# Generated once per process so unknown accounts perform the same Argon2 work
+# without embedding a reusable credential in the source tree.
+DUMMY_PASSWORD_HASH = password_hasher.hash(secrets.token_urlsafe(48))
 
 
 def hash_password(password: str) -> str:
@@ -21,8 +24,15 @@ def hash_password(password: str) -> str:
 def verify_password(password_hash: str, password: str) -> bool:
     try:
         return password_hasher.verify(password_hash, password)
-    except VerifyMismatchError, InvalidHashError:
+    except (VerifyMismatchError, InvalidHashError):
         return False
+
+
+def verify_login_password(
+    password: str,
+    password_hash: str | None,
+) -> bool:
+    return verify_password(password_hash or DUMMY_PASSWORD_HASH, password)
 
 
 def _hmac_token(raw: str, secret: str) -> str:

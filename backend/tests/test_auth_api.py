@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 from app.api import analytics
+from app.auth import security
 from app.config import settings
 from app.models import User
 
@@ -28,6 +29,126 @@ def test_bad_password_is_rejected(client: TestClient, user: User) -> None:
         "/api/v1/auth/login", json={"username": "admin", "password": "wrong-password"}
     )
     assert response.status_code == 401
+
+
+def test_login_ip_limit_cannot_be_bypassed_with_different_usernames(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "login_ip_rate_limit", 3)
+    monkeypatch.setattr(settings, "login_rate_limit", 100)
+
+    responses = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": f"unknown-{index}", "password": "wrong-password"},
+        )
+        for index in range(4)
+    ]
+
+    assert [response.status_code for response in responses] == [401, 401, 401, 429]
+    assert "Retry-After" in responses[-1].headers
+
+
+def test_login_account_limit_normalizes_unknown_and_existing_accounts(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "login_ip_rate_limit", 100)
+    monkeypatch.setattr(settings, "login_rate_limit", 2)
+
+    unknown_responses = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "wrong-password"},
+        )
+        for username in ("Ghost", " ghost ", "GHOST")
+    ]
+    existing_responses = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        for _ in range(3)
+    ]
+
+    assert [response.status_code for response in unknown_responses] == [401, 401, 429]
+    assert [response.status_code for response in existing_responses] == [401, 401, 429]
+
+
+def test_unknown_account_uses_dummy_argon2_hash(monkeypatch) -> None:
+    verified_hashes: list[str] = []
+
+    def fake_verify(password_hash: str, password: str) -> bool:
+        del password
+        verified_hashes.append(password_hash)
+        return False
+
+    monkeypatch.setattr(security, "verify_password", fake_verify)
+
+    assert security.verify_login_password("wrong-password", None) is False
+    assert verified_hashes == [security.DUMMY_PASSWORD_HASH]
+
+
+def test_successful_login_clears_account_failures(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "login_ip_rate_limit", 100)
+    monkeypatch.setattr(settings, "login_rate_limit", 2)
+
+    failed = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "wrong-password"},
+    )
+    succeeded = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    after_success = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        for _ in range(2)
+    ]
+
+    assert failed.status_code == 401
+    assert succeeded.status_code == 200
+    assert [response.status_code for response in after_success] == [401, 401]
+
+
+def test_password_change_has_independent_failure_limit(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "password_change_rate_limit", 2)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    responses = [
+        client.post(
+            "/api/v1/auth/password",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "current_password": "wrong-password",
+                "new_password": "new-correct-horse-battery-staple",
+            },
+        )
+        for _ in range(3)
+    ]
+
+    assert [response.status_code for response in responses] == [400, 400, 429]
+    assert "Retry-After" in responses[-1].headers
 
 
 def test_existing_target_version_can_be_updated(

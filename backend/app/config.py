@@ -27,8 +27,25 @@ class Settings(BaseSettings):
     max_zip_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
     max_zip_entries: int = 20
     raw_payload_retention_days: int = 0
-    login_rate_limit: int = 10
-    import_rate_limit: int = 30
+    login_rate_limit: int = Field(default=10, ge=1, le=10_000)
+    login_rate_limit_window_seconds: int = Field(default=900, ge=60, le=86_400)
+    login_ip_rate_limit: int = Field(default=30, ge=1, le=100_000)
+    login_ip_rate_limit_window_seconds: int = Field(default=300, ge=60, le=86_400)
+    password_change_rate_limit: int = Field(default=5, ge=1, le=1_000)
+    password_change_rate_limit_window_seconds: int = Field(
+        default=900, ge=60, le=86_400
+    )
+    rate_limit_retention_hours: int = Field(default=24, ge=1, le=720)
+    import_rate_limit: int = Field(default=30, ge=1, le=100_000)
+    import_rate_limit_window_seconds: int = Field(default=60, ge=60, le=86_400)
+    import_ip_rate_limit: int = Field(default=60, ge=1, le=100_000)
+    file_import_user_rate_limit: int = Field(default=3, ge=1, le=1_000)
+    file_import_ip_rate_limit: int = Field(default=6, ge=1, le=10_000)
+    file_import_rate_limit_window_seconds: int = Field(
+        default=3_600,
+        ge=60,
+        le=604_800,
+    )
     credential_encryption_key: str = ""
     yazio_scheduler_poll_seconds: int = 60
     yazio_scheduler_jitter_minutes: int = 30

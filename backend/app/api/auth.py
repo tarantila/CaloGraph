@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -14,6 +15,7 @@ from app.auth.security import (
     hash_password,
     hash_session_token,
     revoke_user_sessions,
+    verify_login_password,
     verify_password,
 )
 from app.config import settings
@@ -26,9 +28,42 @@ from app.schemas import (
     RegistrationRequest,
     UserResponse,
 )
-from app.services.rate_limit import check_rate_limit
+from app.services.rate_limit import (
+    RateLimitExceeded,
+    check_rate_limit,
+    clear_rate_limit,
+    ensure_rate_limit_available,
+    normalize_account_identifier,
+    normalize_client_ip,
+    rate_limit_key_id,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
+logger = logging.getLogger("calograph.auth")
+
+
+def _log_login(
+    request: Request,
+    outcome: str,
+    client_key: str,
+    account_key: str,
+) -> None:
+    logger.info(
+        "security_event=login outcome=%s request_id=%s client_key=%s account_key=%s",
+        outcome,
+        getattr(request.state, "request_id", None),
+        rate_limit_key_id(client_key),
+        rate_limit_key_id(account_key),
+    )
+
+
+def _log_password_change(request: Request, outcome: str, user_key: str) -> None:
+    logger.info(
+        "security_event=password_change outcome=%s request_id=%s user_key=%s",
+        outcome,
+        getattr(request.state, "request_id", None),
+        rate_limit_key_id(user_key),
+    )
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
@@ -37,7 +72,7 @@ def register(
     request: Request,
     db: Session = Depends(get_db),
 ) -> User:
-    client = request.client.host if request.client else "unknown"
+    client = normalize_client_ip(request.client.host if request.client else None)
     check_rate_limit(db, "register", client, 5)
     now = datetime.now(UTC)
     invitation = db.scalar(
@@ -82,11 +117,48 @@ def register(
 def login(
     payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ) -> dict[str, object]:
-    client = request.client.host if request.client else "unknown"
-    check_rate_limit(db, "login", f"{client}:{payload.username.lower()}", settings.login_rate_limit)
+    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    account_key = f"account:{normalize_account_identifier(payload.username)}"
+    try:
+        check_rate_limit(
+            db,
+            "login-ip",
+            client_key,
+            settings.login_ip_rate_limit,
+            settings.login_ip_rate_limit_window_seconds,
+        )
+        ensure_rate_limit_available(
+            db,
+            "login-account",
+            account_key,
+            settings.login_rate_limit,
+            settings.login_rate_limit_window_seconds,
+        )
+    except RateLimitExceeded:
+        _log_login(request, "rate_limited", client_key, account_key)
+        raise
+
     user = db.scalar(select(User).where(User.username == payload.username))
-    if not user or not user.is_active or not verify_password(user.password_hash, payload.password):
+    password_matches = verify_login_password(
+        payload.password,
+        user.password_hash if user is not None else None,
+    )
+    if user is None or not user.is_active or not password_matches:
+        try:
+            check_rate_limit(
+                db,
+                "login-account",
+                account_key,
+                settings.login_rate_limit,
+                settings.login_rate_limit_window_seconds,
+            )
+        except RateLimitExceeded:
+            _log_login(request, "rate_limited", client_key, account_key)
+            raise
+        _log_login(request, "failed", client_key, account_key)
         raise_invalid_login()
+
+    clear_rate_limit(db, "login-account", account_key)
     _, raw_token, csrf_token = create_session(db, user)
     response.set_cookie(
         "calograph_session",
@@ -97,6 +169,7 @@ def login(
         samesite="lax",
         path="/",
     )
+    _log_login(request, "succeeded", client_key, account_key)
     return {"user": UserResponse.model_validate(user), "csrf_token": csrf_token}
 
 
@@ -151,12 +224,40 @@ def logout(
 @router.post("/password", status_code=204)
 def change_password(
     payload: PasswordChangeRequest,
+    request: Request,
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> None:
+    user_key = f"user:{user.id}"
+    try:
+        ensure_rate_limit_available(
+            db,
+            "password-change",
+            user_key,
+            settings.password_change_rate_limit,
+            settings.password_change_rate_limit_window_seconds,
+        )
+    except RateLimitExceeded:
+        _log_password_change(request, "rate_limited", user_key)
+        raise
+
     if not verify_password(user.password_hash, payload.current_password):
+        try:
+            check_rate_limit(
+                db,
+                "password-change",
+                user_key,
+                settings.password_change_rate_limit,
+                settings.password_change_rate_limit_window_seconds,
+            )
+        except RateLimitExceeded:
+            _log_password_change(request, "rate_limited", user_key)
+            raise
+        _log_password_change(request, "failed", user_key)
         from fastapi import HTTPException
 
         raise HTTPException(status_code=400, detail="Aktuelles Passwort ist falsch")
+    clear_rate_limit(db, "password-change", user_key)
     user.password_hash = hash_password(payload.new_password)
     revoke_user_sessions(db, user.id)
+    _log_password_change(request, "succeeded", user_key)

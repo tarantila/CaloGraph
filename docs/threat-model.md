@@ -38,10 +38,14 @@ backups, and the availability of the private application.
 - **CSRF:** SameSite cookie, separate CSRF header, and origin validation for
   state-changing browser endpoints.
 - **Forged forwarded headers:** Uvicorn accepts proxy metadata only from
-  `TRUSTED_PROXY_NETWORKS`; wildcard trust is rejected, and the backend has no
-  published host port.
-- **Brute force:** PostgreSQL-backed per-minute limits; the reverse proxy may
-  add further limits.
+  `TRUSTED_PROXY_NETWORKS`; wildcard trust is rejected, production rejects the
+  generic Docker address pool, and the backend has no published host port.
+- **Brute force and account enumeration:** independent temporary limits apply
+  to all login attempts from a normalized IP address and to failed attempts for
+  an HMAC-pseudonymized account identifier. PostgreSQL updates the counters
+  atomically, unknown accounts still perform Argon2 verification against a
+  dummy hash, expired buckets are deleted, and authentication events contain
+  only pseudonymous identifiers. The reverse proxy may add further limits.
 - **Forwarded invitation link:** cryptographically random invitation tokens
   stored only as hashes, one-time use, seven-day expiration, and administrator
   revocation. Plaintext is displayed only immediately after creation. The
