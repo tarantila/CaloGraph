@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from defusedxml.common import DefusedXmlException
 
+from app.config import settings
 from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.importers.json_adapter import parse_json_payload
@@ -79,6 +80,37 @@ def test_health_auto_export_and_unknown_type() -> None:
     assert len(result.samples) == 1
     assert result.unknown_types == {"unknown_private_metric"}
     assert result.unknown_count == 3
+
+
+def test_adapter_caps_materialized_errors_and_unknown_types(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "max_import_errors", 2)
+    monkeypatch.setattr(settings, "max_import_unknown_types", 2)
+    result = parse_json_payload(
+        {
+            "samples": [
+                {
+                    "type": "dietary_energy",
+                    "value": "invalid",
+                    "start_at": "2026-07-20T12:00:00+00:00",
+                }
+                for _ in range(5)
+            ]
+            + [
+                {
+                    "type": f"unknown-{index}",
+                    "value": 1,
+                    "start_at": "2026-07-20T12:00:00+00:00",
+                }
+                for index in range(5)
+            ]
+        },
+        "Europe/Berlin",
+    )
+
+    assert result.failed_count == 5
+    assert len(result.errors) == 2
+    assert result.unknown_count == 5
+    assert len(result.unknown_types) == 2
 
 
 def test_xml_entities_are_rejected() -> None:

@@ -10,6 +10,7 @@ const labels: Record<string, string> = {
   no_data: 'Keine Daten',
   completed: 'Abgeschlossen',
   completed_with_errors: 'Mit Fehlern',
+  partial_failed: 'Teilweise importiert',
 }
 </script>
 

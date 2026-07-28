@@ -47,14 +47,14 @@ def parse_yazio_export(
     result = AdapterResult(source_type=SOURCE_TYPE)
     for item_index, (day, day_data) in enumerate(dated_items):
         if not isinstance(day_data, dict):
-            result.errors.append(
+            result.add_error(
                 (item_index, day.isoformat(), "invalid_day", "Tagesdaten sind kein Objekt")
             )
             continue
 
         summary = day_data.get("daily_summary", day_data)
         if not isinstance(summary, dict) or "error" in summary:
-            result.errors.append(
+            result.add_error(
                 (
                     item_index,
                     day.isoformat(),
@@ -68,22 +68,22 @@ def parse_yazio_export(
         try:
             values = _daily_values(day_data, summary)
         except (TypeError, ValueError) as exc:
-            result.errors.append(
+            result.add_error(
                 (item_index, day.isoformat(), "invalid_day", str(exc))
             )
             continue
         imported_for_day = 0
         for input_name, metric_type, value, incoming_unit, canonical_unit in values:
-            result.received += 1
+            result.add_received()
             try:
                 raw_value = decimal_value(value)
                 normalized = normalize_value(raw_value, incoming_unit, canonical_unit)
             except (TypeError, ValueError) as exc:
-                result.errors.append(
+                result.add_error(
                     (item_index, input_name, "invalid_sample", str(exc))
                 )
                 continue
-            result.samples.append(
+            result.add_sample(
                 CanonicalSample(
                     metric_type=metric_type,
                     value=normalized,
@@ -102,7 +102,7 @@ def parse_yazio_export(
             imported_for_day += 1
 
         if imported_for_day == 0 and not values:
-            result.errors.append(
+            result.add_error(
                 (
                     item_index,
                     day.isoformat(),
@@ -115,19 +115,19 @@ def parse_yazio_export(
         micronutrient_items, start=len(dated_items)
     ):
         definition = MICRONUTRIENT_BY_YAZIO_ID[nutrient_id]
-        result.received += 1
+        result.add_received()
         try:
             raw_value = decimal_value(value)
             # YAZIO's specific-nutrient endpoint returns every nutrient as
             # grams, including vitamins normally displayed as micrograms.
             normalized = normalize_value(raw_value, "g", definition.unit)
         except (TypeError, ValueError) as exc:
-            result.errors.append(
+            result.add_error(
                 (item_index, nutrient_id, "invalid_sample", str(exc))
             )
             continue
         at = datetime.combine(day, time(hour=12), tzinfo=zone)
-        result.samples.append(
+        result.add_sample(
             CanonicalSample(
                 metric_type=definition.metric_type,
                 value=normalized,

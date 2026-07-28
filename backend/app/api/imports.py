@@ -1,6 +1,7 @@
 import json
-import tempfile
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import IO
 from uuid import UUID
@@ -8,11 +9,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.dependencies import current_user, import_token, require_csrf
 from app.config import settings
 from app.database import get_db
-from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.json_adapter import AdapterResult, parse_json_payload
 from app.importers.yazio import parse_yazio_export
 from app.models import ApiToken, ImportBatch, ImportError, User
@@ -22,19 +23,27 @@ from app.schemas import (
     ImportErrorResponse,
     ImportSummary,
 )
-from app.services.import_service import persist_import
-from app.services.rate_limit import check_rate_limit
+from app.services.import_guard import ImportAlreadyRunning, import_slot
+from app.services.import_service import persist_apple_health_stream, persist_import
+from app.services.rate_limit import check_rate_limit, normalize_client_ip
 
 router = APIRouter(tags=["Import"])
 
 
 async def _json_body(request: Request) -> tuple[bytes, dict[str, object]]:
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > settings.max_json_payload_bytes:
-        raise HTTPException(status_code=413, detail="JSON-Payload ist zu groß")
-    raw = await request.body()
-    if len(raw) > settings.max_json_payload_bytes:
-        raise HTTPException(status_code=413, detail="JSON-Payload ist zu groß")
+    if content_length:
+        try:
+            if int(content_length) > settings.max_json_payload_bytes:
+                raise HTTPException(status_code=413, detail="JSON-Payload ist zu groß")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Content-Length ist ungültig") from exc
+    buffer = bytearray()
+    async for chunk in request.stream():
+        buffer.extend(chunk)
+        if len(buffer) > settings.max_json_payload_bytes:
+            raise HTTPException(status_code=413, detail="JSON-Payload ist zu groß")
+    raw = bytes(buffer)
     try:
         payload = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -42,6 +51,72 @@ async def _json_body(request: Request) -> tuple[bytes, dict[str, object]]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="JSON-Wurzel muss ein Objekt sein")
     return raw, payload
+
+
+def _rate_limit_api_import(
+    db: Session,
+    request: Request,
+    token: ApiToken,
+) -> None:
+    client = normalize_client_ip(request.client.host if request.client else None)
+    check_rate_limit(
+        db,
+        "import-ip",
+        f"ip:{client}",
+        settings.import_ip_rate_limit,
+        settings.import_rate_limit_window_seconds,
+    )
+    check_rate_limit(
+        db,
+        "import-token",
+        f"token:{token.id}",
+        settings.import_rate_limit,
+        settings.import_rate_limit_window_seconds,
+    )
+
+
+def _rate_limit_file_import(
+    db: Session,
+    request: Request,
+    user: User,
+) -> None:
+    client = normalize_client_ip(request.client.host if request.client else None)
+    check_rate_limit(
+        db,
+        "file-import-ip",
+        f"ip:{client}",
+        settings.file_import_ip_rate_limit,
+        settings.file_import_rate_limit_window_seconds,
+    )
+    check_rate_limit(
+        db,
+        "file-import-user",
+        f"user:{user.id}",
+        settings.file_import_user_rate_limit,
+        settings.file_import_rate_limit_window_seconds,
+    )
+
+
+@contextmanager
+def _user_import_slot(user: User) -> Iterator[None]:
+    try:
+        with import_slot(user.id):
+            yield
+    except ImportAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Für dieses Konto läuft bereits ein Import oder eine Validierung.",
+        ) from exc
+
+
+def _validate_result(result: AdapterResult) -> ImportSummary:
+    return ImportSummary(
+        status="valid" if not result.failed_count else "valid_with_errors",
+        received=result.received,
+        skipped=result.unknown_count,
+        failed=result.failed_count,
+        unknown_types=sorted(result.unknown_types),
+    )
 
 
 @router.post("/import/apple-health", response_model=ImportSummary)
@@ -52,35 +127,39 @@ async def import_json(
     db: Session = Depends(get_db),
 ) -> ImportSummary:
     user, token = identity
-    check_rate_limit(db, "import", str(token.id), settings.import_rate_limit)
-    raw, payload = await _json_body(request)
-    try:
-        result = parse_json_payload(payload, user.timezone)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return persist_import(
-        db, user, result, raw, "application/json", client_identifier or token.label
-    )
+    _rate_limit_api_import(db, request, token)
+    with _user_import_slot(user):
+        raw, payload = await _json_body(request)
+        try:
+            result = await run_in_threadpool(parse_json_payload, payload, user.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await run_in_threadpool(
+            persist_import,
+            db,
+            user,
+            result,
+            raw,
+            "application/json",
+            client_identifier or token.label,
+        )
 
 
 @router.post("/import/apple-health/validate", response_model=ImportSummary)
 async def validate_json(
     request: Request,
     identity: tuple[User, ApiToken] = Depends(import_token),
+    db: Session = Depends(get_db),
 ) -> ImportSummary:
-    user, _ = identity
-    _, payload = await _json_body(request)
-    try:
-        result = parse_json_payload(payload, user.timezone)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return ImportSummary(
-        status="valid" if not result.errors else "valid_with_errors",
-        received=result.received,
-        skipped=result.unknown_count,
-        failed=len(result.errors),
-        unknown_types=sorted(result.unknown_types),
-    )
+    user, token = identity
+    _rate_limit_api_import(db, request, token)
+    with _user_import_slot(user):
+        _, payload = await _json_body(request)
+        try:
+            result = await run_in_threadpool(parse_json_payload, payload, user.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _validate_result(result)
 
 
 @router.post("/import/yazio", response_model=ImportSummary)
@@ -91,98 +170,144 @@ async def import_yazio_json(
     db: Session = Depends(get_db),
 ) -> ImportSummary:
     user, token = identity
-    check_rate_limit(db, "import", str(token.id), settings.import_rate_limit)
-    _, payload = await _json_body(request)
-    source_identifier = client_identifier or "yazio-account"
-    try:
-        result = parse_yazio_export(payload, user.timezone, source_identifier)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return persist_import(
-        db, user, result, None, "application/json", client_identifier or token.label
-    )
+    _rate_limit_api_import(db, request, token)
+    with _user_import_slot(user):
+        _, payload = await _json_body(request)
+        source_identifier = client_identifier or "yazio-account"
+        try:
+            result = await run_in_threadpool(
+                parse_yazio_export,
+                payload,
+                user.timezone,
+                source_identifier,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await run_in_threadpool(
+            persist_import,
+            db,
+            user,
+            result,
+            None,
+            "application/json",
+            client_identifier or token.label,
+        )
 
 
 @router.post("/import/yazio/validate", response_model=ImportSummary)
 async def validate_yazio_json(
     request: Request,
     identity: tuple[User, ApiToken] = Depends(import_token),
+    db: Session = Depends(get_db),
 ) -> ImportSummary:
-    user, _ = identity
-    _, payload = await _json_body(request)
-    try:
-        result = parse_yazio_export(payload, user.timezone)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return ImportSummary(
-        status="valid" if not result.errors else "valid_with_errors",
-        received=result.received,
-        skipped=result.unknown_count,
-        failed=len(result.errors),
-        unknown_types=sorted(result.unknown_types),
-    )
+    user, token = identity
+    _rate_limit_api_import(db, request, token)
+    with _user_import_slot(user):
+        _, payload = await _json_body(request)
+        try:
+            result = await run_in_threadpool(
+                parse_yazio_export,
+                payload,
+                user.timezone,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _validate_result(result)
 
 
 @router.post("/import/apple-health/file", response_model=ImportSummary)
-async def import_file(
+def import_file(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> ImportSummary:
-    filename = (file.filename or "").lower()
-    if not (filename.endswith(".xml") or filename.endswith(".zip")):
+    filename = (file.filename or "").replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+    filename = filename[-190:]
+    lowered_filename = filename.lower()
+    if not (lowered_filename.endswith(".xml") or lowered_filename.endswith(".zip")):
         raise HTTPException(status_code=415, detail="Nur Apple-Health-XML oder ZIP ist erlaubt")
-    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b") as buffer:
-        total = 0
-        while chunk := await file.read(1024 * 1024):
-            total += len(chunk)
-            if total > settings.max_upload_bytes:
-                raise HTTPException(status_code=413, detail="Upload ist zu groß")
-            buffer.write(chunk)
-        buffer.seek(0)
-        if filename.endswith(".zip"):
-            result = _parse_zip(buffer, user.timezone)
-        else:
-            result = parse_apple_health_xml(buffer, user.timezone)
-    return persist_import(
-        db, user, result, None, file.content_type or "application/octet-stream", filename
-    )
+    if _upload_size(file) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Upload ist zu groß")
+    _rate_limit_file_import(db, request, user)
+    with _user_import_slot(user):
+        if lowered_filename.endswith(".zip"):
+            return _import_zip(
+                file.file,
+                user,
+                db,
+                file.content_type or "application/zip",
+                filename,
+            )
+        file.file.seek(0)
+        return persist_apple_health_stream(
+            db,
+            user,
+            file.file,
+            file.content_type or "application/xml",
+            filename,
+        )
 
 
 @router.post("/import/yazio/file", response_model=ImportSummary)
-async def import_yazio_file(
+def import_yazio_file(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> ImportSummary:
-    filename = (file.filename or "").lower()
-    if not filename.endswith(".json"):
+    filename = (file.filename or "").replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+    filename = filename[-190:]
+    if not filename.lower().endswith(".json"):
         raise HTTPException(
             status_code=415,
             detail="Nur eine YAZIO-days.json oder -nutrients.json ist erlaubt",
         )
 
-    raw = bytearray()
-    while chunk := await file.read(1024 * 1024):
-        raw.extend(chunk)
-        if len(raw) > settings.max_json_payload_bytes:
-            raise HTTPException(status_code=413, detail="JSON-Datei ist zu groß")
+    if _upload_size(file) > settings.max_json_payload_bytes:
+        raise HTTPException(status_code=413, detail="JSON-Datei ist zu groß")
+    _rate_limit_file_import(db, request, user)
+    file.file.seek(0)
+    raw = file.file.read(settings.max_json_payload_bytes + 1)
+    if len(raw) > settings.max_json_payload_bytes:
+        raise HTTPException(status_code=413, detail="JSON-Datei ist zu groß")
     try:
         payload = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail="Ungültiges JSON") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="JSON-Wurzel muss ein Objekt sein")
-    try:
-        result = parse_yazio_export(payload, user.timezone)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return persist_import(
-        db, user, result, None, file.content_type or "application/json", filename
-    )
+    with _user_import_slot(user):
+        try:
+            result = parse_yazio_export(payload, user.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return persist_import(
+            db,
+            user,
+            result,
+            None,
+            file.content_type or "application/json",
+            filename,
+        )
 
 
-def _parse_zip(buffer: IO[bytes], timezone: str) -> AdapterResult:
+def _upload_size(file: UploadFile) -> int:
+    if file.size is not None:
+        return file.size
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    return size
+
+
+def _import_zip(
+    buffer: IO[bytes],
+    user: User,
+    db: Session,
+    content_type: str,
+    client_identifier: str,
+) -> ImportSummary:
     if not zipfile.is_zipfile(buffer):
         raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei")
     buffer.seek(0)
@@ -207,7 +332,13 @@ def _parse_zip(buffer: IO[bytes], timezone: str) -> AdapterResult:
         if len(candidates) != 1:
             raise HTTPException(status_code=422, detail="ZIP muss genau eine export.xml enthalten")
         with archive.open(candidates[0], "r") as xml_stream:
-            return parse_apple_health_xml(xml_stream, timezone)
+            return persist_apple_health_stream(
+                db,
+                user,
+                xml_stream,
+                content_type,
+                client_identifier,
+            )
 
 
 @router.get("/imports", response_model=list[ImportBatchResponse])

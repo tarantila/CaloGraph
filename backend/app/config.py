@@ -22,10 +22,29 @@ class Settings(BaseSettings):
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
     trusted_proxy_networks: str = "127.0.0.1/32"
     enable_hsts: bool = False
-    max_json_payload_bytes: int = 10 * 1024 * 1024
-    max_upload_bytes: int = 1024 * 1024 * 1024
-    max_zip_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
-    max_zip_entries: int = 20
+    max_json_payload_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024**2)
+    max_upload_bytes: int = Field(default=500 * 1024 * 1024, ge=1024, le=2 * 1024**3)
+    max_zip_uncompressed_bytes: int = Field(
+        default=2 * 1024 * 1024 * 1024,
+        ge=1024,
+        le=8 * 1024**3,
+    )
+    nginx_max_upload_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=1024,
+        le=2 * 1024**3,
+    )
+    backend_tmpfs_bytes: int = Field(
+        default=600 * 1024 * 1024,
+        ge=1024,
+        le=4 * 1024**3,
+    )
+    max_zip_entries: int = Field(default=20, ge=1, le=1_000)
+    max_import_records: int = Field(default=1_000_000, ge=1, le=10_000_000)
+    max_import_samples: int = Field(default=250_000, ge=1, le=5_000_000)
+    max_import_errors: int = Field(default=1_000, ge=1, le=100_000)
+    max_import_unknown_types: int = Field(default=100, ge=1, le=10_000)
+    import_batch_size: int = Field(default=500, ge=50, le=5_000)
     raw_payload_retention_days: int = 0
     login_rate_limit: int = Field(default=10, ge=1, le=10_000)
     login_rate_limit_window_seconds: int = Field(default=900, ge=60, le=86_400)

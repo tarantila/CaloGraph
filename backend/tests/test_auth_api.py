@@ -242,6 +242,43 @@ def test_authenticated_historical_xml_upload(client: TestClient, user: User) -> 
     assert response.json()["inserted"] == 1
 
 
+def test_browser_file_import_has_size_and_rate_limits(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "max_upload_bytes", 128)
+    monkeypatch.setattr(settings, "file_import_user_rate_limit", 1)
+    monkeypatch.setattr(settings, "file_import_ip_rate_limit", 100)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    too_large = client.post(
+        "/api/v1/import/apple-health/file",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("export.xml", b"x" * 129, "application/xml")},
+    )
+    xml = b"""<?xml version="1.0"?><HealthData></HealthData>"""
+    accepted = client.post(
+        "/api/v1/import/apple-health/file",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("export.xml", xml, "application/xml")},
+    )
+    limited = client.post(
+        "/api/v1/import/apple-health/file",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("export.xml", xml, "application/xml")},
+    )
+
+    assert too_large.status_code == 413
+    assert accepted.status_code == 200
+    assert limited.status_code == 429
+
+
 def test_authenticated_yazio_json_upload(client: TestClient, user: User) -> None:
     del user
     login = client.post(

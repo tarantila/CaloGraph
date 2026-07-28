@@ -9,4 +9,10 @@ describe('StatusBadge', () => {
     expect(wrapper.text()).toContain('Kalorienwert fehlt')
     expect(wrapper.classes()).toContain('probably-incomplete')
   })
+
+  it('labels a partially persisted import clearly', () => {
+    const wrapper = mount(StatusBadge, { props: { status: 'partial_failed' } })
+    expect(wrapper.text()).toContain('Teilweise importiert')
+    expect(wrapper.classes()).toContain('partial-failed')
+  })
 })

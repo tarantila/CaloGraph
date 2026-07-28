@@ -32,7 +32,12 @@ backups, and the availability of the private application.
   decimal values, allowlisted metrics, and database constraints.
 - **Malicious ZIP/XML:** total and individual size limits, entry count,
   compression ratio, path checks, exactly one `export.xml`, no DTD, entities,
-  or network access, and streaming processing.
+  or network access, and streaming processing. Nginx admits only one concurrent
+  large upload, Starlette uses one bounded ephemeral tmpfs spool, supported
+  samples are bulk-written in bounded batches, total records/errors/unknown
+  types are capped, and per-user plus per-IP temporary rate limits protect
+  upload and validation paths. Completed checkpoints survive as
+  `partial_failed` and can be retried idempotently.
 - **XSS:** Vue escaping, no arbitrary HTML rendering, local assets, and a strict
   CSP.
 - **CSRF:** SameSite cookie, separate CSRF header, and origin validation for

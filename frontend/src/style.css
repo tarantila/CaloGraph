@@ -518,6 +518,9 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .badge.probably-complete { background: #1d3a31; color: #86d5af; }
 .badge.probably-incomplete { background: #47371d; color: #f5c864; }
 .badge.incomplete { background: #49232c; color: #ff94a3; }
+.badge.completed { background: #163d35; color: #5de0b8; }
+.badge.completed-with-errors { background: #47371d; color: #f5c864; }
+.badge.partial-failed { background: #49232c; color: #ff94a3; }
 .empty, .error { padding: 2rem; text-align: center; color: var(--muted); }
 .error { color: #ff9aaa; }
 .form-card { max-width: 760px; padding: 1.3rem; scroll-margin-top: 1rem; }

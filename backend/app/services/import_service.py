@@ -1,14 +1,354 @@
 import hashlib
+import zipfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import IO
+from xml.etree.ElementTree import ParseError
 
 import zstandard
-from sqlalchemy import delete, select
+from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
+from sqlalchemy import delete, select, tuple_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.importers.common import local_date_for
-from app.importers.json_adapter import AdapterResult
+from app.config import settings
+from app.importers.apple_xml import iter_apple_health_xml
+from app.importers.common import CanonicalSample, local_date_for
+from app.importers.json_adapter import AdapterResult, ImportLimitError
 from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.schemas import ImportSummary
+
+
+@dataclass(slots=True)
+class ImportCounters:
+    received: int = 0
+    inserted: int = 0
+    updated: int = 0
+    duplicate_skipped: int = 0
+    unknown_count: int = 0
+    failed: int = 0
+    accepted: int = 0
+
+
+def _summary(batch: ImportBatch) -> ImportSummary:
+    return ImportSummary(
+        batch_id=batch.id,
+        status=batch.status,
+        received=batch.received,
+        inserted=batch.inserted,
+        updated=batch.updated,
+        skipped=batch.skipped,
+        failed=batch.failed,
+        unknown_types=batch.unknown_types,
+    )
+
+
+def _start_batch(
+    db: Session,
+    user: User,
+    source_type: str,
+    client_identifier: str | None,
+    payload_hash: str | None = None,
+) -> ImportBatch:
+    batch = ImportBatch(
+        user_id=user.id,
+        source_type=source_type,
+        client_identifier=client_identifier,
+        status="processing",
+        payload_hash=payload_hash,
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def _sample_values(
+    user: User,
+    batch: ImportBatch,
+    sample: CanonicalSample,
+    fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "user_id": user.id,
+        "import_batch_id": batch.id,
+        "external_sample_id": sample.external_sample_id,
+        "fingerprint": fingerprint,
+        "source_type": sample.source_type,
+        "source_name": sample.source_name,
+        "source_identifier": sample.source_identifier,
+        "metric_type": sample.metric_type,
+        "value": sample.value,
+        "unit": sample.unit,
+        "original_value": sample.original_value,
+        "original_unit": sample.original_unit,
+        "start_at": sample.start_at,
+        "end_at": sample.end_at,
+        "local_date": local_date_for(sample.start_at, sample.timezone),
+        "timezone": sample.timezone,
+    }
+
+
+def _update_sample(
+    existing: HealthSample,
+    batch: ImportBatch,
+    sample: CanonicalSample,
+    fingerprint: str,
+) -> None:
+    existing.import_batch_id = batch.id
+    existing.external_sample_id = sample.external_sample_id
+    existing.fingerprint = fingerprint
+    existing.metric_type = sample.metric_type
+    existing.value = sample.value
+    existing.unit = sample.unit
+    existing.original_value = sample.original_value
+    existing.original_unit = sample.original_unit
+    existing.start_at = sample.start_at
+    existing.end_at = sample.end_at
+    existing.local_date = local_date_for(sample.start_at, sample.timezone)
+    existing.timezone = sample.timezone
+    existing.source_name = sample.source_name
+    existing.source_identifier = sample.source_identifier
+
+
+def _persist_sample_batch(
+    db: Session,
+    user: User,
+    batch: ImportBatch,
+    samples: list[CanonicalSample],
+) -> tuple[int, int, int]:
+    prepared: list[tuple[CanonicalSample, str]] = []
+    local_fingerprints: set[str] = set()
+    local_external_ids: set[tuple[str, str, str]] = set()
+    skipped = 0
+
+    for sample in samples:
+        fingerprint = sample.fingerprint(user.id)
+        external_key = (
+            sample.source_type,
+            sample.source_identifier,
+            sample.external_sample_id,
+        ) if sample.external_sample_id else None
+        if fingerprint in local_fingerprints or (
+            external_key is not None and external_key in local_external_ids
+        ):
+            skipped += 1
+            continue
+        local_fingerprints.add(fingerprint)
+        if external_key is not None:
+            local_external_ids.add(external_key)
+        prepared.append((sample, fingerprint))
+
+    if not prepared:
+        return 0, 0, skipped
+
+    fingerprints = [fingerprint for _, fingerprint in prepared]
+    existing_by_fingerprint = {
+        item.fingerprint: item
+        for item in db.scalars(
+            select(HealthSample).where(
+                HealthSample.user_id == user.id,
+                HealthSample.fingerprint.in_(fingerprints),
+            )
+        )
+    }
+    external_keys = [
+        (sample.source_type, sample.source_identifier, sample.external_sample_id)
+        for sample, _ in prepared
+        if sample.external_sample_id is not None
+    ]
+    existing_by_external: dict[tuple[str, str, str], HealthSample] = {}
+    if external_keys:
+        existing_by_external = {
+            (
+                item.source_type,
+                item.source_identifier,
+                item.external_sample_id or "",
+            ): item
+            for item in db.scalars(
+                select(HealthSample).where(
+                    HealthSample.user_id == user.id,
+                    tuple_(
+                        HealthSample.source_type,
+                        HealthSample.source_identifier,
+                        HealthSample.external_sample_id,
+                    ).in_(external_keys),
+                )
+            )
+        }
+
+    inserted = updated = 0
+    for sample, fingerprint in prepared:
+        external_key = (
+            sample.source_type,
+            sample.source_identifier,
+            sample.external_sample_id,
+        ) if sample.external_sample_id else None
+        existing = (
+            existing_by_external.get(external_key)
+            if external_key is not None
+            else None
+        )
+        if existing is None:
+            existing = existing_by_fingerprint.get(fingerprint)
+        if existing is not None:
+            if existing.fingerprint == fingerprint:
+                skipped += 1
+                continue
+            _update_sample(existing, batch, sample, fingerprint)
+            updated += 1
+            continue
+        db.add(HealthSample(**_sample_values(user, batch, sample, fingerprint)))
+        inserted += 1
+
+    db.flush()
+    return inserted, updated, skipped
+
+
+def _add_import_errors(
+    db: Session,
+    batch: ImportBatch,
+    errors: list[tuple[int | None, str | None, str, str]],
+) -> None:
+    for item_index, metric, code, detail in errors:
+        db.add(
+            ImportError(
+                batch_id=batch.id,
+                item_index=item_index,
+                metric_type=metric[:128] if metric else None,
+                error_code=code[:64],
+                safe_detail=detail[:500],
+            )
+        )
+
+
+def _checkpoint(
+    db: Session,
+    batch: ImportBatch,
+    counters: ImportCounters,
+    unknown_types: set[str],
+    errors: list[tuple[int | None, str | None, str, str]],
+) -> None:
+    _add_import_errors(db, batch, errors)
+    errors.clear()
+    batch.received = counters.received
+    batch.inserted = counters.inserted
+    batch.updated = counters.updated
+    batch.skipped = counters.duplicate_skipped + counters.unknown_count
+    batch.failed = counters.failed
+    batch.unknown_types = sorted(unknown_types)
+    db.commit()
+
+
+def _partial_failure_detail(exc: Exception) -> str:
+    if isinstance(exc, ImportLimitError):
+        return str(exc)
+    if isinstance(exc, DefusedXmlException):
+        return "XML enthält nicht erlaubte DTD- oder Entity-Inhalte"
+    if isinstance(exc, (ParseError, zipfile.BadZipFile)):
+        return "XML- oder ZIP-Datei ist beschädigt oder unvollständig"
+    if isinstance(exc, OSError):
+        return "Importdatei konnte nicht vollständig gelesen werden"
+    return "Import wurde während der Verarbeitung abgebrochen"
+
+
+def _finish_partial(
+    db: Session,
+    batch_id: object,
+    counters: ImportCounters,
+    unknown_types: set[str],
+    errors: list[tuple[int | None, str | None, str, str]],
+    exc: Exception,
+) -> ImportSummary:
+    db.rollback()
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None:
+        raise RuntimeError("Import batch disappeared while recording a partial failure") from exc
+    detail = _partial_failure_detail(exc)
+    if counters.failed < settings.max_import_errors:
+        errors.append((counters.received or None, None, "import_aborted", detail))
+    counters.failed += 1
+    _checkpoint(db, batch, counters, unknown_types, errors)
+    batch.status = "partial_failed"
+    batch.error_message = detail
+    batch.finished_at = datetime.now(UTC)
+    db.commit()
+    return _summary(batch)
+
+
+def persist_apple_health_stream(
+    db: Session,
+    user: User,
+    stream: IO[bytes],
+    content_type: str,
+    client_identifier: str | None,
+) -> ImportSummary:
+    del content_type
+    batch = _start_batch(db, user, "apple_health_xml", client_identifier)
+    counters = ImportCounters()
+    samples: list[CanonicalSample] = []
+    pending_errors: list[tuple[int | None, str | None, str, str]] = []
+    unknown_types: set[str] = set()
+
+    try:
+        for record in iter_apple_health_xml(stream, user.timezone):
+            counters.received += 1
+            if counters.received > settings.max_import_records:
+                raise ImportLimitError("Import enthält zu viele XML-Datensätze")
+            if record.sample is not None:
+                counters.accepted += 1
+                if counters.accepted > settings.max_import_samples:
+                    raise ImportLimitError(
+                        "Import enthält zu viele unterstützte Ernährungswerte"
+                    )
+                samples.append(record.sample)
+            elif record.error is not None:
+                counters.failed += 1
+                if (
+                    counters.failed <= settings.max_import_errors
+                    and len(pending_errors) < settings.max_import_errors
+                ):
+                    pending_errors.append(record.error)
+            else:
+                counters.unknown_count += 1
+                if (
+                    record.unknown_type
+                    and len(unknown_types) < settings.max_import_unknown_types
+                ):
+                    unknown_types.add(record.unknown_type[:128])
+
+            if len(samples) >= settings.import_batch_size:
+                inserted, updated, skipped = _persist_sample_batch(
+                    db, user, batch, samples
+                )
+                counters.inserted += inserted
+                counters.updated += updated
+                counters.duplicate_skipped += skipped
+                samples.clear()
+                _checkpoint(db, batch, counters, unknown_types, pending_errors)
+
+        if samples:
+            inserted, updated, skipped = _persist_sample_batch(
+                db, user, batch, samples
+            )
+            counters.inserted += inserted
+            counters.updated += updated
+            counters.duplicate_skipped += skipped
+        _checkpoint(db, batch, counters, unknown_types, pending_errors)
+    except (DefusedXmlException, ImportLimitError, OSError, ParseError, zipfile.BadZipFile) as exc:
+        return _finish_partial(
+            db,
+            batch.id,
+            counters,
+            unknown_types,
+            pending_errors,
+            exc,
+        )
+
+    batch.status = "completed_with_errors" if counters.failed else "completed"
+    batch.finished_at = datetime.now(UTC)
+    db.commit()
+    return _summary(batch)
 
 
 def persist_import(
@@ -20,126 +360,62 @@ def persist_import(
     client_identifier: str | None,
 ) -> ImportSummary:
     payload_hash = hashlib.sha256(raw_payload).hexdigest() if raw_payload is not None else None
-    batch = ImportBatch(
-        user_id=user.id,
-        source_type=result.source_type,
-        client_identifier=client_identifier,
-        status="processing",
+    batch = _start_batch(
+        db,
+        user,
+        result.source_type,
+        client_identifier,
+        payload_hash,
+    )
+    counters = ImportCounters(
         received=result.received,
-        failed=len(result.errors),
-        unknown_types=sorted(result.unknown_types),
-        payload_hash=payload_hash,
+        unknown_count=result.unknown_count,
+        failed=result.failed_count,
+        accepted=len(result.samples),
     )
-    db.add(batch)
-    db.flush()
+    pending_errors = list(result.errors[: settings.max_import_errors])
+    unknown_types = set(list(sorted(result.unknown_types))[: settings.max_import_unknown_types])
 
-    for item_index, metric, code, detail in result.errors[:1000]:
-        db.add(
-            ImportError(
-                batch_id=batch.id,
-                item_index=item_index,
-                metric_type=metric,
-                error_code=code,
-                safe_detail=detail[:500],
+    try:
+        for offset in range(0, len(result.samples), settings.import_batch_size):
+            inserted, updated, skipped = _persist_sample_batch(
+                db,
+                user,
+                batch,
+                result.samples[offset : offset + settings.import_batch_size],
             )
-        )
+            counters.inserted += inserted
+            counters.updated += updated
+            counters.duplicate_skipped += skipped
+            _checkpoint(db, batch, counters, unknown_types, pending_errors)
 
-    inserted = updated = skipped = 0
-    # SessionLocal deliberately disables autoflush. Consequently, a database
-    # lookup cannot see samples that were added earlier in this same import
-    # until the final commit. Keep an import-local index so duplicate records
-    # in one Apple Health export are skipped before they can violate the
-    # database uniqueness constraint.
-    batch_fingerprints: set[str] = set()
-    for sample in result.samples:
-        fingerprint = sample.fingerprint(user.id)
-        if fingerprint in batch_fingerprints:
-            skipped += 1
-            continue
-        batch_fingerprints.add(fingerprint)
-        existing = None
-        if sample.external_sample_id:
-            existing = db.scalar(
-                select(HealthSample).where(
-                    HealthSample.user_id == user.id,
-                    HealthSample.source_type == sample.source_type,
-                    HealthSample.source_identifier == sample.source_identifier,
-                    HealthSample.external_sample_id == sample.external_sample_id,
+        if not result.samples:
+            _checkpoint(db, batch, counters, unknown_types, pending_errors)
+
+        retention_days = user.raw_payload_retention_days
+        if raw_payload is not None and retention_days > 0:
+            db.add(
+                RawImportPayload(
+                    batch_id=batch.id,
+                    content_type=content_type,
+                    compressed_payload=zstandard.ZstdCompressor(level=6).compress(raw_payload),
+                    expires_at=datetime.now(UTC) + timedelta(days=retention_days),
                 )
             )
-        if existing is None:
-            existing = db.scalar(
-                select(HealthSample).where(
-                    HealthSample.user_id == user.id, HealthSample.fingerprint == fingerprint
-                )
-            )
-        if existing:
-            changed = existing.fingerprint != fingerprint
-            if not changed:
-                skipped += 1
-                continue
-            existing.fingerprint = fingerprint
-            existing.metric_type = sample.metric_type
-            existing.value = sample.value
-            existing.unit = sample.unit
-            existing.original_value = sample.original_value
-            existing.original_unit = sample.original_unit
-            existing.start_at = sample.start_at
-            existing.end_at = sample.end_at
-            existing.local_date = local_date_for(sample.start_at, sample.timezone)
-            existing.timezone = sample.timezone
-            existing.source_name = sample.source_name
-            existing.import_batch_id = batch.id
-            updated += 1
-            continue
-        db.add(
-            HealthSample(
-                user_id=user.id,
-                import_batch_id=batch.id,
-                external_sample_id=sample.external_sample_id,
-                fingerprint=fingerprint,
-                source_type=sample.source_type,
-                source_name=sample.source_name,
-                source_identifier=sample.source_identifier,
-                metric_type=sample.metric_type,
-                value=sample.value,
-                unit=sample.unit,
-                original_value=sample.original_value,
-                original_unit=sample.original_unit,
-                start_at=sample.start_at,
-                end_at=sample.end_at,
-                local_date=local_date_for(sample.start_at, sample.timezone),
-                timezone=sample.timezone,
-            )
+        batch.status = "completed_with_errors" if counters.failed else "completed"
+        batch.finished_at = datetime.now(UTC)
+        db.commit()
+    except SQLAlchemyError as exc:
+        _finish_partial(
+            db,
+            batch.id,
+            counters,
+            unknown_types,
+            pending_errors,
+            exc,
         )
-        inserted += 1
-
-    retention_days = user.raw_payload_retention_days
-    if raw_payload is not None and retention_days > 0:
-        db.add(
-            RawImportPayload(
-                batch_id=batch.id,
-                content_type=content_type,
-                compressed_payload=zstandard.ZstdCompressor(level=6).compress(raw_payload),
-                expires_at=datetime.now(UTC) + timedelta(days=retention_days),
-            )
-        )
-    batch.inserted = inserted
-    batch.updated = updated
-    batch.skipped = skipped + result.unknown_count
-    batch.status = "completed_with_errors" if result.errors else "completed"
-    batch.finished_at = datetime.now(UTC)
-    db.commit()
-    return ImportSummary(
-        batch_id=batch.id,
-        status=batch.status,
-        received=batch.received,
-        inserted=inserted,
-        updated=updated,
-        skipped=batch.skipped,
-        failed=batch.failed,
-        unknown_types=batch.unknown_types,
-    )
+        raise
+    return _summary(batch)
 
 
 def purge_expired_raw_payloads(db: Session) -> int:

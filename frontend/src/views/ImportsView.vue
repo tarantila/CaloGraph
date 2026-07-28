@@ -33,6 +33,8 @@ const error = ref('')
 const message = ref('')
 const messageIsError = ref(false)
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
+const maxJsonBytes = 10 * 1024 * 1024
+const maxAppleHealthBytes = 500 * 1024 * 1024
 
 async function load() {
   error.value = ''
@@ -48,10 +50,27 @@ async function load() {
 onMounted(load)
 
 function selectFile(event: Event) {
-  selected.value = (event.target as HTMLInputElement).files?.[0] ?? null
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
   progress.value = 0
   message.value = ''
   messageIsError.value = false
+  if (!file) {
+    selected.value = null
+    return
+  }
+  const isJson = file.name.toLowerCase().endsWith('.json')
+  const maxBytes = isJson ? maxJsonBytes : maxAppleHealthBytes
+  if (file.size > maxBytes) {
+    selected.value = null
+    input.value = ''
+    messageIsError.value = true
+    message.value = isJson
+      ? 'Die YAZIO-Datei darf höchstens 10 MB groß sein.'
+      : 'Der Apple-Health-Export darf höchstens 500 MB groß sein.'
+    return
+  }
+  selected.value = file
 }
 
 async function upload() {
@@ -78,14 +97,19 @@ async function upload() {
       uploading.value = false
       if (xhr.status >= 200 && xhr.status < 300) {
         const result = JSON.parse(xhr.responseText) as {
+          status: string
           inserted: number
           updated: number
           skipped: number
           failed: number
         }
-        message.value = `${result.inserted} neu · ${result.updated} aktualisiert · ${result.skipped} unverändert${result.failed ? ` · ${result.failed} fehlerhaft` : ''}`
-        messageIsError.value = result.failed > 0
-        selected.value = null
+        const counts = `${result.inserted} neu · ${result.updated} aktualisiert · ${result.skipped} unverändert${result.failed ? ` · ${result.failed} fehlerhaft` : ''}`
+        message.value =
+          result.status === 'partial_failed'
+            ? `Teilweise importiert: ${counts}. Du kannst dieselbe Datei erneut importieren, um fortzufahren.`
+            : counts
+        messageIsError.value = result.status === 'partial_failed' || result.failed > 0
+        if (result.status !== 'partial_failed') selected.value = null
         await load()
       } else {
         messageIsError.value = true
@@ -150,6 +174,7 @@ const importsWithIssues = computed(() =>
   imports.value.filter(
     (item) =>
       item.status === 'completed_with_errors' ||
+      item.status === 'partial_failed' ||
       item.failed > 0 ||
       item.error_message ||
       item.unknown_types.length,
@@ -170,7 +195,7 @@ const importsWithIssues = computed(() =>
         <div class="import-upload-icon"><PhDownloadSimple :size="25" weight="duotone" /></div>
         <div>
           <h2>Historischen Export importieren</h2>
-          <p>Unterstützt werden Apple Health als <code>export.xml</code> oder ZIP und YAZIO als <code>days.json</code> oder <code>nutrients.json</code>. Die Dateien verlassen deine Infrastruktur nicht.</p>
+          <p>Unterstützt werden Apple Health als <code>export.xml</code> oder ZIP bis 500 MB und YAZIO als <code>days.json</code> oder <code>nutrients.json</code> bis 10 MB. Die Dateien verlassen deine Infrastruktur nicht.</p>
         </div>
         <label class="import-file-picker">
           <span>Datei auswählen</span>
@@ -182,7 +207,7 @@ const importsWithIssues = computed(() =>
           <span><strong>{{ selected.name }}</strong><small>{{ fileSize(selected.size) }}</small></span>
         </div>
         <button class="button import-submit" type="button" :disabled="!selected || uploading" @click="upload">
-          {{ uploading ? `Upload ${progress} %` : 'Datei importieren' }}
+          {{ uploading ? (progress >= 100 ? 'Wird verarbeitet …' : `Upload ${progress} %`) : 'Datei importieren' }}
         </button>
         <progress v-if="uploading" class="metric-progress import-progress" :value="progress" max="100">{{ progress }} %</progress>
         <p v-if="message" :class="['import-message', { error: messageIsError }]" :role="messageIsError ? 'alert' : 'status'">{{ message }}</p>

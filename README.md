@@ -148,7 +148,14 @@ The source-neutral format intended for a future native iOS app is documented in
 In Apple Health, select **Profile → Export All Health Data**. Upload the
 resulting ZIP or its `export.xml` file under **Importe**. CaloGraph validates
 file sizes, paths, compression ratios, and XML safety. Parsing is streamed, and
-repeated imports do not create duplicates.
+repeated imports do not create duplicates. Apple Health uploads are limited to
+500 MiB by default. Accepted values are persisted in batches of 500 instead of
+being materialized as one large in-memory import.
+
+If a large import stops after one or more committed batches, its status is
+`partial_failed` (**Teilweise importiert** in the interface). The completed
+batches remain available; uploading the same file again safely continues the
+idempotent import without duplicating those values.
 
 A completely synthetic example is available at
 `examples/apple-health-export.xml`.

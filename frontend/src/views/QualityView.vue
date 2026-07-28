@@ -109,6 +109,7 @@ const issueImports = computed(() =>
     (item) =>
       item.failed > 0 ||
       item.status === 'completed_with_errors' ||
+      item.status === 'partial_failed' ||
       item.error_message ||
       item.unknown_types.length,
   ) ?? [],
