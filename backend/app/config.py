@@ -1,17 +1,51 @@
 import ipaddress
+import sys
 from functools import lru_cache
-from urllib.parse import urlsplit
+from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from cryptography.fernet import Fernet
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+KNOWN_INSECURE_SECRETS = frozenset(
+    {
+        "development-session-secret-change-me-32",
+        "development-rate-limit-secret-change-me",
+        "change_me_at_least_32_random_characters",
+        "change_me_another_random_secret",
+    }
+)
+KNOWN_INSECURE_DATABASE_PASSWORDS = frozenset(
+    {
+        "calograph",
+        "admin",
+        "root",
+        "secret",
+        "letmein",
+        "postgres",
+        "password",
+        "changeme",
+        "change_me",
+        "change_me_database_password",
+    }
+)
+
+
+class ProductionConfigurationError(RuntimeError):
+    pass
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     app_name: str = "CaloGraph"
-    environment: str = "production"
+    environment: Literal["development", "test", "production"]
     database_url: str = "postgresql+psycopg://calograph:calograph@postgres:5432/calograph"
     session_secret: str = Field(default="development-session-secret-change-me-32", min_length=32)
     rate_limit_secret: str = Field(default="development-rate-limit-secret-change-me", min_length=32)
@@ -148,6 +182,127 @@ class Settings(BaseSettings):
             raise ValueError("YAZIO_SCHEDULER_JITTER_MINUTES must be between 0 and 180")
         return value
 
+    def validate_runtime_security(self) -> None:
+        if self.environment != "production":
+            return
+
+        errors: list[str] = []
+        public_url = urlsplit(self.calograph_public_url)
+        public_host = (public_url.hostname or "").casefold()
+        configured_hosts = {
+            item.strip().casefold()
+            for item in self.trusted_hosts.split(",")
+            if item.strip()
+        }
+        configured_origins = {
+            item.strip().rstrip("/")
+            for item in self.trusted_origins.split(",")
+            if item.strip()
+        }
+
+        if public_url.scheme != "https":
+            errors.append("CALOGRAPH_PUBLIC_URL must use https://")
+        if (
+            not public_host
+            or public_host in {"localhost", "127.0.0.1", "::1"}
+            or public_host in {"example.com", "example.net", "example.org"}
+            or public_host.endswith(
+                (".example", ".example.com", ".example.net", ".example.org", ".example.test")
+            )
+        ):
+            errors.append("CALOGRAPH_PUBLIC_URL must contain the real public hostname")
+        if not self.cookie_secure:
+            errors.append("COOKIE_SECURE must be true")
+        if not self.enable_hsts:
+            errors.append("ENABLE_HSTS must be true")
+        if public_host not in configured_hosts:
+            errors.append("TRUSTED_HOSTS must explicitly contain the public hostname")
+        if self.calograph_public_url not in configured_origins:
+            errors.append("TRUSTED_ORIGINS must explicitly contain CALOGRAPH_PUBLIC_URL")
+        if any("*" in host for host in configured_hosts):
+            errors.append("TRUSTED_HOSTS must not contain wildcard entries")
+        if any(not origin.startswith("https://") for origin in configured_origins):
+            errors.append("all production TRUSTED_ORIGINS entries must use https://")
+
+        proxy_networks = [
+            ipaddress.ip_network(item, strict=False)
+            for item in self.trusted_proxy_networks.split(",")
+            if item
+        ]
+        if all(network.is_loopback for network in proxy_networks):
+            errors.append(
+                "TRUSTED_PROXY_NETWORKS must contain the actual Docker proxy subnet"
+            )
+        if any(
+            (
+                isinstance(network, ipaddress.IPv4Network)
+                and network.prefixlen < 16
+            )
+            or (
+                isinstance(network, ipaddress.IPv6Network)
+                and network.prefixlen < 64
+            )
+            for network in proxy_networks
+        ):
+            errors.append(
+                "TRUSTED_PROXY_NETWORKS must use an exact proxy IP or narrow subnet"
+            )
+
+        normalized_session_secret = self.session_secret.strip().casefold()
+        normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
+        if (
+            normalized_session_secret in KNOWN_INSECURE_SECRETS
+            or "change_me" in normalized_session_secret
+            or "changeme" in normalized_session_secret
+        ):
+            errors.append("SESSION_SECRET uses a known development or placeholder value")
+        if (
+            normalized_rate_limit_secret in KNOWN_INSECURE_SECRETS
+            or "change_me" in normalized_rate_limit_secret
+            or "changeme" in normalized_rate_limit_secret
+        ):
+            errors.append("RATE_LIMIT_SECRET uses a known development or placeholder value")
+        if self.session_secret == self.rate_limit_secret:
+            errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
+
+        database_url = urlsplit(self.database_url)
+        database_password = unquote(database_url.password or "").strip().casefold()
+        if not database_url.scheme.startswith("postgresql"):
+            errors.append("DATABASE_URL must use PostgreSQL")
+        if (
+            not database_password
+            or database_password in KNOWN_INSECURE_DATABASE_PASSWORDS
+            or "change_me" in database_password
+            or "changeme" in database_password
+        ):
+            errors.append("DATABASE_URL must contain a non-default database password")
+
+        if self.yazio_enabled and not self.credential_encryption_key:
+            errors.append(
+                "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED is true"
+            )
+
+        if self.max_json_payload_bytes > self.max_upload_bytes:
+            errors.append("MAX_JSON_PAYLOAD_BYTES must not exceed MAX_UPLOAD_BYTES")
+        if self.max_zip_uncompressed_bytes < self.max_upload_bytes:
+            errors.append(
+                "MAX_ZIP_UNCOMPRESSED_BYTES must not be smaller than MAX_UPLOAD_BYTES"
+            )
+        if self.nginx_max_upload_bytes < self.max_upload_bytes + 1024 * 1024:
+            errors.append(
+                "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
+            )
+        if self.backend_tmpfs_bytes < self.nginx_max_upload_bytes + 16 * 1024 * 1024:
+            errors.append(
+                "BACKEND_TMPFS_BYTES needs reserve space above NGINX_MAX_UPLOAD_BYTES"
+            )
+
+        if errors:
+            formatted = "\n".join(f"- {error}" for error in errors)
+            raise ProductionConfigurationError(
+                f"Unsafe production configuration:\n{formatted}"
+            )
+
     @property
     def trusted_host_list(self) -> list[str]:
         hosts = [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
@@ -172,3 +327,13 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--check-runtime"]:
+        raise SystemExit("Usage: python -m app.config --check-runtime")
+    try:
+        settings.validate_runtime_security()
+    except ProductionConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(78) from None

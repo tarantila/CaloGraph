@@ -15,6 +15,8 @@ from app.database import engine
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("calograph")
 
+settings.validate_runtime_security()
+
 app = FastAPI(
     title="CaloGraph API",
     version="0.1.2",

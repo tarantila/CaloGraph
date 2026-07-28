@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 
 from app.auth.security import create_api_token, hash_password
-from app.config import settings
+from app.config import ProductionConfigurationError, settings
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
@@ -301,6 +301,10 @@ def yazio_status(args: argparse.Namespace) -> None:
 
 
 def run_yazio_scheduler(args: argparse.Namespace) -> None:
+    try:
+        settings.validate_runtime_security()
+    except ProductionConfigurationError as exc:
+        raise SystemExit(str(exc)) from None
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

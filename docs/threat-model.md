@@ -18,6 +18,11 @@ backups, and the availability of the private application.
   permissions, and test restores.
 - **Sensitive logs:** payloads and health values are excluded; request IDs are
   logged instead of user data.
+- **Unsafe production defaults:** `ENVIRONMENT` must be explicit. Production
+  startup validates HTTPS, secure cookies, HSTS, independent non-default
+  secrets, PostgreSQL credentials, explicit host/origin allowlists, an exact
+  proxy subnet, YAZIO encryption, and consistent upload capacities. Failure
+  messages contain variable names rather than secret values.
 - **YAZIO credentials:** manual retrieval does not persist credentials.
   Scheduled sync stores each user's email and password using authenticated
   Fernet encryption. The key exists only in `.env` and must be protected and

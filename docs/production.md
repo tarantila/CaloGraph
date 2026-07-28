@@ -2,22 +2,25 @@
 
 ## Minimum checklist
 
+- Start from `.env.production.example`, set `ENVIRONMENT=production`, and
+  replace every `CHANGE_ME` and example value. The application reports all
+  rejected variable names together without printing their values.
 - `.env` is owned by the operator and has file mode `0600`.
-- `POSTGRES_PASSWORD`, `SESSION_SECRET`, `RATE_LIMIT_SECRET`, and
-  `CREDENTIAL_ENCRYPTION_KEY` are independent random values.
+- `POSTGRES_PASSWORD`, `SESSION_SECRET`, and `RATE_LIMIT_SECRET` are independent
+  random values. `CREDENTIAL_ENCRYPTION_KEY` is additionally required whenever
+  `YAZIO_ENABLED=true`.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.
 - `CALOGRAPH_PUBLIC_URL` contains the final externally reachable HTTPS origin.
-  CaloGraph uses it for invitation links and automatically adds it to the host
-  and CSRF-origin allowlists.
-- With HTTPS, set `COOKIE_SECURE=true`, an exact HTTPS origin in
-  `TRUSTED_ORIGINS`, and the public hostname in `TRUSTED_HOSTS` only when
-  additional origins or host aliases are required.
+  CaloGraph uses it for invitation links.
+- Set `COOKIE_SECURE=true`, list the exact public hostname in `TRUSTED_HOSTS`,
+  and list the exact HTTPS origin in `TRUSTED_ORIGINS`. Wildcard hosts and HTTP
+  production origins are rejected.
 - `TRUSTED_PROXY_NETWORKS` contains only the Docker network from which the
   frontend reaches the backend; wildcard trust is rejected.
-- Enable `ENABLE_HSTS=true` only after the domain is permanently available
-  exclusively over HTTPS.
+- Set `ENABLE_HSTS=true` after the domain is permanently available exclusively
+  over HTTPS. Production mode will not start while it is false.
 - Backups are encrypted, stored outside the Docker host, and a restore has been
   tested in practice.
 - Docker and host security updates are installed regularly.
@@ -29,6 +32,87 @@ The Compose services use `restart: unless-stopped`, internal health checks,
 services, and bounded Docker log rotation. The YAZIO scheduler writes a
 heartbeat to its ephemeral `/tmp`; its health check detects a stuck scheduler
 independently of the backend.
+
+The root `Dockerfile` provides separate `backend-runtime` and
+`frontend-runtime` targets. Both production targets switch to an unprivileged
+user; the frontend uses the purpose-built NGINX unprivileged runtime with all
+writable state kept in an ephemeral `/tmp`. `WEB_CONCURRENCY`, `UVICORN_LOG_LEVEL`,
+`UVICORN_TIMEOUT_KEEP_ALIVE`, `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN`, and
+`UVICORN_ACCESS_LOG` are runtime settings and can be changed through `.env`
+without rebuilding. Keep `RUN_MIGRATIONS=true` unless migrations are managed
+explicitly as a separate deployment step.
+
+Login throttling defaults to 30 attempts per IP network in five minutes and ten
+failed attempts per normalized account identifier in 15 minutes. Password
+changes allow five failed current-password checks in 15 minutes. These limits
+and windows can be adjusted with the documented `LOGIN_*` and
+`PASSWORD_CHANGE_*` values in `.env`; keep the temporary windows bounded to
+avoid permanent account lockouts.
+
+Historical Apple Health uploads default to 500 MiB. The bundled Nginx permits
+512 MiB through `NGINX_MAX_UPLOAD_BYTES` on that one endpoint for multipart
+overhead, forwards the body without proxy buffering, and admits only one
+concurrent large upload. The backend uses a 600 MiB
+`BACKEND_TMPFS_BYTES`-controlled ephemeral `/tmp` tmpfs for Starlette's upload
+spool; no health export is written to a host bind mount or persistent Docker
+volume. An outer reverse proxy must allow slightly more than 500 MiB and use a
+request timeout suitable for the connection, or the upload will be rejected
+before reaching CaloGraph.
+
+File-import rate limits, XML record/sample caps, the 2-GiB expanded ZIP limit,
+and the 500-record database batch size are configurable through the
+`MAX_IMPORT_*`, `MAX_ZIP_*`, `IMPORT_BATCH_SIZE`, and `FILE_IMPORT_*` settings
+in `.env`. Measure representative exports before raising them.
+Production validation requires the Nginx limit to include multipart overhead,
+the backend tmpfs to include additional reserve space, JSON not to exceed the
+general upload limit, and the expanded ZIP ceiling not to be smaller than the
+upload ceiling. The expanded XML is streamed and does not need to fit into
+tmpfs.
+
+Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Before public
+operation, keep the default explicit 3.05-second connect timeout, 15-second
+read timeout, 25-second login deadline, and five-minute full-operation
+deadline unless measured provider behavior requires a change. Saving
+credentials and starting a manual sync share independent per-user and per-IP
+limits of two attempts per ten minutes. PostgreSQL advisory locks cap active
+YAZIO operations at two across all backend workers and the scheduler, while a
+database-backed circuit breaker pauses provider calls after five provider or
+deadline failures in ten minutes. No Redis service or general-purpose job
+queue is required.
+
+Authentication failures are not retried and do not affect the shared circuit
+breaker. They disable scheduled sync only for the affected account; saving and
+successfully verifying new credentials enables it again. Set
+`YAZIO_ENABLED=false` and recreate the backend and scheduler to use the
+operational kill switch:
+
+```bash
+docker compose up -d --force-recreate backend yazio-scheduler
+```
+
+Compose adds no CPU, memory, or PID ceiling to the backend by default because
+legitimate Apple Health histories vary widely in size; Docker-host or parent
+cgroup constraints still apply. Operators who need stricter per-container
+limits can uncomment the concrete `BACKEND_MEMORY_LIMIT`, `BACKEND_CPU_LIMIT`,
+and `BACKEND_PIDS_LIMIT` examples in `.env.example`. Size the memory limit
+above `BACKEND_TMPFS_BYTES` because tmpfs pages count toward container memory
+usage.
+
+## Fail-closed production validation
+
+The backend checks production safety before running migrations, and the YAZIO
+scheduler repeats the same check before entering its loop. Startup is rejected
+when the public origin is not HTTPS, secure cookies or HSTS are disabled,
+known development secrets or database passwords are present, secrets are
+reused, effective proxy trust remains loopback-only or uses the generic Docker
+address pool, direct YAZIO access has no valid Fernet key, or upload capacities
+contradict each other. IPv4 proxy networks broader than `/16` and IPv6 networks
+broader than `/64` are rejected. Development and test environments remain able
+to use localhost HTTP.
+
+Changing only `ENVIRONMENT=production` is therefore intentionally insufficient.
+The real domain, exact Docker subnet, independent secrets, and TLS policy must
+be configured first.
 
 Check status:
 
@@ -51,7 +135,8 @@ that are actually required.
 Docker logs rotate per service across at most three files of 10 MB each. This
 does not replace free-space monitoring. Pay particular attention to the
 PostgreSQL volume, encrypted backup storage, and failed YAZIO runs shown in the
-data-status view.
+data-status view. A `partial_failed` historical import is safe to retry with the
+same file; completed checkpoints are retained and deduplicated.
 
 ## Updates
 

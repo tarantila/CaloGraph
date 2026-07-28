@@ -68,6 +68,12 @@ docker compose up -d --build
 docker compose ps
 ```
 
+The standard template sets `ENVIRONMENT=development` and is intended only for
+a loopback installation. For Internet-facing operation, start from
+`.env.production.example`. Production startup fails closed when HTTPS, cookie,
+secret, database, proxy, YAZIO encryption, or upload-capacity settings are
+unsafe or inconsistent.
+
 Generate independent random values for `POSTGRES_PASSWORD`, `SESSION_SECRET`,
 and `RATE_LIMIT_SECRET`. Both application secrets must contain at least 32
 characters. Scheduled YAZIO sync additionally requires a dedicated
@@ -77,8 +83,12 @@ characters. Scheduled YAZIO sync additionally requires a dedicated
 `CALOGRAPH_PUBLIC_URL` is the canonical browser address used for links that
 leave the application, especially user invitations. Keep the local default for
 a loopback-only installation. When using a reverse proxy, set it to the final
-HTTPS origin, for example `https://nutrition.example.com`. Its hostname and
-origin are automatically added to the request allowlists.
+HTTPS origin. Reserved `example.com`, `example.net`, and `example.org`
+hostnames are documentation placeholders and are rejected in production. The
+configured hostname and origin are automatically added to the effective
+request allowlists.
+Production nevertheless requires both values to be listed explicitly in
+`TRUSTED_HOSTS` and `TRUSTED_ORIGINS`, making the deployed policy auditable.
 
 The backend container applies pending Alembic migrations before it starts. The
 application is then available at
@@ -262,11 +272,14 @@ The backend refuses to start when migrations fail.
   the database.
 - PostgreSQL has no host port mapping.
 - The frontend binds to `127.0.0.1:8180` by default.
-- TLS terminates at a reverse proxy; only then enable `COOKIE_SECURE=true` and
-  `ENABLE_HSTS=true`.
+- `ENVIRONMENT` is mandatory. `production` requires an HTTPS public URL,
+  secure cookies, HSTS, non-default independent secrets, and exact request
+  allowlists before the backend or scheduler starts.
+- TLS terminates at a reverse proxy. Never expose a configuration using
+  `ENVIRONMENT=development` through that proxy.
 - Forwarded headers are accepted only from `TRUSTED_PROXY_NETWORKS`. The
-  Compose default covers standard Docker bridge networks and should be narrowed
-  to the actual `calograph_internal` subnet where practical.
+  production value must be the actual `calograph_internal` subnet rather than
+  Docker's broad address pool.
 - No CDN dependencies, telemetry, external analytics, or third-party data
   transfer.
 
