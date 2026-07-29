@@ -34,7 +34,11 @@ updates:
       frontend-production:
         dependency-type: production
       frontend-development:
+        applies-to: version-updates
         dependency-type: development
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: pip
     directory: /backend
