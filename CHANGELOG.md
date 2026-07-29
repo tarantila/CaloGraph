@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-29
+
 ### Changed
 
 - Consolidated backend and frontend container builds into a central,
@@ -170,6 +172,7 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tarantila/CaloGraph/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tarantila/CaloGraph/compare/b4ca2cf...v0.1.1

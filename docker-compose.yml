@@ -35,13 +35,13 @@ services:
     pids_limit: ${POSTGRES_PIDS_LIMIT:--1}
 
   backend:
-    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.2.0}
     build:
       context: .
       dockerfile: Dockerfile
       target: backend-runtime
       args:
-        APP_VERSION: ${CALOGRAPH_VERSION:-0.1.2}
+        APP_VERSION: ${CALOGRAPH_VERSION:-0.2.0}
         APP_UID: ${CALOGRAPH_UID:-10001}
         APP_GID: ${CALOGRAPH_GID:-10001}
     restart: unless-stopped
@@ -144,7 +144,7 @@ services:
       - /tmp:size=${BACKEND_TMPFS_BYTES:-629145600},mode=1777
 
   yazio-scheduler:
-    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.2.0}
     restart: unless-stopped
     command: ["python", "-m", "app.cli", "run-yazio-scheduler"]
     environment:
@@ -201,13 +201,13 @@ services:
       - /tmp:size=64m,mode=1777
 
   frontend:
-    image: ${CALOGRAPH_FRONTEND_IMAGE:-calograph-frontend}:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_FRONTEND_IMAGE:-calograph-frontend}:${CALOGRAPH_VERSION:-0.2.0}
     build:
       context: .
       dockerfile: Dockerfile
       target: frontend-runtime
       args:
-        APP_VERSION: ${CALOGRAPH_VERSION:-0.1.2}
+        APP_VERSION: ${CALOGRAPH_VERSION:-0.2.0}
     restart: unless-stopped
     environment:
       ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
