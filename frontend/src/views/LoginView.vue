@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { PhArrowLeft, PhLockKey } from '@phosphor-icons/vue'
+import { PhArrowLeft, PhFingerprint, PhLockKey } from '@phosphor-icons/vue'
 import { nextTick, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { isPasskeySupported } from '../webauthn'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -15,6 +16,7 @@ const mfaCode = ref('')
 const error = ref('')
 const passwordFormVisible = ref(Boolean(route.query.registered))
 const usernameInput = ref<HTMLInputElement | null>(null)
+const passkeySupported = isPasskeySupported()
 
 async function showPasswordForm() {
   passwordFormVisible.value = true
@@ -49,6 +51,23 @@ async function submitMfa() {
     error.value = cause instanceof ApiError ? cause.message : 'MFA-Prüfung ist fehlgeschlagen.'
   }
 }
+
+async function submitPasskey() {
+  error.value = ''
+  try {
+    await auth.loginWithPasskey()
+    await router.replace(String(route.query.next ?? '/'))
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'NotAllowedError') {
+      error.value = 'Passkey-Anmeldung wurde abgebrochen oder ist abgelaufen.'
+    } else {
+      error.value =
+        cause instanceof ApiError || cause instanceof Error
+          ? cause.message
+          : 'Passkey-Anmeldung ist fehlgeschlagen.'
+    }
+  }
+}
 </script>
 
 <template>
@@ -67,7 +86,18 @@ async function submitMfa() {
           <PhLockKey :size="20" weight="regular" aria-hidden="true" />
           Mit Passwort anmelden
         </button>
+        <button
+          v-if="passkeySupported"
+          class="login-method-button"
+          type="button"
+          :disabled="auth.loading"
+          @click="submitPasskey"
+        >
+          <PhFingerprint :size="20" weight="regular" aria-hidden="true" />
+          {{ auth.loading ? 'Passkey wird geprüft …' : 'Mit Passkey anmelden' }}
+        </button>
       </div>
+      <div v-if="error" class="error" role="alert">{{ error }}</div>
     </section>
 
     <section v-else class="card login-card login-form-card" aria-labelledby="login-title">

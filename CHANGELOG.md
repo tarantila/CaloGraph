@@ -77,6 +77,10 @@ follows [Semantic Versioning](https://semver.org/).
   short-lived login challenges, replay protection, one-time recovery codes,
   management rate limits, session revocation, and an explicit administrative
   recovery command.
+- Added passwordless passkey authentication with discoverable credentials,
+  required user verification, exact RP/origin binding, one-time database-backed
+  challenges, sign-counter tracking, per-IP throttling, and account-level
+  registration and revocation controls.
 
 ## [0.1.2] - 2026-07-27
 

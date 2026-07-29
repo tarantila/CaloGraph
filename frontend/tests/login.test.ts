@@ -7,6 +7,7 @@ import { useAuthStore } from '../src/stores/auth'
 describe('authentication store', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     setActivePinia(createPinia())
     setCsrfToken(null)
   })
@@ -74,6 +75,79 @@ describe('authentication store', () => {
     expect(auth.user?.username).toBe('admin')
     expect(auth.mfaRequired).toBe(false)
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf-after-mfa')
+  })
+
+  it('stores the user returned by passwordless passkey sign-in', async () => {
+    const credentialJson = {
+      id: 'credential',
+      rawId: 'credential',
+      response: {
+        clientDataJSON: 'client-data',
+        authenticatorData: 'authenticator-data',
+        signature: 'signature',
+        userHandle: 'user-handle',
+      },
+      authenticatorAttachment: 'platform',
+      clientExtensionResults: {},
+      type: 'public-key' as const,
+    }
+    class FakePublicKeyCredential {
+      toJSON() {
+        return credentialJson
+      }
+    }
+    const getCredential = vi.fn().mockResolvedValue(new FakePublicKeyCredential())
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PublicKeyCredential', FakePublicKeyCredential)
+    vi.stubGlobal('navigator', { credentials: { get: getCredential } })
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            challenge_id: 'challenge-id',
+            public_key: {
+              challenge: 'Y2hhbGxlbmdl',
+              rpId: 'localhost',
+              userVerification: 'required',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            mfa_required: false,
+            user: {
+              id: '1',
+              username: 'admin',
+              language: 'de',
+              timezone: 'Europe/Berlin',
+              week_starts_on: 0,
+            },
+            csrf_token: 'csrf-passkey',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const auth = useAuthStore()
+
+    await auth.loginWithPasskey()
+
+    expect(getCredential).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/auth/passkey/verify',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          challenge_id: 'challenge-id',
+          credential: credentialJson,
+        }),
+      }),
+    )
+    expect(auth.user?.username).toBe('admin')
+    expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf-passkey')
   })
 
   it('exchanges and uses an invitation without requiring an existing CSRF session', async () => {

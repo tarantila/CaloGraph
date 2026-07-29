@@ -90,7 +90,16 @@ stored only as HMAC digests. Accepted TOTP time steps are persisted to prevent
 replay, while login and MFA-management attempts use temporary database-backed
 limits. If a user loses both factors, an operator can run
 `python -m app.cli reset-mfa --username USER --confirm USER`; the command
-removes TOTP and recovery codes and revokes all sessions for that account.
+removes TOTP, recovery codes, and passkeys and revokes all sessions for that
+account.
+
+Users can enroll discoverable passkeys after confirming their password and,
+when enabled, TOTP. Passkey authentication requires user verification and is
+bound to the exact `CALOGRAPH_PUBLIC_URL` host and origin. Production passkeys
+therefore depend on a valid HTTPS deployment; changing the public hostname
+requires users to enroll new passkeys for the new relying-party ID. Temporary
+WebAuthn challenges are stored in PostgreSQL, consumed exactly once, and
+deleted hourly after expiry.
 
 Historical Apple Health uploads default to 500 MiB. The bundled Nginx permits
 512 MiB through `NGINX_MAX_UPLOAD_BYTES` on that one endpoint for multipart

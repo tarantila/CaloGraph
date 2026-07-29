@@ -73,8 +73,23 @@ docker compose exec backend python -m app.cli reset-mfa \
 ```
 
 The explicit confirmation must match the username. The reset removes the
-second factor and revokes every session; the user must sign in with their
-password and enroll again.
+TOTP credential, recovery codes, and all passkeys and revokes every session;
+the user must sign in with their password and enroll again.
+
+## Passkeys
+
+Each user can register multiple discoverable passkeys under **Konto →
+Passkeys**. Enrollment requires the current password and, when TOTP is enabled,
+an active TOTP or recovery code. Adding or removing a passkey revokes every
+other session for that account.
+
+Passkey sign-in is passwordless and requires local user verification, such as
+Windows Hello, Touch ID, Face ID, Android biometrics, or the device PIN.
+CaloGraph binds WebAuthn to the exact host and origin configured through
+`CALOGRAPH_PUBLIC_URL`; production therefore requires HTTPS. Registration
+challenges are tied to the current user session. Authentication and
+registration challenges expire after five minutes, are consumed once, and are
+cleaned up by the scheduler. Stored credential public keys are not secrets.
 
 ## Personal YAZIO connection
 

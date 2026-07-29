@@ -1060,6 +1060,34 @@ td strong { color: #f0f4f9; font-weight: 600; }
   font-size: .78rem;
 }
 .text-button.danger { color: #ff9aaa; }
+.passkey-unavailable {
+  padding: .75rem .9rem;
+  border: 1px solid rgba(251, 191, 36, .28);
+  border-radius: 12px;
+  background: rgba(251, 191, 36, .06);
+}
+.passkey-list {
+  display: grid;
+  gap: .65rem;
+  margin: 1rem 0;
+}
+.passkey-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .8rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .02);
+}
+.passkey-item strong,
+.passkey-item small { display: block; }
+.passkey-item small {
+  margin-top: .2rem;
+  color: var(--muted);
+  font-size: .69rem;
+}
 
 @media (max-width: 1220px) {
   .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

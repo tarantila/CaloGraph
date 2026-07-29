@@ -1,5 +1,6 @@
 import logging
 from datetime import date
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,15 +20,21 @@ from app.database import get_db
 from app.models import (
     ApiToken,
     NutritionTarget,
+    PasskeyCredential,
     TrackingOverride,
     TrackingQualitySettings,
     User,
+    UserSession,
     UserTotpCredential,
 )
 from app.schemas import (
     MfaCodeRequest,
     MfaManagementRequest,
     MfaStatusResponse,
+    PasskeyDeleteRequest,
+    PasskeyRegistrationCompleteRequest,
+    PasskeyRegistrationOptionsRequest,
+    PasskeyResponse,
     ProfileUpdate,
     RecoveryCodesResponse,
     TargetInput,
@@ -41,6 +48,7 @@ from app.schemas import (
     TrackingQualityInput,
     TrackingQualityResponse,
     UserResponse,
+    WebAuthnOptionsResponse,
 )
 from app.services.mfa import (
     MfaSetupError,
@@ -52,6 +60,13 @@ from app.services.mfa import (
     totp_status,
 )
 from app.services.mfa_crypto import MfaEncryptionError
+from app.services.passkeys import (
+    PasskeyRegistrationError,
+    begin_passkey_registration,
+    complete_passkey_registration,
+    delete_passkey,
+    list_passkeys,
+)
 from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
@@ -132,6 +147,40 @@ def _preserve_only_current_session(
         user.id,
         hash_session_token(raw_session),
     )
+
+
+def _current_session_id(request: Request, db: Session) -> UUID:
+    raw_session = request.cookies.get(session_cookie_name(), "")
+    session_id = db.scalar(
+        select(UserSession.id).where(UserSession.token_hash == hash_session_token(raw_session))
+    )
+    if session_id is None:
+        raise HTTPException(status_code=401, detail="Sitzung ungültig")
+    return session_id
+
+
+def _verify_management_second_factor_if_enabled(
+    db: Session,
+    user: User,
+    code: str | None,
+) -> None:
+    credential = db.scalar(
+        select(UserTotpCredential)
+        .where(
+            UserTotpCredential.user_id == user.id,
+            UserTotpCredential.enabled_at.is_not(None),
+        )
+        .with_for_update()
+    )
+    if credential is None:
+        return
+    _ensure_mfa_management_factor_available(db, user)
+    if not code or not consume_mfa_factor(db, credential, code):
+        db.rollback()
+        _record_mfa_management_failure(db, user)
+        raise HTTPException(status_code=400, detail="MFA-Code ist ungültig")
+    db.commit()
+    _clear_mfa_management_factor_limit(db, user)
 
 
 @router.get("/profile", response_model=UserResponse)
@@ -273,6 +322,83 @@ def remove_totp(
     _preserve_only_current_session(request, db, user)
     logger.info(
         "security_event=mfa_totp_disabled user_key=%s",
+        _mfa_log_user_key(user),
+    )
+
+
+@router.get("/passkeys", response_model=list[PasskeyResponse])
+def passkeys(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[PasskeyCredential]:
+    return list_passkeys(db, user.id)
+
+
+@router.post("/passkeys/options", response_model=WebAuthnOptionsResponse)
+def passkey_registration_options(
+    payload: PasskeyRegistrationOptionsRequest,
+    request: Request,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> WebAuthnOptionsResponse:
+    _verify_management_password(db, user, payload.current_password)
+    _verify_management_second_factor_if_enabled(db, user, payload.code)
+    challenge_id, public_key = begin_passkey_registration(
+        db,
+        user,
+        _current_session_id(request, db),
+    )
+    logger.info(
+        "security_event=passkey_registration_started user_key=%s",
+        _mfa_log_user_key(user),
+    )
+    return WebAuthnOptionsResponse(
+        challenge_id=challenge_id,
+        public_key=public_key,
+    )
+
+
+@router.post("/passkeys", response_model=PasskeyResponse, status_code=201)
+def register_passkey(
+    payload: PasskeyRegistrationCompleteRequest,
+    request: Request,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> PasskeyCredential:
+    try:
+        passkey = complete_passkey_registration(
+            db,
+            user,
+            _current_session_id(request, db),
+            payload.challenge_id,
+            payload.label,
+            payload.credential,
+        )
+    except PasskeyRegistrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    _preserve_only_current_session(request, db, user)
+    logger.info(
+        "security_event=passkey_registered user_key=%s",
+        _mfa_log_user_key(user),
+    )
+    return passkey
+
+
+@router.delete("/passkeys/{passkey_id}", status_code=204)
+def remove_passkey(
+    passkey_id: UUID,
+    payload: PasskeyDeleteRequest,
+    request: Request,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> None:
+    _verify_management_password(db, user, payload.current_password)
+    _verify_management_second_factor_if_enabled(db, user, payload.code)
+    if not delete_passkey(db, user.id, passkey_id):
+        raise HTTPException(status_code=404, detail="Passkey nicht gefunden")
+    _preserve_only_current_session(request, db, user)
+    logger.info(
+        "security_event=passkey_removed user_key=%s",
         _mfa_log_user_key(user),
     )
 

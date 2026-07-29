@@ -3,6 +3,10 @@ import { ref } from 'vue'
 
 import { api, setCsrfToken } from '../api'
 import type { User } from '../types'
+import {
+  authenticateWithPasskey,
+  type WebAuthnOptionsResponse,
+} from '../webauthn'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
@@ -63,6 +67,32 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function loginWithPasskey(): Promise<void> {
+    loading.value = true
+    try {
+      const options = await api<WebAuthnOptionsResponse>('/auth/passkey/options', {
+        method: 'POST',
+      })
+      const credential = await authenticateWithPasskey(options.public_key)
+      const result = await api<{
+        mfa_required: false
+        user: User
+        csrf_token: string
+      }>('/auth/passkey/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          challenge_id: options.challenge_id,
+          credential,
+        }),
+      })
+      user.value = result.user
+      setCsrfToken(result.csrf_token)
+      mfaRequired.value = false
+    } finally {
+      loading.value = false
+    }
+  }
+
   function cancelMfa(): void {
     mfaRequired.value = false
   }
@@ -79,6 +109,7 @@ export const useAuthStore = defineStore('auth', () => {
     mfaRequired,
     ensureUser,
     login,
+    loginWithPasskey,
     verifyMfa,
     cancelMfa,
     logout,

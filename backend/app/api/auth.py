@@ -43,11 +43,18 @@ from app.schemas import (
     InvitationStateResponse,
     LoginRequest,
     MfaCodeRequest,
+    PasskeyAuthenticationCompleteRequest,
     PasswordChangeRequest,
     RegistrationRequest,
     UserResponse,
+    WebAuthnOptionsResponse,
 )
 from app.services.mfa import consume_mfa_factor
+from app.services.passkeys import (
+    PasskeyAuthenticationError,
+    begin_passkey_authentication,
+    complete_passkey_authentication,
+)
 from app.services.rate_limit import (
     RateLimitExceeded,
     check_rate_limit,
@@ -257,7 +264,9 @@ def register(
 def login(
     payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ) -> dict[str, object]:
-    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    client_key = (
+        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    )
     account_key = f"account:{normalize_account_identifier(payload.username)}"
     try:
         check_rate_limit(
@@ -320,6 +329,80 @@ def raise_invalid_login() -> Never:
     from fastapi import HTTPException
 
     raise HTTPException(status_code=401, detail="Benutzername oder Passwort ist falsch")
+
+
+@router.post("/passkey/options", response_model=WebAuthnOptionsResponse)
+def passkey_login_options(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> WebAuthnOptionsResponse:
+    client_key = (
+        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    )
+    check_rate_limit(
+        db,
+        "passkey-options-ip",
+        client_key,
+        settings.passkey_ip_rate_limit,
+        settings.passkey_rate_limit_window_seconds,
+    )
+    challenge_id, public_key = begin_passkey_authentication(db)
+    return WebAuthnOptionsResponse(
+        challenge_id=challenge_id,
+        public_key=public_key,
+    )
+
+
+@router.post("/passkey/verify")
+def verify_passkey_login(
+    payload: PasskeyAuthenticationCompleteRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    ensure_rate_limit_available(
+        db,
+        "passkey-verify-ip",
+        client_key,
+        settings.passkey_ip_rate_limit,
+        settings.passkey_rate_limit_window_seconds,
+    )
+    try:
+        user = complete_passkey_authentication(
+            db,
+            payload.challenge_id,
+            payload.credential,
+        )
+    except PasskeyAuthenticationError:
+        check_rate_limit(
+            db,
+            "passkey-verify-ip",
+            client_key,
+            settings.passkey_ip_rate_limit,
+            settings.passkey_rate_limit_window_seconds,
+        )
+        logger.info(
+            "security_event=passkey_login outcome=failed request_id=%s client_key=%s",
+            getattr(request.state, "request_id", None),
+            rate_limit_key_id(client_key),
+        )
+        raise_invalid_login()
+
+    clear_rate_limit(db, "passkey-verify-ip", client_key)
+    session, raw_token, csrf_token = create_session(db, user)
+    _set_session_cookie(response, session, raw_token)
+    _delete_mfa_challenge_cookie(response)
+    logger.info(
+        "security_event=passkey_login outcome=succeeded request_id=%s client_key=%s",
+        getattr(request.state, "request_id", None),
+        rate_limit_key_id(client_key),
+    )
+    return {
+        "mfa_required": False,
+        "user": UserResponse.model_validate(user),
+        "csrf_token": csrf_token,
+    }
 
 
 @router.post("/mfa/totp/verify")

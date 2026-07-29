@@ -24,10 +24,13 @@ from app.importers.json_adapter import AdapterResult
 from app.models import (
     MfaRecoveryCode,
     NutritionTarget,
+    PasskeyCredential,
     TrackingQualitySettings,
     User,
     UserSession,
     UserTotpCredential,
+    WebAuthnChallenge,
+    WebAuthnUserHandle,
     YazioConnection,
 )
 from app.services.credential_crypto import (
@@ -35,6 +38,7 @@ from app.services.credential_crypto import (
     generate_credential_key,
 )
 from app.services.import_service import persist_import, purge_expired_raw_payloads
+from app.services.passkeys import purge_expired_webauthn_challenges
 from app.services.rate_limit import purge_expired_rate_limit_buckets
 from app.services.yazio_sync import (
     YazioSyncError,
@@ -111,10 +115,16 @@ def reset_mfa(args: argparse.Namespace) -> None:
         db.execute(
             delete(UserTotpCredential).where(UserTotpCredential.user_id == user.id)
         )
+        db.execute(delete(PasskeyCredential).where(PasskeyCredential.user_id == user.id))
+        db.execute(delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == user.id))
+        db.execute(
+            delete(WebAuthnUserHandle).where(WebAuthnUserHandle.user_id == user.id)
+        )
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
         db.commit()
     print(
-        f"MFA für '{username}' wurde zurückgesetzt; alle Sitzungen wurden widerrufen."
+        f"Anmeldefaktoren für '{username}' wurden zurückgesetzt; "
+        "alle Sitzungen wurden widerrufen."
     )
 
 
@@ -365,6 +375,9 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                         settings.rate_limit_retention_hours,
                     )
                     session_deleted = purge_expired_sessions(db)
+                    webauthn_challenge_deleted = (
+                        purge_expired_webauthn_challenges(db)
+                    )
                 last_security_cleanup = monotonic_now
                 if rate_limit_deleted:
                     logger.info(
@@ -373,6 +386,11 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                     )
                 if session_deleted:
                     logger.info("session_cleanup deleted=%s", session_deleted)
+                if webauthn_challenge_deleted:
+                    logger.info(
+                        "webauthn_challenge_cleanup deleted=%s",
+                        webauthn_challenge_deleted,
+                    )
         except Exception:
             logger.exception("yazio_scheduler_cycle_failed")
             if args.once:

@@ -71,6 +71,15 @@ stores encrypted TOTP seeds, the last accepted time step for replay
 protection, and HMAC-only one-time recovery codes. MFA-management actions
 require the current password plus a factor and preserve only the current
 session.
+
+Passkeys use WebAuthn discoverable credentials for passwordless sign-in.
+CaloGraph stores only the credential public key, user handle, metadata, and
+signature counter. Five-minute registration and authentication challenges are
+persisted in PostgreSQL and claimed under a row lock, making each challenge
+single-use across backend workers. Registration is additionally bound to the
+current user session. Verification requires a matching
+`CALOGRAPH_PUBLIC_URL` relying-party host and origin plus authenticator user
+verification.
 PostgreSQL advisory locks enforce one operation per user and a small
 deployment-wide concurrency budget across HTTP workers and the scheduler. The
 same database also stores temporary rate-limit and circuit-breaker buckets, so

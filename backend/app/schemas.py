@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -66,6 +66,121 @@ class MfaStatusResponse(BaseModel):
 
 class RecoveryCodesResponse(BaseModel):
     recovery_codes: list[str]
+
+
+WebAuthnTransport = Literal["usb", "nfc", "ble", "smart-card", "hybrid", "internal"]
+
+
+class WebAuthnAttestationResponseInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_data_json: str = Field(alias="clientDataJSON", min_length=1, max_length=16_384)
+    attestation_object: str = Field(
+        alias="attestationObject",
+        min_length=1,
+        max_length=2 * 1024 * 1024,
+    )
+    transports: list[WebAuthnTransport] = Field(default_factory=list, max_length=10)
+
+
+class WebAuthnAssertionResponseInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_data_json: str = Field(alias="clientDataJSON", min_length=1, max_length=16_384)
+    authenticator_data: str = Field(
+        alias="authenticatorData",
+        min_length=1,
+        max_length=16_384,
+    )
+    signature: str = Field(min_length=1, max_length=16_384)
+    user_handle: str | None = Field(
+        default=None,
+        alias="userHandle",
+        max_length=2_048,
+    )
+
+
+class WebAuthnRegistrationCredentialInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str = Field(min_length=1, max_length=2_048, pattern=r"^[A-Za-z0-9_-]+$")
+    raw_id: str = Field(
+        alias="rawId",
+        min_length=1,
+        max_length=2_048,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    response: WebAuthnAttestationResponseInput
+    authenticator_attachment: Literal["platform", "cross-platform"] | None = Field(
+        default=None,
+        alias="authenticatorAttachment",
+    )
+    client_extension_results: dict[str, object] = Field(
+        default_factory=dict,
+        alias="clientExtensionResults",
+        max_length=20,
+    )
+    type: Literal["public-key"]
+
+
+class WebAuthnAuthenticationCredentialInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str = Field(min_length=1, max_length=2_048, pattern=r"^[A-Za-z0-9_-]+$")
+    raw_id: str = Field(
+        alias="rawId",
+        min_length=1,
+        max_length=2_048,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    response: WebAuthnAssertionResponseInput
+    authenticator_attachment: Literal["platform", "cross-platform"] | None = Field(
+        default=None,
+        alias="authenticatorAttachment",
+    )
+    client_extension_results: dict[str, object] = Field(
+        default_factory=dict,
+        alias="clientExtensionResults",
+        max_length=20,
+    )
+    type: Literal["public-key"]
+
+
+class PasskeyRegistrationOptionsRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=1024)
+    code: str | None = Field(default=None, min_length=6, max_length=64)
+
+
+class PasskeyRegistrationCompleteRequest(BaseModel):
+    challenge_id: uuid.UUID
+    label: str = Field(min_length=1, max_length=100)
+    credential: WebAuthnRegistrationCredentialInput
+
+
+class PasskeyAuthenticationCompleteRequest(BaseModel):
+    challenge_id: uuid.UUID
+    credential: WebAuthnAuthenticationCredentialInput
+
+
+class PasskeyDeleteRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=1024)
+    code: str | None = Field(default=None, min_length=6, max_length=64)
+
+
+class WebAuthnOptionsResponse(BaseModel):
+    challenge_id: uuid.UUID
+    public_key: dict[str, Any]
+
+
+class PasskeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    label: str
+    device_type: str
+    backed_up: bool
+    created_at: datetime
+    last_used_at: datetime | None
 
 
 class RegistrationRequest(BaseModel):

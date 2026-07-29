@@ -23,6 +23,13 @@ backups, and the availability of the private application.
   recovery codes are one-time HMAC digests. Temporary user and IP limits apply
   to second-factor attempts. TOTP does not protect a fully compromised browser
   or host.
+- **Password phishing and passkey replay:** optional passwordless passkeys bind
+  signatures to the exact relying-party host and HTTPS origin and require
+  authenticator user verification. Discoverable credentials avoid transmitting
+  a reusable password. Challenges expire after five minutes, are claimed once
+  under a database row lock, and failed verification consumes the challenge.
+  Stored public keys cannot authenticate without the user's authenticator.
+  Passkeys do not protect a compromised authenticated browser or device.
 - **Insecure backups:** database dumps and the `.env`/secret-file bundle are
   streamed directly into authenticated `age` encryption without plaintext
   temporary backup files. The operator must keep the private identity off-host,
@@ -98,9 +105,10 @@ backups, and the availability of the private application.
   common and breached values plus application-specific identifiers. No
   password material is sent to a third-party service. Existing Argon2id
   storage and the absence of periodic forced changes are retained.
-- **Lost second factor:** users receive ten offline recovery codes during TOTP
-  activation. An explicit operator CLI reset removes MFA and revokes all
-  sessions when neither the Authenticator nor a recovery code remains.
+- **Lost authentication factor:** users receive ten offline recovery codes
+  during TOTP activation and can enroll multiple passkeys. An explicit
+  operator CLI reset removes TOTP, recovery codes, and passkeys and revokes all
+  sessions when no enrolled factor remains available.
 - **Forwarded invitation link:** cryptographically random invitation tokens
   stored only as hashes, one-time use, seven-day expiration, and administrator
   revocation. Plaintext is displayed only immediately after creation. Tokens

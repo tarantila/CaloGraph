@@ -154,6 +154,8 @@ class Settings(BaseSettings):
     mfa_rate_limit: int = Field(default=10, ge=1, le=1_000)
     mfa_rate_limit_window_seconds: int = Field(default=300, ge=60, le=86_400)
     mfa_ip_rate_limit: int = Field(default=30, ge=1, le=10_000)
+    passkey_ip_rate_limit: int = Field(default=30, ge=1, le=10_000)
+    passkey_rate_limit_window_seconds: int = Field(default=300, ge=60, le=86_400)
     session_idle_timeout_hours: int = Field(default=24, ge=1, le=168)
     session_absolute_timeout_days: int = Field(default=30, ge=1, le=30)
     rate_limit_retention_hours: int = Field(default=24, ge=1, le=720)

@@ -6,6 +6,12 @@
 - `user_totp_credentials`: encrypted TOTP seed, activation time, and the last
   accepted time step used to reject replay.
 - `mfa_recovery_codes`: HMAC-only one-time recovery codes and consumption time.
+- `webauthn_user_handles`: random, stable WebAuthn user handles that do not
+  expose usernames to authenticators.
+- `passkey_credentials`: user-scoped WebAuthn credential public keys, device
+  metadata, backup state, signature counter, and last use.
+- `webauthn_challenges`: short-lived, single-use registration and
+  authentication challenges; registration rows are bound to a user session.
 - `user_invitations`: hashed one-time invitation tokens, expiration, creator,
   recipient, and revocation.
 - `api_tokens`: label, prefix, HMAC hash, scopes, expiration, and revocation.

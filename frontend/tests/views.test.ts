@@ -576,6 +576,7 @@ describe('main views', () => {
       if (path === '/settings/targets') return Promise.resolve([currentTarget])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
       if (path === '/settings/mfa') {
         return Promise.resolve({
           totp_enabled: false,
@@ -622,6 +623,7 @@ describe('main views', () => {
     await flushPromises()
     expect(accountWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
     expect(accountWrapper.text()).toContain('Zwei-Faktor-Authentifizierung')
+    expect(accountWrapper.text()).toContain('Passkeys')
     expect(accountWrapper.text()).toContain('Benutzerverwaltung')
     expect(accountWrapper.text()).not.toContain('Budget- und Zielhistorie')
     expect(accountWrapper.text()).not.toContain('Tracking-Vollständigkeit')
@@ -667,6 +669,7 @@ describe('main views', () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/settings/profile') return Promise.resolve(user)
       if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
       if (path === '/settings/mfa') {
         return Promise.resolve({
           totp_enabled: false,

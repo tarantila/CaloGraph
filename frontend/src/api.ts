@@ -36,6 +36,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const publicMutation =
     path === '/auth/login' ||
     path === '/auth/mfa/totp/verify' ||
+    path === '/auth/passkey/options' ||
+    path === '/auth/passkey/verify' ||
     path === '/auth/register' ||
     path === '/auth/invitation/exchange'
   const headers = new Headers(options.headers)

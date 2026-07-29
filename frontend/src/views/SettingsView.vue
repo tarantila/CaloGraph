@@ -4,11 +4,24 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api, ApiError } from '../api'
 import { useAuthStore } from '../stores/auth'
 import type { Target, User, YazioStatus } from '../types'
+import {
+  createPasskey,
+  isPasskeySupported,
+  type WebAuthnOptionsResponse,
+} from '../webauthn'
 
 interface Token { id: string; label: string; token_prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
 interface Invitation { id: string; created_at: string; expires_at: string; used_at: string | null; revoked_at: string | null }
 interface MfaStatus { totp_enabled: boolean; totp_setup_pending: boolean; recovery_codes_remaining: number }
 interface TotpSetup { secret: string; provisioning_uri: string; qr_svg_data_url: string }
+interface Passkey {
+  id: string
+  label: string
+  device_type: string
+  backed_up: boolean
+  created_at: string
+  last_used_at: string | null
+}
 const fallbackTimezones = [
   'UTC',
   'Europe/Berlin',
@@ -78,6 +91,12 @@ const mfaCurrentPassword = ref('')
 const mfaCode = ref('')
 const recoveryCodes = ref<string[]>([])
 const managingMfa = ref(false)
+const passkeys = ref<Passkey[]>([])
+const passkeySupported = isPasskeySupported()
+const passkeyLabel = ref('')
+const passkeyPassword = ref('')
+const passkeyCode = ref('')
+const managingPasskey = ref(false)
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const timezoneOptions = computed(() =>
   [...new Set(['UTC', profile.timezone, ...supportedTimezones()])].sort((left, right) =>
@@ -117,11 +136,12 @@ async function loadTargets() {
 }
 
 async function loadAccount() {
-  const [user, tokenResult, yazioResult, mfaResult] = await Promise.all([
+  const [user, tokenResult, yazioResult, mfaResult, passkeyResult] = await Promise.all([
     api<User>('/settings/profile'),
     api<Token[]>('/settings/tokens'),
     api<YazioStatus>('/yazio/status'),
     api<MfaStatus>('/settings/mfa'),
+    api<Passkey[]>('/settings/passkeys'),
   ])
   profile.timezone = user.timezone
   profile.week_starts_on = user.week_starts_on
@@ -130,6 +150,7 @@ async function loadAccount() {
   tokens.value = tokenResult
   yazio.value = yazioResult
   mfa.value = mfaResult
+  passkeys.value = passkeyResult
   if (user.is_admin) {
     ;[users.value, invitations.value] = await Promise.all([
       api<User[]>('/users'),
@@ -317,6 +338,77 @@ async function copyRecoveryCodes() {
   await navigator.clipboard.writeText(recoveryCodes.value.join('\n'))
   message.value = 'Wiederherstellungscodes kopiert.'
 }
+
+async function registerPasskey() {
+  managingPasskey.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const options = await api<WebAuthnOptionsResponse>('/settings/passkeys/options', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: passkeyPassword.value,
+        code: passkeyCode.value || null,
+      }),
+    })
+    const credential = await createPasskey(options.public_key)
+    await api<Passkey>('/settings/passkeys', {
+      method: 'POST',
+      body: JSON.stringify({
+        challenge_id: options.challenge_id,
+        label: passkeyLabel.value,
+        credential,
+      }),
+    })
+    passkeyLabel.value = ''
+    passkeyPassword.value = ''
+    passkeyCode.value = ''
+    await loadAccount()
+    message.value = 'Passkey wurde eingerichtet. Du kannst dich jetzt ohne Passwort anmelden.'
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'NotAllowedError') {
+      error.value = 'Passkey-Einrichtung wurde abgebrochen oder ist abgelaufen.'
+    } else {
+      error.value =
+        cause instanceof ApiError || cause instanceof Error
+          ? cause.message
+          : 'Passkey konnte nicht eingerichtet werden.'
+    }
+  } finally {
+    managingPasskey.value = false
+  }
+}
+
+async function removePasskey(id: string) {
+  managingPasskey.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    await api(`/settings/passkeys/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        current_password: passkeyPassword.value,
+        code: passkeyCode.value || null,
+      }),
+    })
+    passkeyPassword.value = ''
+    passkeyCode.value = ''
+    await loadAccount()
+    message.value = 'Passkey wurde entfernt.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'Passkey konnte nicht entfernt werden.'
+  } finally {
+    managingPasskey.value = false
+  }
+}
+
+function passkeyDeviceLabel(passkey: Passkey) {
+  if (passkey.backed_up || passkey.device_type === 'multi_device') {
+    return 'synchronisiert'
+  }
+  return 'dieses Gerät'
+}
 </script>
 
 <template>
@@ -471,6 +563,77 @@ async function copyRecoveryCodes() {
           <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
           <button class="button secondary" type="button" @click="copyRecoveryCodes">Alle kopieren</button>
         </div>
+      </section>
+
+      <section class="card form-card passkey-card" style="margin-top: 1rem">
+        <h2>Passkeys</h2>
+        <p>Mit einem Passkey meldest du dich per Fingerabdruck, Gesichtserkennung oder Geräte-PIN an – ohne dein CaloGraph-Passwort einzugeben.</p>
+        <p v-if="!passkeySupported" class="passkey-unavailable">
+          Dieser Browser oder diese Verbindung unterstützt Passkeys hier nicht. Außer auf localhost ist dafür HTTPS erforderlich.
+        </p>
+
+        <div v-if="passkeys.length" class="passkey-list">
+          <article v-for="passkey in passkeys" :key="passkey.id" class="passkey-item">
+            <div>
+              <strong>{{ passkey.label }}</strong>
+              <small>
+                {{ passkeyDeviceLabel(passkey) }} · erstellt
+                {{ new Date(passkey.created_at).toLocaleDateString('de-DE') }}
+                <template v-if="passkey.last_used_at">
+                  · zuletzt {{ new Date(passkey.last_used_at).toLocaleString('de-DE') }}
+                </template>
+              </small>
+            </div>
+            <button
+              class="text-button danger"
+              type="button"
+              :disabled="managingPasskey"
+              @click="removePasskey(passkey.id)"
+            >
+              Entfernen
+            </button>
+          </article>
+        </div>
+        <p v-else>Noch kein Passkey eingerichtet.</p>
+
+        <form class="form-grid" @submit.prevent="registerPasskey">
+          <label class="field">
+            Bezeichnung
+            <input
+              v-model="passkeyLabel"
+              maxlength="100"
+              placeholder="z. B. Windows Hello"
+              :disabled="!passkeySupported"
+              required
+            />
+          </label>
+          <label class="field">
+            Aktuelles CaloGraph-Passwort
+            <input
+              v-model="passkeyPassword"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+            <small>Wird auch benötigt, wenn du einen vorhandenen Passkey entfernst.</small>
+          </label>
+          <label v-if="mfa?.totp_enabled" class="field">
+            TOTP- oder Wiederherstellungscode
+            <input
+              v-model="passkeyCode"
+              autocomplete="one-time-code"
+              maxlength="64"
+              required
+            />
+          </label>
+          <button
+            class="button"
+            type="submit"
+            :disabled="!passkeySupported || managingPasskey"
+          >
+            {{ managingPasskey ? 'Passkey wird verarbeitet …' : 'Passkey einrichten' }}
+          </button>
+        </form>
       </section>
 
       <section class="card form-card yazio-connection-card" style="margin-top: 1rem">

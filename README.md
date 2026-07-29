@@ -139,15 +139,21 @@ one-time invitation links under **Konto → Benutzerverwaltung**.
 
 Each user can optionally enable TOTP under **Konto →
 Zwei-Faktor-Authentifizierung**. CaloGraph shows ten one-time recovery codes
-during activation. An operator can recover an account whose second factor and
-recovery codes are both unavailable with:
+during activation. Users can also enroll one or more passkeys under **Konto →
+Passkeys** and then sign in passwordlessly with their device's biometric check
+or PIN. Passkeys require HTTPS, except for browser-recognized localhost
+development.
+
+An operator can recover an account whose authentication factors are unavailable
+with:
 
 ```bash
 docker compose exec backend python -m app.cli reset-mfa \
   --username USERNAME --confirm USERNAME
 ```
 
-The command disables TOTP and revokes every session for that account.
+The command removes TOTP, recovery codes, and passkeys, then revokes every
+session for that account.
 
 ### Create an import token
 
