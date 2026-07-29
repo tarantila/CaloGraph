@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.api import analytics
 from app.auth import security
 from app.config import settings
+from app.main import app
 from app.models import User, UserSession
 
 
@@ -127,6 +128,57 @@ def test_password_change_rejects_common_password(
 
     assert response.status_code == 422
     assert "häufig verwendet" in response.json()["detail"]
+
+
+def test_successful_password_change_revokes_every_existing_session(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    other_client = TestClient(app)
+    first_login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    second_login = other_client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert first_login.status_code == 200
+    assert second_login.status_code == 200
+
+    changed = client.post(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": first_login.json()["csrf_token"]},
+        json={
+            "current_password": "correct-horse-battery-staple",
+            "new_password": "new-unique-passphrase-for-regression",
+        },
+    )
+
+    assert changed.status_code == 204
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert other_client.get("/api/v1/auth/me").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": "admin",
+                "password": "correct-horse-battery-staple",
+            },
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": "admin",
+                "password": "new-unique-passphrase-for-regression",
+            },
+        ).status_code
+        == 200
+    )
 
 
 def test_bad_password_is_rejected(client: TestClient, user: User) -> None:

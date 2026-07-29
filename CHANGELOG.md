@@ -81,6 +81,11 @@ follows [Semantic Versioning](https://semver.org/).
   required user verification, exact RP/origin binding, one-time database-backed
   challenges, sign-counter tracking, per-IP throttling, and account-level
   registration and revocation controls.
+- Revalidate cached frontend authentication on every protected navigation and
+  clear local user/CSRF state plus return to login when a protected API reports
+  an expired or revoked session.
+- Added regression coverage proving a successful password change invalidates
+  every existing browser session before the new password can sign in.
 
 ## [0.1.2] - 2026-07-27
 

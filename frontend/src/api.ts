@@ -1,6 +1,16 @@
 import type { ApiProblem } from './types'
 
 let csrfToken: string | null = sessionStorage.getItem('calograph_csrf')
+let authenticationExpiredHandler: (() => void) | null = null
+
+const publicAuthenticationPaths = new Set([
+  '/auth/login',
+  '/auth/mfa/totp/verify',
+  '/auth/passkey/options',
+  '/auth/passkey/verify',
+  '/auth/register',
+  '/auth/invitation/exchange',
+])
 
 export class ApiError extends Error {
   constructor(
@@ -18,9 +28,20 @@ export function setCsrfToken(value: string | null): void {
   else sessionStorage.removeItem('calograph_csrf')
 }
 
+export function setAuthenticationExpiredHandler(handler: (() => void) | null): void {
+  authenticationExpiredHandler = handler
+}
+
+function notifyAuthenticationExpired(): void {
+  authenticationExpiredHandler?.()
+}
+
 async function refreshCsrf(): Promise<string> {
   const response = await fetch('/api/v1/auth/csrf', { credentials: 'include' })
-  if (!response.ok) throw new ApiError('Sitzung ist abgelaufen.', response.status)
+  if (!response.ok) {
+    if (response.status === 401) notifyAuthenticationExpired()
+    throw new ApiError('Sitzung ist abgelaufen.', response.status)
+  }
   const data = (await response.json()) as { csrf_token: string }
   setCsrfToken(data.csrf_token)
   return data.csrf_token
@@ -46,6 +67,13 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' })
   if (response.status === 204) return undefined as T
   if (!response.ok) {
+    if (
+      response.status === 401 &&
+      path !== '/auth/me' &&
+      !publicAuthenticationPaths.has(path)
+    ) {
+      notifyAuthenticationExpired()
+    }
     let problem: ApiProblem = { detail: `HTTP ${response.status}` }
     try {
       problem = (await response.json()) as ApiProblem

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import { setAuthenticationExpiredHandler } from './api'
 import { useAuthStore } from './stores/auth'
 
 const router = createRouter({
@@ -40,6 +41,17 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.public) return true
   return (await auth.ensureUser()) ? true : { name: 'login', query: { next: to.fullPath } }
+})
+
+setAuthenticationExpiredHandler(() => {
+  const auth = useAuthStore()
+  auth.clearSession()
+  const currentRoute = router.currentRoute.value
+  if (currentRoute.meta.public || currentRoute.name === 'login') return
+  void router.replace({
+    name: 'login',
+    query: { next: currentRoute.fullPath },
+  })
 })
 
 export default router

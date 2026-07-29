@@ -1,7 +1,11 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { api, setCsrfToken } from '../src/api'
+import {
+  api,
+  setAuthenticationExpiredHandler,
+  setCsrfToken,
+} from '../src/api'
 import { useAuthStore } from '../src/stores/auth'
 
 describe('authentication store', () => {
@@ -10,6 +14,7 @@ describe('authentication store', () => {
     vi.unstubAllGlobals()
     setActivePinia(createPinia())
     setCsrfToken(null)
+    setAuthenticationExpiredHandler(null)
   })
 
   it('stores the user returned by login', async () => {
@@ -27,6 +32,67 @@ describe('authentication store', () => {
     await auth.login('admin', 'password-password')
     expect(auth.user?.username).toBe('admin')
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
+  })
+
+  it('revalidates and clears a cached user after the server session expires', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            mfa_required: false,
+            user: {
+              id: '1',
+              username: 'admin',
+              language: 'de',
+              timezone: 'Europe/Berlin',
+              week_starts_on: 0,
+            },
+            csrf_token: 'csrf',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Nicht authentifiziert' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    const auth = useAuthStore()
+    await auth.login('admin', 'password-password')
+
+    expect(await auth.ensureUser()).toBe(false)
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/auth/me',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+    expect(auth.user).toBeNull()
+    expect(auth.mfaRequired).toBe(false)
+    expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
+  })
+
+  it('signals an expired session on protected 401 responses only', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Nicht authentifiziert' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    await expect(api('/dashboard/summary')).rejects.toMatchObject({ status: 401 })
+    expect(expired).toHaveBeenCalledOnce()
+
+    await expect(
+      api('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'admin', password: 'wrong' }),
+      }),
+    ).rejects.toMatchObject({ status: 401 })
+    expect(expired).toHaveBeenCalledOnce()
   })
 
   it('requires the second factor before storing a user', async () => {

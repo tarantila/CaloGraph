@@ -13,12 +13,18 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   const mfaRequired = ref(false)
 
+  function clearSession(): void {
+    user.value = null
+    mfaRequired.value = false
+    setCsrfToken(null)
+  }
+
   async function ensureUser(): Promise<boolean> {
-    if (user.value) return true
     try {
       user.value = await api<User>('/auth/me')
       return true
     } catch {
+      clearSession()
       return false
     }
   }
@@ -112,6 +118,7 @@ export const useAuthStore = defineStore('auth', () => {
     loginWithPasskey,
     verifyMfa,
     cancelMfa,
+    clearSession,
     logout,
   }
 })
