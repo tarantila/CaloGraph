@@ -34,6 +34,14 @@ upload-capacity relationships. Unsafe production configuration aborts startup
 with variable names but never secret values. Development keeps localhost HTTP
 available.
 
+Compose separates browser-facing proxy traffic, internal data traffic, and
+scheduler egress. PostgreSQL is attached only to the externally isolated data
+network; the frontend never shares a network with it. Application containers
+drop all Linux capabilities, while PostgreSQL receives only the small set its
+official entrypoint needs to initialize ownership and switch users. Optional
+per-service memory, CPU, and PID ceilings can be enabled through the deployment
+environment after measuring representative imports.
+
 Migrations abort container startup on failure. The backend uses multiple
 workers, so rate limits use atomic
 PostgreSQL upserts. Login protection has independent buckets for all attempts

@@ -53,6 +53,13 @@ backups, and the availability of the private application.
   types are capped, and per-user plus per-IP temporary rate limits protect
   upload and validation paths. Completed checkpoints survive as
   `partial_failed` and can be retried idempotently.
+- **Container breakout and resource exhaustion:** application containers drop
+  every Linux capability, PostgreSQL retains only the ownership and user-switch
+  capabilities required by its official entrypoint, and
+  `no-new-privileges` remains enabled. The database is confined to an
+  externally isolated data network. Per-service CPU, memory, and PID ceilings
+  are available as explicit deployment settings; installations that leave
+  them disabled accept the remaining host-level exhaustion risk.
 - **XSS:** Vue escaping, no arbitrary HTML rendering, local assets, and a strict
   CSP.
 - **CSRF:** SameSite cookie, separate CSRF header, and origin validation for

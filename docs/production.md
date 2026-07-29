@@ -33,6 +33,16 @@ services, and bounded Docker log rotation. The YAZIO scheduler writes a
 heartbeat to its ephemeral `/tmp`; its health check detects a stuck scheduler
 independently of the backend.
 
+Runtime traffic is split across three Docker networks. `frontend` and
+`backend` share the `edge` network, `backend`, `yazio-scheduler`, and
+`postgres` share the externally isolated `data` network, and only the
+scheduler joins the additional `egress` network. PostgreSQL therefore has no
+external gateway and is not reachable from the frontend. The frontend,
+backend, and scheduler drop every Linux capability. PostgreSQL also drops all
+capabilities and adds back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`,
+and `SETUID`, which its official entrypoint needs for fresh initialization and
+the switch to its unprivileged runtime user.
+
 The root `Dockerfile` provides separate `backend-runtime` and
 `frontend-runtime` targets. Both production targets switch to an unprivileged
 user; the frontend uses the purpose-built NGINX unprivileged runtime with all
@@ -90,13 +100,22 @@ operational kill switch:
 docker compose up -d --force-recreate backend yazio-scheduler
 ```
 
-Compose adds no CPU, memory, or PID ceiling to the backend by default because
-legitimate Apple Health histories vary widely in size; Docker-host or parent
-cgroup constraints still apply. Operators who need stricter per-container
-limits can uncomment the concrete `BACKEND_MEMORY_LIMIT`, `BACKEND_CPU_LIMIT`,
-and `BACKEND_PIDS_LIMIT` examples in `.env.example`. Size the memory limit
-above `BACKEND_TMPFS_BYTES` because tmpfs pages count toward container memory
-usage.
+Compose exposes optional CPU, memory, and PID ceilings for every runtime
+container. They remain disabled by default because legitimate Apple Health
+histories and self-hosted machines vary widely in size; Docker-host or parent
+cgroup constraints still apply. For an internet-facing installation, measure
+the workload and uncomment the concrete `FRONTEND_*`, `BACKEND_*`,
+`YAZIO_SCHEDULER_*`, and `POSTGRES_*` starting values in the environment
+template. A 2-GiB backend ceiling is the initial recommendation for the
+default 500-MiB upload configuration. Keep it comfortably above
+`BACKEND_TMPFS_BYTES` because tmpfs pages count toward container memory usage.
+Leaving the variables unset is an explicit operational acceptance of the
+host-level resource-exhaustion risk.
+
+The backend currently performs migrations before starting its single
+deployment. Before running multiple backend replicas, move migrations into a
+separate one-shot deployment job so concurrent replicas cannot attempt the
+same migration.
 
 ## Fail-closed production validation
 

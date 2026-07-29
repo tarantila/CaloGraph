@@ -50,6 +50,9 @@ follows [Semantic Versioning](https://semver.org/).
   database-sized identifiers, IANA timezones, and decimal ranges before
   persistence, and converted malformed authenticated imports into safe `422`
   responses without reflecting submitted values.
+- Segmented proxy, database, and scheduler-egress traffic across dedicated
+  Docker networks, dropped unnecessary Linux capabilities from every runtime
+  container, and added optional per-service memory, CPU, and PID ceilings.
 
 ## [0.1.2] - 2026-07-27
 

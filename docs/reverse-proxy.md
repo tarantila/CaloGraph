@@ -53,7 +53,7 @@ For a tighter rule, inspect the installation after the network has been
 created:
 
 ```bash
-docker network inspect calograph_internal \
+docker network inspect calograph_edge \
   --format '{{(index .IPAM.Config 0).Subnet}}'
 ```
 
@@ -61,6 +61,20 @@ Then copy the reported subnet, for example `172.18.0.0/16`, into
 `TRUSTED_PROXY_NETWORKS` and recreate the backend. Comma-separated IP addresses
 or CIDRs are accepted. Wildcard trust is rejected, and production also rejects
 IPv4 networks broader than `/16` and IPv6 networks broader than `/64`.
+
+When upgrading an existing installation from the former single
+`calograph_internal` network, recreate the Compose networks without deleting
+the PostgreSQL volume:
+
+```bash
+docker compose down
+docker compose create
+docker network inspect calograph_edge \
+  --format '{{(index .IPAM.Config 0).Subnet}}'
+```
+
+Update `TRUSTED_PROXY_NETWORKS` with that subnet, then start the deployment
+with `docker compose up -d`. Do not add `--volumes` to the `down` command.
 
 The bundled Nginx proxy preserves a valid upstream `X-Forwarded-Proto` value
 from the external proxy, appends the forwarding chain, and forwards the

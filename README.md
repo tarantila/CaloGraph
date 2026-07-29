@@ -287,7 +287,7 @@ The backend refuses to start when migrations fail.
 - TLS terminates at a reverse proxy. Never expose a configuration using
   `ENVIRONMENT=development` through that proxy.
 - Forwarded headers are accepted only from `TRUSTED_PROXY_NETWORKS`. The
-  production value must be the actual `calograph_internal` subnet rather than
+  production value must be the actual `calograph_edge` subnet rather than
   Docker's broad address pool.
 - No CDN dependencies, telemetry, external analytics, or third-party data
   transfer.

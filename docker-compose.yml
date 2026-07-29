@@ -22,10 +22,15 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    networks: [internal]
+    networks: [data]
     security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     logging: *default-logging
     stop_grace_period: 1m
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-0}
+    cpus: ${POSTGRES_CPU_LIMIT:-0}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:--1}
 
   backend:
     image: calograph-backend:${CALOGRAPH_VERSION:-0.1.2}
@@ -105,8 +110,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-    networks: [internal]
+    networks: [edge, data]
     security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     logging: *default-logging
     init: true
     stop_grace_period: 30s
@@ -163,12 +169,16 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    networks: [internal]
+    networks: [data, egress]
     security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     logging: *default-logging
     init: true
     stop_grace_period: 30s
     read_only: true
+    mem_limit: ${YAZIO_SCHEDULER_MEMORY_LIMIT:-0}
+    cpus: ${YAZIO_SCHEDULER_CPU_LIMIT:-0}
+    pids_limit: ${YAZIO_SCHEDULER_PIDS_LIMIT:--1}
     tmpfs:
       - /tmp:size=64m,mode=1777
 
@@ -194,12 +204,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks: [internal]
+    networks: [edge]
     security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     logging: *default-logging
     init: true
     stop_grace_period: 30s
     read_only: true
+    mem_limit: ${FRONTEND_MEMORY_LIMIT:-0}
+    cpus: ${FRONTEND_CPU_LIMIT:-0}
+    pids_limit: ${FRONTEND_PIDS_LIMIT:--1}
     tmpfs:
       - /tmp:size=64m,mode=1777
 
@@ -210,7 +224,7 @@ services:
       dockerfile: Dockerfile
       target: frontend-build
     command: ["npm", "run", "test:unit"]
-    networks: [internal]
+    networks: [edge]
 
   backend-ci:
     profiles: [test]
@@ -221,7 +235,7 @@ services:
     environment:
       ENVIRONMENT: test
     command: ["pytest"]
-    networks: [internal]
+    networks: [data]
 
   backend-postgres-ci:
     profiles: [test]
@@ -236,7 +250,7 @@ services:
       postgres:
         condition: service_healthy
     command: ["pytest", "tests/test_rate_limit_postgres.py"]
-    networks: [internal]
+    networks: [data]
 
   e2e:
     profiles: [test]
@@ -251,10 +265,15 @@ services:
     depends_on:
       frontend:
         condition: service_healthy
-    networks: [internal]
+    networks: [edge]
 
 networks:
-  internal:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+  egress:
     driver: bridge
 
 volumes:
