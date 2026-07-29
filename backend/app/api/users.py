@@ -69,8 +69,7 @@ def create_invitation(
     db.refresh(invitation)
     return InvitationCreatedResponse(
         id=invitation.id,
-        token=raw,
-        invitation_url=f"{settings.calograph_public_url}/einladung/{raw}",
+        invitation_url=f"{settings.calograph_public_url}/einladung#token={raw}",
         expires_at=invitation.expires_at,
     )
 

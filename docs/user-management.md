@@ -34,9 +34,19 @@ The link always starts with the canonical `CALOGRAPH_PUBLIC_URL` configured by
 the operator. Set this value to the final HTTPS domain before creating links
 for other users.
 
-The recipient opens the link, chooses a username and a password containing at
-least twelve characters, and then signs in normally. CaloGraph does not send
-email.
+The secret is carried in a URL fragment such as
+`/einladung#token=invite_…`. Browsers remove fragments before making an HTTP
+request, so the secret does not reach reverse proxies or access logs. The
+frontend removes the fragment from the visible URL immediately and exchanges
+the token for a signed, ten-minute registration state in an `HttpOnly`,
+`SameSite=Strict` cookie. That cookie contains only the invitation identifier
+and expiry, not the original token. The raw token is invalidated by the
+exchange, and the cookie is deleted after registration.
+
+The recipient then chooses a username and a password containing at least
+twelve characters and signs in normally. CaloGraph does not send email.
+Path-based links from older versions must be revoked and regenerated because
+supporting them would expose their token during the first HTTP request.
 
 ## Personal YAZIO connection
 

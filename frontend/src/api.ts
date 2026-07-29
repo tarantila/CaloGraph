@@ -33,7 +33,10 @@ export async function ensureCsrfToken(): Promise<string> {
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method ?? 'GET').toUpperCase()
   const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(method)
-  const publicMutation = path === '/auth/login' || path === '/auth/register'
+  const publicMutation =
+    path === '/auth/login' ||
+    path === '/auth/register' ||
+    path === '/auth/invitation/exchange'
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (mutating && !publicMutation) headers.set('X-CSRF-Token', csrfToken ?? (await refreshCsrf()))

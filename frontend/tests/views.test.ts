@@ -580,8 +580,7 @@ describe('main views', () => {
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations' && options?.method === 'POST') {
         return Promise.resolve({
-          token: 'invite_example',
-          invitation_url: 'https://nutrition.example.test/einladung/invite_example',
+          invitation_url: 'https://nutrition.example.test/einladung#token=invite_example',
         })
       }
       if (path === '/users/invitations') return Promise.resolve([])
@@ -640,7 +639,7 @@ describe('main views', () => {
     await invitationButton!.trigger('click')
     await flushPromises()
     expect(accountWrapper.text()).toContain(
-      'https://nutrition.example.test/einladung/invite_example',
+      'https://nutrition.example.test/einladung#token=invite_example',
     )
   })
 })

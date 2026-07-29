@@ -68,9 +68,14 @@ backups, and the availability of the private application.
   only pseudonymous identifiers. The reverse proxy may add further limits.
 - **Forwarded invitation link:** cryptographically random invitation tokens
   stored only as hashes, one-time use, seven-day expiration, and administrator
-  revocation. Plaintext is displayed only immediately after creation. The
-  externally shared URL uses the operator-controlled `CALOGRAPH_PUBLIC_URL`
-  instead of request headers or the current browser origin.
+  revocation. Plaintext is displayed only immediately after creation. Tokens
+  are carried in browser-only URL fragments, removed from the visible URL
+  before a one-time exchange, invalidated by that exchange, and replaced with a
+  signed ten-minute `HttpOnly`
+  registration cookie. Internal access logs omit query strings and redact
+  legacy invitation paths. The externally shared URL uses the
+  operator-controlled `CALOGRAPH_PUBLIC_URL` instead of request headers or the
+  current browser origin.
 - **Unauthorized user administration:** user and invitation endpoints are
   restricted to administrators. The first CLI-created user becomes an
   administrator automatically; later accounts receive no administrative

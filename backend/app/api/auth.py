@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
+    REGISTRATION_STATE_TTL_SECONDS,
+    create_registration_state,
     create_session,
     hash_invitation_token,
     hash_password,
@@ -17,12 +19,15 @@ from app.auth.security import (
     revoke_user_sessions,
     verify_login_password,
     verify_password,
+    verify_registration_state,
 )
 from app.config import settings
 from app.database import get_db
 from app.models import NutritionTarget, TrackingQualitySettings, User, UserInvitation, UserSession
 from app.schemas import (
     CsrfResponse,
+    InvitationExchangeRequest,
+    InvitationStateResponse,
     LoginRequest,
     PasswordChangeRequest,
     RegistrationRequest,
@@ -40,6 +45,8 @@ from app.services.rate_limit import (
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
 logger = logging.getLogger("calograph.auth")
+REGISTRATION_COOKIE_NAME = "calograph_registration"
+REGISTRATION_COOKIE_PATH = "/api/v1/auth"
 
 
 def _log_login(
@@ -66,23 +73,90 @@ def _log_password_change(request: Request, outcome: str, user_key: str) -> None:
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=201)
-def register(
-    payload: RegistrationRequest,
+def _active_invitation_from_state(
     request: Request,
+    db: Session,
+    now: datetime,
+    *,
+    for_update: bool = False,
+) -> UserInvitation | None:
+    invitation_id = verify_registration_state(
+        request.cookies.get(REGISTRATION_COOKIE_NAME, ""),
+        now,
+    )
+    if invitation_id is None:
+        return None
+    statement = select(UserInvitation).where(
+        UserInvitation.id == invitation_id,
+        UserInvitation.used_at.is_(None),
+        UserInvitation.revoked_at.is_(None),
+        UserInvitation.expires_at > now,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def _set_registration_cookie(response: Response, invitation: UserInvitation) -> None:
+    response.set_cookie(
+        REGISTRATION_COOKIE_NAME,
+        create_registration_state(invitation.id),
+        max_age=REGISTRATION_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="strict",
+        path=REGISTRATION_COOKIE_PATH,
+    )
+
+
+@router.post("/invitation/exchange", status_code=204)
+def exchange_invitation(
+    payload: InvitationExchangeRequest,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-) -> User:
+) -> None:
     client = normalize_client_ip(request.client.host if request.client else None)
-    check_rate_limit(db, "register", client, 5)
+    check_rate_limit(db, "invitation-exchange", f"ip:{client}", 5, 15 * 60)
     now = datetime.now(UTC)
     invitation = db.scalar(
         select(UserInvitation).where(
-            UserInvitation.token_hash == hash_invitation_token(payload.invitation_token),
+            UserInvitation.token_hash == hash_invitation_token(payload.token),
             UserInvitation.used_at.is_(None),
             UserInvitation.revoked_at.is_(None),
             UserInvitation.expires_at > now,
         ).with_for_update()
     )
+    if invitation is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Einladung ist ungültig oder abgelaufen")
+    invitation.token_hash = hash_invitation_token(f"exchanged_{secrets.token_urlsafe(40)}")
+    db.commit()
+    _set_registration_cookie(response, invitation)
+
+
+@router.get("/invitation/status", response_model=InvitationStateResponse)
+def invitation_status(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> InvitationStateResponse:
+    return InvitationStateResponse(
+        valid=_active_invitation_from_state(request, db, datetime.now(UTC)) is not None
+    )
+
+
+@router.post("/register", response_model=UserResponse, status_code=201)
+def register(
+    payload: RegistrationRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> User:
+    client = normalize_client_ip(request.client.host if request.client else None)
+    check_rate_limit(db, "register", client, 5)
+    now = datetime.now(UTC)
+    invitation = _active_invitation_from_state(request, db, now, for_update=True)
     if invitation is None:
         from fastapi import HTTPException
 
@@ -110,6 +184,13 @@ def register(
     invitation.used_at = now
     db.commit()
     db.refresh(user)
+    response.delete_cookie(
+        REGISTRATION_COOKIE_NAME,
+        path=REGISTRATION_COOKIE_PATH,
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
     return user
 
 

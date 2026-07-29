@@ -406,11 +406,21 @@ def test_admin_invitation_creates_isolated_personal_account(
         headers={"X-CSRF-Token": csrf},
         json={"expires_in_days": 7},
     )
+    invitation_url = invited.json()["invitation_url"]
+    raw_token = invitation_url.partition("#token=")[2]
+    exchanged = client.post(
+        "/api/v1/auth/invitation/exchange",
+        json={"token": raw_token},
+    )
+    replayed_exchange = client.post(
+        "/api/v1/auth/invitation/exchange",
+        json={"token": raw_token},
+    )
+    state = client.get("/api/v1/auth/invitation/status")
 
     registered = client.post(
         "/api/v1/auth/register",
         json={
-            "invitation_token": invited.json()["token"],
             "username": "friend",
             "password": "friend-password-is-long",
         },
@@ -418,18 +428,27 @@ def test_admin_invitation_creates_isolated_personal_account(
     reused = client.post(
         "/api/v1/auth/register",
         json={
-            "invitation_token": invited.json()["token"],
             "username": "other",
             "password": "other-password-is-long",
         },
     )
 
     assert invited.status_code == 201
-    assert invited.json()["invitation_url"] == (
-        f"https://nutrition.example.test/einladung/{invited.json()['token']}"
-    )
+    assert "token" not in invited.json()
+    assert invitation_url == f"https://nutrition.example.test/einladung#token={raw_token}"
+    assert raw_token.startswith("invite_")
+    assert exchanged.status_code == 204
+    registration_cookie = exchanged.headers["set-cookie"].lower()
+    assert "calograph_registration=" in registration_cookie
+    assert "httponly" in registration_cookie
+    assert "samesite=strict" in registration_cookie
+    assert "path=/api/v1/auth" in registration_cookie
+    assert replayed_exchange.status_code == 400
+    assert state.json() == {"valid": True}
     assert registered.status_code == 201
     assert registered.json()["is_admin"] is False
+    assert "calograph_registration=" in registered.headers["set-cookie"].lower()
+    assert "max-age=0" in registered.headers["set-cookie"].lower()
     assert reused.status_code == 400
 
     client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
@@ -441,3 +460,24 @@ def test_admin_invitation_creates_isolated_personal_account(
     assert client.get("/api/v1/imports").json() == []
     assert client.get("/api/v1/yazio/status").json()["configured"] is False
     assert client.get("/api/v1/users").status_code == 403
+
+
+def test_invitation_expiration_is_capped_at_seven_days(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    user.is_admin = True
+    db.commit()
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    response = client.post(
+        "/api/v1/users/invitations",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={"expires_in_days": 8},
+    )
+
+    assert response.status_code == 422

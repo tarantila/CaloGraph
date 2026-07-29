@@ -43,6 +43,9 @@ follows [Semantic Versioning](https://semver.org/).
 - Replaced the fixed Nginx upload ceiling and backend tmpfs size with validated
   byte settings while preserving the 500-MiB Apple Health and 2-GiB streamed
   ZIP defaults.
+- Moved invitation secrets from URL paths into browser-only fragments, exchanged
+  them for a signed ten-minute `HttpOnly` registration state, and removed query
+  strings plus legacy invitation tokens from the bundled Nginx access log.
 
 ## [0.1.2] - 2026-07-27
 

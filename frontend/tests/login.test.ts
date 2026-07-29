@@ -27,26 +27,36 @@ describe('authentication store', () => {
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
   })
 
-  it('uses an invitation without requiring an existing CSRF session', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ id: '2', username: 'friend', is_admin: false }), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+  it('exchanges and uses an invitation without requiring an existing CSRF session', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (input === '/api/v1/auth/invitation/exchange') {
+        return new Response(null, { status: 204 })
+      }
+      return new Response(
+        JSON.stringify({ id: '2', username: 'friend', is_admin: false }),
+        {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    })
 
+    await api('/auth/invitation/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ token: 'invite_example' }),
+    })
     await api('/auth/register', {
       method: 'POST',
       body: JSON.stringify({
-        invitation_token: 'invite_example',
         username: 'friend',
         password: 'a-long-personal-password',
       }),
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, options] = fetchMock.mock.calls[0]
-    expect(url).toBe('/api/v1/auth/register')
-    expect(new Headers(options?.headers).has('X-CSRF-Token')).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const [url, options] of fetchMock.mock.calls) {
+      expect(url).toMatch(/^\/api\/v1\/auth\/(invitation\/exchange|register)$/)
+      expect(new Headers(options?.headers).has('X-CSRF-Token')).toBe(false)
+    }
   })
 })

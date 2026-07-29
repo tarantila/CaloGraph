@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
@@ -15,6 +16,8 @@ password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 # Generated once per process so unknown accounts perform the same Argon2 work
 # without embedding a reusable credential in the source tree.
 DUMMY_PASSWORD_HASH = password_hasher.hash(secrets.token_urlsafe(48))
+REGISTRATION_STATE_TTL_SECONDS = 10 * 60
+REGISTRATION_STATE_VERSION = "v1"
 
 
 def hash_password(password: str) -> str:
@@ -49,6 +52,37 @@ def hash_api_token(raw: str) -> str:
 
 def hash_invitation_token(raw: str) -> str:
     return _hmac_token(raw, settings.session_secret)
+
+
+def create_registration_state(
+    invitation_id: UUID,
+    now: datetime | None = None,
+) -> str:
+    expires_at = int((now or datetime.now(UTC)).timestamp()) + REGISTRATION_STATE_TTL_SECONDS
+    payload = f"{REGISTRATION_STATE_VERSION}.{invitation_id.hex}.{expires_at}"
+    signature = _hmac_token(f"registration-state:{payload}", settings.session_secret)
+    return f"{payload}.{signature}"
+
+
+def verify_registration_state(
+    raw: str,
+    now: datetime | None = None,
+) -> UUID | None:
+    try:
+        version, invitation_hex, expires_raw, signature = raw.split(".", maxsplit=3)
+        expires_at = int(expires_raw)
+        invitation_id = UUID(hex=invitation_hex)
+    except (ValueError, TypeError):
+        return None
+    if version != REGISTRATION_STATE_VERSION:
+        return None
+    payload = f"{version}.{invitation_hex}.{expires_at}"
+    expected = _hmac_token(f"registration-state:{payload}", settings.session_secret)
+    if not hmac.compare_digest(signature, expected):
+        return None
+    if expires_at <= int((now or datetime.now(UTC)).timestamp()):
+        return None
+    return invitation_id
 
 
 def create_session(db: Session, user: User) -> tuple[UserSession, str, str]:

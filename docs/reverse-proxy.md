@@ -66,6 +66,42 @@ The bundled Nginx proxy preserves a valid upstream `X-Forwarded-Proto` value
 from the external proxy, appends the forwarding chain, and forwards the
 original host.
 
+## Access logs and invitation links
+
+Invitation secrets use a browser-only fragment:
+`/einladung#token=invite_…`. The fragment is removed before the browser sends
+the HTTP request and is exchanged for a short-lived, signed registration
+cookie. Do not rewrite the fragment into a path or query parameter at the
+external proxy.
+
+The bundled Nginx access log records `$uri` through a redaction map instead of
+the complete `$request`. Query strings are omitted, and a legacy
+`/einladung/<token>` path is rendered as `/einladung/[redacted]`.
+
+External Nginx installations should apply the same policy:
+
+```nginx
+map $uri $calograph_log_path {
+    default $uri;
+    ~^/einladung/ /einladung/[redacted];
+}
+
+log_format calograph_safe
+    '$remote_addr [$time_local] '
+    '"$request_method $calograph_log_path $server_protocol" '
+    '$status $body_bytes_sent';
+
+access_log /var/log/nginx/calograph-access.log calograph_safe;
+```
+
+Do not use `$request`, `$request_uri`, or `$args` in a CaloGraph access-log
+format. Configure an equivalent path-only format in HAProxy, Caddy, Traefik, or
+the selected log collector. Existing path-based invitation links should be
+revoked and regenerated after upgrading.
+
+Do not log request bodies for `/api/v1/auth/invitation/exchange` or
+`/api/v1/auth/register`; the exchange body contains the raw invitation token.
+
 ## Response security headers
 
 The bundled frontend refuses framing, applies a restrictive Content Security

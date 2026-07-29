@@ -41,7 +41,6 @@ class CsrfResponse(BaseModel):
 
 
 class RegistrationRequest(BaseModel):
-    invitation_token: str = Field(min_length=20, max_length=512)
     username: str = Field(
         min_length=1,
         max_length=190,
@@ -50,13 +49,20 @@ class RegistrationRequest(BaseModel):
     password: str = Field(min_length=12, max_length=1024)
 
 
+class InvitationExchangeRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+
+
+class InvitationStateResponse(BaseModel):
+    valid: bool
+
+
 class InvitationCreateRequest(BaseModel):
-    expires_in_days: int = Field(default=7, ge=1, le=30)
+    expires_in_days: int = Field(default=7, ge=1, le=7)
 
 
 class InvitationCreatedResponse(BaseModel):
     id: uuid.UUID
-    token: str
     invitation_url: str
     expires_at: datetime
 

@@ -6,7 +6,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
-    { path: '/einladung/:token', name: 'register', component: () => import('./views/RegisterView.vue'), meta: { public: true } },
+    { path: '/einladung', name: 'register', component: () => import('./views/RegisterView.vue'), meta: { public: true } },
     { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue') },
     { path: '/tage', name: 'daily', component: () => import('./views/DailyView.vue') },
     { path: '/wochen', name: 'weekly', component: () => import('./views/WeeklyView.vue') },
