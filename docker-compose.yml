@@ -13,7 +13,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-calograph}
       POSTGRES_USER: ${POSTGRES_USER:-calograph}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
@@ -45,9 +47,14 @@ services:
     restart: unless-stopped
     environment:
       ENVIRONMENT: ${ENVIRONMENT:?Set ENVIRONMENT to development, test, or production in .env}
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
-      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
-      RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set RATE_LIMIT_SECRET in .env}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB:-calograph}
+      DATABASE_USER: ${POSTGRES_USER:-calograph}
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+      RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
+      CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
       CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
       CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:?Set CALOGRAPH_PUBLIC_URL in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE in .env}
@@ -80,7 +87,6 @@ services:
       FILE_IMPORT_USER_RATE_LIMIT: ${FILE_IMPORT_USER_RATE_LIMIT:-3}
       FILE_IMPORT_IP_RATE_LIMIT: ${FILE_IMPORT_IP_RATE_LIMIT:-6}
       FILE_IMPORT_RATE_LIMIT_WINDOW_SECONDS: ${FILE_IMPORT_RATE_LIMIT_WINDOW_SECONDS:-3600}
-      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
       YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
       YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
       YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
@@ -101,6 +107,11 @@ services:
       UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN: ${UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN:-30}
       UVICORN_ACCESS_LOG: ${UVICORN_ACCESS_LOG:-true}
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+    secrets:
+      - postgres_password
+      - session_secret
+      - rate_limit_secret
+      - credential_encryption_key
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,21 +140,12 @@ services:
     command: ["python", "-m", "app.cli", "run-yazio-scheduler"]
     environment:
       ENVIRONMENT: ${ENVIRONMENT:?Set ENVIRONMENT to development, test, or production in .env}
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
-      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
-      CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:?Set CALOGRAPH_PUBLIC_URL in .env}
-      COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE in .env}
-      TRUSTED_HOSTS: ${TRUSTED_HOSTS:?Set TRUSTED_HOSTS in .env}
-      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:?Set TRUSTED_ORIGINS in .env}
-      TRUSTED_PROXY_NETWORKS: ${TRUSTED_PROXY_NETWORKS:?Set TRUSTED_PROXY_NETWORKS in .env}
-      ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
-      MAX_JSON_PAYLOAD_BYTES: ${MAX_JSON_PAYLOAD_BYTES:-10485760}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
-      MAX_ZIP_UNCOMPRESSED_BYTES: ${MAX_ZIP_UNCOMPRESSED_BYTES:-2147483648}
-      NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
-      BACKEND_TMPFS_BYTES: ${BACKEND_TMPFS_BYTES:-629145600}
-      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
-      RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set RATE_LIMIT_SECRET in .env}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB:-calograph}
+      DATABASE_USER: ${POSTGRES_USER:-calograph}
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
       YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
       YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
       YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
@@ -156,6 +158,9 @@ services:
       YAZIO_SCHEDULER_POLL_SECONDS: ${YAZIO_SCHEDULER_POLL_SECONDS:-60}
       YAZIO_SCHEDULER_JITTER_MINUTES: ${YAZIO_SCHEDULER_JITTER_MINUTES:-30}
       RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
+    secrets:
+      - postgres_password
+      - credential_encryption_key
     depends_on:
       backend:
         condition: service_healthy
@@ -298,3 +303,13 @@ networks:
 
 volumes:
   postgres-data:
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_FILE:?Set POSTGRES_PASSWORD_FILE in .env}
+  session_secret:
+    file: ${SESSION_SECRET_FILE:?Set SESSION_SECRET_FILE in .env}
+  rate_limit_secret:
+    file: ${RATE_LIMIT_SECRET_FILE:?Set RATE_LIMIT_SECRET_FILE in .env}
+  credential_encryption_key:
+    file: ${CREDENTIAL_ENCRYPTION_KEY_FILE:?Set CREDENTIAL_ENCRYPTION_KEY_FILE in .env}

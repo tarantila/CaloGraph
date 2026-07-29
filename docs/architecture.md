@@ -49,10 +49,14 @@ from an IP address (IPv6 is grouped by `/64`) and failed attempts for a
 pseudonymized account identifier. Expired buckets are removed by the scheduler.
 Redis and a general-purpose background queue are deliberately omitted. The
 single YAZIO scheduler checks for due connections at a configurable interval.
-Credentials are encrypted per user with Fernet; the separate key comes from
-`.env` and must be included in the backup and permissions strategy together
-with the database. YAZIO network work runs in a short-lived isolated child
-process with explicit request timeouts and a parent-enforced absolute deadline.
+Credentials are encrypted per user with Fernet. The host stores the key as an
+operator-controlled file outside the image; Compose mounts it only into the
+backend and scheduler. Database, session, and rate-limit secrets use the same
+file-based mechanism with narrower service grants. `.env` contains paths, not
+secret values. The files must be included in the encrypted backup and
+permissions strategy together with the database. YAZIO network work runs in a
+short-lived isolated child process with explicit request timeouts and a
+parent-enforced absolute deadline.
 PostgreSQL advisory locks enforce one operation per user and a small
 deployment-wide concurrency budget across HTTP workers and the scheduler. The
 same database also stores temporary rate-limit and circuit-breaker buckets, so

@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import pytest
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from app.config import ProductionConfigurationError, Settings
 
@@ -82,6 +85,202 @@ def test_validation_errors_do_not_echo_sensitive_inputs() -> None:
         )
 
     assert invalid_key not in str(captured.value)
+
+
+def write_secret(path: Path, value: str | bytes) -> Path:
+    path.write_bytes(value.encode() if isinstance(value, str) else value)
+    return path
+
+
+def clear_direct_secret_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in (
+        "DATABASE_URL",
+        "DATABASE_PASSWORD",
+        "SESSION_SECRET",
+        "RATE_LIMIT_SECRET",
+        "CREDENTIAL_ENCRYPTION_KEY",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+
+def test_secret_files_are_loaded_and_database_url_is_built(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_direct_secret_environment(monkeypatch)
+    database_password = "database password/with?#characters"
+    credential_key = Fernet.generate_key().decode()
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        database_host="database.internal",
+        database_port=5544,
+        database_name="nutrition",
+        database_user="calograph-user",
+        database_password_file=str(
+            write_secret(tmp_path / "database-password", f"{database_password}\n")
+        ),
+        session_secret_file=str(
+            write_secret(
+                tmp_path / "session-secret",
+                "session-secret-from-file-0123456789\n",
+            )
+        ),
+        rate_limit_secret_file=str(
+            write_secret(
+                tmp_path / "rate-limit-secret",
+                "rate-limit-secret-from-file-0123456789\r\n",
+            )
+        ),
+        credential_encryption_key_file=str(
+            write_secret(tmp_path / "credential-key", f"{credential_key}\n")
+        ),
+    )
+
+    database_url = make_url(configured.database_url)
+    assert database_url.host == "database.internal"
+    assert database_url.port == 5544
+    assert database_url.database == "nutrition"
+    assert database_url.username == "calograph-user"
+    assert database_url.password == database_password
+    assert configured.session_secret == "session-secret-from-file-0123456789"
+    assert configured.rate_limit_secret == "rate-limit-secret-from-file-0123456789"
+    assert configured.credential_encryption_key == credential_key
+    rendered = repr(configured)
+    serialized = configured.model_dump()
+    for sensitive_value in (
+        database_password,
+        configured.session_secret,
+        configured.rate_limit_secret,
+        credential_key,
+        str(tmp_path),
+    ):
+        assert sensitive_value not in rendered
+        assert sensitive_value not in str(serialized)
+    for excluded_field in (
+        "database_url",
+        "database_password",
+        "database_password_file",
+        "session_secret",
+        "session_secret_file",
+        "rate_limit_secret",
+        "rate_limit_secret_file",
+        "credential_encryption_key",
+        "credential_encryption_key_file",
+    ):
+        assert excluded_field not in serialized
+
+
+@pytest.mark.parametrize(
+    ("direct_field", "file_field", "direct_value"),
+    [
+        (
+            "session_secret",
+            "session_secret_file",
+            "direct-session-secret-value-0123456789",
+        ),
+        (
+            "rate_limit_secret",
+            "rate_limit_secret_file",
+            "direct-rate-limit-secret-0123456789",
+        ),
+        (
+            "credential_encryption_key",
+            "credential_encryption_key_file",
+            Fernet.generate_key().decode(),
+        ),
+        (
+            "database_password",
+            "database_password_file",
+            "direct-database-password",
+        ),
+        (
+            "database_url",
+            "database_password_file",
+            "postgresql+psycopg://calograph:direct-password@postgres/calograph",
+        ),
+    ],
+)
+def test_direct_and_file_secret_sources_are_rejected_without_leaking_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    direct_field: str,
+    file_field: str,
+    direct_value: str,
+) -> None:
+    clear_direct_secret_environment(monkeypatch)
+    secret_file = write_secret(tmp_path / "sensitive-path-name", "file-secret-value")
+
+    with pytest.raises(ValidationError) as captured:
+        Settings(
+            _env_file=None,
+            environment="development",
+            **{
+                direct_field: direct_value,
+                file_field: str(secret_file),
+            },
+        )
+
+    message = str(captured.value)
+    assert direct_value not in message
+    assert str(secret_file) not in message
+    assert "file-secret-value" not in message
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"",
+        b"private-value\x00nul",
+        b"\xff\xfe",
+        b"x" * (16 * 1024 + 1),
+    ],
+)
+def test_invalid_secret_files_fail_without_leaking_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: bytes,
+) -> None:
+    clear_direct_secret_environment(monkeypatch)
+    secret_file = write_secret(tmp_path / "database-password", content)
+
+    with pytest.raises(ValidationError) as captured:
+        Settings(
+            _env_file=None,
+            environment="development",
+            database_password_file=str(secret_file),
+        )
+
+    message = str(captured.value)
+    assert str(secret_file) not in message
+    assert "private-value" not in message
+    assert "x" * 64 not in message
+
+
+def test_scheduler_production_validation_only_requires_its_own_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_direct_secret_environment(monkeypatch)
+    database_secret = write_secret(
+        tmp_path / "database-password",
+        "scheduler-database-password-0123456789",
+    )
+    credential_secret = write_secret(
+        tmp_path / "credential-key",
+        Fernet.generate_key(),
+    )
+    configured = Settings(
+        _env_file=None,
+        environment="production",
+        database_password_file=str(database_secret),
+        credential_encryption_key_file=str(credential_secret),
+        yazio_enabled=True,
+    )
+
+    configured.validate_runtime_security("scheduler")
+    with pytest.raises(ProductionConfigurationError):
+        configured.validate_runtime_security("backend")
 
 
 def test_valid_production_configuration_passes_runtime_check() -> None:

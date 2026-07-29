@@ -11,7 +11,7 @@ BACKUP_DIR="$backup_dir" scripts/backup-postgres.sh
 if [ "${BACKUP_SECRETS:-0}" = "1" ]; then
   BACKUP_DIR="$backup_dir" scripts/backup-secrets.sh
 else
-  printf 'Hinweis: .env wurde nicht kopiert. Verwende BACKUP_SECRETS=1 nur mit einem verschlüsselten BACKUP_DIR.\n'
+  printf 'Secret backup skipped. Set BACKUP_SECRETS=1 to create an age-encrypted copy.\n'
 fi
 
 docker compose pull postgres

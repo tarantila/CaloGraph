@@ -12,6 +12,7 @@ frontend/dist
 frontend/playwright-report
 frontend/test-results
 backups
+secrets
 uploads
 .env
 .env.*

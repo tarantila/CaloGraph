@@ -63,6 +63,7 @@ need to be installed on the host.
 
 ```bash
 cp .env.example .env
+scripts/init-secrets.sh
 vim .env
 docker compose up -d --build
 docker compose ps
@@ -74,10 +75,24 @@ a loopback installation. For Internet-facing operation, start from
 secret, database, proxy, YAZIO encryption, or upload-capacity settings are
 unsafe or inconsistent.
 
-Generate independent random values for `POSTGRES_PASSWORD`, `SESSION_SECRET`,
-and `RATE_LIMIT_SECRET`. Both application secrets must contain at least 32
-characters. Scheduled YAZIO sync additionally requires a dedicated
-`CREDENTIAL_ENCRYPTION_KEY`; generation is documented in
+`scripts/init-secrets.sh` creates independent database, session, rate-limit,
+and YAZIO credential-encryption secrets in the ignored `secrets/` directory
+without printing them. Compose mounts only the specific file required by each
+service under `/run/secrets`; secret values are not stored in `.env` or placed
+in container environments. The database DSN is assembled in memory from its
+non-secret connection fields and the mounted password.
+
+Existing installations that still keep direct secret values and
+`DATABASE_URL` in `.env` can migrate them once without rotating the database
+password or YAZIO key:
+
+```bash
+CONFIRM_SECRET_MIGRATION=calograph scripts/migrate-env-secrets.sh
+```
+
+The migration is fail-closed, never prints a value, and refuses to overwrite
+an existing secret destination. Back up and inspect the installation before
+running it. YAZIO key handling is described in
 [docs/yazio-sync.md](docs/yazio-sync.md).
 
 `CALOGRAPH_PUBLIC_URL` is the canonical browser address used for links that
@@ -261,15 +276,17 @@ running.
 ## Migrations and updates
 
 ```bash
-BACKUP_DIR=/secure/encrypted/path \
+export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
+BACKUP_DIR=/srv/calograph-backups \
   BACKUP_SECRETS=1 \
   scripts/update-containers.sh
 ```
 
-The script first creates and validates a database backup.
-`BACKUP_SECRETS=1` must only be used with encrypted backup storage; it also
-backs up the `.env` file required for sessions and YAZIO credentials. Restore
-instructions are in [docs/backup-restore.md](docs/backup-restore.md).
+The script first creates an `age`-encrypted database backup without a
+plaintext temporary dump. `BACKUP_SECRETS=1` additionally encrypts `.env` and
+the service-scoped files under `secrets/`. Key generation, off-host storage,
+verification, and restore instructions are in
+[docs/backup-restore.md](docs/backup-restore.md).
 
 The backend refuses to start when migrations fail.
 

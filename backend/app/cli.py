@@ -303,7 +303,7 @@ def yazio_status(args: argparse.Namespace) -> None:
 
 def run_yazio_scheduler(args: argparse.Namespace) -> None:
     try:
-        settings.validate_runtime_security()
+        settings.validate_runtime_security("scheduler")
     except ProductionConfigurationError as exc:
         raise SystemExit(str(exc)) from None
     logging.basicConfig(

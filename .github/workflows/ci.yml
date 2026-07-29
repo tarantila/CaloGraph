@@ -92,11 +92,9 @@ jobs:
     needs: [backend, backend-postgres, frontend]
     steps:
       - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install --yes age
       - run: cp .env.example .env
-      - run: |
-          sed -i 's/CHANGE_ME_DATABASE_PASSWORD/ci-database-password/g' .env
-          sed -i 's/CHANGE_ME_AT_LEAST_32_RANDOM_CHARACTERS/ci-session-secret-at-least-32-characters/' .env
-          sed -i 's/CHANGE_ME_ANOTHER_RANDOM_SECRET/ci-rate-secret-at-least-32-characters/' .env
+      - run: ./scripts/init-secrets.sh
       - run: docker compose build
       - run: ./scripts/e2e.sh
       - run: ./scripts/production-smoke.sh

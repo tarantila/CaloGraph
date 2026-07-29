@@ -1,12 +1,18 @@
 import ipaddress
+import os
 import sys
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from cryptography.fernet import Fernet
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
+
+MAX_SECRET_FILE_BYTES = 16 * 1024
+RuntimeRole = Literal["backend", "scheduler"]
 
 KNOWN_INSECURE_SECRETS = frozenset(
     {
@@ -36,6 +42,30 @@ class ProductionConfigurationError(RuntimeError):
     pass
 
 
+def _read_secret_file(
+    path_value: object,
+    variable_name: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    if not isinstance(path_value, (str, os.PathLike)):
+        raise ValueError(f"{variable_name} must point to a readable secret file")
+    try:
+        with Path(path_value).open("rb") as handle:
+            raw = handle.read(MAX_SECRET_FILE_BYTES + 1)
+    except OSError:
+        raise ValueError(f"{variable_name} must point to a readable secret file") from None
+    if len(raw) > MAX_SECRET_FILE_BYTES:
+        raise ValueError(f"{variable_name} exceeds the secret file size limit")
+    try:
+        value = raw.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        raise ValueError(f"{variable_name} must contain UTF-8 text") from None
+    if "\x00" in value or (not value and not allow_empty):
+        raise ValueError(f"{variable_name} contains an invalid secret")
+    return value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -46,9 +76,42 @@ class Settings(BaseSettings):
 
     app_name: str = "CaloGraph"
     environment: Literal["development", "test", "production"]
-    database_url: str = "postgresql+psycopg://calograph:calograph@postgres:5432/calograph"
-    session_secret: str = Field(default="development-session-secret-change-me-32", min_length=32)
-    rate_limit_secret: str = Field(default="development-rate-limit-secret-change-me", min_length=32)
+    database_url: str = Field(default="", exclude=True, repr=False)
+    database_host: str = Field(default="postgres", min_length=1, max_length=253)
+    database_port: int = Field(default=5432, ge=1, le=65535)
+    database_name: str = Field(default="calograph", min_length=1, max_length=63)
+    database_user: str = Field(default="calograph", min_length=1, max_length=63)
+    database_password: str | None = Field(default=None, exclude=True, repr=False)
+    database_password_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
+    session_secret: str = Field(
+        default="development-session-secret-change-me-32",
+        min_length=32,
+        exclude=True,
+        repr=False,
+    )
+    session_secret_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
+    rate_limit_secret: str = Field(
+        default="development-rate-limit-secret-change-me",
+        min_length=32,
+        exclude=True,
+        repr=False,
+    )
+    rate_limit_secret_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
     calograph_timezone: str = "Europe/Berlin"
     calograph_public_url: str = "http://localhost:8180"
     cookie_secure: bool = False
@@ -99,7 +162,13 @@ class Settings(BaseSettings):
         ge=60,
         le=604_800,
     )
-    credential_encryption_key: str = ""
+    credential_encryption_key: str = Field(default="", exclude=True, repr=False)
+    credential_encryption_key_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
     yazio_enabled: bool = True
     yazio_connect_timeout_seconds: float = Field(default=3.05, ge=0.1, le=30)
     yazio_read_timeout_seconds: float = Field(default=15, ge=1, le=120)
@@ -113,6 +182,63 @@ class Settings(BaseSettings):
     yazio_circuit_window_seconds: int = Field(default=600, ge=60, le=86_400)
     yazio_scheduler_poll_seconds: int = 60
     yazio_scheduler_jitter_minutes: int = 30
+
+    @model_validator(mode="before")
+    @classmethod
+    def load_secret_files(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        secret_fields = (
+            ("session_secret", "session_secret_file", "SESSION_SECRET_FILE", False),
+            ("rate_limit_secret", "rate_limit_secret_file", "RATE_LIMIT_SECRET_FILE", False),
+            (
+                "credential_encryption_key",
+                "credential_encryption_key_file",
+                "CREDENTIAL_ENCRYPTION_KEY_FILE",
+                True,
+            ),
+        )
+        for value_field, file_field, variable_name, allow_empty in secret_fields:
+            file_path = values.get(file_field)
+            if file_path is None:
+                continue
+            if value_field in values:
+                direct_name = variable_name.removesuffix("_FILE")
+                raise ValueError(f"{direct_name} and {variable_name} must not both be set")
+            values[value_field] = _read_secret_file(
+                file_path,
+                variable_name,
+                allow_empty=allow_empty,
+            )
+
+        password_file = values.get("database_password_file")
+        if password_file is not None:
+            if "database_url" in values or "database_password" in values:
+                raise ValueError(
+                    "DATABASE_URL or DATABASE_PASSWORD and DATABASE_PASSWORD_FILE "
+                    "must not both be set"
+                )
+            values["database_password"] = _read_secret_file(
+                password_file,
+                "DATABASE_PASSWORD_FILE",
+            )
+        return values
+
+    @model_validator(mode="after")
+    def build_database_url(self) -> Settings:
+        if self.database_url:
+            return self
+        password = self.database_password or "calograph"
+        self.database_url = URL.create(
+            drivername="postgresql+psycopg",
+            username=self.database_user,
+            password=password,
+            host=self.database_host,
+            port=self.database_port,
+            database=self.database_name,
+        ).render_as_string(hide_password=False)
+        return self
 
     @field_validator("raw_payload_retention_days")
     @classmethod
@@ -182,88 +308,91 @@ class Settings(BaseSettings):
             raise ValueError("YAZIO_SCHEDULER_JITTER_MINUTES must be between 0 and 180")
         return value
 
-    def validate_runtime_security(self) -> None:
+    def validate_runtime_security(self, role: RuntimeRole = "backend") -> None:
+        if role not in {"backend", "scheduler"}:
+            raise ValueError("unknown runtime role")
         if self.environment != "production":
             return
 
         errors: list[str] = []
-        public_url = urlsplit(self.calograph_public_url)
-        public_host = (public_url.hostname or "").casefold()
-        configured_hosts = {
-            item.strip().casefold()
-            for item in self.trusted_hosts.split(",")
-            if item.strip()
-        }
-        configured_origins = {
-            item.strip().rstrip("/")
-            for item in self.trusted_origins.split(",")
-            if item.strip()
-        }
+        if role == "backend":
+            public_url = urlsplit(self.calograph_public_url)
+            public_host = (public_url.hostname or "").casefold()
+            configured_hosts = {
+                item.strip().casefold()
+                for item in self.trusted_hosts.split(",")
+                if item.strip()
+            }
+            configured_origins = {
+                item.strip().rstrip("/")
+                for item in self.trusted_origins.split(",")
+                if item.strip()
+            }
 
-        if public_url.scheme != "https":
-            errors.append("CALOGRAPH_PUBLIC_URL must use https://")
-        if (
-            not public_host
-            or public_host in {"localhost", "127.0.0.1", "::1"}
-            or public_host in {"example.com", "example.net", "example.org"}
-            or public_host.endswith(
-                (".example", ".example.com", ".example.net", ".example.org", ".example.test")
-            )
-        ):
-            errors.append("CALOGRAPH_PUBLIC_URL must contain the real public hostname")
-        if not self.cookie_secure:
-            errors.append("COOKIE_SECURE must be true")
-        if not self.enable_hsts:
-            errors.append("ENABLE_HSTS must be true")
-        if public_host not in configured_hosts:
-            errors.append("TRUSTED_HOSTS must explicitly contain the public hostname")
-        if self.calograph_public_url not in configured_origins:
-            errors.append("TRUSTED_ORIGINS must explicitly contain CALOGRAPH_PUBLIC_URL")
-        if any("*" in host for host in configured_hosts):
-            errors.append("TRUSTED_HOSTS must not contain wildcard entries")
-        if any(not origin.startswith("https://") for origin in configured_origins):
-            errors.append("all production TRUSTED_ORIGINS entries must use https://")
+            if public_url.scheme != "https":
+                errors.append("CALOGRAPH_PUBLIC_URL must use https://")
+            if (
+                not public_host
+                or public_host in {"localhost", "127.0.0.1", "::1"}
+                or public_host in {"example.com", "example.net", "example.org"}
+                or public_host.endswith(
+                    (".example", ".example.com", ".example.net", ".example.org", ".example.test")
+                )
+            ):
+                errors.append("CALOGRAPH_PUBLIC_URL must contain the real public hostname")
+            if not self.cookie_secure:
+                errors.append("COOKIE_SECURE must be true")
+            if not self.enable_hsts:
+                errors.append("ENABLE_HSTS must be true")
+            if public_host not in configured_hosts:
+                errors.append("TRUSTED_HOSTS must explicitly contain the public hostname")
+            if self.calograph_public_url not in configured_origins:
+                errors.append("TRUSTED_ORIGINS must explicitly contain CALOGRAPH_PUBLIC_URL")
+            if any("*" in host for host in configured_hosts):
+                errors.append("TRUSTED_HOSTS must not contain wildcard entries")
+            if any(not origin.startswith("https://") for origin in configured_origins):
+                errors.append("all production TRUSTED_ORIGINS entries must use https://")
 
-        proxy_networks = [
-            ipaddress.ip_network(item, strict=False)
-            for item in self.trusted_proxy_networks.split(",")
-            if item
-        ]
-        if all(network.is_loopback for network in proxy_networks):
-            errors.append(
-                "TRUSTED_PROXY_NETWORKS must contain the actual Docker proxy subnet"
-            )
-        if any(
-            (
-                isinstance(network, ipaddress.IPv4Network)
-                and network.prefixlen < 16
-            )
-            or (
-                isinstance(network, ipaddress.IPv6Network)
-                and network.prefixlen < 64
-            )
-            for network in proxy_networks
-        ):
-            errors.append(
-                "TRUSTED_PROXY_NETWORKS must use an exact proxy IP or narrow subnet"
-            )
+            proxy_networks = [
+                ipaddress.ip_network(item, strict=False)
+                for item in self.trusted_proxy_networks.split(",")
+                if item
+            ]
+            if all(network.is_loopback for network in proxy_networks):
+                errors.append(
+                    "TRUSTED_PROXY_NETWORKS must contain the actual Docker proxy subnet"
+                )
+            if any(
+                (
+                    isinstance(network, ipaddress.IPv4Network)
+                    and network.prefixlen < 16
+                )
+                or (
+                    isinstance(network, ipaddress.IPv6Network)
+                    and network.prefixlen < 64
+                )
+                for network in proxy_networks
+            ):
+                errors.append(
+                    "TRUSTED_PROXY_NETWORKS must use an exact proxy IP or narrow subnet"
+                )
 
-        normalized_session_secret = self.session_secret.strip().casefold()
-        normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
-        if (
-            normalized_session_secret in KNOWN_INSECURE_SECRETS
-            or "change_me" in normalized_session_secret
-            or "changeme" in normalized_session_secret
-        ):
-            errors.append("SESSION_SECRET uses a known development or placeholder value")
-        if (
-            normalized_rate_limit_secret in KNOWN_INSECURE_SECRETS
-            or "change_me" in normalized_rate_limit_secret
-            or "changeme" in normalized_rate_limit_secret
-        ):
-            errors.append("RATE_LIMIT_SECRET uses a known development or placeholder value")
-        if self.session_secret == self.rate_limit_secret:
-            errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
+            normalized_session_secret = self.session_secret.strip().casefold()
+            normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
+            if (
+                normalized_session_secret in KNOWN_INSECURE_SECRETS
+                or "change_me" in normalized_session_secret
+                or "changeme" in normalized_session_secret
+            ):
+                errors.append("SESSION_SECRET uses a known development or placeholder value")
+            if (
+                normalized_rate_limit_secret in KNOWN_INSECURE_SECRETS
+                or "change_me" in normalized_rate_limit_secret
+                or "changeme" in normalized_rate_limit_secret
+            ):
+                errors.append("RATE_LIMIT_SECRET uses a known development or placeholder value")
+            if self.session_secret == self.rate_limit_secret:
+                errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
 
         database_url = urlsplit(self.database_url)
         database_password = unquote(database_url.password or "").strip().casefold()
@@ -282,20 +411,21 @@ class Settings(BaseSettings):
                 "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED is true"
             )
 
-        if self.max_json_payload_bytes > self.max_upload_bytes:
-            errors.append("MAX_JSON_PAYLOAD_BYTES must not exceed MAX_UPLOAD_BYTES")
-        if self.max_zip_uncompressed_bytes < self.max_upload_bytes:
-            errors.append(
-                "MAX_ZIP_UNCOMPRESSED_BYTES must not be smaller than MAX_UPLOAD_BYTES"
-            )
-        if self.nginx_max_upload_bytes < self.max_upload_bytes + 1024 * 1024:
-            errors.append(
-                "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
-            )
-        if self.backend_tmpfs_bytes < self.nginx_max_upload_bytes + 16 * 1024 * 1024:
-            errors.append(
-                "BACKEND_TMPFS_BYTES needs reserve space above NGINX_MAX_UPLOAD_BYTES"
-            )
+        if role == "backend":
+            if self.max_json_payload_bytes > self.max_upload_bytes:
+                errors.append("MAX_JSON_PAYLOAD_BYTES must not exceed MAX_UPLOAD_BYTES")
+            if self.max_zip_uncompressed_bytes < self.max_upload_bytes:
+                errors.append(
+                    "MAX_ZIP_UNCOMPRESSED_BYTES must not be smaller than MAX_UPLOAD_BYTES"
+                )
+            if self.nginx_max_upload_bytes < self.max_upload_bytes + 1024 * 1024:
+                errors.append(
+                    "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
+                )
+            if self.backend_tmpfs_bytes < self.nginx_max_upload_bytes + 16 * 1024 * 1024:
+                errors.append(
+                    "BACKEND_TMPFS_BYTES needs reserve space above NGINX_MAX_UPLOAD_BYTES"
+                )
 
         if errors:
             formatted = "\n".join(f"- {error}" for error in errors)

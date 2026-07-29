@@ -14,8 +14,16 @@ backups, and the availability of the private application.
 - **Compromised browser:** HttpOnly sessions and a small attack surface without
   third-party scripts. A compromised endpoint can still read data visible to
   that user.
-- **Insecure backups:** the operator must encrypt backups, restrict
-  permissions, and test restores.
+- **Insecure backups:** database dumps and the `.env`/secret-file bundle are
+  streamed directly into authenticated `age` encryption without plaintext
+  temporary backup files. The operator must keep the private identity off-host,
+  maintain an offline or immutable copy, define retention, and test restores.
+- **Container secret disclosure:** Compose mounts operator-controlled source
+  files as service-scoped secrets under `/run/secrets`. `.env` contains only
+  their paths. Containers receive only the secrets required for their role and
+  no password-bearing database URL.
+  Direct environment variables remain a legacy/test interface and cannot be
+  combined ambiguously with `_FILE` settings.
 - **Sensitive logs:** payloads and health values are excluded; request IDs are
   logged instead of user data.
 - **Unsafe production defaults:** `ENVIRONMENT` must be explicit. Production
@@ -25,10 +33,10 @@ backups, and the availability of the private application.
   messages contain variable names rather than secret values.
 - **YAZIO credentials:** manual retrieval does not persist credentials.
   Scheduled sync stores each user's email and password using authenticated
-  Fernet encryption. The key exists only in `.env` and must be protected and
-  backed up together with database backups. Credentials reach the isolated
-  transport process through standard input rather than process arguments or
-  environment variables.
+  Fernet encryption. The host-side key file is mounted only into the backend
+  and scheduler and must be protected and backed up together with database
+  backups. Credentials reach the isolated transport process through standard
+  input rather than process arguments or environment variables.
 - **Unofficial third-party interface:** isolated adapter, pinned exporter
   version, fixed provider endpoint, explicit network timeouts, rejected
   redirects, no authentication retries, parent-enforced operation deadlines,
@@ -90,11 +98,14 @@ backups, and the availability of the private application.
 - **Cross-account data access:** queries, imports, targets, tokens, and YAZIO
   connections are always restricted by the authenticated user ID. A separate
   invitation and login scenario tests this isolation path.
-- **Data loss:** persistent volume, Alembic migrations, regular encrypted
-  backups, and a documented restore process.
+- **Data loss:** persistent volume, Alembic migrations, authenticated encrypted
+  backups, an off-host immutable or offline copy, and a documented restore
+  process.
 
 ## Residual risks
 
 Anyone who completely controls the host, database, or browser profile can read
 health data. CaloGraph does not replace disk encryption, host hardening,
-network segmentation, or secure backup retention.
+network segmentation, or secure backup retention. Compose Secrets reduce
+accidental disclosure and service overexposure; they do not protect secrets
+from a fully privileged Docker-host administrator.

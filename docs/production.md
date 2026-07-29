@@ -3,12 +3,22 @@
 ## Minimum checklist
 
 - Start from `.env.production.example`, set `ENVIRONMENT=production`, and
-  replace every `CHANGE_ME` and example value. The application reports all
-  rejected variable names together without printing their values.
+  replace every example value. The application reports all rejected variable
+  names together without printing their values.
 - `.env` is owned by the operator and has file mode `0600`.
-- `POSTGRES_PASSWORD`, `SESSION_SECRET`, and `RATE_LIMIT_SECRET` are independent
-  random values. `CREDENTIAL_ENCRYPTION_KEY` is additionally required whenever
-  `YAZIO_ENABLED=true`.
+- Run `scripts/init-secrets.sh` for a new installation. The ignored
+  `secrets/` directory is owned by the operator with mode `0700`; its files use
+  mode `0444`. The restrictive parent directory prevents other host users from
+  traversing to those files, while the read-only file mode lets non-root
+  container UIDs read only the individual file Compose mounts. Existing
+  installations use the explicit
+  `scripts/migrate-env-secrets.sh` procedure instead so database and YAZIO keys
+  are not rotated accidentally.
+- Compose mounts the four source files as service-scoped secrets under
+  `/run/secrets`; it does not place their values or a password-bearing database
+  URL in container environments. PostgreSQL receives only its password,
+  `backend` receives all four, `yazio-scheduler` receives only the database
+  password and credential key, and `frontend` receives none.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.
@@ -21,8 +31,9 @@
   frontend reaches the backend; wildcard trust is rejected.
 - Set `ENABLE_HSTS=true` after the domain is permanently available exclusively
   over HTTPS. Production mode will not start while it is false.
-- Backups are encrypted, stored outside the Docker host, and a restore has been
-  tested in practice.
+- Backups are encrypted with a dedicated `age` recipient, stored outside the
+  Docker host with an immutable or offline copy, and a restore has been tested
+  in practice. Keep the private `age` identity off the Docker host.
 - Docker and host security updates are installed regularly.
 
 ## Runtime
@@ -119,15 +130,16 @@ same migration.
 
 ## Fail-closed production validation
 
-The backend checks production safety before running migrations, and the YAZIO
-scheduler repeats the same check before entering its loop. Startup is rejected
-when the public origin is not HTTPS, secure cookies or HSTS are disabled,
-known development secrets or database passwords are present, secrets are
-reused, effective proxy trust remains loopback-only or uses the generic Docker
-address pool, direct YAZIO access has no valid Fernet key, or upload capacities
-contradict each other. IPv4 proxy networks broader than `/16` and IPv6 networks
-broader than `/64` are rejected. Development and test environments remain able
-to use localhost HTTP.
+The backend checks production safety before running migrations. The YAZIO
+scheduler performs a role-specific check before entering its loop and therefore
+does not need access to web-session or reverse-proxy secrets. Backend startup
+is rejected when the public origin is not HTTPS, secure cookies or HSTS are
+disabled, known development secrets or database passwords are present, secrets
+are reused, effective proxy trust remains loopback-only or uses the generic
+Docker address pool, direct YAZIO access has no valid Fernet key, or upload
+capacities contradict each other. IPv4 proxy networks broader than `/16` and
+IPv6 networks broader than `/64` are rejected. Development and test
+environments remain able to use localhost HTTP.
 
 Changing only `ENVIRONMENT=production` is therefore intentionally insufficient.
 The real domain, exact Docker subnet, independent secrets, and TLS policy must
@@ -154,7 +166,8 @@ that are actually required.
 Docker logs rotate per service across at most three files of 10 MB each. This
 does not replace free-space monitoring. Pay particular attention to the
 PostgreSQL volume, encrypted backup storage, and failed YAZIO runs shown in the
-data-status view. A `partial_failed` historical import is safe to retry with the
+data-status view. Full-disk or volume encryption is still required for live
+PostgreSQL data. A `partial_failed` historical import is safe to retry with the
 same file; completed checkpoints are retained and deduplicated.
 
 ## Updates

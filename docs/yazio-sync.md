@@ -61,8 +61,9 @@ health samples.
 ### Configure scheduled synchronization
 
 For unattended operation, every YAZIO connection belongs to one CaloGraph
-user. Email and password are stored only in encrypted form in PostgreSQL; the
-separate key remains in `.env`.
+user. Email and password are stored only in encrypted form in PostgreSQL. The
+separate key remains in the host-side `secrets/credential_encryption_key` file;
+Compose mounts it only into the backend and scheduler.
 
 Generate the key once:
 
@@ -71,8 +72,11 @@ docker compose run --rm --no-deps backend \
   python -m app.cli generate-credential-key
 ```
 
-Set the resulting value as `CREDENTIAL_ENCRYPTION_KEY` in `.env`, then recreate
-the backend and scheduler:
+For a new installation, `scripts/init-secrets.sh` already creates a valid key.
+If a key is generated manually, write the resulting value to the file named by
+`CREDENTIAL_ENCRYPTION_KEY_FILE` in `.env`, keep its parent directory at mode
+`0700`, apply read-only mode `0444` to the file for the non-root container UID,
+and then recreate the backend and scheduler:
 
 ```bash
 docker compose up -d --build backend yazio-scheduler
@@ -176,11 +180,12 @@ medical diagnosis.
   remain stored so the feature can be re-enabled later.
 - Manual retrieval sends credentials only to the YAZIO endpoint and does not
   persist them. Scheduled sync stores them using authenticated Fernet
-  encryption, with the key kept separately in `.env`.
+  encryption, with the key kept in a separate host file and delivered through
+  a service-scoped secret mount.
 - If `CREDENTIAL_ENCRYPTION_KEY` is lost, stored connections cannot be
   recovered and must be configured again.
-- Anyone who can read both the database and `.env` can decrypt credentials.
-  File permissions and backups must protect both.
+- Anyone who can read both the database and credential key file can decrypt
+  credentials. File permissions and encrypted backups must protect both.
 - A single direct request is limited to 366 days.
 - The timeout, concurrency, rate-limit, and circuit-breaker defaults are
   configurable through the documented `YAZIO_*` values in `.env`. Raising

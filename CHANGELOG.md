@@ -53,6 +53,13 @@ follows [Semantic Versioning](https://semver.org/).
 - Segmented proxy, database, and scheduler-egress traffic across dedicated
   Docker networks, dropped unnecessary Linux capabilities from every runtime
   container, and added optional per-service memory, CPU, and PID ceilings.
+- Replaced runtime secret environment values and password-bearing database
+  URLs with service-scoped Compose Secret files, including role-specific
+  production validation for the YAZIO scheduler.
+- Added directly streamed `age` encryption for database and
+  environment/secret-file backups, authenticated verification and restore,
+  and non-destructive migration helpers for existing plaintext dumps and
+  legacy `.env` secret values.
 
 ## [0.1.2] - 2026-07-27
 

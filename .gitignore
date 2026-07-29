@@ -44,6 +44,7 @@ uploads/
 raw-imports/
 backups/
 *.dump
+*.age
 *.sql.gz
 *.db
 *.log
