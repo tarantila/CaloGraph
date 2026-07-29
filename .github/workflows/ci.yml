@@ -39,6 +39,8 @@ jobs:
           version: 0.11.29
           enable-cache: true
       - working-directory: backend
+        run: uv lock --check
+      - working-directory: backend
         run: uv sync --frozen --all-extras
       - name: Audit production Python dependencies
         working-directory: backend
@@ -90,6 +92,8 @@ jobs:
         with:
           version: 0.11.29
           enable-cache: true
+      - working-directory: backend
+        run: uv lock --check
       - working-directory: backend
         run: uv sync --frozen --all-extras
       - working-directory: backend
