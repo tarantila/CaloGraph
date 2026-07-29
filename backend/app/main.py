@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import text
 
 from app.api.router import api_router
+from app.auth.password_policy import validate_password_blocklist
 from app.config import settings
 from app.database import engine
 
@@ -18,6 +19,7 @@ logger = logging.getLogger("calograph")
 REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 settings.validate_runtime_security()
+validate_password_blocklist()
 
 app = FastAPI(
     title="CaloGraph API",

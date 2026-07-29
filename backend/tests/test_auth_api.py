@@ -1,11 +1,12 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.api import analytics
 from app.auth import security
 from app.config import settings
-from app.models import User
+from app.models import User, UserSession
 
 
 def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
@@ -16,11 +17,116 @@ def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
     )
     assert response.status_code == 200
     csrf = response.json()["csrf_token"]
-    assert "httponly" in response.headers["set-cookie"].lower()
+    session_cookie = response.headers["set-cookie"].lower()
+    assert "calograph_session=" in session_cookie
+    assert "__host-" not in session_cookie
+    assert "httponly" in session_cookie
+    assert "samesite=lax" in session_cookie
+    assert "path=/" in session_cookie
     forbidden = client.post("/api/v1/auth/logout")
     assert forbidden.status_code == 403
     logged_out = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
     assert logged_out.status_code == 204
+
+
+def test_production_session_cookie_uses_host_prefix(
+    client: TestClient,
+    user: User,
+    monkeypatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "cookie_secure", True)
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    session_cookie = response.headers["set-cookie"].lower()
+    assert response.status_code == 200
+    assert "__host-calograph_session=" in session_cookie
+    assert "secure" in session_cookie
+    assert "httponly" in session_cookie
+    assert "samesite=lax" in session_cookie
+    assert "path=/" in session_cookie
+    assert "domain=" not in session_cookie
+
+
+def test_idle_and_absolute_session_timeouts_are_server_enforced(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session.last_used_at = datetime.now(UTC) - timedelta(
+        hours=settings.session_idle_timeout_hours + 1
+    )
+    db.commit()
+
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    newest = db.scalars(
+        select(UserSession).order_by(UserSession.created_at.desc())
+    ).first()
+    assert newest is not None
+    newest.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_expired_and_revoked_sessions_are_purged(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session.revoked_at = datetime.now(UTC)
+    db.commit()
+
+    assert security.purge_expired_sessions(db) == 1
+    assert db.scalar(select(UserSession)) is None
+
+
+def test_password_change_rejects_common_password(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    response = client.post(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={
+            "current_password": "correct-horse-battery-staple",
+            "new_password": "123456789qwerty",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "häufig verwendet" in response.json()["detail"]
 
 
 def test_bad_password_is_rejected(client: TestClient, user: User) -> None:

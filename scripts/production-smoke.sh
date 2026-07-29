@@ -184,6 +184,42 @@ if ! curl --fail --silent --show-error \
   fail "Production frontend health endpoint failed."
 fi
 
+if ! compose exec -T backend python -m app.cli create-user \
+  --username smoke-admin \
+  --password smoke-password-is-long-and-unique \
+  --if-not-exists >/dev/null; then
+  fail "Production user creation with the password policy failed."
+fi
+login_status=$(curl --silent --show-error \
+  --dump-header "$response_headers" \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  --header 'Content-Type: application/json' \
+  --data '{"username":"smoke-admin","password":"smoke-password-is-long-and-unique"}' \
+  http://127.0.0.1:18180/api/v1/auth/login)
+if [ "$login_status" != "200" ]; then
+  fail "Production login returned HTTP $login_status instead of 200."
+fi
+normalized_login_headers=$(tr -d '\r' <"$response_headers")
+for required_cookie_pattern in \
+  '^set-cookie: __Host-calograph_session=' \
+  '^set-cookie: __Host-calograph_session=.*;.*Max-Age=2592000' \
+  '^set-cookie: __Host-calograph_session=.*;.*HttpOnly' \
+  '^set-cookie: __Host-calograph_session=.*;.*Path=/' \
+  '^set-cookie: __Host-calograph_session=.*;.*SameSite=lax' \
+  '^set-cookie: __Host-calograph_session=.*;.*Secure'
+do
+  if ! printf '%s\n' "$normalized_login_headers" \
+    | grep -Eiq "$required_cookie_pattern"; then
+    fail "Production session cookie is missing required host-only security attributes."
+  fi
+done
+if printf '%s\n' "$normalized_login_headers" \
+  | grep -Eiq '^set-cookie: __Host-calograph_session=.*;.*Domain='; then
+  fail "Production session cookie unexpectedly contains a Domain attribute."
+fi
+
 auth_status=$(curl --silent --show-error \
   --dump-header "$response_headers" \
   --output /dev/null \

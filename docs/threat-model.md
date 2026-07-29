@@ -12,8 +12,10 @@ backups, and the availability of the private application.
 - **Public import endpoint:** bearer authentication, size limits, schema and
   unit validation, redacted responses, and reverse-proxy protection.
 - **Compromised browser:** HttpOnly sessions and a small attack surface without
-  third-party scripts. A compromised endpoint can still read data visible to
-  that user.
+  third-party scripts. Production cookies use the `__Host-` prefix, `Secure`,
+  `Path=/`, no `Domain`, and `SameSite=Lax`. Server-side idle and absolute
+  timeouts limit a stolen cookie's lifetime. A compromised endpoint can still
+  read data visible to that user.
 - **Insecure backups:** database dumps and the `.env`/secret-file bundle are
   streamed directly into authenticated `age` encryption without plaintext
   temporary backup files. The operator must keep the private identity off-host,
@@ -83,6 +85,11 @@ backups, and the availability of the private application.
   atomically, unknown accounts still perform Argon2 verification against a
   dummy hash, expired buckets are deleted, and authentication events contain
   only pseudonymous identifiers. The reverse proxy may add further limits.
+- **Weak new passwords:** single-factor passwords require at least 15
+  characters and are compared locally against a bundled digest blocklist of
+  common and breached values plus application-specific identifiers. No
+  password material is sent to a third-party service. Existing Argon2id
+  storage and the absence of periodic forced changes are retained.
 - **Forwarded invitation link:** cryptographically random invitation tokens
   stored only as hashes, one-time use, seven-day expiration, and administrator
   revocation. Plaintext is displayed only immediately after creation. Tokens

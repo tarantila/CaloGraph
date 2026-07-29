@@ -49,6 +49,10 @@ from an IP address (IPv6 is grouped by `/64`) and failed attempts for a
 pseudonymized account identifier. Expired buckets are removed by the scheduler.
 Redis and a general-purpose background queue are deliberately omitted. The
 single YAZIO scheduler checks for due connections at a configurable interval.
+The same hourly maintenance cycle removes revoked sessions and sessions beyond
+their server-side idle or absolute lifetime. Internet-facing sessions use a
+host-only secure cookie; development retains a separate non-prefixed localhost
+cookie so HTTP development remains usable.
 Credentials are encrypted per user with Fernet. The host stores the key as an
 operator-controlled file outside the image; Compose mounts it only into the
 backend and scheduler. Database, session, and rate-limit secrets use the same

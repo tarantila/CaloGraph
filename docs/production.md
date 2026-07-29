@@ -71,6 +71,16 @@ and windows can be adjusted with the documented `LOGIN_*` and
 `PASSWORD_CHANGE_*` values in `.env`; keep the temporary windows bounded to
 avoid permanent account lockouts.
 
+New single-factor passwords require at least 15 characters and are checked
+locally against a bundled digest blocklist derived from SecLists; CaloGraph
+does not send password material to an external breach service. Production
+sessions use an `__Host-` cookie with `Secure`, `HttpOnly`, `Path=/`, no
+`Domain`, and `SameSite=Lax`. The server enforces a 24-hour idle timeout and a
+30-day absolute timeout by default. `SESSION_IDLE_TIMEOUT_HOURS` can be lowered
+or raised to at most seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered
+but not raised above 30 days. The scheduler deletes expired, idle, and revoked
+session rows hourly.
+
 Historical Apple Health uploads default to 500 MiB. The bundled Nginx permits
 512 MiB through `NGINX_MAX_UPLOAD_BYTES` on that one endpoint for multipart
 overhead, forwards the body without proxy buffering, and admits only one

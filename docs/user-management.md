@@ -44,7 +44,9 @@ and expiry, not the original token. The raw token is invalidated by the
 exchange, and the cookie is deleted after registration.
 
 The recipient then chooses a username and a password containing at least
-twelve characters and signs in normally. CaloGraph does not send email.
+15 characters and signs in normally. New passwords are checked locally against
+a bundled common and breached-password digest list; no password or hash prefix
+is sent to a third party. CaloGraph does not send email.
 Path-based links from older versions must be revoked and regenerated because
 supporting them would expose their token during the first HTTP request.
 

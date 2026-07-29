@@ -69,6 +69,10 @@ follows [Semantic Versioning](https://semver.org/).
   circuit-breaker buckets without exposing the browser session secret.
 - Added an iterative pre-Pydantic limit over every raw YAZIO container entry
   and removed sorted day/micronutrient materialization.
+- Raised new single-factor passwords to 15 characters, added a local hashed
+  common-password blocklist, switched production sessions to a secure
+  `__Host-` cookie, and added server-enforced idle/absolute expiry plus hourly
+  session cleanup.
 
 ## [0.1.2] - 2026-07-27
 

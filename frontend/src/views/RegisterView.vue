@@ -81,8 +81,9 @@ async function submit() {
       <p v-if="initializing" aria-live="polite">Einladung wird geprüft …</p>
       <form v-if="invitationReady" @submit.prevent="submit">
         <label class="field">Benutzername<input v-model="username" autocomplete="username" required /></label>
-        <label class="field">Passwort<input v-model="password" type="password" minlength="12" autocomplete="new-password" required /></label>
-        <label class="field">Passwort wiederholen<input v-model="passwordRepeat" type="password" minlength="12" autocomplete="new-password" required /></label>
+        <label class="field">Passwort<input v-model="password" type="password" minlength="15" autocomplete="new-password" required /></label>
+        <label class="field">Passwort wiederholen<input v-model="passwordRepeat" type="password" minlength="15" autocomplete="new-password" required /></label>
+        <p class="muted">Mindestens 15 Zeichen. Lange Passphrasen und Passwortmanager werden unterstützt.</p>
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <button class="button" type="submit" :disabled="loading">
           {{ loading ? 'Konto wird erstellt …' : 'Konto erstellen' }}

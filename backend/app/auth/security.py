@@ -20,6 +20,12 @@ REGISTRATION_STATE_TTL_SECONDS = 10 * 60
 REGISTRATION_STATE_VERSION = "v1"
 
 
+def session_cookie_name() -> str:
+    if settings.cookie_secure:
+        return "__Host-calograph_session"
+    return "calograph_session"
+
+
 def hash_password(password: str) -> str:
     return password_hasher.hash(password)
 
@@ -85,14 +91,22 @@ def verify_registration_state(
     return invitation_id
 
 
-def create_session(db: Session, user: User) -> tuple[UserSession, str, str]:
+def create_session(
+    db: Session,
+    user: User,
+    now: datetime | None = None,
+) -> tuple[UserSession, str, str]:
+    created_at = now or datetime.now(UTC)
     raw_token = secrets.token_urlsafe(48)
     csrf_token = secrets.token_urlsafe(32)
     session = UserSession(
         user_id=user.id,
         token_hash=hash_session_token(raw_token),
         csrf_hash=hash_session_token(csrf_token),
-        expires_at=datetime.now(UTC) + timedelta(days=30),
+        created_at=created_at,
+        expires_at=created_at
+        + timedelta(days=settings.session_absolute_timeout_days),
+        last_used_at=created_at,
     )
     db.add(session)
     db.commit()
@@ -121,3 +135,27 @@ def create_api_token(
 def revoke_user_sessions(db: Session, user_id: object) -> None:
     db.execute(delete(UserSession).where(UserSession.user_id == user_id))
     db.commit()
+
+
+def purge_expired_sessions(
+    db: Session,
+    now: datetime | None = None,
+) -> int:
+    current_time = now or datetime.now(UTC)
+    idle_cutoff = current_time - timedelta(hours=settings.session_idle_timeout_hours)
+    result = db.execute(
+        delete(UserSession).where(
+            (UserSession.revoked_at.is_not(None))
+            | (UserSession.expires_at <= current_time)
+            | (
+                UserSession.last_used_at.is_not(None)
+                & (UserSession.last_used_at <= idle_cutoff)
+            )
+            | (
+                UserSession.last_used_at.is_(None)
+                & (UserSession.created_at <= idle_cutoff)
+            )
+        )
+    )
+    db.commit()
+    return int(getattr(result, "rowcount", 0) or 0)

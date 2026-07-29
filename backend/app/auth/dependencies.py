@@ -1,11 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.auth.security import hash_api_token, hash_session_token
+from app.auth.security import hash_api_token, hash_session_token, session_cookie_name
 from app.config import settings
 from app.database import get_db
 from app.models import ApiToken, User, UserSession
@@ -14,16 +14,20 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    raw = request.cookies.get("calograph_session")
+    raw = request.cookies.get(session_cookie_name())
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Anmeldung erforderlich"
         )
+    now = datetime.now(UTC)
+    idle_cutoff = now - timedelta(hours=settings.session_idle_timeout_hours)
     session = db.scalar(
         select(UserSession).where(
             UserSession.token_hash == hash_session_token(raw),
             UserSession.revoked_at.is_(None),
-            UserSession.expires_at > datetime.now(UTC),
+            UserSession.expires_at > now,
+            func.coalesce(UserSession.last_used_at, UserSession.created_at)
+            > idle_cutoff,
         )
     )
     if not session:
@@ -31,7 +35,7 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, session.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Konto inaktiv")
-    session.last_used_at = datetime.now(UTC)
+    session.last_used_at = now
     db.commit()
     return user
 
@@ -45,7 +49,7 @@ def require_csrf(
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") not in settings.trusted_origin_list:
         raise HTTPException(status_code=403, detail="Unzulässiger Request-Ursprung")
-    raw = request.cookies.get("calograph_session", "")
+    raw = request.cookies.get(session_cookie_name(), "")
     session = db.scalar(
         select(UserSession).where(UserSession.token_hash == hash_session_token(raw))
     )

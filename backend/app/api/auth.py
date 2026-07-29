@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_csrf
+from app.auth.password_policy import PasswordPolicyError, validate_new_password
 from app.auth.security import (
     REGISTRATION_STATE_TTL_SECONDS,
     create_registration_state,
@@ -17,6 +18,7 @@ from app.auth.security import (
     hash_password,
     hash_session_token,
     revoke_user_sessions,
+    session_cookie_name,
     verify_login_password,
     verify_password,
     verify_registration_state,
@@ -165,6 +167,12 @@ def register(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=409, detail="Benutzername ist bereits vergeben")
+    try:
+        validate_new_password(payload.password, payload.username)
+    except PasswordPolicyError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
@@ -240,11 +248,11 @@ def login(
         raise_invalid_login()
 
     clear_rate_limit(db, "login-account", account_key)
-    _, raw_token, csrf_token = create_session(db, user)
+    session, raw_token, csrf_token = create_session(db, user)
     response.set_cookie(
-        "calograph_session",
+        session_cookie_name(),
         raw_token,
-        max_age=30 * 24 * 60 * 60,
+        max_age=int((session.expires_at - session.created_at).total_seconds()),
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
@@ -270,7 +278,7 @@ def csrf_token(
     request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> CsrfResponse:
     del user
-    raw_session = request.cookies.get("calograph_session", "")
+    raw_session = request.cookies.get(session_cookie_name(), "")
     session = db.scalar(
         select(UserSession).where(UserSession.token_hash == hash_session_token(raw_session))
     )
@@ -292,14 +300,20 @@ def logout(
     db: Session = Depends(get_db),
 ) -> None:
     del user
-    raw = request.cookies.get("calograph_session", "")
+    raw = request.cookies.get(session_cookie_name(), "")
     session = db.scalar(
         select(UserSession).where(UserSession.token_hash == hash_session_token(raw))
     )
     if session:
         session.revoked_at = datetime.now(UTC)
         db.commit()
-    response.delete_cookie("calograph_session", path="/")
+    response.delete_cookie(
+        session_cookie_name(),
+        path="/",
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
 
 
 @router.post("/password", status_code=204)
@@ -339,6 +353,12 @@ def change_password(
 
         raise HTTPException(status_code=400, detail="Aktuelles Passwort ist falsch")
     clear_rate_limit(db, "password-change", user_key)
+    try:
+        validate_new_password(payload.new_password, user.username)
+    except PasswordPolicyError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     user.password_hash = hash_password(payload.new_password)
     revoke_user_sessions(db, user.id)
     _log_password_change(request, "succeeded", user_key)

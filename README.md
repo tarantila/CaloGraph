@@ -125,9 +125,9 @@ docker compose exec backend python -m app.cli create-user
 ```
 
 The command prompts for a username and password. Initial passwords must contain
-at least twelve characters. The first user becomes an administrator
-automatically and can create one-time invitation links under
-**Konto → Benutzerverwaltung**.
+at least 15 characters and must not occur in CaloGraph's bundled common-password
+blocklist. The first user becomes an administrator automatically and can create
+one-time invitation links under **Konto → Benutzerverwaltung**.
 
 ### Create an import token
 

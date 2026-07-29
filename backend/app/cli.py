@@ -11,7 +11,12 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
-from app.auth.security import create_api_token, hash_password
+from app.auth.password_policy import (
+    MIN_PASSWORD_LENGTH,
+    PasswordPolicyError,
+    validate_new_password,
+)
+from app.auth.security import create_api_token, hash_password, purge_expired_sessions
 from app.config import ProductionConfigurationError, settings
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
@@ -36,9 +41,13 @@ logger = logging.getLogger("calograph.cli")
 
 def create_user(args: argparse.Namespace) -> None:
     username = args.username or input("Benutzername: ").strip()
-    password = args.password or getpass.getpass("Passwort (mindestens 12 Zeichen): ")
-    if len(password) < 12:
-        raise SystemExit("Das Passwort muss mindestens 12 Zeichen lang sein.")
+    password = args.password or getpass.getpass(
+        f"Passwort (mindestens {MIN_PASSWORD_LENGTH} Zeichen): "
+    )
+    try:
+        validate_new_password(password, username)
+    except PasswordPolicyError as exc:
+        raise SystemExit(str(exc)) from None
     with SessionLocal() as db:
         if db.scalar(select(User).where(User.username == username)):
             if args.if_not_exists:
@@ -315,20 +324,26 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         settings.yazio_scheduler_poll_seconds,
         settings.yazio_scheduler_jitter_minutes,
     )
-    last_rate_limit_cleanup = 0.0
+    last_security_cleanup = 0.0
     while True:
         try:
             attempted, succeeded = run_due_yazio_syncs()
             monotonic_now = time.monotonic()
-            if monotonic_now - last_rate_limit_cleanup >= 3600:
+            if monotonic_now - last_security_cleanup >= 3600:
                 with SessionLocal() as db:
-                    deleted = purge_expired_rate_limit_buckets(
+                    rate_limit_deleted = purge_expired_rate_limit_buckets(
                         db,
                         settings.rate_limit_retention_hours,
                     )
-                last_rate_limit_cleanup = monotonic_now
-                if deleted:
-                    logger.info("rate_limit_cleanup deleted=%s", deleted)
+                    session_deleted = purge_expired_sessions(db)
+                last_security_cleanup = monotonic_now
+                if rate_limit_deleted:
+                    logger.info(
+                        "rate_limit_cleanup deleted=%s",
+                        rate_limit_deleted,
+                    )
+                if session_deleted:
+                    logger.info("session_cleanup deleted=%s", session_deleted)
         except Exception:
             logger.exception("yazio_scheduler_cycle_failed")
             if args.once:
