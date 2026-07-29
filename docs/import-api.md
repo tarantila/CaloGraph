@@ -45,7 +45,15 @@ vitamins and minerals as daily values. Activity energy, steps, and water are
 deliberately ignored. Meal, product, and recipe names are not stored.
 
 Timestamps require a UTC offset. Units are converted in a controlled manner to
-kcal, g, mg, and µg. Negative, infinite, and non-numeric values are rejected.
+kcal, g, mg, and µg. Negative, infinite, non-numeric values and values outside
+the database ranges are rejected. Source fields, external identifiers, units,
+client identifiers, and IANA timezones are validated against the corresponding
+storage contract before persistence.
+
+Structurally unusable JSON receives a generic `422` response without echoing
+submitted fields. A well-formed export can still contain individual invalid
+measurements; those are omitted and reported through `valid_with_errors` or
+`completed_with_errors` so the remaining valid measurements are not discarded.
 
 ## Browser file imports
 

@@ -1,16 +1,40 @@
 import io
+from contextlib import suppress
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from defusedxml.common import DefusedXmlException
+from hypothesis import given
+from hypothesis import settings as hypothesis_settings
+from hypothesis import strategies as st
 
 from app.config import settings
 from app.importers.apple_xml import parse_apple_health_xml
-from app.importers.common import CanonicalSample, local_date_for, normalize_value
+from app.importers.common import (
+    CanonicalSample,
+    decimal_value,
+    local_date_for,
+    normalize_value,
+)
+from app.importers.errors import ImportFormatError
 from app.importers.json_adapter import parse_json_payload
 from app.importers.yazio import parse_yazio_export
+
+json_scalars = (
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=True, allow_infinity=True)
+    | st.text(max_size=140)
+)
+json_values = st.recursive(
+    json_scalars,
+    lambda children: st.lists(children, max_size=4)
+    | st.dictionaries(st.text(max_size=140), children, max_size=4),
+    max_leaves=12,
+)
 
 
 def test_unit_conversions() -> None:
@@ -18,6 +42,19 @@ def test_unit_conversions() -> None:
     assert normalize_value(Decimal("2"), "L", "ml") == Decimal("2000")
     assert normalize_value(Decimal("1.5"), "mg", "ug") == Decimal("1500.0")
     assert normalize_value(Decimal("250"), "mcg", "mg") == Decimal("0.250")
+
+
+def test_decimal_values_fit_the_database_contract() -> None:
+    assert decimal_value("999999999999.123456789012") == Decimal(
+        "999999999999.123456789012"
+    )
+    assert normalize_value(Decimal("1"), "kJ", "kcal").as_tuple().exponent == -6
+    with pytest.raises(ValueError, match=r"Numeric\(24,12\)"):
+        decimal_value("1000000000000")
+    with pytest.raises(ValueError, match=r"Numeric\(24,12\)"):
+        decimal_value("0.1234567890123")
+    with pytest.raises(ValueError, match="zu groß"):
+        normalize_value(Decimal("999999999999"), "g", "ug")
 
 
 def test_berlin_dst_and_midnight_local_date() -> None:
@@ -111,6 +148,90 @@ def test_adapter_caps_materialized_errors_and_unknown_types(monkeypatch) -> None
     assert len(result.errors) == 2
     assert result.unknown_count == 5
     assert len(result.unknown_types) == 2
+
+
+@pytest.mark.parametrize("invalid_item", ["scalar", 1, None, []])
+def test_json_adapters_reject_non_object_list_items(invalid_item: object) -> None:
+    with pytest.raises(ImportFormatError):
+        parse_json_payload({"samples": [invalid_item]}, "Europe/Berlin")
+    with pytest.raises(ImportFormatError):
+        parse_json_payload({"metrics": [invalid_item]}, "Europe/Berlin")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_name", "x" * 191),
+        ("source_identifier", "x" * 256),
+        ("id", "x" * 256),
+        ("unit", "x" * 65),
+        ("timezone", "x" * 65),
+    ],
+)
+def test_json_adapter_rejects_long_database_fields(
+    field: str,
+    value: str,
+) -> None:
+    with pytest.raises(ImportFormatError):
+        parse_json_payload(
+            {
+                "samples": [
+                    {
+                        "type": "dietary_energy",
+                        "value": 1,
+                        "start_at": "2026-07-20T12:00:00+00:00",
+                        field: value,
+                    }
+                ]
+            },
+            "Europe/Berlin",
+        )
+
+
+def test_invalid_sample_timezone_is_safe_partial_error() -> None:
+    secret_timezone = "Mars/secret-timezone"
+    result = parse_json_payload(
+        {
+            "samples": [
+                {
+                    "type": "dietary_energy",
+                    "value": 1,
+                    "start_at": "2026-07-20T12:00:00+00:00",
+                    "timezone": secret_timezone,
+                }
+            ]
+        },
+        "Europe/Berlin",
+    )
+
+    assert result.failed_count == 1
+    assert result.samples == []
+    assert secret_timezone not in result.errors[0][3]
+
+
+@hypothesis_settings(max_examples=75, deadline=None)
+@given(st.lists(json_values, max_size=6))
+def test_calograph_adapter_never_leaks_unexpected_exceptions(samples: list[object]) -> None:
+    with suppress(ImportFormatError):
+        parse_json_payload({"samples": samples}, "Europe/Berlin")
+
+
+@hypothesis_settings(max_examples=75, deadline=None)
+@given(st.lists(json_values, max_size=6))
+def test_health_auto_adapter_never_leaks_unexpected_exceptions(
+    metrics: list[object],
+) -> None:
+    with suppress(ImportFormatError):
+        parse_json_payload({"metrics": metrics}, "Europe/Berlin")
+
+
+@hypothesis_settings(max_examples=75, deadline=None)
+@given(st.dictionaries(st.text(max_size=140), json_values, max_size=6))
+def test_yazio_adapter_never_leaks_unexpected_exceptions(
+    payload: dict[str, object],
+) -> None:
+    with suppress(ImportFormatError):
+        parse_yazio_export(payload, "Europe/Berlin")
 
 
 def test_xml_entities_are_rejected() -> None:

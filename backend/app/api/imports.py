@@ -2,8 +2,9 @@ import json
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import PurePosixPath
-from typing import IO
+from typing import IO, Never
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
@@ -14,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from app.auth.dependencies import current_user, import_token, require_csrf
 from app.config import settings
 from app.database import get_db
+from app.importers.errors import ImportFormatError
 from app.importers.json_adapter import AdapterResult, parse_json_payload
 from app.importers.yazio import parse_yazio_export
 from app.models import ApiToken, ImportBatch, ImportError, User
@@ -45,12 +47,29 @@ async def _json_body(request: Request) -> tuple[bytes, dict[str, object]]:
             raise HTTPException(status_code=413, detail="JSON-Payload ist zu groß")
     raw = bytes(buffer)
     try:
-        payload = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(raw, parse_float=Decimal)
+    except (UnicodeDecodeError, RecursionError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Ungültiges JSON") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="JSON-Wurzel muss ein Objekt sein")
     return raw, payload
+
+
+def _validated_client_identifier(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) > 190 or "\x00" in value:
+        raise HTTPException(status_code=422, detail="X-Client-Identifier ist ungültig")
+    return value
+
+
+def _raise_invalid_import(exc: ValueError) -> Never:
+    detail = (
+        str(exc)
+        if isinstance(exc, ImportFormatError)
+        else "Importdaten enthalten ungültige Felder"
+    )
+    raise HTTPException(status_code=422, detail=detail) from exc
 
 
 def _rate_limit_api_import(
@@ -128,12 +147,13 @@ async def import_json(
 ) -> ImportSummary:
     user, token = identity
     _rate_limit_api_import(db, request, token)
+    validated_client_identifier = _validated_client_identifier(client_identifier)
     with _user_import_slot(user):
         raw, payload = await _json_body(request)
         try:
             result = await run_in_threadpool(parse_json_payload, payload, user.timezone)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _raise_invalid_import(exc)
         return await run_in_threadpool(
             persist_import,
             db,
@@ -141,7 +161,7 @@ async def import_json(
             result,
             raw,
             "application/json",
-            client_identifier or token.label,
+            validated_client_identifier or token.label,
         )
 
 
@@ -158,7 +178,7 @@ async def validate_json(
         try:
             result = await run_in_threadpool(parse_json_payload, payload, user.timezone)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _raise_invalid_import(exc)
         return _validate_result(result)
 
 
@@ -171,9 +191,10 @@ async def import_yazio_json(
 ) -> ImportSummary:
     user, token = identity
     _rate_limit_api_import(db, request, token)
+    validated_client_identifier = _validated_client_identifier(client_identifier)
     with _user_import_slot(user):
         _, payload = await _json_body(request)
-        source_identifier = client_identifier or "yazio-account"
+        source_identifier = validated_client_identifier or "yazio-account"
         try:
             result = await run_in_threadpool(
                 parse_yazio_export,
@@ -182,7 +203,7 @@ async def import_yazio_json(
                 source_identifier,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _raise_invalid_import(exc)
         return await run_in_threadpool(
             persist_import,
             db,
@@ -190,7 +211,7 @@ async def import_yazio_json(
             result,
             None,
             "application/json",
-            client_identifier or token.label,
+            validated_client_identifier or token.label,
         )
 
 
@@ -211,7 +232,7 @@ async def validate_yazio_json(
                 user.timezone,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _raise_invalid_import(exc)
         return _validate_result(result)
 
 
@@ -272,8 +293,8 @@ def import_yazio_file(
     if len(raw) > settings.max_json_payload_bytes:
         raise HTTPException(status_code=413, detail="JSON-Datei ist zu groß")
     try:
-        payload = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(raw, parse_float=Decimal)
+    except (UnicodeDecodeError, RecursionError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Ungültiges JSON") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="JSON-Wurzel muss ein Objekt sein")
@@ -281,7 +302,7 @@ def import_yazio_file(
         try:
             result = parse_yazio_export(payload, user.timezone)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _raise_invalid_import(exc)
         return persist_import(
             db,
             user,

@@ -12,6 +12,7 @@ from app.importers.common import (
     normalize_value,
     parse_datetime,
 )
+from app.importers.errors import safe_sample_error
 from app.importers.json_adapter import AdapterResult
 
 
@@ -66,7 +67,12 @@ def iter_apple_health_xml(
             )
         except (KeyError, TypeError, ValueError) as exc:
             record = AppleHealthRecord(
-                error=(item_index, raw_type, "invalid_sample", str(exc))
+                error=(
+                    item_index,
+                    raw_type,
+                    "invalid_sample",
+                    safe_sample_error(exc),
+                )
             )
         yield record
         item_index += 1

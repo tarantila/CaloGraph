@@ -46,6 +46,10 @@ follows [Semantic Versioning](https://semver.org/).
 - Moved invitation secrets from URL paths into browser-only fragments, exchanged
   them for a signed ten-minute `HttpOnly` registration state, and removed query
   strings plus legacy invitation tokens from the bundled Nginx access log.
+- Added typed validation boundaries for every JSON import format, enforced
+  database-sized identifiers, IANA timezones, and decimal ranges before
+  persistence, and converted malformed authenticated imports into safe `422`
+  responses without reflecting submitted values.
 
 ## [0.1.2] - 2026-07-27
 

@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.importers.apple_xml import iter_apple_health_xml
 from app.importers.common import CanonicalSample, local_date_for
-from app.importers.json_adapter import AdapterResult, ImportLimitError
+from app.importers.errors import ImportLimitError
+from app.importers.json_adapter import AdapterResult
 from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.schemas import ImportSummary
 
