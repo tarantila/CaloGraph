@@ -1,5 +1,13 @@
 version: 2
 
+multi-ecosystem-groups:
+  playwright:
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:10"
+      timezone: Europe/Berlin
+
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -12,6 +20,20 @@ updates:
       github-actions:
         patterns: ["*"]
 
+  # The npm test runner and its browser image must always use the same version.
+  - package-ecosystem: docker
+    directory: /
+    patterns: ["playwright"]
+    multi-ecosystem-group: playwright
+
+  - package-ecosystem: npm
+    directory: /frontend
+    patterns: ["@playwright/test"]
+    multi-ecosystem-group: playwright
+    allow:
+      - dependency-name: "@playwright/test"
+        dependency-type: development
+
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -19,6 +41,8 @@ updates:
       day: monday
       time: "04:15"
       timezone: Europe/Berlin
+    ignore:
+      - dependency-name: playwright
     groups:
       container-bases:
         patterns: ["*"]
@@ -30,6 +54,8 @@ updates:
       day: monday
       time: "04:30"
       timezone: Europe/Berlin
+    ignore:
+      - dependency-name: "@playwright/test"
     groups:
       frontend-production:
         dependency-type: production
