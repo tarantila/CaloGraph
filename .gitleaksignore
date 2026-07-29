@@ -1,0 +1,5 @@
+# Exact historical false positives: inert test/documentation placeholders only.
+aa697b7b16c47c014cb5aa73f4efe3858cfacd22:backend/tests/test_auth_api.py:generic-api-key:124
+97edd630347009ff2b56b452db2c96fb40afdfba:scripts/production-smoke.sh:generic-api-key:48
+b4ca2cf6e3521859da6f4ec8c3a34a76e727463c:README.md:curl-auth-header:77
+b4ca2cf6e3521859da6f4ec8c3a34a76e727463c:README.md:curl-auth-header:89

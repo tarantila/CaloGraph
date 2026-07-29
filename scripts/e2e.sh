@@ -8,7 +8,11 @@ TRUSTED_HOSTS=${TRUSTED_HOSTS:-localhost,127.0.0.1,frontend}
 export TRUSTED_HOSTS
 
 cd "$project_root"
-docker compose up -d --build postgres backend frontend
+if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
+  docker compose up -d --no-build postgres backend frontend
+else
+  docker compose up -d --build postgres backend frontend
+fi
 docker compose exec -T backend python -m app.cli create-user \
   --username "$e2e_username" \
   --password "$e2e_password" \
@@ -18,8 +22,17 @@ token_output=$(docker compose exec -T backend python -m app.cli create-import-to
   --label playwright)
 e2e_token=$(printf '%s\n' "$token_output" | tail -n 1)
 
-docker compose --profile test run --rm --build \
-  -e E2E_USERNAME="$e2e_username" \
-  -e E2E_PASSWORD="$e2e_password" \
-  -e E2E_IMPORT_TOKEN="$e2e_token" \
-  e2e
+if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
+  docker compose --profile test build e2e
+  docker compose --profile test run --rm \
+    -e E2E_USERNAME="$e2e_username" \
+    -e E2E_PASSWORD="$e2e_password" \
+    -e E2E_IMPORT_TOKEN="$e2e_token" \
+    e2e
+else
+  docker compose --profile test run --rm --build \
+    -e E2E_USERNAME="$e2e_username" \
+    -e E2E_PASSWORD="$e2e_password" \
+    -e E2E_IMPORT_TOKEN="$e2e_token" \
+    e2e
+fi

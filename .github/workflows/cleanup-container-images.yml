@@ -1,0 +1,105 @@
+name: Clean up container images
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report candidates without deleting them
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cleanup-container-images
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      RETENTION_DAYS: "30"
+      KEEP_RECENT_UNRELEASED: "10"
+      MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete old non-release image versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            dry_run="${MANUAL_DRY_RUN:-true}"
+          else
+            dry_run=false
+          fi
+          if [[ "${{ github.event.repository.owner.type }}" == "Organization" ]]; then
+            owner_scope=orgs
+          else
+            owner_scope=users
+          fi
+
+          cutoff_epoch=$(date --utc --date="-${RETENTION_DAYS} days" +%s)
+          for package in calograph-backend calograph-frontend; do
+            pages_file="${RUNNER_TEMP}/${package}-pages.json"
+            versions_file="${RUNNER_TEMP}/${package}-versions.json"
+            candidates_file="${RUNNER_TEMP}/${package}-candidates.tsv"
+            api_base="/${owner_scope}/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions"
+
+            if ! gh api --paginate "${api_base}?per_page=100" >"$pages_file"; then
+              printf '%s: package not available or not manageable; skipping\n' "$package"
+              continue
+            fi
+            jq -s 'add // []' "$pages_file" >"$versions_file"
+            jq --raw-output \
+              --argjson cutoff "$cutoff_epoch" \
+              --argjson keep "$KEEP_RECENT_UNRELEASED" '
+                [
+                  .[]
+                  | select((.metadata.container.tags // []) | length > 0)
+                  | select(
+                      (
+                        (.metadata.container.tags // [])
+                        | any(
+                            test(
+                              "^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$"
+                            )
+                          )
+                      )
+                      | not
+                    )
+                ]
+                | sort_by(.created_at)
+                | reverse
+                | .[$keep:][]
+                | select((.created_at | fromdateiso8601) < $cutoff)
+                | [
+                    (.id | tostring),
+                    .created_at,
+                    ((.metadata.container.tags // []) | join(","))
+                  ]
+                | @tsv
+              ' "$versions_file" >"$candidates_file"
+
+            if [[ ! -s "$candidates_file" ]]; then
+              printf '%s: no eligible versions\n' "$package"
+              continue
+            fi
+
+            while IFS=$'\t' read -r version_id created_at tags; do
+              printf '%s: %s created %s tags=%s\n' \
+                "$package" "$version_id" "$created_at" "$tags"
+              if [[ "$dry_run" != "true" ]]; then
+                gh api --method DELETE "${api_base}/${version_id}"
+              fi
+            done <"$candidates_file"
+          done
+
+          if [[ "$dry_run" == "true" ]]; then
+            printf 'Dry run only; no package version was deleted.\n'
+          fi

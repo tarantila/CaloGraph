@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:18.4-alpine
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-calograph}
@@ -35,7 +35,7 @@ services:
     pids_limit: ${POSTGRES_PIDS_LIMIT:--1}
 
   backend:
-    image: calograph-backend:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.1.2}
     build:
       context: .
       dockerfile: Dockerfile
@@ -144,7 +144,7 @@ services:
       - /tmp:size=${BACKEND_TMPFS_BYTES:-629145600},mode=1777
 
   yazio-scheduler:
-    image: calograph-backend:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.1.2}
     restart: unless-stopped
     command: ["python", "-m", "app.cli", "run-yazio-scheduler"]
     environment:
@@ -201,7 +201,7 @@ services:
       - /tmp:size=64m,mode=1777
 
   frontend:
-    image: calograph-frontend:${CALOGRAPH_VERSION:-0.1.2}
+    image: ${CALOGRAPH_FRONTEND_IMAGE:-calograph-frontend}:${CALOGRAPH_VERSION:-0.1.2}
     build:
       context: .
       dockerfile: Dockerfile
@@ -257,7 +257,7 @@ services:
 
   postgres-ci:
     profiles: [test]
-    image: postgres:18.4-alpine
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     environment:
       POSTGRES_DB: calograph_test
       POSTGRES_USER: calograph_test

@@ -1,18 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-ARG PYTHON_VERSION=3.14.6
-ARG UV_VERSION=0.11.29
-ARG NODE_VERSION=24.18.0
-ARG PLAYWRIGHT_VERSION=1.61.1
-ARG NGINX_VERSION=1.30.4
-
 # -----------------------------------------------------------------------------
 # Backend
 # -----------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+FROM ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc AS uv
 
-FROM python:${PYTHON_VERSION}-slim AS backend-base
+FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4 AS backend-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -39,7 +33,7 @@ COPY backend/tests ./tests
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-FROM python:${PYTHON_VERSION}-slim AS backend-runtime
+FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4 AS backend-runtime
 
 ARG APP_VERSION=development
 ARG APP_UID=10001
@@ -62,10 +56,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UVICORN_ACCESS_LOG=true \
     RUN_MIGRATIONS=true
 
-RUN groupadd --gid "${APP_GID}" calograph \
-    && useradd --uid "${APP_UID}" --gid calograph \
-        --home-dir /nonexistent --no-create-home \
-        --shell /usr/sbin/nologin calograph
+RUN addgroup -S -g "${APP_GID}" calograph \
+    && adduser -S -D -H -u "${APP_UID}" -G calograph \
+        -s /sbin/nologin calograph
 
 WORKDIR /app
 
@@ -83,7 +76,7 @@ CMD ["serve"]
 # Frontend
 # -----------------------------------------------------------------------------
 
-FROM node:${NODE_VERSION}-alpine AS frontend-dependencies
+FROM node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS frontend-dependencies
 
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
@@ -101,7 +94,7 @@ FROM frontend-dependencies AS frontend-build
 COPY frontend/ .
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble AS frontend-e2e
+FROM mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48 AS frontend-e2e
 
 WORKDIR /work
 COPY frontend/package.json frontend/package-lock.json ./
@@ -110,7 +103,7 @@ COPY frontend/ .
 
 CMD ["npx", "playwright", "test"]
 
-FROM nginxinc/nginx-unprivileged:${NGINX_VERSION}-alpine AS frontend-runtime
+FROM nginxinc/nginx-unprivileged:1.30.4-alpine@sha256:44e36330f74d4f3a1d4e222acca9e23b401fb87811a7597024502bb759c4dd49 AS frontend-runtime
 
 ARG APP_VERSION=development
 

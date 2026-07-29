@@ -7,20 +7,46 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_VERSION: 8.30.1
+
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: 3.14.6
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: 0.11.29
           enable-cache: true
       - working-directory: backend
         run: uv sync --frozen --all-extras
+      - name: Audit production Python dependencies
+        working-directory: backend
+        run: |
+          uv export --frozen --no-dev --no-emit-project \
+            >/tmp/calograph-production-requirements.txt
+          uv run pip-audit --disable-pip \
+            --requirement /tmp/calograph-production-requirements.txt
+      - name: Audit complete Python environment
+        working-directory: backend
+        run: uv run pip-audit --skip-editable
       - working-directory: backend
         run: uv run ruff check app tests
       - working-directory: backend
@@ -32,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18.4-alpine
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
         env:
           POSTGRES_DB: calograph_test
           POSTGRES_USER: calograph_test
@@ -53,11 +79,11 @@ jobs:
       RATE_LIMIT_SECRET: test-rate-limit-secret-with-at-least-32-chars
       TRUSTED_HOSTS: testserver,localhost,127.0.0.1
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: 3.14.6
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: 0.11.29
           enable-cache: true
@@ -71,14 +97,20 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - working-directory: frontend
         run: npm ci
+      - name: Audit production npm dependencies
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+      - name: Audit complete npm dependency tree
+        working-directory: frontend
+        run: npm audit --audit-level=high
       - working-directory: frontend
         run: npm run lint
       - working-directory: frontend
@@ -90,14 +122,236 @@ jobs:
 
   containers-and-e2e:
     runs-on: ubuntu-latest
-    needs: [backend, backend-postgres, frontend]
+    needs: [secret-scan, backend, backend-postgres, frontend]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build runtime images
+        run: |
+          docker build \
+            --target backend-runtime \
+            --build-arg "APP_VERSION=ci-${GITHUB_SHA}" \
+            --tag calograph-backend:ci \
+            .
+          docker build \
+            --target frontend-runtime \
+            --build-arg "APP_VERSION=ci-${GITHUB_SHA}" \
+            --tag calograph-frontend:ci \
+            .
+      - name: Scan backend runtime image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-backend:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          scanners: vuln
+      - name: Scan frontend runtime image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-frontend:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          scanners: vuln
+      - run: mkdir -p sbom
+      - name: Create backend SPDX SBOM
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-backend:ci
+          format: spdx-json
+          output: sbom/calograph-backend.spdx.json
+          vuln-type: os,library
+          scanners: vuln
+      - name: Create frontend SPDX SBOM
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-frontend:ci
+          format: spdx-json
+          output: sbom/calograph-frontend.spdx.json
+          vuln-type: os,library
+          scanners: vuln
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-sboms-${{ github.sha }}
+          path: sbom/*.spdx.json
+          if-no-files-found: error
+          retention-days: 30
       - run: sudo apt-get update && sudo apt-get install --yes age
       - run: cp .env.example .env
       - run: ./scripts/init-secrets.sh
-      - run: docker compose build
-      - run: ./scripts/e2e.sh
-      - run: ./scripts/production-smoke.sh
+      - name: Test the prebuilt runtime images
+        env:
+          CALOGRAPH_VERSION: ci
+          E2E_USE_PREBUILT_IMAGES: "true"
+        run: ./scripts/e2e.sh
+      - name: Run production smoke checks against prebuilt images
+        env:
+          CALOGRAPH_VERSION: ci
+          PRODUCTION_SMOKE_USE_PREBUILT_IMAGES: "true"
+        run: ./scripts/production-smoke.sh
       - if: always()
         run: docker compose logs --no-color --tail=300
+      - if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  publish-images:
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    needs: [containers-and-e2e]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Prepare image names and validate release tag
+        id: images
+        shell: bash
+        run: |
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]] \
+            && [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            printf 'Refusing non-SemVer release tag: %s\n' "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          printf 'backend=ghcr.io/%s/calograph-backend\n' "$owner" >>"$GITHUB_OUTPUT"
+          printf 'frontend=ghcr.io/%s/calograph-frontend\n' "$owner" >>"$GITHUB_OUTPUT"
+      - name: Build candidate images
+        run: |
+          docker build \
+            --target backend-runtime \
+            --build-arg "APP_VERSION=${GITHUB_REF_NAME}" \
+            --tag calograph-backend:publish \
+            .
+          docker build \
+            --target frontend-runtime \
+            --build-arg "APP_VERSION=${GITHUB_REF_NAME}" \
+            --tag calograph-frontend:publish \
+            .
+      - run: sudo apt-get update && sudo apt-get install --yes age
+      - run: cp .env.example .env
+      - run: ./scripts/init-secrets.sh
+      - name: Test the exact candidate images
+        env:
+          CALOGRAPH_VERSION: publish
+          E2E_USE_PREBUILT_IMAGES: "true"
+        run: ./scripts/e2e.sh
+      - name: Production-smoke the exact candidate images
+        env:
+          CALOGRAPH_VERSION: publish
+          PRODUCTION_SMOKE_USE_PREBUILT_IMAGES: "true"
+        run: ./scripts/production-smoke.sh
+      - name: Scan backend candidate
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-backend:publish
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          scanners: vuln
+      - name: Scan frontend candidate
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-frontend:publish
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          scanners: vuln
+      - run: mkdir -p sbom
+      - name: Create backend release SPDX SBOM
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-backend:publish
+          format: spdx-json
+          output: sbom/calograph-backend.spdx.json
+          vuln-type: os,library
+          scanners: vuln
+      - name: Create frontend release SPDX SBOM
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: calograph-frontend:publish
+          format: spdx-json
+          output: sbom/calograph-frontend.spdx.json
+          vuln-type: os,library
+          scanners: vuln
+      - name: Sign in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish tested images
+        id: publish
+        shell: bash
+        env:
+          BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.images.outputs.frontend }}
+        run: |
+          tags=("sha-${GITHUB_SHA}")
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tags+=("$GITHUB_REF_NAME" "latest")
+          else
+            tags+=("edge")
+          fi
+
+          for tag in "${tags[@]}"; do
+            docker tag calograph-backend:publish "${BACKEND_IMAGE}:${tag}"
+            docker tag calograph-frontend:publish "${FRONTEND_IMAGE}:${tag}"
+            docker push "${BACKEND_IMAGE}:${tag}"
+            docker push "${FRONTEND_IMAGE}:${tag}"
+          done
+
+          backend_digest=$(docker buildx imagetools inspect \
+            "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" |
+            awk '$1 == "Digest:" {print $2; exit}')
+          frontend_digest=$(docker buildx imagetools inspect \
+            "${FRONTEND_IMAGE}:sha-${GITHUB_SHA}" |
+            awk '$1 == "Digest:" {print $2; exit}')
+          [[ "$backend_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$frontend_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'backend_digest=%s\n' "$backend_digest" >>"$GITHUB_OUTPUT"
+          printf 'frontend_digest=%s\n' "$frontend_digest" >>"$GITHUB_OUTPUT"
+      - name: Attest backend build provenance
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.backend }}
+          subject-digest: ${{ steps.publish.outputs.backend_digest }}
+          push-to-registry: true
+      - name: Attest frontend build provenance
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.frontend }}
+          subject-digest: ${{ steps.publish.outputs.frontend_digest }}
+          push-to-registry: true
+      - name: Attest backend SPDX SBOM
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.backend }}
+          subject-digest: ${{ steps.publish.outputs.backend_digest }}
+          sbom-path: sbom/calograph-backend.spdx.json
+          push-to-registry: true
+      - name: Attest frontend SPDX SBOM
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.frontend }}
+          subject-digest: ${{ steps.publish.outputs.frontend_digest }}
+          sbom-path: sbom/calograph-frontend.spdx.json
+          push-to-registry: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: published-runtime-sboms-${{ github.sha }}
+          path: sbom/*.spdx.json
+          if-no-files-found: error
+          retention-days: 90
+      - if: always()
+        run: docker compose logs --no-color --tail=300
+      - if: always()
+        run: docker compose down --volumes --remove-orphans
+      - if: always()
+        run: docker logout ghcr.io

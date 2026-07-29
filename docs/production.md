@@ -207,3 +207,11 @@ The recommended process is documented in
 [backup-restore.md](backup-restore.md) and reproduced by
 `scripts/update-containers.sh`. Every update begins with a validated database
 dump. Source updates and container updates remain separate, auditable steps.
+
+Release images are available from GHCR after the complete CI, exact-image
+browser/production-smoke tests, and high/critical vulnerability gate succeed.
+Use `CALOGRAPH_BACKEND_IMAGE`, `CALOGRAPH_FRONTEND_IMAGE`, and a release
+`CALOGRAPH_VERSION`, then start with `--no-build` so deployment cannot silently
+replace the tested image with a local build. Image tags, signed attestations,
+SPDX SBOMs, dependency automation, and cleanup rules are described in
+[supply-chain.md](supply-chain.md).

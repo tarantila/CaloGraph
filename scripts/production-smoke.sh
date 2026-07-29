@@ -108,7 +108,13 @@ age-keygen -o "$age_identity" >/dev/null 2>&1
 age-keygen -y "$age_identity" >"$age_recipients"
 
 cd "$project_root"
-if ! compose up -d --build --wait --wait-timeout 240 postgres backend frontend; then
+if [ "${PRODUCTION_SMOKE_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
+  smoke_build_option=--no-build
+else
+  smoke_build_option=--build
+fi
+if ! compose up -d "$smoke_build_option" --wait --wait-timeout 240 \
+  postgres backend frontend; then
   fail "Production Compose stack did not become healthy."
 fi
 

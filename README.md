@@ -126,6 +126,12 @@ without rebuilding the image. Build labels and the backend UID/GID can
 optionally be overridden with `CALOGRAPH_VERSION`, `CALOGRAPH_UID`, and
 `CALOGRAPH_GID`.
 
+GitHub CI also builds, scans, tests, signs, and publishes release images to
+GHCR. Set `CALOGRAPH_BACKEND_IMAGE`, `CALOGRAPH_FRONTEND_IMAGE`, and an existing
+`vX.Y.Z` `CALOGRAPH_VERSION` to use them with `docker compose up --no-build`.
+The immutable pins, SBOMs, provenance verification, and retention policy are
+documented in [docs/supply-chain.md](docs/supply-chain.md).
+
 ### Create the first user
 
 ```bash

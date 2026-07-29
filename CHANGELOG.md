@@ -86,6 +86,18 @@ follows [Semantic Versioning](https://semver.org/).
   an expired or revoked session.
 - Added regression coverage proving a successful password change invalidates
   every existing browser session before the new password can sign in.
+- Pinned every GitHub Action and container base to immutable revisions, added
+  weekly Dependabot maintenance, and forced the affected development-only
+  `brace-expansion` tree onto the patched 5.0.8 release.
+- Moved the backend build and runtime to pinned Alpine 3.23 after the current
+  Debian slim base failed the strict image gate on 23 unfixed high/critical OS
+  findings; both final runtime images now pass that gate without exclusions.
+- Added production and full-tree npm/Python audits, full-history Gitleaks
+  scanning, and blocking high/critical Trivy checks for both runtime images.
+- Added exact-image browser and production-smoke gates before GHCR publication,
+  SPDX SBOM artifacts, and Sigstore-backed build/SBOM attestations.
+- Added conservative GHCR retention that preserves every release-tagged image
+  and tagless attestation record while aging out old non-release builds.
 
 ## [0.1.2] - 2026-07-27
 
