@@ -1,15 +1,19 @@
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.auth.security import hash_mfa_recovery_code, hash_password
 from app.config import settings
 from app.database import engine as application_engine
-from app.models import RateLimitBucket
+from app.models import MfaRecoveryCode, RateLimitBucket, User, UserTotpCredential
 from app.services.import_guard import ImportAlreadyRunning, import_slot
+from app.services.mfa import consume_mfa_factor
+from app.services.mfa_crypto import encrypt_mfa_secret
 from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
@@ -102,3 +106,63 @@ def test_postgres_yazio_slots_enforce_user_and_global_capacity(
 
     with yazio_operation_slot("user-3"):
         pass
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
+)
+def test_concurrent_recovery_code_consumption_succeeds_only_once() -> None:
+    database_url = os.environ["CALOGRAPH_POSTGRES_TEST_URL"]
+    engine = create_engine(database_url, pool_pre_ping=True)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    raw_code = "A1B2-C3D4-E5F6-0123"
+    with sessions() as db:
+        user = User(
+            username=f"mfa-race-{uuid.uuid4()}",
+            password_hash=hash_password("integration-password-is-unique"),
+        )
+        db.add(user)
+        db.flush()
+        db.add(
+            UserTotpCredential(
+                user_id=user.id,
+                encrypted_secret=encrypt_mfa_secret("JBSWY3DPEHPK3PXP"),
+                enabled_at=datetime.now(UTC),
+            )
+        )
+        db.add(
+            MfaRecoveryCode(
+                user_id=user.id,
+                code_hash=hash_mfa_recovery_code(raw_code.replace("-", "")),
+            )
+        )
+        db.commit()
+        user_id = user.id
+
+    def consume(_: int) -> bool:
+        with sessions() as db:
+            credential = db.scalar(
+                select(UserTotpCredential)
+                .where(UserTotpCredential.user_id == user_id)
+                .with_for_update()
+            )
+            assert credential is not None
+            accepted = consume_mfa_factor(db, credential, raw_code)
+            if accepted:
+                db.commit()
+            else:
+                db.rollback()
+            return accepted
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(consume, range(2)))
+        assert sorted(results) == [False, True]
+    finally:
+        with sessions() as db:
+            item = db.get(User, user_id)
+            if item is not None:
+                db.delete(item)
+                db.commit()
+        engine.dispose()

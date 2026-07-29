@@ -73,6 +73,10 @@ follows [Semantic Versioning](https://semver.org/).
   common-password blocklist, switched production sessions to a secure
   `__Host-` cookie, and added server-enforced idle/absolute expiry plus hourly
   session cleanup.
+- Added optional TOTP authentication with a dedicated encryption key, strict
+  short-lived login challenges, replay protection, one-time recovery codes,
+  management rate limits, session revocation, and an explicit administrative
+  recovery command.
 
 ## [0.1.2] - 2026-07-27
 

@@ -24,6 +24,7 @@ def valid_production_settings(**overrides) -> Settings:
         "trusted_proxy_networks": "172.18.0.0/16",
         "enable_hsts": True,
         "credential_encryption_key": Fernet.generate_key().decode(),
+        "mfa_encryption_key": Fernet.generate_key().decode(),
         "yazio_enabled": True,
     }
     values.update(overrides)
@@ -99,6 +100,7 @@ def clear_direct_secret_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "SESSION_SECRET",
         "RATE_LIMIT_SECRET",
         "CREDENTIAL_ENCRYPTION_KEY",
+        "MFA_ENCRYPTION_KEY",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -110,6 +112,7 @@ def test_secret_files_are_loaded_and_database_url_is_built(
     clear_direct_secret_environment(monkeypatch)
     database_password = "database password/with?#characters"
     credential_key = Fernet.generate_key().decode()
+    mfa_key = Fernet.generate_key().decode()
     configured = Settings(
         _env_file=None,
         environment="development",
@@ -135,6 +138,9 @@ def test_secret_files_are_loaded_and_database_url_is_built(
         credential_encryption_key_file=str(
             write_secret(tmp_path / "credential-key", f"{credential_key}\n")
         ),
+        mfa_encryption_key_file=str(
+            write_secret(tmp_path / "mfa-key", f"{mfa_key}\n")
+        ),
     )
 
     database_url = make_url(configured.database_url)
@@ -146,6 +152,7 @@ def test_secret_files_are_loaded_and_database_url_is_built(
     assert configured.session_secret == "session-secret-from-file-0123456789"
     assert configured.rate_limit_secret == "rate-limit-secret-from-file-0123456789"
     assert configured.credential_encryption_key == credential_key
+    assert configured.mfa_encryption_key == mfa_key
     rendered = repr(configured)
     serialized = configured.model_dump()
     for sensitive_value in (
@@ -153,6 +160,7 @@ def test_secret_files_are_loaded_and_database_url_is_built(
         configured.session_secret,
         configured.rate_limit_secret,
         credential_key,
+        mfa_key,
         str(tmp_path),
     ):
         assert sensitive_value not in rendered
@@ -167,6 +175,8 @@ def test_secret_files_are_loaded_and_database_url_is_built(
         "rate_limit_secret_file",
         "credential_encryption_key",
         "credential_encryption_key_file",
+        "mfa_encryption_key",
+        "mfa_encryption_key_file",
     ):
         assert excluded_field not in serialized
 
@@ -187,6 +197,11 @@ def test_secret_files_are_loaded_and_database_url_is_built(
         (
             "credential_encryption_key",
             "credential_encryption_key_file",
+            Fernet.generate_key().decode(),
+        ),
+        (
+            "mfa_encryption_key",
+            "mfa_encryption_key_file",
             Fernet.generate_key().decode(),
         ),
         (
@@ -316,6 +331,13 @@ def test_valid_production_configuration_passes_runtime_check() -> None:
     valid_production_settings().validate_runtime_security()
 
 
+def test_production_backend_requires_dedicated_mfa_encryption_key() -> None:
+    configured = valid_production_settings(mfa_encryption_key="")
+
+    with pytest.raises(ProductionConfigurationError, match="MFA_ENCRYPTION_KEY"):
+        configured.validate_runtime_security("backend")
+
+
 def test_development_configuration_allows_local_http() -> None:
     configured = Settings(
         _env_file=None,
@@ -341,6 +363,7 @@ def test_unsafe_production_configuration_reports_all_variable_names() -> None:
         trusted_proxy_networks="127.0.0.1/32",
         enable_hsts=False,
         credential_encryption_key="",
+        mfa_encryption_key="",
         max_upload_bytes=50 * 1024 * 1024,
         max_json_payload_bytes=60 * 1024 * 1024,
         max_zip_uncompressed_bytes=40 * 1024 * 1024,
@@ -363,6 +386,7 @@ def test_unsafe_production_configuration_reports_all_variable_names() -> None:
         "RATE_LIMIT_SECRET",
         "DATABASE_URL",
         "CREDENTIAL_ENCRYPTION_KEY",
+        "MFA_ENCRYPTION_KEY",
         "MAX_JSON_PAYLOAD_BYTES",
         "MAX_ZIP_UNCOMPRESSED_BYTES",
         "NGINX_MAX_UPLOAD_BYTES",

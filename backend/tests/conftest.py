@@ -45,6 +45,8 @@ for variable in (
     "RATE_LIMIT_SECRET_FILE",
     "CREDENTIAL_ENCRYPTION_KEY",
     "CREDENTIAL_ENCRYPTION_KEY_FILE",
+    "MFA_ENCRYPTION_KEY",
+    "MFA_ENCRYPTION_KEY_FILE",
 ):
     os.environ.pop(variable, None)
 os.environ["ENVIRONMENT"] = "test"
@@ -54,6 +56,7 @@ os.environ["RATE_LIMIT_SECRET"] = "test-rate-limit-secret-with-at-least-32-chars
 os.environ["TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1"
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -62,6 +65,8 @@ from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import NutritionTarget, TrackingQualitySettings, User
+
+settings.mfa_encryption_key = Fernet.generate_key().decode()
 
 
 def assert_safe_test_database() -> None:

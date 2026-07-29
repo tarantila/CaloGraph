@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.auth.password_policy import (
     MIN_PASSWORD_LENGTH,
@@ -21,7 +21,15 @@ from app.config import ProductionConfigurationError, settings
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import NutritionTarget, TrackingQualitySettings, User, YazioConnection
+from app.models import (
+    MfaRecoveryCode,
+    NutritionTarget,
+    TrackingQualitySettings,
+    User,
+    UserSession,
+    UserTotpCredential,
+    YazioConnection,
+)
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     generate_credential_key,
@@ -87,6 +95,27 @@ def create_token(args: argparse.Namespace) -> None:
         _, raw = create_api_token(db, user, label)
     print("Import-Token (wird nur dieses eine Mal angezeigt):")
     print(raw)
+
+
+def reset_mfa(args: argparse.Namespace) -> None:
+    username = args.username or input("Benutzername: ").strip()
+    if args.confirm != username:
+        raise SystemExit(
+            "MFA-Rücksetzung abgebrochen. --confirm muss exakt dem Benutzernamen entsprechen."
+        )
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        if user is None:
+            raise SystemExit("Benutzer nicht gefunden.")
+        db.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user.id))
+        db.execute(
+            delete(UserTotpCredential).where(UserTotpCredential.user_id == user.id)
+        )
+        db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+        db.commit()
+    print(
+        f"MFA für '{username}' wurde zurückgesetzt; alle Sitzungen wurden widerrufen."
+    )
 
 
 def seed_demo(args: argparse.Namespace) -> None:
@@ -377,6 +406,10 @@ def parser() -> argparse.ArgumentParser:
     token.add_argument("--username")
     token.add_argument("--label")
     token.set_defaults(handler=create_token)
+    mfa_reset = commands.add_parser("reset-mfa")
+    mfa_reset.add_argument("--username")
+    mfa_reset.add_argument("--confirm", required=True)
+    mfa_reset.set_defaults(handler=reset_mfa)
     seed = commands.add_parser("seed-demo-data")
     seed.add_argument("--username", default="admin")
     seed.set_defaults(handler=seed_demo)

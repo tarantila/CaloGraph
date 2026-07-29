@@ -63,6 +63,14 @@ session secret. `.env` contains paths, not secret values. The files must be
 included in the encrypted backup and permissions strategy together with the
 database. YAZIO network work runs in a short-lived isolated child process with
 explicit request timeouts and a parent-enforced absolute deadline.
+
+TOTP uses a separate Fernet key mounted only into the backend. Password login
+for an enrolled user yields a signed five-minute challenge instead of a
+session; a session is issued after the second factor succeeds. The database
+stores encrypted TOTP seeds, the last accepted time step for replay
+protection, and HMAC-only one-time recovery codes. MFA-management actions
+require the current password plus a factor and preserve only the current
+session.
 PostgreSQL advisory locks enforce one operation per user and a small
 deployment-wide concurrency budget across HTTP workers and the scheduler. The
 same database also stores temporary rate-limit and circuit-breaker buckets, so

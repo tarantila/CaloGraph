@@ -40,6 +40,34 @@ class CsrfResponse(BaseModel):
     csrf_token: str
 
 
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=64)
+
+
+class MfaManagementRequest(MfaCodeRequest):
+    current_password: str = Field(min_length=8, max_length=1024)
+
+
+class TotpSetupRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=1024)
+
+
+class TotpSetupResponse(BaseModel):
+    secret: str
+    provisioning_uri: str
+    qr_svg_data_url: str
+
+
+class MfaStatusResponse(BaseModel):
+    totp_enabled: bool
+    totp_setup_pending: bool
+    recovery_codes_remaining: int
+
+
+class RecoveryCodesResponse(BaseModel):
+    recovery_codes: list[str]
+
+
 class RegistrationRequest(BaseModel):
     username: str = Field(
         min_length=1,

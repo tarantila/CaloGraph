@@ -7,6 +7,7 @@ import type { User } from '../types'
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const loading = ref(false)
+  const mfaRequired = ref(false)
 
   async function ensureUser(): Promise<boolean> {
     if (user.value) return true
@@ -18,18 +19,52 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(username: string, password: string): Promise<void> {
+  async function login(username: string, password: string): Promise<boolean> {
     loading.value = true
     try {
-      const result = await api<{ user: User; csrf_token: string }>('/auth/login', {
+      const result = await api<
+        | { mfa_required: true }
+        | { mfa_required: false; user: User; csrf_token: string }
+      >('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       })
+      if (result.mfa_required) {
+        user.value = null
+        setCsrfToken(null)
+        mfaRequired.value = true
+        return false
+      }
       user.value = result.user
       setCsrfToken(result.csrf_token)
+      mfaRequired.value = false
+      return true
     } finally {
       loading.value = false
     }
+  }
+
+  async function verifyMfa(code: string): Promise<void> {
+    loading.value = true
+    try {
+      const result = await api<{
+        mfa_required: false
+        user: User
+        csrf_token: string
+      }>('/auth/mfa/totp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      })
+      user.value = result.user
+      setCsrfToken(result.csrf_token)
+      mfaRequired.value = false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function cancelMfa(): void {
+    mfaRequired.value = false
   }
 
   async function logout(): Promise<void> {
@@ -38,6 +73,14 @@ export const useAuthStore = defineStore('auth', () => {
     setCsrfToken(null)
   }
 
-  return { user, loading, ensureUser, login, logout }
+  return {
+    user,
+    loading,
+    mfaRequired,
+    ensureUser,
+    login,
+    verifyMfa,
+    cancelMfa,
+    logout,
+  }
 })
-

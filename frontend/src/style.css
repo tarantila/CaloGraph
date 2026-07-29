@@ -1020,6 +1020,46 @@ td strong { color: #f0f4f9; font-weight: 600; }
   font-size: .63rem;
   line-height: 1.45;
 }
+.mfa-card { overflow: hidden; }
+.mfa-setup {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.mfa-setup ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+}
+.mfa-qr {
+  width: min(240px, 100%);
+  padding: .7rem;
+  border-radius: 14px;
+  background: #fff;
+}
+.mfa-secret {
+  display: block;
+  margin-top: .6rem;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .6rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(251, 191, 36, .35);
+  border-radius: 14px;
+  background: rgba(251, 191, 36, .06);
+}
+.recovery-codes > strong,
+.recovery-codes > button { grid-column: 1 / -1; }
+.recovery-codes code {
+  color: var(--ink);
+  font-size: .78rem;
+}
+.text-button.danger { color: #ff9aaa; }
 
 @media (max-width: 1220px) {
   .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1099,4 +1139,5 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .micronutrient-source-filter .field { min-width: 0; }
   .nutrient-row-meta { align-items: flex-start; flex-direction: column; }
   .nutrient-row-meta > span:last-child { text-align: left; }
+  .recovery-codes { grid-template-columns: 1fr; }
 }

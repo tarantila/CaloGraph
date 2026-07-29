@@ -11,30 +11,43 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.password_policy import PasswordPolicyError, validate_new_password
 from app.auth.security import (
+    MFA_LOGIN_STATE_TTL_SECONDS,
     REGISTRATION_STATE_TTL_SECONDS,
+    create_mfa_login_state,
     create_registration_state,
     create_session,
     hash_invitation_token,
     hash_password,
     hash_session_token,
+    mfa_challenge_cookie_name,
     revoke_user_sessions,
     session_cookie_name,
     verify_login_password,
+    verify_mfa_login_state,
     verify_password,
     verify_registration_state,
 )
 from app.config import settings
 from app.database import get_db
-from app.models import NutritionTarget, TrackingQualitySettings, User, UserInvitation, UserSession
+from app.models import (
+    NutritionTarget,
+    TrackingQualitySettings,
+    User,
+    UserInvitation,
+    UserSession,
+    UserTotpCredential,
+)
 from app.schemas import (
     CsrfResponse,
     InvitationExchangeRequest,
     InvitationStateResponse,
     LoginRequest,
+    MfaCodeRequest,
     PasswordChangeRequest,
     RegistrationRequest,
     UserResponse,
 )
+from app.services.mfa import consume_mfa_factor
 from app.services.rate_limit import (
     RateLimitExceeded,
     check_rate_limit,
@@ -72,6 +85,44 @@ def _log_password_change(request: Request, outcome: str, user_key: str) -> None:
         outcome,
         getattr(request.state, "request_id", None),
         rate_limit_key_id(user_key),
+    )
+
+
+def _set_mfa_challenge_cookie(response: Response, user: User) -> None:
+    response.set_cookie(
+        mfa_challenge_cookie_name(),
+        create_mfa_login_state(user.id),
+        max_age=MFA_LOGIN_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+
+
+def _delete_mfa_challenge_cookie(response: Response) -> None:
+    response.delete_cookie(
+        mfa_challenge_cookie_name(),
+        path="/",
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _set_session_cookie(
+    response: Response,
+    session: UserSession,
+    raw_token: str,
+) -> None:
+    response.set_cookie(
+        session_cookie_name(),
+        raw_token,
+        max_age=int((session.expires_at - session.created_at).total_seconds()),
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
     )
 
 
@@ -248,24 +299,121 @@ def login(
         raise_invalid_login()
 
     clear_rate_limit(db, "login-account", account_key)
+    totp_credential = db.get(UserTotpCredential, user.id)
+    if totp_credential is not None and totp_credential.enabled_at is not None:
+        _set_mfa_challenge_cookie(response, user)
+        _log_login(request, "mfa_required", client_key, account_key)
+        return {"mfa_required": True}
+
     session, raw_token, csrf_token = create_session(db, user)
-    response.set_cookie(
-        session_cookie_name(),
-        raw_token,
-        max_age=int((session.expires_at - session.created_at).total_seconds()),
-        httponly=True,
-        secure=settings.cookie_secure,
-        samesite="lax",
-        path="/",
-    )
+    _set_session_cookie(response, session, raw_token)
+    _delete_mfa_challenge_cookie(response)
     _log_login(request, "succeeded", client_key, account_key)
-    return {"user": UserResponse.model_validate(user), "csrf_token": csrf_token}
+    return {
+        "mfa_required": False,
+        "user": UserResponse.model_validate(user),
+        "csrf_token": csrf_token,
+    }
 
 
 def raise_invalid_login() -> Never:
     from fastapi import HTTPException
 
     raise HTTPException(status_code=401, detail="Benutzername oder Passwort ist falsch")
+
+
+@router.post("/mfa/totp/verify")
+def verify_totp_login(
+    payload: MfaCodeRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    user_id = verify_mfa_login_state(
+        request.cookies.get(mfa_challenge_cookie_name(), "")
+    )
+    if user_id is None:
+        raise_invalid_login()
+
+    client_key = (
+        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    )
+    account_key = f"user:{user_id}"
+    try:
+        ensure_rate_limit_available(
+            db,
+            "mfa-ip",
+            client_key,
+            settings.mfa_ip_rate_limit,
+            settings.mfa_rate_limit_window_seconds,
+        )
+        ensure_rate_limit_available(
+            db,
+            "mfa-account",
+            account_key,
+            settings.mfa_rate_limit,
+            settings.mfa_rate_limit_window_seconds,
+        )
+    except RateLimitExceeded:
+        _log_login(request, "mfa_rate_limited", client_key, account_key)
+        raise
+
+    user = db.get(User, user_id)
+    credential = db.scalar(
+        select(UserTotpCredential)
+        .where(
+            UserTotpCredential.user_id == user_id,
+            UserTotpCredential.enabled_at.is_not(None),
+        )
+        .with_for_update()
+    )
+    if (
+        user is None
+        or not user.is_active
+        or credential is None
+        or not consume_mfa_factor(db, credential, payload.code)
+    ):
+        rate_limit_error: RateLimitExceeded | None = None
+        for action, key, limit in (
+            ("mfa-ip", client_key, settings.mfa_ip_rate_limit),
+            ("mfa-account", account_key, settings.mfa_rate_limit),
+        ):
+            try:
+                check_rate_limit(
+                    db,
+                    action,
+                    key,
+                    limit,
+                    settings.mfa_rate_limit_window_seconds,
+                )
+            except RateLimitExceeded as exc:
+                if (
+                    rate_limit_error is None
+                    or exc.retry_after > rate_limit_error.retry_after
+                ):
+                    rate_limit_error = exc
+        _log_login(
+            request,
+            "mfa_rate_limited" if rate_limit_error else "mfa_failed",
+            client_key,
+            account_key,
+        )
+        if rate_limit_error:
+            raise rate_limit_error
+        raise_invalid_login()
+
+    db.commit()
+    clear_rate_limit(db, "mfa-ip", client_key)
+    clear_rate_limit(db, "mfa-account", account_key)
+    session, raw_token, csrf_token = create_session(db, user)
+    _set_session_cookie(response, session, raw_token)
+    _delete_mfa_challenge_cookie(response)
+    _log_login(request, "succeeded_with_mfa", client_key, account_key)
+    return {
+        "mfa_required": False,
+        "user": UserResponse.model_validate(user),
+        "csrf_token": csrf_token,
+    }
 
 
 @router.get("/me", response_model=UserResponse)

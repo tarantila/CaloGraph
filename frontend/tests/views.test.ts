@@ -576,6 +576,13 @@ describe('main views', () => {
       if (path === '/settings/targets') return Promise.resolve([currentTarget])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/mfa') {
+        return Promise.resolve({
+          totp_enabled: false,
+          totp_setup_pending: false,
+          recovery_codes_remaining: 0,
+        })
+      }
       if (path === '/yazio/status') return Promise.resolve({ available: true, configured: true, sync_enabled: true, sync_interval_minutes: 360, sync_days: 7, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations' && options?.method === 'POST') {
@@ -614,6 +621,7 @@ describe('main views', () => {
     const accountWrapper = mount(SettingsView, { props: { section: 'account' } })
     await flushPromises()
     expect(accountWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
+    expect(accountWrapper.text()).toContain('Zwei-Faktor-Authentifizierung')
     expect(accountWrapper.text()).toContain('Benutzerverwaltung')
     expect(accountWrapper.text()).not.toContain('Budget- und Zielhistorie')
     expect(accountWrapper.text()).not.toContain('Tracking-Vollständigkeit')
@@ -659,6 +667,13 @@ describe('main views', () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/settings/profile') return Promise.resolve(user)
       if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/mfa') {
+        return Promise.resolve({
+          totp_enabled: false,
+          totp_setup_pending: false,
+          recovery_codes_remaining: 0,
+        })
+      }
       if (path === '/yazio/status') return Promise.resolve(status)
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations') return Promise.resolve([])

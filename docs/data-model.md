@@ -3,6 +3,9 @@
 - `users`: account, language, IANA time zone, first weekday, administrator
   flag, and active status.
 - `user_sessions`: hashed session and CSRF keys, expiration, and revocation.
+- `user_totp_credentials`: encrypted TOTP seed, activation time, and the last
+  accepted time step used to reject replay.
+- `mfa_recovery_codes`: HMAC-only one-time recovery codes and consumption time.
 - `user_invitations`: hashed one-time invitation tokens, expiration, creator,
   recipient, and revocation.
 - `api_tokens`: label, prefix, HMAC hash, scopes, expiration, and revocation.

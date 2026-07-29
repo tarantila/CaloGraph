@@ -11,15 +11,17 @@
   mode `0444`. The restrictive parent directory prevents other host users from
   traversing to those files, while the read-only file mode lets non-root
   container UIDs read only the individual file Compose mounts. Existing
-  installations use the explicit
-  `scripts/migrate-env-secrets.sh` procedure instead so database and YAZIO keys
-  are not rotated accidentally.
-- Compose mounts the four source files as service-scoped secrets under
+  installations use the explicit `scripts/migrate-env-secrets.sh` procedure
+  instead so database and YAZIO keys are not rotated accidentally, followed by
+  `scripts/migrate-mfa-secret.sh` when adding MFA to an installation that
+  already uses file-backed secrets.
+- Compose mounts the five source files as service-scoped secrets under
   `/run/secrets`; it does not place their values or a password-bearing database
   URL in container environments. PostgreSQL receives only its password,
-  `backend` receives all four, `yazio-scheduler` receives only the database
-  password, credential key, and shared rate-limit key required by the
-  deployment-wide provider circuit breaker, and `frontend` receives none.
+  `backend` receives all five, `yazio-scheduler` receives only the database
+  password, YAZIO credential key, and shared rate-limit key required by the
+  deployment-wide provider circuit breaker, and `frontend` receives none. The
+  scheduler never receives the session or MFA-encryption key.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.
@@ -80,6 +82,15 @@ sessions use an `__Host-` cookie with `Secure`, `HttpOnly`, `Path=/`, no
 or raised to at most seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered
 but not raised above 30 days. The scheduler deletes expired, idle, and revoked
 session rows hourly.
+
+Users can enable TOTP in their account settings. The pending and enabled TOTP
+secret is encrypted with a dedicated key that is mounted only into the
+backend. Ten one-time recovery codes are generated during activation and
+stored only as HMAC digests. Accepted TOTP time steps are persisted to prevent
+replay, while login and MFA-management attempts use temporary database-backed
+limits. If a user loses both factors, an operator can run
+`python -m app.cli reset-mfa --username USER --confirm USER`; the command
+removes TOTP and recovery codes and revokes all sessions for that account.
 
 Historical Apple Health uploads default to 500 MiB. The bundled Nginx permits
 512 MiB through `NGINX_MAX_UPLOAD_BYTES` on that one endpoint for multipart

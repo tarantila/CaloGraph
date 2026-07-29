@@ -50,6 +50,32 @@ is sent to a third party. CaloGraph does not send email.
 Path-based links from older versions must be revoked and regenerated because
 supporting them would expose their token during the first HTTP request.
 
+## Two-factor authentication
+
+Each user can enable TOTP under **Konto → Zwei-Faktor-Authentifizierung** after
+confirming their current CaloGraph password. The setup QR code and manual
+secret are displayed only for the pending setup. Activation requires a valid
+Authenticator code and returns ten one-time recovery codes, which the user
+must store offline.
+
+After activation, a password login creates only a five-minute, `HttpOnly`,
+`SameSite=Strict` MFA challenge. A regular session is issued only after a
+valid, previously unused TOTP time step or recovery code. Replacing recovery
+codes or disabling TOTP requires both the current password and an active
+second factor. These changes revoke every other session for that account.
+
+If a user loses both the Authenticator and all recovery codes, an operator can
+perform an emergency reset:
+
+```bash
+docker compose exec backend python -m app.cli reset-mfa \
+  --username USERNAME --confirm USERNAME
+```
+
+The explicit confirmation must match the username. The reset removes the
+second factor and revokes every session; the user must sign in with their
+password and enroll again.
+
 ## Personal YAZIO connection
 
 Each user configures their own credentials under

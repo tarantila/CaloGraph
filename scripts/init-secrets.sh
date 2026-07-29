@@ -43,5 +43,6 @@ create_hex_secret "$secrets_dir/postgres_password"
 create_hex_secret "$secrets_dir/session_secret"
 create_hex_secret "$secrets_dir/rate_limit_secret"
 create_fernet_secret "$secrets_dir/credential_encryption_key"
+create_fernet_secret "$secrets_dir/mfa_encryption_key"
 
 printf 'Secret initialization complete. Values were not printed.\n'

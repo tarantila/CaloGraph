@@ -151,6 +151,9 @@ class Settings(BaseSettings):
     password_change_rate_limit_window_seconds: int = Field(
         default=900, ge=60, le=86_400
     )
+    mfa_rate_limit: int = Field(default=10, ge=1, le=1_000)
+    mfa_rate_limit_window_seconds: int = Field(default=300, ge=60, le=86_400)
+    mfa_ip_rate_limit: int = Field(default=30, ge=1, le=10_000)
     session_idle_timeout_hours: int = Field(default=24, ge=1, le=168)
     session_absolute_timeout_days: int = Field(default=30, ge=1, le=30)
     rate_limit_retention_hours: int = Field(default=24, ge=1, le=720)
@@ -166,6 +169,13 @@ class Settings(BaseSettings):
     )
     credential_encryption_key: str = Field(default="", exclude=True, repr=False)
     credential_encryption_key_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
+    mfa_encryption_key: str = Field(default="", exclude=True, repr=False)
+    mfa_encryption_key_file: str | None = Field(
         default=None,
         max_length=4096,
         exclude=True,
@@ -199,6 +209,12 @@ class Settings(BaseSettings):
                 "credential_encryption_key_file",
                 "CREDENTIAL_ENCRYPTION_KEY_FILE",
                 True,
+            ),
+            (
+                "mfa_encryption_key",
+                "mfa_encryption_key_file",
+                "MFA_ENCRYPTION_KEY_FILE",
+                False,
             ),
         )
         for value_field, file_field, variable_name, allow_empty in secret_fields:
@@ -283,7 +299,7 @@ class Settings(BaseSettings):
                 ) from exc
         return ",".join(entries)
 
-    @field_validator("credential_encryption_key")
+    @field_validator("credential_encryption_key", "mfa_encryption_key")
     @classmethod
     def valid_credential_key(cls, value: str) -> str:
         if not value:
@@ -292,7 +308,7 @@ class Settings(BaseSettings):
             Fernet(value.encode())
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key"
+                "Encryption keys must be valid Fernet keys"
             ) from exc
         return value
 
@@ -413,6 +429,8 @@ class Settings(BaseSettings):
             errors.append(
                 "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED is true"
             )
+        if role == "backend" and not self.mfa_encryption_key:
+            errors.append("MFA_ENCRYPTION_KEY is required for the backend")
 
         if role == "backend":
             if self.max_json_payload_bytes > self.max_upload_bytes:

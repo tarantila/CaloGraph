@@ -16,6 +16,13 @@ backups, and the availability of the private application.
   `Path=/`, no `Domain`, and `SameSite=Lax`. Server-side idle and absolute
   timeouts limit a stolen cookie's lifetime. A compromised endpoint can still
   read data visible to that user.
+- **Stolen password:** optional TOTP prevents a password-only login from
+  creating a session. A signed five-minute, `HttpOnly`, `SameSite=Strict`
+  challenge carries the login between factors. TOTP secrets use a dedicated
+  backend-only encryption key, accepted time steps cannot be replayed, and
+  recovery codes are one-time HMAC digests. Temporary user and IP limits apply
+  to second-factor attempts. TOTP does not protect a fully compromised browser
+  or host.
 - **Insecure backups:** database dumps and the `.env`/secret-file bundle are
   streamed directly into authenticated `age` encryption without plaintext
   temporary backup files. The operator must keep the private identity off-host,
@@ -24,6 +31,7 @@ backups, and the availability of the private application.
   files as service-scoped secrets under `/run/secrets`. `.env` contains only
   their paths. Containers receive only the secrets required for their role and
   no password-bearing database URL.
+  The scheduler does not receive browser-session or MFA-encryption keys.
   Direct environment variables remain a legacy/test interface and cannot be
   combined ambiguously with `_FILE` settings.
 - **Sensitive logs:** payloads and health values are excluded; request IDs are
@@ -90,6 +98,9 @@ backups, and the availability of the private application.
   common and breached values plus application-specific identifiers. No
   password material is sent to a third-party service. Existing Argon2id
   storage and the absence of periodic forced changes are retained.
+- **Lost second factor:** users receive ten offline recovery codes during TOTP
+  activation. An explicit operator CLI reset removes MFA and revokes all
+  sessions when neither the Authenticator nor a recovery code remains.
 - **Forwarded invitation link:** cryptographically random invitation tokens
   stored only as hashes, one-time use, seven-day expiration, and administrator
   revocation. Plaintext is displayed only immediately after creation. Tokens

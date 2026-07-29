@@ -7,7 +7,7 @@ A complete CaloGraph backup consists of two encrypted parts:
 1. a PostgreSQL dump containing health data, accounts, and encrypted YAZIO
    credentials;
 2. a matching archive containing `.env` plus the database, session, rate-limit,
-   and credential-encryption secret files.
+   credential-encryption, and MFA-encryption secret files.
 
 The scripts encrypt both parts with
 [`age`](https://github.com/FiloSottile/age) before writing them to their final
@@ -18,6 +18,10 @@ Stored YAZIO credentials cannot be decrypted without the original
 credential-encryption key file. Anyone who obtains both the database and that
 file can decrypt them, so both artifacts must use the same operational
 protection.
+
+Stored TOTP seeds likewise require the matching MFA-encryption key. Losing that
+key requires an administrative MFA reset for every enrolled user; exposing it
+together with the database compromises those TOTP seeds.
 
 ## Create a backup identity
 
@@ -122,6 +126,16 @@ The migration preserves the database password and credential-encryption key,
 removes the password-bearing `DATABASE_URL`, atomically replaces `.env` with
 path-only settings, never prints secret values, and refuses to overwrite an
 existing destination. It does not migrate or delete old backup files.
+
+An installation that already completed this migration but does not yet have a
+dedicated MFA key uses:
+
+```bash
+CONFIRM_MFA_SECRET_MIGRATION=calograph scripts/migrate-mfa-secret.sh
+```
+
+This helper generates an independent Fernet key, adds only its path to `.env`,
+and refuses to overwrite an existing MFA setting or key file.
 
 ## Restore
 

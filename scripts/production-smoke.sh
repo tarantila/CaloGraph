@@ -14,6 +14,7 @@ postgres_password="$smoke_root/postgres-password"
 session_secret="$smoke_root/session-secret"
 rate_limit_secret="$smoke_root/rate-limit-secret"
 credential_key="$smoke_root/credential-key"
+mfa_key="$smoke_root/mfa-key"
 legacy_env="$smoke_root/legacy.env"
 legacy_secrets="$smoke_root/legacy-secrets"
 
@@ -66,17 +67,29 @@ if [ "$(tr -d '\n' <"$legacy_secrets/postgres_password")" \
   != 'legacy-rate-secret-fedcba9876543210' ]; then
   fail "Legacy environment migration changed a secret value."
 fi
+if ! CONFIRM_MFA_SECRET_MIGRATION=calograph \
+  SECRETS_DIR="$legacy_secrets" \
+  scripts/migrate-mfa-secret.sh "$legacy_env"; then
+  fail "MFA secret migration failed."
+fi
+if ! grep -q '^MFA_ENCRYPTION_KEY_FILE=' "$legacy_env" \
+  || grep -q '^MFA_ENCRYPTION_KEY=' "$legacy_env" \
+  || [ ! -s "$legacy_secrets/mfa_encryption_key" ]; then
+  fail "MFA secret migration did not create a path-only configuration."
+fi
 
 cp "$project_root/.env.production.example" "$smoke_env"
 printf '%s\n' 'ci-production-database-password' >"$postgres_password"
 printf '%s\n' 'ci-production-session-secret-0123456789abcdef' >"$session_secret"
 printf '%s\n' 'ci-production-rate-secret-fedcba9876543210' >"$rate_limit_secret"
 : >"$credential_key"
+openssl rand -base64 32 | tr '+/' '-_' >"$mfa_key"
 chmod 444 \
   "$postgres_password" \
   "$session_secret" \
   "$rate_limit_secret" \
-  "$credential_key"
+  "$credential_key" \
+  "$mfa_key"
 sed -i \
   -e 's/calograph\.example\.com/calograph-ci.internal/g' \
   -e 's/CALOGRAPH_PORT=8180/CALOGRAPH_PORT=18180/g' \
@@ -84,6 +97,7 @@ sed -i \
   -e "s|SESSION_SECRET_FILE=.*|SESSION_SECRET_FILE=$session_secret|" \
   -e "s|RATE_LIMIT_SECRET_FILE=.*|RATE_LIMIT_SECRET_FILE=$rate_limit_secret|" \
   -e "s|CREDENTIAL_ENCRYPTION_KEY_FILE=.*|CREDENTIAL_ENCRYPTION_KEY_FILE=$credential_key|" \
+  -e "s|MFA_ENCRYPTION_KEY_FILE=.*|MFA_ENCRYPTION_KEY_FILE=$mfa_key|" \
   "$smoke_env"
 
 if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
@@ -105,7 +119,8 @@ for forbidden_name in \
   POSTGRES_PASSWORD \
   SESSION_SECRET \
   RATE_LIMIT_SECRET \
-  CREDENTIAL_ENCRYPTION_KEY
+  CREDENTIAL_ENCRYPTION_KEY \
+  MFA_ENCRYPTION_KEY
 do
   if printf '%s\n' "$backend_environment" | grep -q "^${forbidden_name}="; then
     fail "Backend exposes ${forbidden_name} as an environment variable."
@@ -115,7 +130,8 @@ for required_file_name in \
   DATABASE_PASSWORD_FILE \
   SESSION_SECRET_FILE \
   RATE_LIMIT_SECRET_FILE \
-  CREDENTIAL_ENCRYPTION_KEY_FILE
+  CREDENTIAL_ENCRYPTION_KEY_FILE \
+  MFA_ENCRYPTION_KEY_FILE
 do
   if ! printf '%s\n' "$backend_environment" \
     | grep -q "^${required_file_name}=/run/secrets/"; then
@@ -127,13 +143,15 @@ if ! compose exec -T backend sh -c \
   'test -s /run/secrets/postgres_password &&
    test -s /run/secrets/session_secret &&
    test -s /run/secrets/rate_limit_secret &&
-   test -e /run/secrets/credential_encryption_key'; then
+   test -e /run/secrets/credential_encryption_key &&
+   test -s /run/secrets/mfa_encryption_key'; then
   fail "Backend secret files are missing."
 fi
 if compose exec -T postgres sh -c \
   'test -e /run/secrets/session_secret ||
    test -e /run/secrets/rate_limit_secret ||
-   test -e /run/secrets/credential_encryption_key'; then
+   test -e /run/secrets/credential_encryption_key ||
+   test -e /run/secrets/mfa_encryption_key'; then
   fail "PostgreSQL received an application secret."
 fi
 if compose exec -T frontend sh -c 'test -e /run/secrets'; then
@@ -152,7 +170,9 @@ for forbidden_name in \
   POSTGRES_PASSWORD \
   SESSION_SECRET \
   RATE_LIMIT_SECRET \
-  CREDENTIAL_ENCRYPTION_KEY
+  CREDENTIAL_ENCRYPTION_KEY \
+  MFA_ENCRYPTION_KEY \
+  MFA_ENCRYPTION_KEY_FILE
 do
   if printf '%s\n' "$scheduler_environment" | grep -q "^${forbidden_name}="; then
     fail "YAZIO scheduler exposes ${forbidden_name} as an environment variable."
@@ -173,10 +193,14 @@ do
     fail "YAZIO scheduler is missing ${required_mount}."
   fi
 done
-forbidden_mount=/run/secrets/session_secret
-if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
-  fail "YAZIO scheduler received ${forbidden_mount}."
-fi
+for forbidden_mount in \
+  /run/secrets/session_secret \
+  /run/secrets/mfa_encryption_key
+do
+  if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
+    fail "YAZIO scheduler received ${forbidden_mount}."
+  fi
+done
 
 if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \

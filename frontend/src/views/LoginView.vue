@@ -11,6 +11,7 @@ const route = useRoute()
 const router = useRouter()
 const username = ref('')
 const password = ref('')
+const mfaCode = ref('')
 const error = ref('')
 const passwordFormVisible = ref(Boolean(route.query.registered))
 const usernameInput = ref<HTMLInputElement | null>(null)
@@ -22,18 +23,30 @@ async function showPasswordForm() {
 }
 
 function showMethodSelection() {
+  auth.cancelMfa()
   passwordFormVisible.value = false
   password.value = ''
+  mfaCode.value = ''
   error.value = ''
 }
 
 async function submit() {
   error.value = ''
   try {
-    await auth.login(username.value, password.value)
-    await router.replace(String(route.query.next ?? '/'))
+    const completed = await auth.login(username.value, password.value)
+    if (completed) await router.replace(String(route.query.next ?? '/'))
   } catch (cause) {
     error.value = cause instanceof ApiError ? cause.message : 'Anmeldung ist fehlgeschlagen.'
+  }
+}
+
+async function submitMfa() {
+  error.value = ''
+  try {
+    await auth.verifyMfa(mfaCode.value)
+    await router.replace(String(route.query.next ?? '/'))
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : 'MFA-Prüfung ist fehlgeschlagen.'
   }
 }
 </script>
@@ -72,7 +85,7 @@ async function submit() {
       <div v-if="route.query.registered" class="login-success" role="status">
         Konto erstellt. Du kannst dich jetzt anmelden.
       </div>
-      <form @submit.prevent="submit">
+      <form v-if="!auth.mfaRequired" @submit.prevent="submit">
         <label class="field">
           Benutzername
           <input ref="usernameInput" v-model="username" autocomplete="username" required />
@@ -84,6 +97,25 @@ async function submit() {
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <button class="button login-submit" type="submit" :disabled="auth.loading">
           {{ auth.loading ? 'Anmeldung läuft …' : 'Anmelden' }}
+        </button>
+      </form>
+      <form v-else @submit.prevent="submitMfa">
+        <p>Gib den sechsstelligen Code deiner Authenticator-App oder einen Wiederherstellungscode ein.</p>
+        <label class="field">
+          Sicherheitscode
+          <input
+            v-model="mfaCode"
+            autocomplete="one-time-code"
+            autocapitalize="characters"
+            maxlength="64"
+            spellcheck="false"
+            autofocus
+            required
+          />
+        </label>
+        <div v-if="error" class="error" role="alert">{{ error }}</div>
+        <button class="button login-submit" type="submit" :disabled="auth.loading">
+          {{ auth.loading ? 'Code wird geprüft …' : 'Anmeldung abschließen' }}
         </button>
       </form>
     </section>

@@ -76,11 +76,12 @@ secret, database, proxy, YAZIO encryption, or upload-capacity settings are
 unsafe or inconsistent.
 
 `scripts/init-secrets.sh` creates independent database, session, rate-limit,
-and YAZIO credential-encryption secrets in the ignored `secrets/` directory
-without printing them. Compose mounts only the specific file required by each
-service under `/run/secrets`; secret values are not stored in `.env` or placed
-in container environments. The database DSN is assembled in memory from its
-non-secret connection fields and the mounted password.
+YAZIO credential-encryption, and MFA-encryption secrets in the ignored
+`secrets/` directory without printing them. Compose mounts only the specific
+file required by each service under `/run/secrets`; secret values are not
+stored in `.env` or placed in container environments. The database DSN is
+assembled in memory from its non-secret connection fields and the mounted
+password.
 
 Existing installations that still keep direct secret values and
 `DATABASE_URL` in `.env` can migrate them once without rotating the database
@@ -92,7 +93,14 @@ CONFIRM_SECRET_MIGRATION=calograph scripts/migrate-env-secrets.sh
 
 The migration is fail-closed, never prints a value, and refuses to overwrite
 an existing secret destination. Back up and inspect the installation before
-running it. YAZIO key handling is described in
+running it. Installations already using the original four secret files add the
+separate MFA key with:
+
+```bash
+CONFIRM_MFA_SECRET_MIGRATION=calograph scripts/migrate-mfa-secret.sh
+```
+
+YAZIO key handling is described in
 [docs/yazio-sync.md](docs/yazio-sync.md).
 
 `CALOGRAPH_PUBLIC_URL` is the canonical browser address used for links that
@@ -128,6 +136,18 @@ The command prompts for a username and password. Initial passwords must contain
 at least 15 characters and must not occur in CaloGraph's bundled common-password
 blocklist. The first user becomes an administrator automatically and can create
 one-time invitation links under **Konto → Benutzerverwaltung**.
+
+Each user can optionally enable TOTP under **Konto →
+Zwei-Faktor-Authentifizierung**. CaloGraph shows ten one-time recovery codes
+during activation. An operator can recover an account whose second factor and
+recovery codes are both unavailable with:
+
+```bash
+docker compose exec backend python -m app.cli reset-mfa \
+  --username USERNAME --confirm USERNAME
+```
+
+The command disables TOTP and revokes every session for that account.
 
 ### Create an import token
 

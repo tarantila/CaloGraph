@@ -18,12 +18,20 @@ password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 DUMMY_PASSWORD_HASH = password_hasher.hash(secrets.token_urlsafe(48))
 REGISTRATION_STATE_TTL_SECONDS = 10 * 60
 REGISTRATION_STATE_VERSION = "v1"
+MFA_LOGIN_STATE_TTL_SECONDS = 5 * 60
+MFA_LOGIN_STATE_VERSION = "v1"
 
 
 def session_cookie_name() -> str:
     if settings.cookie_secure:
         return "__Host-calograph_session"
     return "calograph_session"
+
+
+def mfa_challenge_cookie_name() -> str:
+    if settings.cookie_secure:
+        return "__Host-calograph_mfa_challenge"
+    return "calograph_mfa_challenge"
 
 
 def hash_password(password: str) -> str:
@@ -60,6 +68,10 @@ def hash_invitation_token(raw: str) -> str:
     return _hmac_token(raw, settings.session_secret)
 
 
+def hash_mfa_recovery_code(raw: str) -> str:
+    return _hmac_token(f"mfa-recovery:{raw}", settings.session_secret)
+
+
 def create_registration_state(
     invitation_id: UUID,
     now: datetime | None = None,
@@ -89,6 +101,38 @@ def verify_registration_state(
     if expires_at <= int((now or datetime.now(UTC)).timestamp()):
         return None
     return invitation_id
+
+
+def create_mfa_login_state(
+    user_id: UUID,
+    now: datetime | None = None,
+) -> str:
+    expires_at = int((now or datetime.now(UTC)).timestamp()) + MFA_LOGIN_STATE_TTL_SECONDS
+    nonce = secrets.token_urlsafe(24)
+    payload = f"{MFA_LOGIN_STATE_VERSION}.{user_id.hex}.{expires_at}.{nonce}"
+    signature = _hmac_token(f"mfa-login-state:{payload}", settings.session_secret)
+    return f"{payload}.{signature}"
+
+
+def verify_mfa_login_state(
+    raw: str,
+    now: datetime | None = None,
+) -> UUID | None:
+    try:
+        version, user_hex, expires_raw, nonce, signature = raw.split(".", maxsplit=4)
+        expires_at = int(expires_raw)
+        user_id = UUID(hex=user_hex)
+    except (ValueError, TypeError):
+        return None
+    if version != MFA_LOGIN_STATE_VERSION or len(nonce) < 20:
+        return None
+    payload = f"{version}.{user_hex}.{expires_at}.{nonce}"
+    expected = _hmac_token(f"mfa-login-state:{payload}", settings.session_secret)
+    if not hmac.compare_digest(signature, expected):
+        return None
+    if expires_at <= int((now or datetime.now(UTC)).timestamp()):
+        return None
+    return user_id
 
 
 def create_session(
@@ -134,6 +178,20 @@ def create_api_token(
 
 def revoke_user_sessions(db: Session, user_id: object) -> None:
     db.execute(delete(UserSession).where(UserSession.user_id == user_id))
+    db.commit()
+
+
+def revoke_other_user_sessions(
+    db: Session,
+    user_id: object,
+    current_token_hash: str,
+) -> None:
+    db.execute(
+        delete(UserSession).where(
+            UserSession.user_id == user_id,
+            UserSession.token_hash != current_token_hash,
+        )
+    )
     db.commit()
 
 

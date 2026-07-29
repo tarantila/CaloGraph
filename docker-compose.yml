@@ -55,6 +55,7 @@ services:
       SESSION_SECRET_FILE: /run/secrets/session_secret
       RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
       CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
+      MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
       CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
       CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:?Set CALOGRAPH_PUBLIC_URL in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE in .env}
@@ -80,6 +81,9 @@ services:
       LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS:-300}
       PASSWORD_CHANGE_RATE_LIMIT: ${PASSWORD_CHANGE_RATE_LIMIT:-5}
       PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS: ${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS:-900}
+      MFA_RATE_LIMIT: ${MFA_RATE_LIMIT:-10}
+      MFA_RATE_LIMIT_WINDOW_SECONDS: ${MFA_RATE_LIMIT_WINDOW_SECONDS:-300}
+      MFA_IP_RATE_LIMIT: ${MFA_IP_RATE_LIMIT:-30}
       SESSION_IDLE_TIMEOUT_HOURS: ${SESSION_IDLE_TIMEOUT_HOURS:-24}
       SESSION_ABSOLUTE_TIMEOUT_DAYS: ${SESSION_ABSOLUTE_TIMEOUT_DAYS:-30}
       RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
@@ -114,6 +118,7 @@ services:
       - session_secret
       - rate_limit_secret
       - credential_encryption_key
+      - mfa_encryption_key
     depends_on:
       postgres:
         condition: service_healthy
@@ -320,3 +325,5 @@ secrets:
     file: ${RATE_LIMIT_SECRET_FILE:?Set RATE_LIMIT_SECRET_FILE in .env}
   credential_encryption_key:
     file: ${CREDENTIAL_ENCRYPTION_KEY_FILE:?Set CREDENTIAL_ENCRYPTION_KEY_FILE in .env}
+  mfa_encryption_key:
+    file: ${MFA_ENCRYPTION_KEY_FILE:?Set MFA_ENCRYPTION_KEY_FILE in .env}

@@ -7,6 +7,8 @@ import type { Target, User, YazioStatus } from '../types'
 
 interface Token { id: string; label: string; token_prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
 interface Invitation { id: string; created_at: string; expires_at: string; used_at: string | null; revoked_at: string | null }
+interface MfaStatus { totp_enabled: boolean; totp_setup_pending: boolean; recovery_codes_remaining: number }
+interface TotpSetup { secret: string; provisioning_uri: string; qr_svg_data_url: string }
 const fallbackTimezones = [
   'UTC',
   'Europe/Berlin',
@@ -70,6 +72,12 @@ const invitationUrl = ref('')
 const error = ref('')
 const loading = ref(true)
 const savingTarget = ref(false)
+const mfa = ref<MfaStatus | null>(null)
+const totpSetup = ref<TotpSetup | null>(null)
+const mfaCurrentPassword = ref('')
+const mfaCode = ref('')
+const recoveryCodes = ref<string[]>([])
+const managingMfa = ref(false)
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const timezoneOptions = computed(() =>
   [...new Set(['UTC', profile.timezone, ...supportedTimezones()])].sort((left, right) =>
@@ -109,10 +117,11 @@ async function loadTargets() {
 }
 
 async function loadAccount() {
-  const [user, tokenResult, yazioResult] = await Promise.all([
+  const [user, tokenResult, yazioResult, mfaResult] = await Promise.all([
     api<User>('/settings/profile'),
     api<Token[]>('/settings/tokens'),
     api<YazioStatus>('/yazio/status'),
+    api<MfaStatus>('/settings/mfa'),
   ])
   profile.timezone = user.timezone
   profile.week_starts_on = user.week_starts_on
@@ -120,6 +129,7 @@ async function loadAccount() {
   auth.user = user
   tokens.value = tokenResult
   yazio.value = yazioResult
+  mfa.value = mfaResult
   if (user.is_admin) {
     ;[users.value, invitations.value] = await Promise.all([
       api<User[]>('/users'),
@@ -210,6 +220,103 @@ async function revokeInvitation(id: string) {
   await api(`/users/invitations/${id}`, { method: 'DELETE' })
   await load()
 }
+
+async function beginTotpSetup() {
+  managingMfa.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    totpSetup.value = await api<TotpSetup>('/settings/mfa/totp/setup', {
+      method: 'POST',
+      body: JSON.stringify({ current_password: mfaCurrentPassword.value }),
+    })
+    mfaCurrentPassword.value = ''
+    recoveryCodes.value = []
+    message.value = 'Scanne jetzt den QR-Code und bestätige die Einrichtung.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'TOTP-Einrichtung konnte nicht gestartet werden.'
+  } finally {
+    managingMfa.value = false
+  }
+}
+
+async function confirmTotpSetup() {
+  managingMfa.value = true
+  error.value = ''
+  try {
+    const result = await api<{ recovery_codes: string[] }>('/settings/mfa/totp/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ code: mfaCode.value }),
+    })
+    recoveryCodes.value = result.recovery_codes
+    mfaCode.value = ''
+    totpSetup.value = null
+    await loadAccount()
+    message.value = 'Zwei-Faktor-Authentifizierung ist aktiviert. Sichere die Wiederherstellungscodes jetzt.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'TOTP-Code konnte nicht bestätigt werden.'
+  } finally {
+    managingMfa.value = false
+  }
+}
+
+async function regenerateRecoveryCodes() {
+  managingMfa.value = true
+  error.value = ''
+  try {
+    const result = await api<{ recovery_codes: string[] }>(
+      '/settings/mfa/totp/recovery-codes',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: mfaCurrentPassword.value,
+          code: mfaCode.value,
+        }),
+      },
+    )
+    recoveryCodes.value = result.recovery_codes
+    mfaCurrentPassword.value = ''
+    mfaCode.value = ''
+    await loadAccount()
+    message.value = 'Neue Wiederherstellungscodes wurden erzeugt. Die alten sind ungültig.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'Wiederherstellungscodes konnten nicht erneuert werden.'
+  } finally {
+    managingMfa.value = false
+  }
+}
+
+async function disableTotp() {
+  managingMfa.value = true
+  error.value = ''
+  try {
+    await api('/settings/mfa/totp', {
+      method: 'DELETE',
+      body: JSON.stringify({
+        current_password: mfaCurrentPassword.value,
+        code: mfaCode.value,
+      }),
+    })
+    recoveryCodes.value = []
+    mfaCurrentPassword.value = ''
+    mfaCode.value = ''
+    await loadAccount()
+    message.value = 'Zwei-Faktor-Authentifizierung wurde deaktiviert.'
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'Zwei-Faktor-Authentifizierung konnte nicht deaktiviert werden.'
+  } finally {
+    managingMfa.value = false
+  }
+}
+
+async function copyRecoveryCodes() {
+  await navigator.clipboard.writeText(recoveryCodes.value.join('\n'))
+  message.value = 'Wiederherstellungscodes kopiert.'
+}
 </script>
 
 <template>
@@ -294,6 +401,76 @@ async function revokeInvitation(id: string) {
           <label class="field">JSON-Rohimporte aufbewahren (Tage)<input v-model.number="profile.raw_payload_retention_days" type="number" min="0" max="3650" /><small>0 deaktiviert die Speicherung vollständig. Große XML-/ZIP-Dateien werden nicht zusätzlich dupliziert.</small></label>
           <button class="button" type="submit">Profil speichern</button>
         </form>
+      </section>
+
+      <section class="card form-card mfa-card" style="margin-top: 1rem">
+        <h2>Zwei-Faktor-Authentifizierung</h2>
+        <p>Eine Authenticator-App schützt dein Konto zusätzlich zum Passwort. TOTP-Codes funktionieren offline.</p>
+
+        <template v-if="!mfa?.totp_enabled">
+          <p v-if="mfa?.totp_setup_pending && !totpSetup">
+            Eine Einrichtung wurde begonnen, aber noch nicht bestätigt. Starte sie mit deinem Passwort erneut, um einen neuen QR-Code zu erhalten.
+          </p>
+          <form v-if="!totpSetup" class="form-grid" @submit.prevent="beginTotpSetup">
+            <label class="field">
+              Aktuelles CaloGraph-Passwort
+              <input v-model="mfaCurrentPassword" type="password" autocomplete="current-password" required />
+            </label>
+            <button class="button" type="submit" :disabled="managingMfa">
+              {{ managingMfa ? 'Einrichtung wird vorbereitet …' : 'Authenticator einrichten' }}
+            </button>
+          </form>
+
+          <div v-else class="mfa-setup">
+            <ol>
+              <li>Scanne den QR-Code mit deiner Authenticator-App.</li>
+              <li>Gib den dort angezeigten sechsstelligen Code ein.</li>
+            </ol>
+            <img class="mfa-qr" :src="totpSetup.qr_svg_data_url" alt="QR-Code für die Authenticator-Einrichtung" />
+            <details>
+              <summary>Schlüssel manuell eingeben</summary>
+              <code class="mfa-secret">{{ totpSetup.secret }}</code>
+            </details>
+            <form class="form-grid" @submit.prevent="confirmTotpSetup">
+              <label class="field">
+                Sechsstelliger Code
+                <input v-model="mfaCode" inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="6" required />
+              </label>
+              <button class="button" type="submit" :disabled="managingMfa">
+                {{ managingMfa ? 'Code wird geprüft …' : 'TOTP aktivieren' }}
+              </button>
+            </form>
+          </div>
+        </template>
+
+        <template v-else>
+          <p><strong>Status:</strong> aktiv · {{ mfa.recovery_codes_remaining }} Wiederherstellungscodes verfügbar</p>
+          <p>Für Änderungen brauchst du dein aktuelles Passwort und einen TOTP- oder Wiederherstellungscode.</p>
+          <form class="form-grid" @submit.prevent>
+            <label class="field">
+              Aktuelles CaloGraph-Passwort
+              <input v-model="mfaCurrentPassword" type="password" autocomplete="current-password" required />
+            </label>
+            <label class="field">
+              TOTP- oder Wiederherstellungscode
+              <input v-model="mfaCode" autocomplete="one-time-code" maxlength="64" required />
+            </label>
+            <div class="filters">
+              <button class="button secondary" type="button" :disabled="managingMfa" @click="regenerateRecoveryCodes">
+                Codes erneuern
+              </button>
+              <button class="text-button danger" type="button" :disabled="managingMfa" @click="disableTotp">
+                TOTP deaktivieren
+              </button>
+            </div>
+          </form>
+        </template>
+
+        <div v-if="recoveryCodes.length" class="recovery-codes" role="status">
+          <strong>Jetzt offline und sicher speichern – jeder Code funktioniert nur einmal:</strong>
+          <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
+          <button class="button secondary" type="button" @click="copyRecoveryCodes">Alle kopieren</button>
+        </div>
       </section>
 
       <section class="card form-card yazio-connection-card" style="margin-top: 1rem">
