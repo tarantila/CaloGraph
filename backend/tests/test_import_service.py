@@ -2,7 +2,9 @@ import io
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import event, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -10,6 +12,7 @@ from app.database import engine
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
 from app.models import HealthSample, ImportBatch, User
+from app.services import import_service
 from app.services.import_service import persist_apple_health_stream, persist_import
 
 
@@ -198,3 +201,51 @@ def test_record_limit_marks_only_committed_batches_as_partial(
     saved_batch = db.get(ImportBatch, result.batch_id)
     assert saved_batch is not None
     assert saved_batch.error_message == "Import enthält zu viele XML-Datensätze"
+
+
+def test_database_failure_after_xml_checkpoint_is_recorded_as_partial(
+    db: Session,
+    user: User,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "import_batch_size", 2)
+    records = "".join(
+        (
+            '<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+            f'sourceName="Synthetic" unit="kcal" value="{500 + index}" '
+            f'startDate="2024-01-02 12:0{index}:00 +0000" />'
+        )
+        for index in range(4)
+    )
+    xml = f"<?xml version='1.0'?><HealthData>{records}</HealthData>"
+    original_persist = import_service._persist_sample_batch
+    calls = 0
+
+    def fail_second_batch(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise SQLAlchemyError("synthetic database failure")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(import_service, "_persist_sample_batch", fail_second_batch)
+
+    with pytest.raises(SQLAlchemyError, match="synthetic database failure"):
+        persist_apple_health_stream(
+            db,
+            user,
+            io.BytesIO(xml.encode()),
+            "application/xml",
+            "database-failure.xml",
+        )
+
+    saved_batch = db.scalar(
+        select(ImportBatch).where(
+            ImportBatch.client_identifier == "database-failure.xml"
+        )
+    )
+    assert saved_batch is not None
+    assert saved_batch.status == "partial_failed"
+    assert saved_batch.finished_at is not None
+    assert saved_batch.inserted == 2
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == 2

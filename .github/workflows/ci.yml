@@ -28,6 +28,45 @@ jobs:
       - working-directory: backend
         run: uv run pytest
 
+  backend-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: calograph
+          POSTGRES_USER: calograph
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U calograph -d calograph"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+psycopg://calograph:ci-postgres-password@localhost:5432/calograph
+      CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph:ci-postgres-password@localhost:5432/calograph
+      SESSION_SECRET: test-session-secret-with-at-least-32-characters
+      RATE_LIMIT_SECRET: test-rate-limit-secret-with-at-least-32-chars
+      TRUSTED_HOSTS: testserver,localhost,127.0.0.1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14.6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: 0.11.29
+          enable-cache: true
+      - working-directory: backend
+        run: uv sync --frozen --all-extras
+      - working-directory: backend
+        run: uv run alembic upgrade head
+      - working-directory: backend
+        run: uv run pytest tests/test_rate_limit_postgres.py
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -50,7 +89,7 @@ jobs:
 
   containers-and-e2e:
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
+    needs: [backend, backend-postgres, frontend]
     steps:
       - uses: actions/checkout@v5
       - run: cp .env.example .env
@@ -60,5 +99,6 @@ jobs:
           sed -i 's/CHANGE_ME_ANOTHER_RANDOM_SECRET/ci-rate-secret-at-least-32-characters/' .env
       - run: docker compose build
       - run: ./scripts/e2e.sh
+      - run: ./scripts/production-smoke.sh
       - if: always()
         run: docker compose logs --no-color --tail=300

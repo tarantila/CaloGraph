@@ -1,10 +1,16 @@
 import os
 
-os.environ["ENVIRONMENT"] = "test"
-os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
-os.environ["SESSION_SECRET"] = "test-session-secret-with-at-least-32-characters"
-os.environ["RATE_LIMIT_SECRET"] = "test-rate-limit-secret-with-at-least-32-chars"
-os.environ["TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1"
+os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+os.environ.setdefault(
+    "SESSION_SECRET",
+    "test-session-secret-with-at-least-32-characters",
+)
+os.environ.setdefault(
+    "RATE_LIMIT_SECRET",
+    "test-rate-limit-secret-with-at-least-32-chars",
+)
+os.environ.setdefault("TRUSTED_HOSTS", "testserver,localhost,127.0.0.1")
 
 import pytest
 from fastapi.testclient import TestClient

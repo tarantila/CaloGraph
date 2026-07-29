@@ -11,6 +11,7 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 
 from app.config import settings
+from app.importers import json_adapter
 from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.common import (
     CanonicalSample,
@@ -18,7 +19,7 @@ from app.importers.common import (
     local_date_for,
     normalize_value,
 )
-from app.importers.errors import ImportFormatError
+from app.importers.errors import ImportFormatError, ImportLimitError
 from app.importers.json_adapter import parse_json_payload
 from app.importers.yazio import parse_yazio_export
 
@@ -148,6 +149,47 @@ def test_adapter_caps_materialized_errors_and_unknown_types(monkeypatch) -> None
     assert len(result.errors) == 2
     assert result.unknown_count == 5
     assert len(result.unknown_types) == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"samples": [{}, {}, {}]},
+        {"metrics": [{"name": "dietary_energy", "data": [{}, {}, {}]}]},
+        {
+            "data": {
+                "metrics": [{"name": "dietary_energy", "data": [{}, {}, {}]}]
+            }
+        },
+    ],
+)
+def test_record_limits_are_checked_before_pydantic_materialization(
+    payload: dict[str, object],
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_import_records", 2)
+
+    def unexpected_validation(_cls, _payload):
+        raise AssertionError("Pydantic validation must not run above the record limit")
+
+    monkeypatch.setattr(
+        json_adapter.CalographPayloadInput,
+        "model_validate",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        json_adapter.HealthAutoPayloadInput,
+        "model_validate",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        json_adapter.HealthAutoEnvelopeInput,
+        "model_validate",
+        unexpected_validation,
+    )
+
+    with pytest.raises(ImportLimitError):
+        parse_json_payload(payload, "Europe/Berlin")
 
 
 @pytest.mark.parametrize("invalid_item", ["scalar", 1, None, []])

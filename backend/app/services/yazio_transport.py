@@ -1,6 +1,8 @@
 import json
 import subprocess
 import sys
+import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, cast
@@ -123,25 +125,74 @@ def _run_worker(payload: dict[str, object], deadline_seconds: int) -> object:
     if len(encoded) > MAX_WORKER_INPUT_BYTES:
         raise YazioTransportError("YAZIO worker input is too large")
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, "-m", "app.services.yazio_transport", "--worker"],
-            input=encoded,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=deadline_seconds,
         )
+    except OSError as exc:
+        raise YazioTransportError("YAZIO worker could not be started") from exc
+
+    output = bytearray()
+    output_error: list[OSError] = []
+    output_too_large = threading.Event()
+
+    def read_output() -> None:
+        if process.stdout is None:
+            return
+        try:
+            while chunk := process.stdout.read(64 * 1024):
+                remaining = MAX_WORKER_OUTPUT_BYTES + 1 - len(output)
+                if remaining > 0:
+                    output.extend(chunk[:remaining])
+                if len(chunk) > remaining or len(output) > MAX_WORKER_OUTPUT_BYTES:
+                    output_too_large.set()
+                    with suppress(OSError):
+                        process.kill()
+                    return
+        except OSError as exc:
+            output_error.append(exc)
+            with suppress(OSError):
+                process.kill()
+
+    reader = threading.Thread(
+        target=read_output,
+        name="calograph-yazio-worker-output",
+        daemon=True,
+    )
+    reader.start()
+    try:
+        if process.stdin is None:
+            raise YazioTransportError("YAZIO worker input pipe is unavailable")
+        process.stdin.write(encoded)
+        process.stdin.close()
+        process.wait(timeout=deadline_seconds)
     except subprocess.TimeoutExpired as exc:
+        with suppress(OSError):
+            process.kill()
+        process.wait()
+        reader.join()
         raise YazioTransportDeadlineError(
             "YAZIO operation exceeded its absolute deadline"
         ) from exc
     except OSError as exc:
-        raise YazioTransportError("YAZIO worker could not be started") from exc
+        with suppress(OSError):
+            process.kill()
+        process.wait()
+        reader.join()
+        raise YazioTransportError("YAZIO worker communication failed") from exc
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
 
-    if len(completed.stdout) > MAX_WORKER_OUTPUT_BYTES:
+    reader.join()
+    if output_error:
+        raise YazioTransportError("YAZIO worker output could not be read") from output_error[0]
+    if output_too_large.is_set() or len(output) > MAX_WORKER_OUTPUT_BYTES:
         raise YazioTransportError("YAZIO worker output is too large")
     try:
-        response = json.loads(completed.stdout)
+        response = json.loads(output)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise YazioTransportError("YAZIO worker returned an invalid response") from exc
     if not isinstance(response, dict):

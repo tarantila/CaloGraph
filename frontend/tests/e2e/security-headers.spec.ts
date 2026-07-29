@@ -32,13 +32,17 @@ test('serves consistent security headers for documents and static assets', async
   expect(assetHeaders['cache-control']).toBe('public, max-age=604800, immutable')
 
   const apiResponse = await request.get('/api/v1/auth/me', {
-    headers: { Host: 'localhost' },
+    headers: {
+      Host: 'localhost',
+      'X-Request-ID': 'attacker-controlled',
+    },
   })
   const apiHeaders = apiResponse.headers()
 
   expect(apiResponse.status()).toBe(401)
   expect(apiHeaders).toMatchObject(baselineHeaders)
   expect(apiHeaders['cache-control']).toBe('private, no-store')
+  expect(apiHeaders['x-request-id']).toMatch(/^[a-f0-9]{32}$/)
 })
 
 test('respects the HSTS setting for requests forwarded as HTTPS', async ({ request }) => {

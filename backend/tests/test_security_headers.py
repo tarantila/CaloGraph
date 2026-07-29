@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -31,3 +33,15 @@ def test_hsts_is_only_sent_when_enabled(client: TestClient, monkeypatch) -> None
     assert response.headers["strict-transport-security"] == (
         "max-age=31536000; includeSubDomains"
     )
+
+
+def test_request_ids_are_bounded_and_invalid_client_values_are_replaced(
+    client: TestClient,
+) -> None:
+    invalid = client.get("/health/live", headers={"X-Request-ID": "attacker-controlled"})
+    valid_id = "a" * 32
+    valid = client.get("/health/live", headers={"X-Request-ID": valid_id})
+
+    assert invalid.headers["x-request-id"] != "attacker-controlled"
+    assert re.fullmatch(r"[a-f0-9]{32}", invalid.headers["x-request-id"])
+    assert valid.headers["x-request-id"] == valid_id

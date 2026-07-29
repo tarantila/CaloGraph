@@ -105,7 +105,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      test: ["CMD", "python", "-m", "app.healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -237,6 +237,25 @@ services:
     command: ["pytest"]
     networks: [data]
 
+  postgres-ci:
+    profiles: [test]
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: calograph_test
+      POSTGRES_USER: calograph_test
+      POSTGRES_PASSWORD: calograph-test-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calograph_test -d calograph_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql
+    networks: [data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+
   backend-postgres-ci:
     profiles: [test]
     build:
@@ -245,11 +264,12 @@ services:
       target: backend-development
     environment:
       ENVIRONMENT: test
-      CALOGRAPH_POSTGRES_TEST_URL: ${DATABASE_URL:-postgresql+psycopg://calograph:calograph@postgres:5432/calograph}
+      DATABASE_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
+      CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
     depends_on:
-      postgres:
+      postgres-ci:
         condition: service_healthy
-    command: ["pytest", "tests/test_rate_limit_postgres.py"]
+    command: ["sh", "-c", "alembic upgrade head && pytest tests/test_rate_limit_postgres.py"]
     networks: [data]
 
   e2e:

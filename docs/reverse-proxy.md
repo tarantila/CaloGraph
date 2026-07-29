@@ -138,6 +138,7 @@ frontend https_in
   mode http
   http-request set-header X-Forwarded-Proto https
   http-request set-header X-Forwarded-Host %[req.hdr(Host)]
+  http-request set-header X-Forwarded-For %[src]
   default_backend calograph
 
 backend calograph

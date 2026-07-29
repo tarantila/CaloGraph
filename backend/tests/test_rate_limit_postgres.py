@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.database import engine as application_engine
 from app.models import RateLimitBucket
 from app.services.import_guard import ImportAlreadyRunning, import_slot
 from app.services.rate_limit import (
@@ -15,6 +16,14 @@ from app.services.rate_limit import (
     hash_rate_limit_key,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"),
+    reason="PostgreSQL integration URL is not configured",
+)
+def test_application_guards_are_exercised_with_postgres() -> None:
+    assert application_engine.dialect.name == "postgresql"
 
 
 @pytest.mark.skipif(

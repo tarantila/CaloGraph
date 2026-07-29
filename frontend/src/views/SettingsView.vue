@@ -177,6 +177,7 @@ async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { m
 async function saveYazio() {
   if (!yazioCredentialsComplete.value) return
   savingYazio.value = true
+  error.value = ''
   message.value = ''
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {

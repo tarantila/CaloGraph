@@ -160,11 +160,9 @@ def fetch_yazio_payload(
     *,
     operation_key: object | None = None,
 ) -> dict[str, Any]:
-    _require_yazio_enabled()
-    _ensure_yazio_circuit_closed()
     try:
         with yazio_operation_slot(operation_key or yazio_account_hash(email)):
-            result = fetch_yazio_payload_transport(
+            return _fetch_yazio_payload_unlocked(
                 email,
                 password,
                 start_day,
@@ -175,6 +173,25 @@ def fetch_yazio_payload(
         raise YazioOperationCapacityExceeded(
             "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
         ) from exc
+
+
+def _fetch_yazio_payload_unlocked(
+    email: str,
+    password: str,
+    start_day: date,
+    end_day: date,
+    include_micronutrients: bool,
+) -> dict[str, Any]:
+    _require_yazio_enabled()
+    _ensure_yazio_circuit_closed()
+    try:
+        result = fetch_yazio_payload_transport(
+            email,
+            password,
+            start_day,
+            end_day,
+            include_micronutrients,
+        )
     except YazioTransportAuthenticationError as exc:
         raise YazioAuthenticationError(
             "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
@@ -222,14 +239,42 @@ def sync_yazio_user(
     *,
     include_micronutrients: bool = True,
 ) -> ImportSummary:
+    try:
+        with yazio_operation_slot(user.id):
+            return _sync_yazio_user_unlocked(
+                user,
+                email,
+                password,
+                start_day,
+                end_day,
+                source_identifier,
+                fetcher,
+                include_micronutrients=include_micronutrients,
+            )
+    except YazioOperationBusy as exc:
+        raise YazioOperationCapacityExceeded(
+            "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
+        ) from exc
+
+
+def _sync_yazio_user_unlocked(
+    user: User,
+    email: str,
+    password: str,
+    start_day: date,
+    end_day: date,
+    source_identifier: str | None,
+    fetcher: YazioFetcher | None,
+    *,
+    include_micronutrients: bool,
+) -> ImportSummary:
     if fetcher is None:
-        payload = fetch_yazio_payload(
+        payload = _fetch_yazio_payload_unlocked(
             email,
             password,
             start_day,
             end_day,
             include_micronutrients,
-            operation_key=user.id,
         )
     else:
         payload = fetcher(
@@ -375,6 +420,38 @@ def _run_yazio_connection_sync(
         connection = db.get(YazioConnection, connection_id)
         if connection is None or (require_enabled and not connection.sync_enabled):
             return None
+        user_id = connection.user_id
+    try:
+        with yazio_operation_slot(user_id):
+            return _run_yazio_connection_sync_locked(
+                connection_id,
+                fetcher=fetcher,
+                attempted_at=attempted_at,
+                require_enabled=require_enabled,
+                sync_days_override=sync_days_override,
+                raise_errors=raise_errors,
+            )
+    except YazioOperationBusy as exc:
+        if raise_errors:
+            raise YazioOperationCapacityExceeded(
+                "Für dieses Konto läuft bereits ein YAZIO-Vorgang."
+            ) from exc
+        return None
+
+
+def _run_yazio_connection_sync_locked(
+    connection_id: UUID,
+    *,
+    fetcher: YazioFetcher | None,
+    attempted_at: datetime,
+    require_enabled: bool,
+    sync_days_override: int | None,
+    raise_errors: bool,
+) -> ImportSummary | None:
+    with SessionLocal() as db:
+        connection = db.get(YazioConnection, connection_id)
+        if connection is None or (require_enabled and not connection.sync_enabled):
+            return None
         user = db.get(User, connection.user_id)
         if user is None or not user.is_active:
             return None
@@ -415,14 +492,14 @@ def _run_yazio_connection_sync(
     end_day = attempted_at.astimezone(ZoneInfo(timezone)).date()
     start_day = end_day - timedelta(days=sync_days - 1)
     try:
-        summary = sync_yazio_user(
+        summary = _sync_yazio_user_unlocked(
             user,
             email,
             password,
             start_day,
             end_day,
             source_identifier,
-            fetcher=fetcher,
+            fetcher,
             include_micronutrients=include_micronutrients,
         )
     except Exception as exc:

@@ -17,6 +17,7 @@ migrate:
 
 test:
 	docker compose --profile test run --rm --build backend-ci pytest
+	./scripts/test-postgres.sh
 
 lint:
 	docker compose --profile test run --rm --build backend-ci ruff check app tests

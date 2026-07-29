@@ -76,6 +76,7 @@ class AdapterResult:
 
 
 def parse_json_payload(payload: dict[str, Any], timezone: str) -> AdapterResult:
+    _preflight_collection_sizes(payload)
     try:
         if "samples" in payload:
             parsed_calograph = CalographPayloadInput.model_validate(payload)
@@ -91,6 +92,31 @@ def parse_json_payload(payload: dict[str, Any], timezone: str) -> AdapterResult:
             "JSON-Struktur enthält ungültige oder zu lange Felder"
         ) from exc
     raise ImportFormatError("Unbekanntes JSON-Format: 'metrics' oder 'samples' fehlt")
+
+
+def _preflight_collection_sizes(payload: dict[str, Any]) -> None:
+    samples = payload.get("samples")
+    if isinstance(samples, list) and len(samples) > settings.max_import_records:
+        raise ImportLimitError("Import enthält zu viele Datensätze")
+
+    metrics: object = payload.get("metrics")
+    envelope = payload.get("data")
+    if isinstance(envelope, dict):
+        metrics = envelope.get("metrics", metrics)
+    if not isinstance(metrics, list):
+        return
+    if len(metrics) > settings.max_import_records:
+        raise ImportLimitError("Import enthält zu viele Datensätze")
+
+    point_count = 0
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        points = metric.get("data")
+        if isinstance(points, list):
+            point_count += len(points)
+            if point_count > settings.max_import_records:
+                raise ImportLimitError("Import enthält zu viele Datensätze")
 
 
 def _parse_health_auto_export(

@@ -642,4 +642,48 @@ describe('main views', () => {
       'https://nutrition.example.test/einladung#token=invite_example',
     )
   })
+
+  it('clears a stale YAZIO error before a successful retry', async () => {
+    let saveAttempts = 0
+    const status = {
+      available: true,
+      configured: false,
+      sync_enabled: false,
+      sync_interval_minutes: null,
+      sync_days: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve(status)
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      if (path === '/yazio/connection') {
+        saveAttempts += 1
+        return saveAttempts === 1
+          ? Promise.reject(new Error('temporary failure'))
+          : Promise.resolve({ ...status, configured: true, sync_enabled: true })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
+    await wrapper.get('input[name="yazio-password"]').setValue('very-secret')
+
+    const form = wrapper.get('.yazio-connection-card form')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('YAZIO-Verbindung konnte nicht gespeichert werden.')
+
+    await form.trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('YAZIO-Verbindung konnte nicht gespeichert werden.')
+    expect(wrapper.text()).toContain('Persönliche YAZIO-Verbindung gespeichert.')
+  })
 })

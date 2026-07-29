@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -9,10 +10,12 @@ from app.api import yazio as yazio_api
 from app.config import settings
 from app.models import HealthSample, User, YazioConnection
 from app.schemas import ImportSummary
+from app.services import yazio_sync
 from app.services.credential_crypto import (
     decrypt_credential,
     encrypt_credential,
 )
+from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioSyncError,
@@ -62,6 +65,39 @@ def test_connection_is_per_user_and_due(
     assert stored.source_identifier.startswith("yazio:")
     assert stored.sync_days == 7
     assert connection.id in due_yazio_connection_ids()
+
+
+def test_connection_slot_covers_the_complete_sync_and_status_update(
+    user: User,
+    monkeypatch,
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "yazio-password",
+    )
+    expected = ImportSummary(
+        status="completed",
+        received=0,
+        inserted=0,
+        updated=0,
+        skipped=0,
+    )
+
+    def run_while_locked(connection_id, **_kwargs):
+        assert connection_id == connection.id
+        with pytest.raises(YazioOperationBusy), yazio_operation_slot(user.id):
+            pass
+        return expected
+
+    monkeypatch.setattr(
+        yazio_sync,
+        "_run_yazio_connection_sync_locked",
+        run_while_locked,
+    )
+
+    assert run_manual_yazio_sync(user.id) == expected
 
 
 def test_manual_sync_imports_only_for_connection_user(

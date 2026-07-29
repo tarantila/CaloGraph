@@ -345,6 +345,16 @@ def persist_apple_health_stream(
             pending_errors,
             exc,
         )
+    except SQLAlchemyError as exc:
+        _finish_partial(
+            db,
+            batch.id,
+            counters,
+            unknown_types,
+            pending_errors,
+            exc,
+        )
+        raise
 
     batch.status = "completed_with_errors" if counters.failed else "completed"
     batch.finished_at = datetime.now(UTC)

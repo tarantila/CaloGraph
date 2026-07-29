@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 
@@ -14,6 +15,7 @@ from app.database import engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("calograph")
+REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 settings.validate_runtime_security()
 
@@ -43,7 +45,12 @@ def api_docs() -> str:
 async def security_and_request_id(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
-    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    incoming_request_id = request.headers.get("x-request-id", "")
+    request_id = (
+        incoming_request_id
+        if REQUEST_ID_PATTERN.fullmatch(incoming_request_id)
+        else uuid.uuid4().hex
+    )
     request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
