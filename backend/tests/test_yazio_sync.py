@@ -227,6 +227,51 @@ def test_scheduled_sync_records_safe_failure(
     assert timedelta(hours=1, minutes=1) <= retry_delay <= timedelta(hours=1, minutes=30)
 
 
+def test_fully_rejected_payload_is_not_recorded_as_success(
+    db: Session, user: User, monkeypatch
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "yazio-password",
+    )
+
+    def overprecise_fetch(
+        email, password, start_day, end_day, include_micronutrients
+    ):
+        del email, password, start_day, end_day, include_micronutrients
+        return {
+            "2026-07-23": {
+                "daily_summary": {
+                    "meals": {
+                        "dinner": {
+                            "nutrients": {
+                                "energy.energy": "0.1234567890123",
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    assert (
+        run_scheduled_yazio_sync(connection.id, fetcher=overprecise_fetch) is None
+    )
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.last_success_at is None
+    assert stored.last_error == "YAZIO-Daten konnten nicht verarbeitet werden."
+    assert stored.next_sync_at is not None
+
+    with pytest.raises(
+        YazioSyncError,
+        match="YAZIO-Daten konnten nicht verarbeitet werden",
+    ):
+        run_manual_yazio_sync(user.id, fetcher=overprecise_fetch)
+
+
 def test_authentication_failure_disables_automatic_retries(
     db: Session, user: User, monkeypatch
 ) -> None:

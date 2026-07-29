@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -38,6 +38,21 @@ _FLAT_NUTRIENTS = {
     "carbs": "nutrient.carb",
     "fat": "nutrient.fat",
 }
+
+_YAZIO_FLOAT_QUANTUM = Decimal("0.000000000001")
+
+
+def _yazio_decimal_value(value: Any) -> Decimal:
+    if not isinstance(value, float):
+        return decimal_value(value)
+    try:
+        rounded = Decimal(str(value)).quantize(
+            _YAZIO_FLOAT_QUANTUM,
+            rounding=ROUND_HALF_EVEN,
+        )
+    except InvalidOperation:
+        return decimal_value(value)
+    return decimal_value(rounded)
 
 
 def parse_yazio_export(
@@ -130,7 +145,7 @@ def parse_yazio_export(
         for input_name, metric_type, value, incoming_unit, canonical_unit in values:
             result.add_received()
             try:
-                raw_value = decimal_value(value)
+                raw_value = _yazio_decimal_value(value)
                 normalized = normalize_value(raw_value, incoming_unit, canonical_unit)
                 result.add_sample(
                     CanonicalSample(
@@ -179,7 +194,7 @@ def parse_yazio_export(
         definition = MICRONUTRIENT_BY_YAZIO_ID[nutrient_id]
         result.add_received()
         try:
-            raw_value = decimal_value(value)
+            raw_value = _yazio_decimal_value(value)
             # YAZIO's specific-nutrient endpoint returns every nutrient as
             # grams, including vitamins normally displayed as micrograms.
             normalized = normalize_value(raw_value, "g", definition.unit)
@@ -278,7 +293,9 @@ def _daily_values(
     nutrients = _meal_nutrient_totals(summary)
     if not nutrients:
         nutrients = _flat_nutrients(day_data)
-    if nutrients and all(decimal_value(value) == 0 for value in nutrients.values()):
+    if nutrients and all(
+        _yazio_decimal_value(value) == 0 for value in nutrients.values()
+    ):
         nutrients = {}
     for input_name, value in nutrients.items():
         metric_type, canonical_unit = _NUTRIENT_METRICS[input_name]
@@ -305,7 +322,10 @@ def _meal_nutrient_totals(summary: YazioSummaryInput) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = {}
     for nutrient_name, items in raw_values.items():
         if items:
-            totals[nutrient_name] = sum((decimal_value(value) for value in items), Decimal())
+            totals[nutrient_name] = sum(
+                (_yazio_decimal_value(value) for value in items),
+                Decimal(),
+            )
     return totals
 
 

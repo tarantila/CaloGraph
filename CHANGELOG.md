@@ -98,6 +98,9 @@ follows [Semantic Versioning](https://semver.org/).
   SPDX SBOM artifacts, and Sigstore-backed build/SBOM attestations.
 - Added conservative GHCR retention that preserves every release-tagged image
   and tagless attestation record while aging out old non-release builds.
+- Restored YAZIO synchronization after strict import validation exposed binary
+  float artifacts, while retaining range and precision rejection for unsafe
+  values and no longer marking fully rejected payloads as successful syncs.
 
 ## [0.1.2] - 2026-07-27
 

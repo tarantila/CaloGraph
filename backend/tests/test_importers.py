@@ -331,6 +331,65 @@ def test_yazio_days_export_is_aggregated_without_meal_details() -> None:
     assert by_metric["protein_g"].source_identifier == "test-account"
 
 
+def test_yazio_binary_float_artifacts_are_rounded_to_database_precision() -> None:
+    result = parse_yazio_export(
+        {
+            "2026-07-29": {
+                "daily_summary": {
+                    "meals": {
+                        "lunch": {
+                            "nutrients": {
+                                "energy.energy": 222.75000000000003,
+                                "nutrient.protein": 13.750000000000002,
+                                "nutrient.carb": 21.450000000000003,
+                                "nutrient.fat": 7.700000000000001,
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "Europe/Berlin",
+    )
+
+    by_metric = {sample.metric_type: sample for sample in result.samples}
+    assert result.received == 4
+    assert result.errors == []
+    assert by_metric["dietary_energy_kcal"].original_value == Decimal(
+        "222.750000000000"
+    )
+    assert by_metric["protein_g"].value == Decimal("13.750000")
+    assert by_metric["carbohydrates_g"].value == Decimal("21.450000")
+    assert by_metric["fat_g"].value == Decimal("7.700000")
+
+
+@pytest.mark.parametrize(
+    "unsafe_value",
+    [-0.1, float("nan"), float("inf"), 1_000_000_000_000.0, "0.1234567890123"],
+)
+def test_yazio_unsafe_values_remain_rejected(unsafe_value: object) -> None:
+    result = parse_yazio_export(
+        {
+            "2026-07-29": {
+                "daily_summary": {
+                    "meals": {
+                        "lunch": {
+                            "nutrients": {
+                                "energy.energy": unsafe_value,
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "Europe/Berlin",
+    )
+
+    assert result.samples == []
+    assert result.failed_count == 1
+    assert result.errors[0][2] == "invalid_day"
+
+
 def test_yazio_flat_day_format_and_kilojoules_are_supported() -> None:
     result = parse_yazio_export(
         {

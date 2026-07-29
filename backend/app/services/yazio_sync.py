@@ -285,7 +285,15 @@ def _sync_yazio_user_unlocked(
             include_micronutrients,
         )
     identifier = source_identifier or f"yazio:{yazio_account_hash(email)[:16]}"
-    return import_yazio_payload(user, payload, identifier)
+    summary = import_yazio_payload(user, payload, identifier)
+    if (
+        summary.failed > 0
+        and summary.inserted == 0
+        and summary.updated == 0
+        and summary.skipped == 0
+    ):
+        raise YazioSyncError("YAZIO-Daten konnten nicht verarbeitet werden.")
+    return summary
 
 
 def configure_yazio_connection(
