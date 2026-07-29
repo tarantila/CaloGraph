@@ -18,7 +18,8 @@
   `/run/secrets`; it does not place their values or a password-bearing database
   URL in container environments. PostgreSQL receives only its password,
   `backend` receives all four, `yazio-scheduler` receives only the database
-  password and credential key, and `frontend` receives none.
+  password, credential key, and shared rate-limit key required by the
+  deployment-wide provider circuit breaker, and `frontend` receives none.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.

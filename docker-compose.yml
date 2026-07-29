@@ -145,6 +145,7 @@ services:
       DATABASE_NAME: ${POSTGRES_DB:-calograph}
       DATABASE_USER: ${POSTGRES_USER:-calograph}
       DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
       CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
       YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
       YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
@@ -160,6 +161,7 @@ services:
       RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
     secrets:
       - postgres_password
+      - rate_limit_secret
       - credential_encryption_key
     depends_on:
       backend:
@@ -271,6 +273,7 @@ services:
       ENVIRONMENT: test
       DATABASE_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
       CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
+      CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
     depends_on:
       postgres-ci:
         condition: service_healthy

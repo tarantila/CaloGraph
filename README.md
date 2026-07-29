@@ -273,6 +273,12 @@ npm run build
 OpenAPI documentation is exposed at `/api/docs` while the application is
 running.
 
+The regular backend test suite always replaces an inherited `DATABASE_URL`
+with an in-memory SQLite database before importing the application. PostgreSQL
+integration tests are isolated behind `./scripts/test-postgres.sh`; their
+destructive schema reset requires an explicit opt-in and a local database name
+ending in `_test`.
+
 ## Migrations and updates
 
 ```bash

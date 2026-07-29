@@ -12,6 +12,7 @@ from hypothesis import strategies as st
 
 from app.config import settings
 from app.importers import json_adapter
+from app.importers import yazio as yazio_importer
 from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.common import (
     CanonicalSample,
@@ -404,3 +405,41 @@ def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:
 def test_yazio_export_rejects_payload_without_dated_entries() -> None:
     with pytest.raises(ValueError, match="keine Tagesdaten"):
         parse_yazio_export({"profile": {"name": "not imported"}}, "Europe/Berlin")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "unsupported-a": {},
+            "unsupported-b": {},
+            "unsupported-c": {},
+        },
+        {
+            "nutrients": {
+                "unsupported": {
+                    "entry-a": 1,
+                    "entry-b": 2,
+                    "entry-c": 3,
+                }
+            }
+        },
+    ],
+)
+def test_yazio_limits_all_raw_entries_before_pydantic_materialization(
+    payload: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_import_records", 2)
+
+    def unexpected_validation(_cls, _payload):
+        raise AssertionError("Pydantic validation must not run above the record limit")
+
+    monkeypatch.setattr(
+        yazio_importer.YazioExportRootInput,
+        "model_validate",
+        unexpected_validation,
+    )
+
+    with pytest.raises(ImportLimitError):
+        parse_yazio_export(payload, "Europe/Berlin")

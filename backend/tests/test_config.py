@@ -270,17 +270,46 @@ def test_scheduler_production_validation_only_requires_its_own_secrets(
         tmp_path / "credential-key",
         Fernet.generate_key(),
     )
+    rate_limit_secret = write_secret(
+        tmp_path / "rate-limit-secret",
+        "scheduler-rate-limit-secret-0123456789",
+    )
     configured = Settings(
         _env_file=None,
         environment="production",
         database_password_file=str(database_secret),
         credential_encryption_key_file=str(credential_secret),
+        rate_limit_secret_file=str(rate_limit_secret),
         yazio_enabled=True,
     )
 
     configured.validate_runtime_security("scheduler")
     with pytest.raises(ProductionConfigurationError):
         configured.validate_runtime_security("backend")
+
+
+def test_scheduler_rejects_default_rate_limit_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_direct_secret_environment(monkeypatch)
+    configured = Settings(
+        _env_file=None,
+        environment="production",
+        database_password_file=str(
+            write_secret(
+                tmp_path / "database-password",
+                "scheduler-database-password-0123456789",
+            )
+        ),
+        credential_encryption_key_file=str(
+            write_secret(tmp_path / "credential-key", Fernet.generate_key())
+        ),
+        yazio_enabled=True,
+    )
+
+    with pytest.raises(ProductionConfigurationError, match="RATE_LIMIT_SECRET"):
+        configured.validate_runtime_security("scheduler")
 
 
 def test_valid_production_configuration_passes_runtime_check() -> None:

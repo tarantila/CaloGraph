@@ -158,24 +158,25 @@ do
     fail "YAZIO scheduler exposes ${forbidden_name} as an environment variable."
   fi
 done
+if ! printf '%s\n' "$scheduler_environment" \
+  | grep -q '^RATE_LIMIT_SECRET_FILE=/run/secrets/rate_limit_secret$'; then
+  fail "YAZIO scheduler is missing its shared rate-limit secret file."
+fi
 scheduler_mounts=$(docker inspect \
   --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$scheduler_id")
 for required_mount in \
   /run/secrets/postgres_password \
+  /run/secrets/rate_limit_secret \
   /run/secrets/credential_encryption_key
 do
   if ! printf '%s\n' "$scheduler_mounts" | grep -qx "$required_mount"; then
     fail "YAZIO scheduler is missing ${required_mount}."
   fi
 done
-for forbidden_mount in \
-  /run/secrets/session_secret \
-  /run/secrets/rate_limit_secret
-do
-  if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
-    fail "YAZIO scheduler received ${forbidden_mount}."
-  fi
-done
+forbidden_mount=/run/secrets/session_secret
+if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
+  fail "YAZIO scheduler received ${forbidden_mount}."
+fi
 
 if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \

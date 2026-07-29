@@ -52,11 +52,13 @@ single YAZIO scheduler checks for due connections at a configurable interval.
 Credentials are encrypted per user with Fernet. The host stores the key as an
 operator-controlled file outside the image; Compose mounts it only into the
 backend and scheduler. Database, session, and rate-limit secrets use the same
-file-based mechanism with narrower service grants. `.env` contains paths, not
-secret values. The files must be included in the encrypted backup and
-permissions strategy together with the database. YAZIO network work runs in a
-short-lived isolated child process with explicit request timeouts and a
-parent-enforced absolute deadline.
+file-based mechanism with narrower service grants. The scheduler receives the
+rate-limit secret because its provider failures must address the same
+deployment-wide circuit-breaker buckets as HTTP workers; it never receives the
+session secret. `.env` contains paths, not secret values. The files must be
+included in the encrypted backup and permissions strategy together with the
+database. YAZIO network work runs in a short-lived isolated child process with
+explicit request timeouts and a parent-enforced absolute deadline.
 PostgreSQL advisory locks enforce one operation per user and a small
 deployment-wide concurrency budget across HTTP workers and the scheduler. The
 same database also stores temporary rate-limit and circuit-breaker buckets, so

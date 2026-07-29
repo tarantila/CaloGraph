@@ -60,6 +60,15 @@ follows [Semantic Versioning](https://semver.org/).
   environment/secret-file backups, authenticated verification and restore,
   and non-destructive migration helpers for existing plaintext dumps and
   legacy `.env` secret values.
+- Pinned destructive unit-test setup to an in-memory SQLite database even when
+  the invoking shell exports a deployable `DATABASE_URL`, with a second
+  fail-closed guard immediately before schema reset. PostgreSQL integration
+  tests additionally require an explicit destructive-test opt-in, two identical
+  URLs, an allowlisted local host, and a database name ending in `_test`.
+- Restored one shared rate-limit HMAC secret for backend and scheduler YAZIO
+  circuit-breaker buckets without exposing the browser session secret.
+- Added an iterative pre-Pydantic limit over every raw YAZIO container entry
+  and removed sorted day/micronutrient materialization.
 
 ## [0.1.2] - 2026-07-27
 

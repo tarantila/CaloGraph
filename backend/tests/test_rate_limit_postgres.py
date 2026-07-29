@@ -17,18 +17,23 @@ from app.services.rate_limit import (
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 
+POSTGRES_TESTS_ENABLED = (
+    os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
+    and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
+)
+
 
 @pytest.mark.skipif(
-    not os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"),
-    reason="PostgreSQL integration URL is not configured",
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
 )
 def test_application_guards_are_exercised_with_postgres() -> None:
     assert application_engine.dialect.name == "postgresql"
 
 
 @pytest.mark.skipif(
-    not os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"),
-    reason="PostgreSQL integration URL is not configured",
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
 )
 def test_concurrent_rate_limit_updates_are_not_lost() -> None:
     database_url = os.environ["CALOGRAPH_POSTGRES_TEST_URL"]
@@ -61,8 +66,8 @@ def test_concurrent_rate_limit_updates_are_not_lost() -> None:
 
 
 @pytest.mark.skipif(
-    not os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"),
-    reason="PostgreSQL integration URL is not configured",
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
 )
 def test_postgres_import_slot_is_exclusive_and_released() -> None:
     user_id = uuid.uuid4()
@@ -77,8 +82,8 @@ def test_postgres_import_slot_is_exclusive_and_released() -> None:
 
 
 @pytest.mark.skipif(
-    not os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"),
-    reason="PostgreSQL integration URL is not configured",
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
 )
 def test_postgres_yazio_slots_enforce_user_and_global_capacity(
     monkeypatch,

@@ -48,7 +48,9 @@ backups, and the availability of the private application.
   Repeated provider or deadline failures open a temporary shared circuit
   breaker, while authentication failures pause only the affected scheduled
   connection. `YAZIO_ENABLED` provides an operational kill switch without
-  adding Redis or a general-purpose queue.
+  adding Redis or a general-purpose queue. Backend and scheduler receive the
+  same rate-limit secret so provider failures map to the same HMAC-pseudonymized
+  circuit-breaker bucket.
 - **Duplicate sources:** do not use Apple Health and YAZIO for the same time
   range. Cross-source deduplication would hide provenance.
 - **Manipulated JSON:** Pydantic and adapter validation, finite non-negative

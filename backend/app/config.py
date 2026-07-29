@@ -378,21 +378,22 @@ class Settings(BaseSettings):
                 )
 
             normalized_session_secret = self.session_secret.strip().casefold()
-            normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
             if (
                 normalized_session_secret in KNOWN_INSECURE_SECRETS
                 or "change_me" in normalized_session_secret
                 or "changeme" in normalized_session_secret
             ):
                 errors.append("SESSION_SECRET uses a known development or placeholder value")
-            if (
-                normalized_rate_limit_secret in KNOWN_INSECURE_SECRETS
-                or "change_me" in normalized_rate_limit_secret
-                or "changeme" in normalized_rate_limit_secret
-            ):
-                errors.append("RATE_LIMIT_SECRET uses a known development or placeholder value")
             if self.session_secret == self.rate_limit_secret:
                 errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
+
+        normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
+        if (
+            normalized_rate_limit_secret in KNOWN_INSECURE_SECRETS
+            or "change_me" in normalized_rate_limit_secret
+            or "changeme" in normalized_rate_limit_secret
+        ):
+            errors.append("RATE_LIMIT_SECRET uses a known development or placeholder value")
 
         database_url = urlsplit(self.database_url)
         database_password = unquote(database_url.password or "").strip().casefold()

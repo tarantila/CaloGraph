@@ -34,20 +34,21 @@ jobs:
       postgres:
         image: postgres:18.4-alpine
         env:
-          POSTGRES_DB: calograph
-          POSTGRES_USER: calograph
+          POSTGRES_DB: calograph_test
+          POSTGRES_USER: calograph_test
           POSTGRES_PASSWORD: ci-postgres-password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U calograph -d calograph"
+          --health-cmd "pg_isready -U calograph_test -d calograph_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
       ENVIRONMENT: test
-      DATABASE_URL: postgresql+psycopg://calograph:ci-postgres-password@localhost:5432/calograph
-      CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph:ci-postgres-password@localhost:5432/calograph
+      DATABASE_URL: postgresql+psycopg://calograph_test:ci-postgres-password@localhost:5432/calograph_test
+      CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph_test:ci-postgres-password@localhost:5432/calograph_test
+      CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
       SESSION_SECRET: test-session-secret-with-at-least-32-characters
       RATE_LIMIT_SECRET: test-rate-limit-secret-with-at-least-32-chars
       TRUSTED_HOSTS: testserver,localhost,127.0.0.1

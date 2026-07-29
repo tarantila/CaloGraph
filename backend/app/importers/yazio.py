@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
@@ -5,6 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationError
 
+from app.config import settings
 from app.importers.common import CanonicalSample, decimal_value, normalize_value
 from app.importers.errors import (
     ImportFormatError,
@@ -44,6 +46,7 @@ def parse_yazio_export(
     source_identifier: str = "yazio-account",
 ) -> AdapterResult:
     """Normalize a yazio-exporter days.json payload into CaloGraph samples."""
+    _preflight_yazio_collection_sizes(payload)
     try:
         validated_root = YazioExportRootInput.model_validate(payload).root
     except ValidationError as exc:
@@ -64,7 +67,6 @@ def parse_yazio_export(
         if isinstance(validated_root.get("days"), dict)
         else validated_root
     )
-    dated_items = _dated_items(root)
     micronutrient_root = validated_root.get("nutrients")
     if micronutrient_root is not None and not isinstance(micronutrient_root, dict):
         raise ImportFormatError("YAZIO-Feld 'nutrients' muss ein Objekt sein")
@@ -72,14 +74,13 @@ def parse_yazio_export(
         key in MICRONUTRIENT_BY_YAZIO_ID for key in validated_root
     ):
         micronutrient_root = validated_root
-    micronutrient_items = _micronutrient_items(micronutrient_root)
-    if not dated_items and not micronutrient_items:
-        raise ImportFormatError(
-            "Unbekanntes YAZIO-Format: keine Tagesdaten im Format YYYY-MM-DD"
-        )
-
     result = AdapterResult(source_type=SOURCE_TYPE)
-    for item_index, (day, day_data) in enumerate(dated_items):
+    found_entry = False
+    next_item_index = 0
+    for day, day_data in _dated_items(root):
+        found_entry = True
+        item_index = next_item_index
+        next_item_index += 1
         if not isinstance(day_data, dict):
             result.add_error(
                 (item_index, day.isoformat(), "invalid_day", "Tagesdaten sind kein Objekt")
@@ -171,9 +172,10 @@ def parse_yazio_export(
                 )
             )
 
-    for item_index, (day, nutrient_id, value) in enumerate(
-        micronutrient_items, start=len(dated_items)
-    ):
+    for day, nutrient_id, value in _micronutrient_items(micronutrient_root):
+        found_entry = True
+        item_index = next_item_index
+        next_item_index += 1
         definition = MICRONUTRIENT_BY_YAZIO_ID[nutrient_id]
         result.add_received()
         try:
@@ -210,26 +212,48 @@ def parse_yazio_export(
                 )
             )
             continue
+    if not found_entry:
+        raise ImportFormatError(
+            "Unbekanntes YAZIO-Format: keine Tagesdaten im Format YYYY-MM-DD"
+        )
     return result
 
 
-def _dated_items(root: object) -> list[tuple[date, object]]:
+def _preflight_yazio_collection_sizes(payload: dict[str, Any]) -> None:
+    entry_count = 0
+    iterators: list[Iterator[object]] = [iter((payload,))]
+    while iterators:
+        try:
+            current = next(iterators[-1])
+        except StopIteration:
+            iterators.pop()
+            continue
+        if isinstance(current, dict):
+            entry_count += len(current)
+            if entry_count > settings.max_import_records:
+                raise ImportLimitError("Import enthält zu viele Datensätze")
+            iterators.append(iter(current.values()))
+        elif isinstance(current, list):
+            entry_count += len(current)
+            if entry_count > settings.max_import_records:
+                raise ImportLimitError("Import enthält zu viele Datensätze")
+            iterators.append(iter(current))
+
+
+def _dated_items(root: object) -> Iterator[tuple[date, object]]:
     if not isinstance(root, dict):
-        return []
-    result: list[tuple[date, object]] = []
+        return
     for key, value in root.items():
         try:
             parsed = date.fromisoformat(str(key))
         except ValueError:
             continue
-        result.append((parsed, value))
-    return sorted(result, key=lambda item: item[0])
+        yield parsed, value
 
 
-def _micronutrient_items(root: object) -> list[tuple[date, str, object]]:
+def _micronutrient_items(root: object) -> Iterator[tuple[date, str, object]]:
     if not isinstance(root, dict):
-        return []
-    result: list[tuple[date, str, object]] = []
+        return
     for nutrient_id, daily_values in root.items():
         if nutrient_id not in MICRONUTRIENT_BY_YAZIO_ID or not isinstance(
             daily_values, dict
@@ -241,8 +265,7 @@ def _micronutrient_items(root: object) -> list[tuple[date, str, object]]:
             except ValueError:
                 continue
             if value is not None:
-                result.append((day, nutrient_id, value))
-    return sorted(result, key=lambda item: (item[0], item[1]))
+                yield day, nutrient_id, value
 
 
 def _daily_values(
