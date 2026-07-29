@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -12,8 +12,8 @@ dependencies = [
   "argon2-cffi==25.1.0",
   "cryptography==49.0.0",
   "defusedxml==0.7.1",
-  "fastapi==0.139.2",
-  "httpx2==2.7.0",
+  "fastapi==0.140.13",
+  "httpx2==2.9.1",
   "psycopg[binary]==3.3.4",
   "pyotp==2.10.0",
   "pydantic==2.13.4",
@@ -22,7 +22,7 @@ dependencies = [
   "qrcode==8.2",
   "requests==2.34.2",
   "sqlalchemy==2.0.51",
-  "uvicorn[standard]==0.51.0",
+  "uvicorn[standard]==0.52.0",
   "webauthn==3.0.0",
   "yazio-exporter==0.2.0",
   "zstandard==0.25.0",
@@ -30,12 +30,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "hypothesis==6.160.0",
+  "hypothesis==6.163.0",
   "mypy==2.3.0",
   "pip-audit==2.10.1",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
-  "ruff==0.15.22",
+  "ruff==0.16.0",
 ]
 
 [tool.hatch.build.targets.wheel]
