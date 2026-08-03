@@ -36,6 +36,13 @@
   production rejects subnet-wide trust.
 - Set `ENABLE_HSTS=true` after the domain is permanently available exclusively
   over HTTPS. Production mode will not start while it is false.
+- Keep `HSTS_INCLUDE_SUBDOMAINS=false` unless every descendant of the exact
+  CaloGraph hostname permanently supports HTTPS. It does not affect sibling
+  hosts, but an accidental policy for a plain-HTTP descendant can make that
+  host unreachable in browsers until the cached policy expires.
+- Keep `ENABLE_API_DOCS=false` for an Internet-facing installation unless the
+  generated schema is required and the public proxy restricts both
+  `/api/docs` and `/api/openapi.json` to an operator network.
 - Backups are encrypted with a dedicated `age` recipient, stored outside the
   Docker host with an immutable or offline copy, and a restore has been tested
   in practice. Keep the private `age` identity off the Docker host.
@@ -83,7 +90,9 @@ sessions use an `__Host-` cookie with `Secure`, `HttpOnly`, `Path=/`, no
 30-day absolute timeout by default. `SESSION_IDLE_TIMEOUT_HOURS` can be lowered
 or raised to at most seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered
 but not raised above 30 days. The scheduler deletes expired, idle, and revoked
-session rows hourly.
+session rows hourly. Active session and import-token timestamps are written at
+most once every five minutes so read-heavy dashboard traffic does not turn into
+an equal number of database commits.
 
 Users can enable TOTP in their account settings. The pending and enabled TOTP
 secret is encrypted with a dedicated key that is mounted only into the
@@ -218,7 +227,7 @@ dump. Source updates and container updates remain separate, auditable steps.
 
 Release images are available from GHCR after the complete CI, exact-image
 browser/production-smoke tests, and high/critical vulnerability gate succeed.
-Use `CALOGRAPH_BACKEND_IMAGE`, `CALOGRAPH_FRONTEND_IMAGE`, and a release
+Compose defaults to the public GHCR image repositories. Set a release
 `CALOGRAPH_VERSION`, then start with `--no-build` so deployment cannot silently
 replace the tested image with a local build. Image tags, signed attestations,
 SPDX SBOMs, dependency automation, and cleanup rules are described in

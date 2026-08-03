@@ -182,7 +182,7 @@ not a running database.
 
 ## Update containers
 
-After selecting the desired source revision locally:
+After selecting a tested release through `CALOGRAPH_VERSION` in `.env`:
 
 ```bash
 export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
@@ -191,10 +191,11 @@ BACKUP_DIR=/srv/calograph-backups \
   scripts/update-containers.sh
 ```
 
-The script validates Compose, creates encrypted backups first, pulls the pinned
-PostgreSQL image, rebuilds backend and frontend with current base images, and
-waits for healthy services. It intentionally does not run `git pull`;
-selecting the commit to install remains a separate, controlled action.
+The script validates Compose, creates encrypted backups first, pulls
+PostgreSQL plus the selected backend and frontend release images, and starts
+them with `--no-build` before waiting for healthy services. It intentionally
+does not run `git pull` or build source; source updates and image selection
+remain separate, controlled actions.
 
 After every update:
 

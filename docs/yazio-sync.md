@@ -79,7 +79,7 @@ If a key is generated manually, write the resulting value to the file named by
 and then recreate the backend and scheduler:
 
 ```bash
-docker compose up -d --build backend yazio-scheduler
+docker compose up -d --no-build --force-recreate backend yazio-scheduler
 ```
 
 Configure a personal connection:

@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    image: postgres:18.4-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-calograph}
@@ -35,13 +35,13 @@ services:
     pids_limit: ${POSTGRES_PIDS_LIMIT:--1}
 
   backend:
-    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.2.1}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-ghcr.io/tarantila/calograph-backend}:${CALOGRAPH_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
       target: backend-runtime
       args:
-        APP_VERSION: ${CALOGRAPH_VERSION:-0.2.1}
+        APP_VERSION: ${CALOGRAPH_VERSION:-latest}
         APP_UID: ${CALOGRAPH_UID:-10001}
         APP_GID: ${CALOGRAPH_GID:-10001}
     restart: unless-stopped
@@ -62,7 +62,9 @@ services:
       TRUSTED_HOSTS: ${TRUSTED_HOSTS:?Set TRUSTED_HOSTS in .env}
       TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:?Set TRUSTED_ORIGINS in .env}
       TRUSTED_PROXY_NETWORKS: "${CALOGRAPH_FRONTEND_PROXY_IP:-172.30.0.10}/32"
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
       ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
       MAX_JSON_PAYLOAD_BYTES: ${MAX_JSON_PAYLOAD_BYTES:-10485760}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
       MAX_ZIP_UNCOMPRESSED_BYTES: ${MAX_ZIP_UNCOMPRESSED_BYTES:-2147483648}
@@ -146,7 +148,7 @@ services:
       - /tmp:size=${BACKEND_TMPFS_BYTES:-629145600},mode=1777
 
   yazio-scheduler:
-    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend}:${CALOGRAPH_VERSION:-0.2.1}
+    image: ${CALOGRAPH_BACKEND_IMAGE:-ghcr.io/tarantila/calograph-backend}:${CALOGRAPH_VERSION:-latest}
     restart: unless-stopped
     command: ["python", "-m", "app.cli", "run-yazio-scheduler"]
     environment:
@@ -203,16 +205,17 @@ services:
       - /tmp:size=64m,mode=1777
 
   frontend:
-    image: ${CALOGRAPH_FRONTEND_IMAGE:-calograph-frontend}:${CALOGRAPH_VERSION:-0.2.1}
+    image: ${CALOGRAPH_FRONTEND_IMAGE:-ghcr.io/tarantila/calograph-frontend}:${CALOGRAPH_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
       target: frontend-runtime
       args:
-        APP_VERSION: ${CALOGRAPH_VERSION:-0.2.1}
+        APP_VERSION: ${CALOGRAPH_VERSION:-latest}
     restart: unless-stopped
     environment:
       ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
+      HSTS_INCLUDE_SUBDOMAINS: ${HSTS_INCLUDE_SUBDOMAINS:-false}
       NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
       CALOGRAPH_EDGE_GATEWAY_IP: ${CALOGRAPH_EDGE_GATEWAY_IP:-172.30.0.1}
     ports:
@@ -262,7 +265,7 @@ services:
 
   postgres-ci:
     profiles: [test]
-    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    image: postgres:18.4-alpine
     environment:
       POSTGRES_DB: calograph_test
       POSTGRES_USER: calograph_test

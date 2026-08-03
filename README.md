@@ -2,7 +2,7 @@
   <img src="frontend/public/branding/calograph-readme-banner.png" alt="CaloGraph" width="680">
 </p>
 
-# CaloGraph
+<h1 align="center">CaloGraph</h1>
 
 CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
 It puts individual days into the context of weekly budgets, trends,
@@ -17,6 +17,10 @@ project.
 > releases may contain incomplete features, breaking changes, or migration
 > issues. Keep tested backups and review the changelog before updating. It is
 > not medical software and must not be used for diagnosis or treatment.
+
+> [!NOTE]
+> CaloGraph is source-available for noncommercial use. Commercial use is not
+> permitted by the project license.
 
 > [!IMPORTANT]
 > A server cannot retrieve Apple Health or HealthKit data from iCloud. An
@@ -65,7 +69,8 @@ need to be installed on the host.
 cp .env.example .env
 scripts/init-secrets.sh
 vim .env
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build --wait
 docker compose ps
 ```
 
@@ -117,6 +122,12 @@ The backend container applies pending Alembic migrations before it starts. The
 application is then available at
 [http://127.0.0.1:8180](http://127.0.0.1:8180).
 
+Compose pulls the public `latest` application images from GHCR by default. The
+production template instead pins `CALOGRAPH_VERSION` to its matching tested
+`vX.Y.Z` release. Review and update that value deliberately when upgrading.
+Contributors can build the checked-out source with `make dev` or
+`docker compose up -d --build`.
+
 Both application images are built from the central multi-stage
 [`Dockerfile`](Dockerfile). Compose selects separate backend and frontend
 targets, so the final images still contain only their respective runtime. Both
@@ -126,9 +137,9 @@ without rebuilding the image. Build labels and the backend UID/GID can
 optionally be overridden with `CALOGRAPH_VERSION`, `CALOGRAPH_UID`, and
 `CALOGRAPH_GID`.
 
-GitHub CI also builds, scans, tests, signs, and publishes release images to
-GHCR. Set `CALOGRAPH_BACKEND_IMAGE`, `CALOGRAPH_FRONTEND_IMAGE`, and an existing
-`vX.Y.Z` `CALOGRAPH_VERSION` to use them with `docker compose up --no-build`.
+GitHub CI builds, scans, tests, signs, and publishes release images to GHCR.
+Every successful release tag publishes both its `vX.Y.Z` tag and `latest`.
+Override the image names only when using a mirror or fork.
 The immutable pins, SBOMs, provenance verification, and retention policy are
 documented in [docs/supply-chain.md](docs/supply-chain.md).
 
@@ -302,8 +313,10 @@ npm run test:unit
 npm run build
 ```
 
-OpenAPI documentation is exposed at `/api/docs` while the application is
-running.
+The development template enables OpenAPI documentation at `/api/docs` and
+`/api/openapi.json`. Production disables both endpoints by default through
+`ENABLE_API_DOCS=false`; they can be enabled deliberately for a restricted
+operator or API-client network.
 
 The regular backend test suite always replaces an inherited `DATABASE_URL`
 with an in-memory SQLite database before importing the application. PostgreSQL
@@ -362,7 +375,25 @@ and [docs/reverse-proxy.md](docs/reverse-proxy.md).
 - [Production Docker operation](docs/production.md)
 - [User management](docs/user-management.md)
 - [Reverse proxy](docs/reverse-proxy.md)
+- [Software supply chain](docs/supply-chain.md)
 - [Future native iOS sync](docs/native-ios-sync-future.md)
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
+opening a pull request, and report vulnerabilities privately according to
+[SECURITY.md](SECURITY.md).
+
+## License
+
+CaloGraph's original code and assets are licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and
+redistribute them for noncommercial purposes; commercial use is not permitted.
+This is a source-available license, not an OSI-approved open-source license.
+
+External dependencies retain their own licenses. In particular,
+`yazio-exporter` is a separately maintained MIT-licensed dependency and is not
+CaloGraph-owned code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Brand assets
 

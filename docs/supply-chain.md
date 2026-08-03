@@ -7,8 +7,10 @@ between untrusted change validation and trusted publication.
 ## Dependency and source controls
 
 - Every third-party GitHub Action is pinned to a full commit SHA.
-- Every Dockerfile and Compose base image retains a readable version tag and is
-  pinned to an immutable manifest digest.
+- Dockerfile and CI base images retain a readable version tag and are pinned to
+  an immutable manifest digest. Operational Compose deliberately tracks the
+  explicit `postgres:18.4-alpine` patch tag so compatible image rebuilds can be
+  consumed without editing the file.
 - `npm ci` is followed by both production-only and complete dependency audits.
 - `pip-audit` checks an exported production lock set and the complete
   development environment.
@@ -40,7 +42,8 @@ Trivy, emits SPDX JSON SBOMs, and then runs browser and production-smoke tests
 against those exact prebuilt images.
 
 Only a successful push to `main` or a SemVer-style `vX.Y.Z` tag starts the
-separate publication job with package and attestation permissions. That job
+separate publication job with package and attestation permissions. Release
+tags must exactly match the backend and frontend application versions. The job
 rebuilds candidates from the trusted commit, then applies the same exact-image
 tests and high/critical Trivy gate before it signs in to GHCR.
 
@@ -51,9 +54,21 @@ Published names and tags are:
 - `edge` for the current successful `main` image
 - the exact `vX.Y.Z` tag plus `latest` for a successful release tag
 
-GitHub's Sigstore-backed artifact attestation service signs build provenance
-and the SPDX SBOM for each published image digest. The SBOM files are also
-retained as workflow artifacts.
+The workflow first publishes only the immutable `sha-COMMIT` tags. GitHub's
+Sigstore-backed artifact attestation service then signs build provenance and
+the SPDX SBOM for those image digests. Only after every required attestation
+succeeds does the workflow promote the exact same local image to `edge`, or to
+the release tag and `latest`. A failed attestation therefore cannot move a
+mutable deployment tag. The SBOM files are also retained as workflow
+artifacts.
+
+GitHub does not offer artifact attestations to private repositories owned by a
+personal account. The workflow therefore keeps private pre-publication `main`
+pushes green, retains their SBOM artifacts, and skips only the attestation
+steps. It refuses to publish a release tag while the repository is private.
+Once the repository is public, the same attestation steps activate
+automatically. Create the release tag only after that visibility change so the
+release and `latest` digest receives provenance and SBOM attestations.
 
 Verify a published image with the GitHub CLI:
 
@@ -65,11 +80,11 @@ gh attestation verify \
 
 ## Running release images
 
-Set the image repositories and an existing release tag in `.env`:
+Compose defaults to the public `latest` image repositories. The production
+environment template overrides that default with its matching release. For a
+reproducible deployment, keep an existing release tag in `.env`:
 
 ```dotenv
-CALOGRAPH_BACKEND_IMAGE=ghcr.io/tarantila/calograph-backend
-CALOGRAPH_FRONTEND_IMAGE=ghcr.io/tarantila/calograph-frontend
 CALOGRAPH_VERSION=vX.Y.Z
 ```
 
@@ -81,6 +96,11 @@ docker compose up -d --no-build --wait backend frontend yazio-scheduler
 ```
 
 The backend and scheduler deliberately use the same backend image.
+
+The first GHCR publication creates private packages. Before documenting an
+anonymous installation, make both `calograph-backend` and
+`calograph-frontend` public in their package settings. Repository visibility
+and package visibility are separate controls.
 
 ## GHCR retention
 

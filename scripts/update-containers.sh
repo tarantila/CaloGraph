@@ -14,8 +14,7 @@ else
   printf 'Secret backup skipped. Set BACKUP_SECRETS=1 to create an age-encrypted copy.\n'
 fi
 
-docker compose pull postgres
-docker compose build --pull backend frontend
-docker compose up -d --wait --remove-orphans
+docker compose pull postgres backend frontend yazio-scheduler
+docker compose up -d --no-build --wait --remove-orphans
 docker compose ps
 printf 'Container-Update abgeschlossen. Anwendung und YAZIO-Status jetzt prüfen.\n'

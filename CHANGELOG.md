@@ -5,6 +5,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-03
+
+### Changed
+
+- Disabled generated OpenAPI routes by default while keeping an explicit
+  development and restricted-operator opt-in.
+- Decoupled HSTS from `includeSubDomains` so descendant-host enforcement is a
+  deliberate deployment decision.
+- Reduced authentication database writes by persisting session and import-token
+  activity at most once every five minutes.
+- Added deployment-specific Nginx upload guidance and a JSON-log-compatible
+  optional Fail2ban example.
+- Made public GHCR `latest` images the Compose default while retaining release
+  tag pinning and separate local development image names.
+- Switched operational Compose services to the explicit
+  `postgres:18.4-alpine` tag instead of a manifest digest.
+- Kept private pre-publication image jobs green by deferring GitHub artifact
+  attestations until the repository is public; release tags still publish both
+  their version and `latest` with provenance and SBOM attestations.
+- Added the PolyForm Noncommercial 1.0.0 source-available license, contribution
+  terms, container license metadata, and explicit third-party attribution for
+  the separately maintained MIT-licensed `yazio-exporter` dependency.
+- Included the license and notice files shipped by production dependencies in
+  both runtime images.
+- Made release publication transactional: immutable commit images are scanned
+  and attested before `edge`, version, or `latest` tags are promoted, and a
+  release tag must match both application versions.
+- Pinned the production environment template to `v0.2.2` while retaining the
+  convenient `latest` Compose default for local and first-run setups.
+- Made the documented Nginx HTTP redirect use the configured canonical host
+  instead of reflecting the request's Host header.
+
 ## [0.2.1] - 2026-08-03
 
 ### Security
