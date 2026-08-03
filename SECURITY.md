@@ -26,3 +26,6 @@ images must be updated regularly and fully tested afterward.
 
 The complete threat model is documented in
 [docs/threat-model.md](docs/threat-model.md).
+
+Contributions and vulnerability reports remain subject to the licensing and
+privacy rules in [CONTRIBUTING.md](CONTRIBUTING.md).

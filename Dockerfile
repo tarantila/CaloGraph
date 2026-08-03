@@ -23,7 +23,17 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
 COPY backend/app ./app
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev \
+    && mkdir -p /third-party-licenses/backend \
+    && find /opt/venv -type f \
+        \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+        -print \
+      | while IFS= read -r license_file; do \
+          relative_path=${license_file#/opt/venv/}; \
+          destination=/third-party-licenses/backend/${relative_path}; \
+          mkdir -p "$(dirname "$destination")"; \
+          cp "$license_file" "$destination"; \
+        done
 
 FROM backend-base AS backend-development
 
@@ -42,6 +52,7 @@ ARG APP_GID=10001
 LABEL org.opencontainers.image.title="CaloGraph Backend" \
       org.opencontainers.image.description="CaloGraph nutrition analytics API" \
       org.opencontainers.image.source="https://github.com/tarantila/CaloGraph" \
+      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -64,9 +75,18 @@ WORKDIR /app
 
 COPY --from=backend-base --chown=calograph:calograph /opt/venv /opt/venv
 COPY --from=backend-base --chown=calograph:calograph /app /app
+COPY --chmod=444 LICENSE /licenses/CaloGraph-LICENSE.md
+COPY --chmod=444 THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
+COPY --from=backend-base /third-party-licenses/backend /licenses/backend
+COPY --chmod=444 THIRD_PARTY_LICENSES/yazio-exporter-MIT.txt /licenses/yazio-exporter-MIT.txt
 COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
+RUN chmod 0555 /licenses
 
 USER calograph
+RUN test -r /licenses/CaloGraph-LICENSE.md \
+    && test -r /licenses/THIRD_PARTY_NOTICES.md \
+    && test -r /licenses/yazio-exporter-MIT.txt \
+    && test -n "$(find /licenses/backend -type f -print -quit)"
 EXPOSE 8000
 
 ENTRYPOINT ["backend-entrypoint"]
@@ -92,7 +112,18 @@ CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 FROM frontend-dependencies AS frontend-build
 
 COPY frontend/ .
-RUN npm run build
+RUN npm run build \
+    && npm prune --omit=dev \
+    && mkdir -p /third-party-licenses/frontend \
+    && find node_modules -type f \
+        \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+        -print \
+      | while IFS= read -r license_file; do \
+          relative_path=${license_file#node_modules/}; \
+          destination=/third-party-licenses/frontend/${relative_path}; \
+          mkdir -p "$(dirname "$destination")"; \
+          cp "$license_file" "$destination"; \
+        done
 
 FROM mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07 AS frontend-e2e
 
@@ -110,6 +141,7 @@ ARG APP_VERSION=development
 LABEL org.opencontainers.image.title="CaloGraph Frontend" \
       org.opencontainers.image.description="CaloGraph nutrition analytics web interface" \
       org.opencontainers.image.source="https://github.com/tarantila/CaloGraph" \
+      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
 USER root
@@ -120,9 +152,18 @@ RUN rm -f \
 
 COPY frontend/nginx.conf /etc/nginx/nginx.conf
 COPY --from=frontend-build /app/dist /usr/share/nginx/html
+COPY --chmod=444 LICENSE /licenses/CaloGraph-LICENSE.md
+COPY --chmod=444 THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
+COPY --from=frontend-build /third-party-licenses/frontend /licenses/frontend
 COPY --chmod=755 docker/frontend-entrypoint.sh /usr/local/bin/calograph-frontend-entrypoint
+RUN chmod 0555 /licenses
 
 USER nginx
+RUN test -r /licenses/CaloGraph-LICENSE.md \
+    && test -r /licenses/THIRD_PARTY_NOTICES.md \
+    && test -r /licenses/frontend/@fontsource/inter/LICENSE \
+    && test -r /licenses/frontend/echarts/NOTICE \
+    && test -r /licenses/frontend/vue/LICENSE
 EXPOSE 8080
 
 ENTRYPOINT ["calograph-frontend-entrypoint"]
