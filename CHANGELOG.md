@@ -5,6 +5,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-03
+
+### Security
+
+- Restricted forwarded-header trust to the exact frontend proxy address and
+  made the bundled Nginx replace inbound forwarding and request identifiers at
+  the application trust boundary.
+- Added bounded request identifiers and structured, pseudonymous security
+  events for authentication, throttling, account administration, YAZIO,
+  uploads, and imports, together with monitoring and Fail2ban guidance.
+- Replaced deterministic email-derived YAZIO source identifiers with opaque
+  per-user identifiers and added a collision-safe migration for existing
+  records without exposing the original email address.
+
 ## [0.2.0] - 2026-07-29
 
 ### Changed
@@ -172,7 +186,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tarantila/CaloGraph/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tarantila/CaloGraph/compare/b4ca2cf...v0.1.1
