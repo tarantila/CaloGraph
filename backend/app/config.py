@@ -380,21 +380,14 @@ class Settings(BaseSettings):
             ]
             if all(network.is_loopback for network in proxy_networks):
                 errors.append(
-                    "TRUSTED_PROXY_NETWORKS must contain the actual Docker proxy subnet"
+                    "TRUSTED_PROXY_NETWORKS must contain the actual frontend proxy IP"
                 )
             if any(
-                (
-                    isinstance(network, ipaddress.IPv4Network)
-                    and network.prefixlen < 16
-                )
-                or (
-                    isinstance(network, ipaddress.IPv6Network)
-                    and network.prefixlen < 64
-                )
+                network.prefixlen != network.max_prefixlen
                 for network in proxy_networks
             ):
                 errors.append(
-                    "TRUSTED_PROXY_NETWORKS must use an exact proxy IP or narrow subnet"
+                    "TRUSTED_PROXY_NETWORKS must use exact proxy IP addresses (/32 or /128)"
                 )
 
             normalized_session_secret = self.session_secret.strip().casefold()

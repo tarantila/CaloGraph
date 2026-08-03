@@ -30,8 +30,10 @@
 - Set `COOKIE_SECURE=true`, list the exact public hostname in `TRUSTED_HOSTS`,
   and list the exact HTTPS origin in `TRUSTED_ORIGINS`. Wildcard hosts and HTTP
   production origins are rejected.
-- `TRUSTED_PROXY_NETWORKS` contains only the Docker network from which the
-  frontend reaches the backend; wildcard trust is rejected.
+- `CALOGRAPH_EDGE_SUBNET`, `CALOGRAPH_EDGE_GATEWAY_IP`, and
+  `CALOGRAPH_FRONTEND_PROXY_IP` describe a dedicated, non-overlapping edge
+  network. Compose derives backend proxy trust from the exact frontend `/32`;
+  production rejects subnet-wide trust.
 - Set `ENABLE_HSTS=true` after the domain is permanently available exclusively
   over HTTPS. Production mode will not start while it is false.
 - Backups are encrypted with a dedicated `age` recipient, stored outside the

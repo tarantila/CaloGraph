@@ -93,6 +93,9 @@ chmod 444 \
 sed -i \
   -e 's/calograph\.example\.com/calograph-ci.internal/g' \
   -e 's/CALOGRAPH_PORT=8180/CALOGRAPH_PORT=18180/g' \
+  -e 's/CALOGRAPH_EDGE_SUBNET=172\.30\.0\.0\/24/CALOGRAPH_EDGE_SUBNET=172.31.250.0\/24/g' \
+  -e 's/CALOGRAPH_EDGE_GATEWAY_IP=172\.30\.0\.1/CALOGRAPH_EDGE_GATEWAY_IP=172.31.250.1/g' \
+  -e 's/CALOGRAPH_FRONTEND_PROXY_IP=172\.30\.0\.10/CALOGRAPH_FRONTEND_PROXY_IP=172.31.250.10/g' \
   -e "s|POSTGRES_PASSWORD_FILE=.*|POSTGRES_PASSWORD_FILE=$postgres_password|" \
   -e "s|SESSION_SECRET_FILE=.*|SESSION_SECRET_FILE=$session_secret|" \
   -e "s|RATE_LIMIT_SECRET_FILE=.*|RATE_LIMIT_SECRET_FILE=$rate_limit_secret|" \
@@ -132,6 +135,10 @@ do
     fail "Backend exposes ${forbidden_name} as an environment variable."
   fi
 done
+if ! printf '%s\n' "$backend_environment" \
+  | grep -q '^TRUSTED_PROXY_NETWORKS=172.31.250.10/32$'; then
+  fail "Backend does not trust only the fixed frontend proxy address."
+fi
 for required_file_name in \
   DATABASE_PASSWORD_FILE \
   SESSION_SECRET_FILE \
@@ -212,6 +219,51 @@ if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \
   http://127.0.0.1:18180/health >/dev/null; then
   fail "Production frontend health endpoint failed."
+fi
+
+forwarded_https_status=$(curl --silent --show-error \
+  --dump-header "$response_headers" \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  --header 'X-Forwarded-Proto: https' \
+  --header 'X-Forwarded-For: 198.51.100.7, 203.0.113.9' \
+  http://127.0.0.1:18180/)
+if [ "$forwarded_https_status" != "200" ]; then
+  fail "Trusted proxy HTTPS request returned HTTP $forwarded_https_status instead of 200."
+fi
+if ! tr -d '\r' <"$response_headers" \
+  | grep -Eiq '^strict-transport-security: max-age=31536000; includeSubDomains$'; then
+  fail "Trusted proxy HTTPS request did not receive HSTS."
+fi
+
+attempt=1
+while [ "$attempt" -le 5 ]; do
+  invitation_status=$(curl --silent --show-error \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    --header 'Host: calograph-ci.internal' \
+    --header 'X-Forwarded-Proto: https' \
+    --header "X-Forwarded-For: 198.51.100.$attempt, 203.0.113.9" \
+    --header 'Content-Type: application/json' \
+    --data '{"token":"invalid-invitation-token-for-proxy-test"}' \
+    http://127.0.0.1:18180/api/v1/auth/invitation/exchange)
+  if [ "$invitation_status" != "400" ]; then
+    fail "Invitation proxy test returned HTTP $invitation_status before its limit."
+  fi
+  attempt=$((attempt + 1))
+done
+invitation_status=$(curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  --header 'X-Forwarded-Proto: https' \
+  --header 'X-Forwarded-For: 198.51.100.99, 203.0.113.9' \
+  --header 'Content-Type: application/json' \
+  --data '{"token":"invalid-invitation-token-for-proxy-test"}' \
+  http://127.0.0.1:18180/api/v1/auth/invitation/exchange)
+if [ "$invitation_status" != "429" ]; then
+  fail "Untrusted forwarded-for prefixes bypassed the shared client-IP rate limit."
 fi
 
 if ! compose exec -T backend python -m app.cli create-user \

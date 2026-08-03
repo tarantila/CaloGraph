@@ -91,9 +91,10 @@ backups, and the availability of the private application.
   CSP.
 - **CSRF:** SameSite cookie, separate CSRF header, and origin validation for
   state-changing browser endpoints.
-- **Forged forwarded headers:** Uvicorn accepts proxy metadata only from
-  `TRUSTED_PROXY_NETWORKS`; wildcard trust is rejected, production rejects the
-  generic Docker address pool, and the backend has no published host port.
+- **Forged forwarded headers:** Uvicorn accepts proxy metadata only from the
+  frontend's fixed `/32`. The bundled Nginx trusts forwarded client metadata
+  only from the exact edge gateway, discards untrusted forwarding chains, and
+  the backend has no published host port.
 - **Brute force and account enumeration:** independent temporary limits apply
   to all login attempts from a normalized IP address and to failed attempts for
   an HMAC-pseudonymized account identifier. PostgreSQL updates the counters

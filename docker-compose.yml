@@ -61,7 +61,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE in .env}
       TRUSTED_HOSTS: ${TRUSTED_HOSTS:?Set TRUSTED_HOSTS in .env}
       TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:?Set TRUSTED_ORIGINS in .env}
-      TRUSTED_PROXY_NETWORKS: ${TRUSTED_PROXY_NETWORKS:?Set TRUSTED_PROXY_NETWORKS in .env}
+      TRUSTED_PROXY_NETWORKS: "${CALOGRAPH_FRONTEND_PROXY_IP:-172.30.0.10}/32"
       ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
       MAX_JSON_PAYLOAD_BYTES: ${MAX_JSON_PAYLOAD_BYTES:-10485760}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
@@ -130,7 +130,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-    networks: [edge, data]
+    networks:
+      edge:
+      data:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     logging: *default-logging
@@ -212,6 +214,7 @@ services:
     environment:
       ENABLE_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
       NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
+      CALOGRAPH_EDGE_GATEWAY_IP: ${CALOGRAPH_EDGE_GATEWAY_IP:-172.30.0.1}
     ports:
       - "127.0.0.1:${CALOGRAPH_PORT:-8180}:8080"
     depends_on:
@@ -222,7 +225,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks: [edge]
+    networks:
+      edge:
+        ipv4_address: ${CALOGRAPH_FRONTEND_PROXY_IP:-172.30.0.10}
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     logging: *default-logging
@@ -299,7 +304,6 @@ services:
       target: frontend-e2e
     environment:
       BASE_URL: http://frontend:8080
-      EXPECT_HSTS: ${ENABLE_HSTS:?Set ENABLE_HSTS in .env}
     command: ["npx", "playwright", "test"]
     depends_on:
       frontend:
@@ -309,6 +313,10 @@ services:
 networks:
   edge:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${CALOGRAPH_EDGE_SUBNET:-172.30.0.0/24}
+          gateway: ${CALOGRAPH_EDGE_GATEWAY_IP:-172.30.0.1}
   data:
     driver: bridge
     internal: true

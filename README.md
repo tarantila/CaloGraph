@@ -341,9 +341,9 @@ The backend refuses to start when migrations fail.
   allowlists before the backend or scheduler starts.
 - TLS terminates at a reverse proxy. Never expose a configuration using
   `ENVIRONMENT=development` through that proxy.
-- Forwarded headers are accepted only from `TRUSTED_PROXY_NETWORKS`. The
-  production value must be the actual `calograph_edge` subnet rather than
-  Docker's broad address pool.
+- Forwarded headers are accepted only from the fixed frontend proxy IP.
+  Compose derives an exact `/32` from `CALOGRAPH_FRONTEND_PROXY_IP`, and
+  production rejects subnet-wide trust.
 - No CDN dependencies, telemetry, external analytics, or third-party data
   transfer.
 

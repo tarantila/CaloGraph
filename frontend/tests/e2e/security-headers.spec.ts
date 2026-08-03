@@ -20,6 +20,11 @@ test('serves consistent security headers for documents and static assets', async
   expect(documentHeaders['cross-origin-opener-policy']).toBeUndefined()
   expect(documentHeaders['strict-transport-security']).toBeUndefined()
 
+  const trustedLocalResponse = await request.get('/', {
+    headers: { Host: 'localhost' },
+  })
+  expect(trustedLocalResponse.headers()['cross-origin-opener-policy']).toBe('same-origin')
+
   const document = await documentResponse.text()
   const scriptPath = document.match(/<script[^>]+src="([^"]+)"/)?.[1]
   expect(scriptPath).toBeTruthy()
@@ -45,17 +50,11 @@ test('serves consistent security headers for documents and static assets', async
   expect(apiHeaders['x-request-id']).toMatch(/^[a-f0-9]{32}$/)
 })
 
-test('respects the HSTS setting for requests forwarded as HTTPS', async ({ request }) => {
+test('ignores forwarded HTTPS from an untrusted peer', async ({ request }) => {
   const response = await request.get('/', {
     headers: { 'X-Forwarded-Proto': 'https' },
   })
 
-  if (process.env.EXPECT_HSTS === 'true') {
-    expect(response.headers()['strict-transport-security']).toBe(
-      'max-age=31536000; includeSubDomains',
-    )
-  } else {
-    expect(response.headers()['strict-transport-security']).toBeUndefined()
-  }
-  expect(response.headers()['cross-origin-opener-policy']).toBe('same-origin')
+  expect(response.headers()['strict-transport-security']).toBeUndefined()
+  expect(response.headers()['cross-origin-opener-policy']).toBeUndefined()
 })

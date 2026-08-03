@@ -21,7 +21,7 @@ def valid_production_settings(**overrides) -> Settings:
         "cookie_secure": True,
         "trusted_hosts": "nutrition.calograph.de",
         "trusted_origins": "https://nutrition.calograph.de",
-        "trusted_proxy_networks": "172.18.0.0/16",
+        "trusted_proxy_networks": "172.30.0.10/32",
         "enable_hsts": True,
         "credential_encryption_key": Fernet.generate_key().decode(),
         "mfa_encryption_key": Fernet.generate_key().decode(),
@@ -329,6 +329,27 @@ def test_scheduler_rejects_default_rate_limit_secret(
 
 def test_valid_production_configuration_passes_runtime_check() -> None:
     valid_production_settings().validate_runtime_security()
+
+
+@pytest.mark.parametrize(
+    "proxy_network",
+    ["172.30.0.0/24", "172.18.0.0/16", "2001:db8::/64"],
+)
+def test_production_rejects_proxy_subnets(proxy_network: str) -> None:
+    configured = valid_production_settings(trusted_proxy_networks=proxy_network)
+
+    with pytest.raises(ProductionConfigurationError, match="exact proxy IP"):
+        configured.validate_runtime_security()
+
+
+@pytest.mark.parametrize(
+    "proxy_address",
+    ["172.30.0.10/32", "2001:db8::10/128"],
+)
+def test_production_accepts_exact_proxy_addresses(proxy_address: str) -> None:
+    configured = valid_production_settings(trusted_proxy_networks=proxy_address)
+
+    configured.validate_runtime_security()
 
 
 def test_production_backend_requires_dedicated_mfa_encryption_key() -> None:

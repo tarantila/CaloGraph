@@ -14,7 +14,9 @@ CALOGRAPH_PUBLIC_URL=https://nutrition.example.com
 COOKIE_SECURE=true
 TRUSTED_HOSTS=nutrition.example.com
 TRUSTED_ORIGINS=https://nutrition.example.com
-TRUSTED_PROXY_NETWORKS=172.18.0.0/16
+CALOGRAPH_EDGE_SUBNET=172.30.0.0/24
+CALOGRAPH_EDGE_GATEWAY_IP=172.30.0.1
+CALOGRAPH_FRONTEND_PROXY_IP=172.30.0.10
 ENABLE_HSTS=true
 ```
 
@@ -32,53 +34,48 @@ the deployed policy cannot silently diverge from `.env`.
 
 Enable HSTS only after the domain works permanently and exclusively over HTTPS.
 With `ENABLE_HSTS=true`, the bundled frontend emits HSTS for HTML, static
-assets, and proxied API responses whenever the reverse proxy sends
-`X-Forwarded-Proto: https`; the backend also enables it on direct responses.
-The public reverse proxy should set HSTS itself so redirects and
-proxy-generated error pages receive the same protection.
+assets, and proxied API responses when the trusted host-side reverse proxy
+sends `X-Forwarded-Proto: https`; the backend also enables it on direct
+responses. Forwarded protocol headers from any other peer are ignored. The
+public reverse proxy should set HSTS itself so redirects and proxy-generated
+error pages receive the same protection.
 
-## Trusted proxy network
+## Trusted proxy boundary
 
-The browser and external reverse proxy reach the `frontend` container. Only
-that container connects to the backend, so Uvicorn must trust forwarded headers
-from the Docker bridge network rather than from every sender.
-
-The development template covers Docker's standard bridge address pool:
+The browser and host-side reverse proxy reach the `frontend` container. Only
+that container connects to the backend. Compose therefore assigns the frontend
+a fixed address and derives Uvicorn's trusted proxy value as an exact `/32`:
 
 ```dotenv
-TRUSTED_PROXY_NETWORKS=172.16.0.0/12
+CALOGRAPH_EDGE_SUBNET=172.30.0.0/24
+CALOGRAPH_EDGE_GATEWAY_IP=172.30.0.1
+CALOGRAPH_FRONTEND_PROXY_IP=172.30.0.10
 ```
 
-For a tighter rule, inspect the installation after the network has been
-created:
+Override all three values together if the example subnet overlaps another
+local or routed network. Production rejects wildcard and subnet-wide proxy
+trust. The bundled Nginx accepts client IP and protocol metadata only from the
+exact edge gateway, replaces the forwarding chain with the resulting client
+address, and forwards it to the backend.
 
-```bash
-docker network inspect calograph_edge \
-  --format '{{(index .IPAM.Config 0).Subnet}}'
-```
-
-Then copy the reported subnet, for example `172.18.0.0/16`, into
-`TRUSTED_PROXY_NETWORKS` and recreate the backend. Comma-separated IP addresses
-or CIDRs are accepted. Wildcard trust is rejected, and production also rejects
-IPv4 networks broader than `/16` and IPv6 networks broader than `/64`.
-
-When upgrading an existing installation from the former single
-`calograph_internal` network, recreate the Compose networks without deleting
-the PostgreSQL volume:
+An existing installation must recreate the edge network once after upgrading.
+This does not remove the PostgreSQL volume:
 
 ```bash
 docker compose down
-docker compose create
-docker network inspect calograph_edge \
-  --format '{{(index .IPAM.Config 0).Subnet}}'
+docker compose up -d
 ```
 
-Update `TRUSTED_PROXY_NETWORKS` with that subnet, then start the deployment
-with `docker compose up -d`. Do not add `--volumes` to the `down` command.
+Do not add `--volumes` to the `down` command.
 
-The bundled Nginx proxy preserves a valid upstream `X-Forwarded-Proto` value
-from the external proxy, appends the forwarding chain, and forwards the
-original host.
+The public Nginx must overwrite forwarding headers at the Internet trust
+boundary. In particular, do not use `$proxy_add_x_forwarded_for` here. A
+complete configuration is provided in the [Nginx example](#nginx-example).
+
+When a CDN is placed in front of Nginx, configure `set_real_ip_from` only for
+the CIDRs published by that CDN, select its documented client-IP header, and
+enable `real_ip_recursive`. Nginx may then pass the validated `$remote_addr` as
+shown above. Never trust a CDN header from arbitrary Internet clients.
 
 ## Access logs and invitation links
 
@@ -130,6 +127,88 @@ baseline so the protection also exists during direct service tests.
 for CaloGraph and can interfere with browser downloads or future integrations
 without providing a current application benefit.
 
+## Nginx example
+
+The following configuration can be stored as
+`/etc/nginx/conf.d/calograph.conf` on the Docker host. It assumes that the
+distribution includes `conf.d/*.conf` from Nginx's `http` context. Replace the
+hostname and certificate paths before enabling it.
+
+```nginx
+map $uri $calograph_log_path {
+    default $uri;
+    ~^/einladung/ /einladung/[redacted];
+}
+
+log_format calograph_safe
+    '$remote_addr [$time_local] '
+    '"$request_method $calograph_log_path $server_protocol" '
+    '$status $body_bytes_sent "$http_user_agent"';
+
+upstream calograph_frontend {
+    server 127.0.0.1:8180;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name nutrition.example.com;
+
+    access_log /var/log/nginx/calograph-access.log calograph_safe;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name nutrition.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/nutrition.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nutrition.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Matches the bundled proxy limit and leaves room above the 500 MiB
+    # application upload limit for multipart framing.
+    client_max_body_size 512m;
+
+    access_log /var/log/nginx/calograph-access.log calograph_safe;
+
+    # Set HSTS at the public TLS boundary so Nginx redirects and error pages
+    # receive the same policy as application responses.
+    add_header Strict-Transport-Security
+        "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        proxy_pass http://calograph_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # Avoid duplicate HSTS fields; the public proxy owns this header.
+        proxy_hide_header Strict-Transport-Security;
+
+        # Apple Health uploads can be large and are streamed by CaloGraph.
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+This example intentionally overwrites `X-Forwarded-For` with `$remote_addr`.
+If a trusted CDN is added, configure its published CIDRs with
+`set_real_ip_from` first; `$remote_addr` then contains the client address that
+Nginx validated at that trust boundary.
+
 ## HAProxy example
 
 ```haproxy
@@ -148,6 +227,6 @@ backend calograph
   server local 127.0.0.1:8180 check
 ```
 
-Forwarded headers must be accepted only from known proxy networks. Keep the
-published Nginx port bound to loopback and expose only the TLS reverse proxy
-through the firewall.
+Forwarded headers must be accepted only from exact, known proxy addresses.
+Keep the bundled frontend port bound to loopback and expose only the TLS
+reverse proxy through the firewall.
