@@ -182,6 +182,9 @@ medical diagnosis.
   persist them. Scheduled sync stores them using authenticated Fernet
   encryption, with the key kept in a separate host file and delivered through
   a service-scoped secret mount.
+- Stored source identifiers use only CaloGraph's random internal user UUID.
+  Neither the YAZIO email address nor an unkeyed digest of it is stored or
+  written to logs.
 - If `CREDENTIAL_ENCRYPTION_KEY` is lost, stored connections cannot be
   recovered and must be configured again.
 - Anyone who can read both the database and credential key file can decrypt

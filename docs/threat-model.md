@@ -55,8 +55,10 @@ backups, and the availability of the private application.
   Scheduled sync stores each user's email and password using authenticated
   Fernet encryption. The host-side key file is mounted only into the backend
   and scheduler and must be protected and backed up together with database
-  backups. Credentials reach the isolated transport process through standard
-  input rather than process arguments or environment variables.
+  backups. Stored source identifiers use an internal random user UUID rather
+  than an email-derived digest. Credentials reach the isolated transport
+  process through standard input rather than process arguments or environment
+  variables.
 - **Unofficial third-party interface:** isolated adapter, pinned exporter
   version, fixed provider endpoint, explicit network timeouts, rejected
   redirects, no authentication retries, parent-enforced operation deadlines,

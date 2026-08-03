@@ -27,7 +27,8 @@
   safe error context, and optional compressed raw data.
 - `tracking_overrides`: optional manual data-status override per local day.
 - `yazio_connections`: one encrypted, user-scoped YAZIO connection with
-  scheduling and last-run status.
+  scheduling, last-run status, and an opaque source identifier derived only
+  from the internal user UUID. Email-derived hashes are not stored.
 - `rate_limit_buckets`: hashed identifiers in minute windows.
 
 Stable external IDs are unique per user, adapter, and source identifier.

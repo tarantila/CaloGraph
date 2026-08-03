@@ -62,9 +62,34 @@ def test_connection_is_per_user_and_due(
     assert stored.id == connection.id
     assert b"owner@example.com" not in stored.encrypted_email
     assert b"yazio-password" not in stored.encrypted_password
-    assert stored.source_identifier.startswith("yazio:")
+    assert stored.source_identifier == f"yazio:{user.id}"
+    assert not hasattr(stored, "account_hash")
     assert stored.sync_days == 7
     assert connection.id in due_yazio_connection_ids()
+
+
+def test_reconfiguring_yazio_email_keeps_opaque_source_identifier(
+    db: Session, user: User, monkeypatch
+) -> None:
+    _configure_key(monkeypatch)
+    first = configure_yazio_connection(
+        user,
+        "first-owner@example.com",
+        "yazio-password",
+    )
+    second = configure_yazio_connection(
+        user,
+        "replacement-owner@example.net",
+        "replacement-password",
+    )
+
+    db.expire_all()
+    stored = db.get(YazioConnection, first.id)
+    assert stored is not None
+    assert second.id == first.id
+    assert stored.source_identifier == f"yazio:{user.id}"
+    assert "first-owner" not in stored.source_identifier
+    assert "replacement-owner" not in stored.source_identifier
 
 
 def test_connection_slot_covers_the_complete_sync_and_status_update(

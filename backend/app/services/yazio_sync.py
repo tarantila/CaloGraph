@@ -1,4 +1,3 @@
-import hashlib
 import secrets
 from collections.abc import Callable
 from contextlib import suppress
@@ -98,8 +97,12 @@ def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
     return reference + timedelta(minutes=interval_minutes + jitter_minutes)
 
 
-def yazio_account_hash(email: str) -> str:
-    return hashlib.sha256(email.strip().casefold().encode()).hexdigest()
+def yazio_source_identifier(user_id: UUID) -> str:
+    return f"yazio:{user_id}"
+
+
+def _yazio_operation_key(email: str) -> str:
+    return security_reference("yazio_account", email.strip().casefold())
 
 
 def _require_yazio_enabled() -> None:
@@ -146,7 +149,7 @@ def validate_yazio_credentials(
     _require_yazio_enabled()
     _ensure_yazio_circuit_closed()
     try:
-        with yazio_operation_slot(operation_key or yazio_account_hash(email)):
+        with yazio_operation_slot(operation_key or _yazio_operation_key(email)):
             validate_yazio_credentials_transport(email, password)
     except YazioOperationBusy as exc:
         raise YazioOperationCapacityExceeded(
@@ -179,7 +182,7 @@ def fetch_yazio_payload(
     operation_key: object | None = None,
 ) -> dict[str, Any]:
     try:
-        with yazio_operation_slot(operation_key or yazio_account_hash(email)):
+        with yazio_operation_slot(operation_key or _yazio_operation_key(email)):
             return _fetch_yazio_payload_unlocked(
                 email,
                 password,
@@ -302,7 +305,7 @@ def _sync_yazio_user_unlocked(
             end_day,
             include_micronutrients,
         )
-    identifier = source_identifier or f"yazio:{yazio_account_hash(email)[:16]}"
+    identifier = source_identifier or yazio_source_identifier(user.id)
     summary = import_yazio_payload(user, payload, identifier)
     if (
         summary.failed > 0
@@ -328,7 +331,6 @@ def configure_yazio_connection(
     if not 1 <= sync_days <= 366:
         raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
 
-    account_hash = yazio_account_hash(email)
     with SessionLocal() as db:
         attached_user = db.get(User, user.id)
         if attached_user is None:
@@ -341,8 +343,7 @@ def configure_yazio_connection(
             db.add(connection)
         connection.encrypted_email = encrypt_credential(email.strip())
         connection.encrypted_password = encrypt_credential(password)
-        connection.account_hash = account_hash
-        connection.source_identifier = f"yazio:{account_hash[:16]}"
+        connection.source_identifier = yazio_source_identifier(attached_user.id)
         connection.sync_enabled = True
         connection.sync_interval_minutes = sync_interval_minutes
         connection.sync_days = sync_days

@@ -68,7 +68,6 @@ class YazioConnection(Base):
     )
     encrypted_email: Mapped[bytes] = mapped_column(LargeBinary)
     encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
-    account_hash: Mapped[str] = mapped_column(String(64))
     source_identifier: Mapped[str] = mapped_column(String(255))
     sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
