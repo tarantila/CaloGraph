@@ -3,6 +3,10 @@
 Contributions are welcome. Bug reports, documentation improvements, tests, and
 focused code changes all help the project.
 
+Participation in the CaloGraph community is subject to the
+[Code of Conduct](CODE_OF_CONDUCT.md). Keep discussions respectful, protect
+personal health data, and use synthetic or thoroughly redacted examples.
+
 ## License of contributions
 
 CaloGraph is source-available under the

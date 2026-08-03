@@ -27,6 +27,8 @@ follows [Semantic Versioning](https://semver.org/).
 - Added the PolyForm Noncommercial 1.0.0 source-available license, contribution
   terms, container license metadata, and explicit third-party attribution for
   the separately maintained MIT-licensed `yazio-exporter` dependency.
+- Added a project-specific community code of conduct and prominent links to
+  the conduct, contribution, license, and security policies.
 - Included the license and notice files shipped by production dependencies in
   both runtime images.
 - Made release publication transactional: immutable commit images are scanned

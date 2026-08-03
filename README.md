@@ -4,6 +4,13 @@
 
 <h1 align="center">CaloGraph</h1>
 
+<p align="center">
+  <a href="CODE_OF_CONDUCT.md">Code of Conduct</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="LICENSE">License</a> ·
+  <a href="SECURITY.md">Security Policy</a>
+</p>
+
 CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
 It puts individual days into the context of weekly budgets, trends,
 micronutrients, and data coverage without moral judgment or external telemetry.
@@ -380,8 +387,9 @@ and [docs/reverse-proxy.md](docs/reverse-proxy.md).
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
-opening a pull request, and report vulnerabilities privately according to
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and
+the project-specific [Code of Conduct](CODE_OF_CONDUCT.md) before opening a
+pull request. Report vulnerabilities privately according to
 [SECURITY.md](SECURITY.md).
 
 ## License
