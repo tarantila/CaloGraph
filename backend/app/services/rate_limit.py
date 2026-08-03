@@ -15,8 +15,10 @@ from app.models import RateLimitBucket
 
 
 class RateLimitExceeded(HTTPException):
-    def __init__(self, retry_after: int) -> None:
+    def __init__(self, retry_after: int, action: str, key_ref: str) -> None:
         self.retry_after = max(1, retry_after)
+        self.action = action
+        self.key_ref = key_ref
         super().__init__(
             status_code=429,
             detail="Zu viele Anfragen. Bitte später erneut versuchen.",
@@ -89,7 +91,7 @@ def ensure_rate_limit_available(
     now = datetime.now(UTC)
     window_start, retry_after = _window(now, window_seconds)
     if _current_count(db, action, hash_rate_limit_key(key), window_start) >= limit:
-        raise RateLimitExceeded(retry_after)
+        raise RateLimitExceeded(retry_after, action, hash_rate_limit_key(key)[:16])
 
 
 def check_rate_limit(
@@ -144,7 +146,7 @@ def check_rate_limit(
     if count is None:
         raise RuntimeError("Rate-limit counter update returned no value")
     if count > limit:
-        raise RateLimitExceeded(retry_after)
+        raise RateLimitExceeded(retry_after, action, key_hash[:16])
 
 
 def clear_rate_limit(db: Session, action: str, key: str) -> None:

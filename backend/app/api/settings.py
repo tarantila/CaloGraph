@@ -1,4 +1,3 @@
-import logging
 from datetime import date
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -50,6 +49,7 @@ from app.schemas import (
     UserResponse,
     WebAuthnOptionsResponse,
 )
+from app.security_events import log_security_event, security_reference
 from app.services.mfa import (
     MfaSetupError,
     begin_totp_setup,
@@ -71,11 +71,9 @@ from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
     ensure_rate_limit_available,
-    rate_limit_key_id,
 )
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
-logger = logging.getLogger("calograph.auth")
 
 
 def _mfa_management_key(user: User) -> str:
@@ -83,7 +81,7 @@ def _mfa_management_key(user: User) -> str:
 
 
 def _mfa_log_user_key(user: User) -> str:
-    return rate_limit_key_id(_mfa_management_key(user))
+    return security_reference("user", user.id)
 
 
 def _verify_management_password(
@@ -232,9 +230,9 @@ def setup_totp(
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except MfaEncryptionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
-    logger.info(
-        "security_event=mfa_totp_setup_started user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.mfa.totp_setup_started",
+        actor_ref=_mfa_log_user_key(user),
     )
     return TotpSetupResponse(
         secret=setup.secret,
@@ -258,9 +256,9 @@ def confirm_totp(
         raise HTTPException(status_code=400, detail=str(exc)) from None
     _clear_mfa_management_factor_limit(db, user)
     _preserve_only_current_session(request, db, user)
-    logger.info(
-        "security_event=mfa_totp_enabled user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.mfa.totp_enabled",
+        actor_ref=_mfa_log_user_key(user),
     )
     return RecoveryCodesResponse(recovery_codes=recovery_codes)
 
@@ -289,9 +287,9 @@ def replace_totp_recovery_codes(
     recovery_codes = regenerate_recovery_codes(db, user.id)
     _clear_mfa_management_factor_limit(db, user)
     _preserve_only_current_session(request, db, user)
-    logger.info(
-        "security_event=mfa_recovery_codes_replaced user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.mfa.recovery_codes_replaced",
+        actor_ref=_mfa_log_user_key(user),
     )
     return RecoveryCodesResponse(recovery_codes=recovery_codes)
 
@@ -320,9 +318,9 @@ def remove_totp(
     disable_totp(db, user.id)
     _clear_mfa_management_factor_limit(db, user)
     _preserve_only_current_session(request, db, user)
-    logger.info(
-        "security_event=mfa_totp_disabled user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.mfa.totp_disabled",
+        actor_ref=_mfa_log_user_key(user),
     )
 
 
@@ -348,9 +346,9 @@ def passkey_registration_options(
         user,
         _current_session_id(request, db),
     )
-    logger.info(
-        "security_event=passkey_registration_started user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.passkey.registration_started",
+        actor_ref=_mfa_log_user_key(user),
     )
     return WebAuthnOptionsResponse(
         challenge_id=challenge_id,
@@ -377,9 +375,10 @@ def register_passkey(
     except PasskeyRegistrationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     _preserve_only_current_session(request, db, user)
-    logger.info(
-        "security_event=passkey_registered user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.passkey.registered",
+        actor_ref=_mfa_log_user_key(user),
+        target_ref=security_reference("passkey", passkey.id),
     )
     return passkey
 
@@ -397,9 +396,10 @@ def remove_passkey(
     if not delete_passkey(db, user.id, passkey_id):
         raise HTTPException(status_code=404, detail="Passkey nicht gefunden")
     _preserve_only_current_session(request, db, user)
-    logger.info(
-        "security_event=passkey_removed user_key=%s",
-        _mfa_log_user_key(user),
+    log_security_event(
+        "auth.passkey.removed",
+        actor_ref=_mfa_log_user_key(user),
+        target_ref=security_reference("passkey", passkey_id),
     )
 
 
@@ -528,6 +528,11 @@ def new_token(
     db: Session = Depends(get_db),
 ) -> TokenCreatedResponse:
     token, raw = create_api_token(db, user, payload.label, payload.expires_at)
+    log_security_event(
+        "auth.api_token.created",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("api_token", token.id),
+    )
     return TokenCreatedResponse(
         id=token.id, label=token.label, token=raw, expires_at=token.expires_at
     )
@@ -544,6 +549,11 @@ def revoke_token(
 
     token.revoked_at = datetime.now(UTC)
     db.commit()
+    log_security_event(
+        "auth.api_token.revoked",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("api_token", token.id),
+    )
 
 
 @router.put("/tracking/{day}", status_code=204)

@@ -1,4 +1,3 @@
-import logging
 import secrets
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -49,6 +48,7 @@ from app.schemas import (
     UserResponse,
     WebAuthnOptionsResponse,
 )
+from app.security_events import log_security_event, security_reference
 from app.services.mfa import consume_mfa_factor
 from app.services.passkeys import (
     PasskeyAuthenticationError,
@@ -66,7 +66,6 @@ from app.services.rate_limit import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
-logger = logging.getLogger("calograph.auth")
 REGISTRATION_COOKIE_NAME = "calograph_registration"
 REGISTRATION_COOKIE_PATH = "/api/v1/auth"
 
@@ -77,21 +76,32 @@ def _log_login(
     client_key: str,
     account_key: str,
 ) -> None:
-    logger.info(
-        "security_event=login outcome=%s request_id=%s client_key=%s account_key=%s",
-        outcome,
-        getattr(request.state, "request_id", None),
-        rate_limit_key_id(client_key),
-        rate_limit_key_id(account_key),
+    del request
+    event, reason = {
+        "failed": ("auth.login.failed", "invalid_credentials"),
+        "mfa_failed": ("auth.login.failed", "invalid_mfa"),
+        "mfa_required": ("auth.login.mfa_required", None),
+        "succeeded": ("auth.login.succeeded", None),
+        "succeeded_with_mfa": ("auth.login.succeeded", None),
+    }[outcome]
+    log_security_event(
+        event,
+        client_ref=rate_limit_key_id(client_key),
+        target_ref=rate_limit_key_id(account_key),
+        reason=reason,
     )
 
 
 def _log_password_change(request: Request, outcome: str, user_key: str) -> None:
-    logger.info(
-        "security_event=password_change outcome=%s request_id=%s user_key=%s",
-        outcome,
-        getattr(request.state, "request_id", None),
-        rate_limit_key_id(user_key),
+    del request
+    event = {
+        "failed": "auth.password.change_failed",
+        "succeeded": "auth.password.changed",
+    }[outcome]
+    log_security_event(
+        event,
+        actor_ref=rate_limit_key_id(user_key),
+        reason="invalid_current_password" if outcome == "failed" else None,
     )
 
 
@@ -190,10 +200,15 @@ def exchange_invitation(
     if invitation is None:
         from fastapi import HTTPException
 
+        log_security_event("auth.invitation.rejected", reason="invalid_or_expired")
         raise HTTPException(status_code=400, detail="Einladung ist ungültig oder abgelaufen")
     invitation.token_hash = hash_invitation_token(f"exchanged_{secrets.token_urlsafe(40)}")
     db.commit()
     _set_registration_cookie(response, invitation)
+    log_security_event(
+        "auth.invitation.exchanged",
+        target_ref=security_reference("invitation", invitation.id),
+    )
 
 
 @router.get("/invitation/status", response_model=InvitationStateResponse)
@@ -257,6 +272,11 @@ def register(
         httponly=True,
         samesite="strict",
     )
+    log_security_event(
+        "auth.registration.succeeded",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("invitation", invitation.id),
+    )
     return user
 
 
@@ -268,24 +288,20 @@ def login(
         f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
     )
     account_key = f"account:{normalize_account_identifier(payload.username)}"
-    try:
-        check_rate_limit(
-            db,
-            "login-ip",
-            client_key,
-            settings.login_ip_rate_limit,
-            settings.login_ip_rate_limit_window_seconds,
-        )
-        ensure_rate_limit_available(
-            db,
-            "login-account",
-            account_key,
-            settings.login_rate_limit,
-            settings.login_rate_limit_window_seconds,
-        )
-    except RateLimitExceeded:
-        _log_login(request, "rate_limited", client_key, account_key)
-        raise
+    check_rate_limit(
+        db,
+        "login-ip",
+        client_key,
+        settings.login_ip_rate_limit,
+        settings.login_ip_rate_limit_window_seconds,
+    )
+    ensure_rate_limit_available(
+        db,
+        "login-account",
+        account_key,
+        settings.login_rate_limit,
+        settings.login_rate_limit_window_seconds,
+    )
 
     user = db.scalar(select(User).where(User.username == payload.username))
     password_matches = verify_login_password(
@@ -293,17 +309,13 @@ def login(
         user.password_hash if user is not None else None,
     )
     if user is None or not user.is_active or not password_matches:
-        try:
-            check_rate_limit(
-                db,
-                "login-account",
-                account_key,
-                settings.login_rate_limit,
-                settings.login_rate_limit_window_seconds,
-            )
-        except RateLimitExceeded:
-            _log_login(request, "rate_limited", client_key, account_key)
-            raise
+        check_rate_limit(
+            db,
+            "login-account",
+            account_key,
+            settings.login_rate_limit,
+            settings.login_rate_limit_window_seconds,
+        )
         _log_login(request, "failed", client_key, account_key)
         raise_invalid_login()
 
@@ -382,10 +394,10 @@ def verify_passkey_login(
             settings.passkey_ip_rate_limit,
             settings.passkey_rate_limit_window_seconds,
         )
-        logger.info(
-            "security_event=passkey_login outcome=failed request_id=%s client_key=%s",
-            getattr(request.state, "request_id", None),
-            rate_limit_key_id(client_key),
+        log_security_event(
+            "auth.passkey.login_failed",
+            client_ref=rate_limit_key_id(client_key),
+            reason="invalid_assertion",
         )
         raise_invalid_login()
 
@@ -393,10 +405,10 @@ def verify_passkey_login(
     session, raw_token, csrf_token = create_session(db, user)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
-    logger.info(
-        "security_event=passkey_login outcome=succeeded request_id=%s client_key=%s",
-        getattr(request.state, "request_id", None),
-        rate_limit_key_id(client_key),
+    log_security_event(
+        "auth.passkey.login_succeeded",
+        actor_ref=security_reference("user", user.id),
+        client_ref=rate_limit_key_id(client_key),
     )
     return {
         "mfa_required": False,
@@ -422,24 +434,20 @@ def verify_totp_login(
         f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
     )
     account_key = f"user:{user_id}"
-    try:
-        ensure_rate_limit_available(
-            db,
-            "mfa-ip",
-            client_key,
-            settings.mfa_ip_rate_limit,
-            settings.mfa_rate_limit_window_seconds,
-        )
-        ensure_rate_limit_available(
-            db,
-            "mfa-account",
-            account_key,
-            settings.mfa_rate_limit,
-            settings.mfa_rate_limit_window_seconds,
-        )
-    except RateLimitExceeded:
-        _log_login(request, "mfa_rate_limited", client_key, account_key)
-        raise
+    ensure_rate_limit_available(
+        db,
+        "mfa-ip",
+        client_key,
+        settings.mfa_ip_rate_limit,
+        settings.mfa_rate_limit_window_seconds,
+    )
+    ensure_rate_limit_available(
+        db,
+        "mfa-account",
+        account_key,
+        settings.mfa_rate_limit,
+        settings.mfa_rate_limit_window_seconds,
+    )
 
     user = db.get(User, user_id)
     credential = db.scalar(
@@ -475,14 +483,9 @@ def verify_totp_login(
                     or exc.retry_after > rate_limit_error.retry_after
                 ):
                     rate_limit_error = exc
-        _log_login(
-            request,
-            "mfa_rate_limited" if rate_limit_error else "mfa_failed",
-            client_key,
-            account_key,
-        )
         if rate_limit_error:
             raise rate_limit_error
+        _log_login(request, "mfa_failed", client_key, account_key)
         raise_invalid_login()
 
     db.commit()
@@ -530,7 +533,6 @@ def logout(
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> None:
-    del user
     raw = request.cookies.get(session_cookie_name(), "")
     session = db.scalar(
         select(UserSession).where(UserSession.token_hash == hash_session_token(raw))
@@ -545,6 +547,10 @@ def logout(
         httponly=True,
         samesite="lax",
     )
+    log_security_event(
+        "auth.session.logged_out",
+        actor_ref=security_reference("user", user.id),
+    )
 
 
 @router.post("/password", status_code=204)
@@ -555,30 +561,22 @@ def change_password(
     db: Session = Depends(get_db),
 ) -> None:
     user_key = f"user:{user.id}"
-    try:
-        ensure_rate_limit_available(
+    ensure_rate_limit_available(
+        db,
+        "password-change",
+        user_key,
+        settings.password_change_rate_limit,
+        settings.password_change_rate_limit_window_seconds,
+    )
+
+    if not verify_password(user.password_hash, payload.current_password):
+        check_rate_limit(
             db,
             "password-change",
             user_key,
             settings.password_change_rate_limit,
             settings.password_change_rate_limit_window_seconds,
         )
-    except RateLimitExceeded:
-        _log_password_change(request, "rate_limited", user_key)
-        raise
-
-    if not verify_password(user.password_hash, payload.current_password):
-        try:
-            check_rate_limit(
-                db,
-                "password-change",
-                user_key,
-                settings.password_change_rate_limit,
-                settings.password_change_rate_limit_window_seconds,
-            )
-        except RateLimitExceeded:
-            _log_password_change(request, "rate_limited", user_key)
-            raise
         _log_password_change(request, "failed", user_key)
         from fastapi import HTTPException
 

@@ -1,10 +1,9 @@
 import hashlib
-import logging
 import secrets
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -15,6 +14,7 @@ from app.database import SessionLocal
 from app.importers.yazio import parse_yazio_export
 from app.models import User, YazioConnection
 from app.schemas import ImportSummary
+from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     decrypt_credential,
@@ -35,8 +35,6 @@ from app.services.yazio_transport import (
     fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
-
-logger = logging.getLogger("calograph.yazio_sync")
 
 YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)
@@ -72,6 +70,26 @@ class YazioCircuitOpen(YazioSyncError):
     def __init__(self, retry_after: int) -> None:
         self.retry_after = retry_after
         super().__init__("YAZIO ist nach mehreren Providerfehlern vorübergehend pausiert.")
+
+
+def yazio_failure_reason(error: Exception) -> str:
+    if isinstance(error, YazioAuthenticationError):
+        return "authentication_error"
+    if isinstance(error, YazioOperationDeadlineExceeded):
+        return "deadline_exceeded"
+    if isinstance(error, YazioOperationCapacityExceeded):
+        return "capacity_exceeded"
+    if isinstance(error, YazioCircuitOpen):
+        return "circuit_open"
+    if isinstance(error, YazioConnectionNotConfigured):
+        return "connection_not_configured"
+    if isinstance(error, YazioDisabled):
+        return "feature_disabled"
+    if isinstance(error, CredentialEncryptionError):
+        return "credential_decryption_error"
+    if isinstance(error, YazioSyncError):
+        return "provider_error"
+    return "unexpected_error"
 
 
 def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
@@ -377,6 +395,7 @@ def run_scheduled_yazio_sync(
         now=now,
         require_enabled=True,
         raise_errors=False,
+        mode="scheduled",
     )
 
 
@@ -406,6 +425,7 @@ def run_manual_yazio_sync(
         require_enabled=True,
         sync_days_override=sync_days,
         raise_errors=True,
+        mode="manual",
     )
     if summary is None:
         raise YazioSyncError(
@@ -422,6 +442,7 @@ def _run_yazio_connection_sync(
     require_enabled: bool,
     sync_days_override: int | None = None,
     raise_errors: bool = False,
+    mode: Literal["manual", "scheduled"],
 ) -> ImportSummary | None:
     attempted_at = now or datetime.now(UTC)
     with SessionLocal() as db:
@@ -438,8 +459,16 @@ def _run_yazio_connection_sync(
                 require_enabled=require_enabled,
                 sync_days_override=sync_days_override,
                 raise_errors=raise_errors,
+                mode=mode,
             )
     except YazioOperationBusy as exc:
+        log_security_event(
+            "integration.yazio.sync_failed",
+            actor_ref=security_reference("user", user_id),
+            target_ref=security_reference("yazio_connection", connection_id),
+            reason="capacity_exceeded",
+            details={"mode": mode},
+        )
         if raise_errors:
             raise YazioOperationCapacityExceeded(
                 "Für dieses Konto läuft bereits ein YAZIO-Vorgang."
@@ -455,6 +484,7 @@ def _run_yazio_connection_sync_locked(
     require_enabled: bool,
     sync_days_override: int | None,
     raise_errors: bool,
+    mode: Literal["manual", "scheduled"],
 ) -> ImportSummary | None:
     with SessionLocal() as db:
         connection = db.get(YazioConnection, connection_id)
@@ -482,7 +512,7 @@ def _run_yazio_connection_sync_locked(
         timezone = user.timezone
         sync_days = sync_days_override or connection.sync_days
         source_identifier = connection.source_identifier
-        username = user.username
+        user_id = user.id
         last_micronutrient_sync_at = connection.last_micronutrient_sync_at
 
     if (
@@ -512,10 +542,12 @@ def _run_yazio_connection_sync_locked(
         )
     except Exception as exc:
         _record_failure(connection_id, attempted_at, exc)
-        logger.warning(
-            "scheduled_yazio_sync_failed connection_id=%s error_type=%s",
-            connection_id,
-            type(exc).__name__,
+        log_security_event(
+            "integration.yazio.sync_failed",
+            actor_ref=security_reference("user", user_id),
+            target_ref=security_reference("yazio_connection", connection_id),
+            reason=yazio_failure_reason(exc),
+            details={"mode": mode},
         )
         if raise_errors:
             if isinstance(exc, YazioSyncError):
@@ -538,12 +570,18 @@ def _run_yazio_connection_sync_locked(
                 connection.sync_interval_minutes,
             )
             db.commit()
-    logger.info(
-        "scheduled_yazio_sync_completed username=%s inserted=%s updated=%s skipped=%s",
-        username,
-        summary.inserted,
-        summary.updated,
-        summary.skipped,
+    log_security_event(
+        "integration.yazio.sync_completed",
+        actor_ref=security_reference("user", user_id),
+        target_ref=security_reference("yazio_connection", connection_id),
+        details={
+            "mode": mode,
+            "received": summary.received,
+            "inserted": summary.inserted,
+            "updated": summary.updated,
+            "skipped": summary.skipped,
+            "failed": summary.failed,
+        },
     )
     return summary
 

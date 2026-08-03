@@ -197,7 +197,13 @@ that are actually required.
 ## Storage and monitoring
 
 Docker logs rotate per service across at most three files of 10 MB each. This
-does not replace free-space monitoring. Pay particular attention to the
+does not provide durable audit retention and does not replace free-space
+monitoring. The backend and scheduler emit allowlisted, pseudonymous JSON
+security events; Internet-facing installations should forward them to a
+protected host or remote collector. Client IP addresses remain in the public
+proxy access log so host controls such as Fail2ban can act on them. Event fields,
+privacy rules, retention guidance, and alerting recommendations are documented
+in [security-monitoring.md](security-monitoring.md). Pay particular attention to the
 PostgreSQL volume, encrypted backup storage, and failed YAZIO runs shown in the
 data-status view. Full-disk or volume encryption is still required for live
 PostgreSQL data. A `partial_failed` historical import is safe to retry with the

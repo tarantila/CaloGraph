@@ -18,6 +18,7 @@ from app.importers.errors import ImportLimitError
 from app.importers.json_adapter import AdapterResult
 from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.schemas import ImportSummary
+from app.security_events import log_security_event, security_reference
 
 
 @dataclass(slots=True)
@@ -61,7 +62,24 @@ def _start_batch(
     db.add(batch)
     db.commit()
     db.refresh(batch)
+    log_security_event(
+        "import.started",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("import_batch", batch.id),
+        details={"source_type": source_type},
+    )
     return batch
+
+
+def _batch_event_details(batch: ImportBatch) -> dict[str, object]:
+    return {
+        "source_type": batch.source_type,
+        "received": batch.received,
+        "inserted": batch.inserted,
+        "updated": batch.updated,
+        "skipped": batch.skipped,
+        "failed": batch.failed,
+    }
 
 
 def _sample_values(
@@ -253,6 +271,22 @@ def _partial_failure_detail(exc: Exception) -> str:
     return "Import wurde während der Verarbeitung abgebrochen"
 
 
+def _partial_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, ImportLimitError):
+        return "record_limit"
+    if isinstance(exc, DefusedXmlException):
+        return "unsafe_xml"
+    if isinstance(exc, ParseError):
+        return "invalid_xml"
+    if isinstance(exc, zipfile.BadZipFile):
+        return "invalid_zip"
+    if isinstance(exc, OSError):
+        return "io_error"
+    if isinstance(exc, SQLAlchemyError):
+        return "database_error"
+    return "unexpected_error"
+
+
 def _finish_partial(
     db: Session,
     batch_id: object,
@@ -274,6 +308,13 @@ def _finish_partial(
     batch.error_message = detail
     batch.finished_at = datetime.now(UTC)
     db.commit()
+    log_security_event(
+        "import.partial_failed",
+        actor_ref=security_reference("user", batch.user_id),
+        target_ref=security_reference("import_batch", batch.id),
+        reason=_partial_failure_reason(exc),
+        details=_batch_event_details(batch),
+    )
     return _summary(batch)
 
 
@@ -359,6 +400,12 @@ def persist_apple_health_stream(
     batch.status = "completed_with_errors" if counters.failed else "completed"
     batch.finished_at = datetime.now(UTC)
     db.commit()
+    log_security_event(
+        "import.completed",
+        actor_ref=security_reference("user", batch.user_id),
+        target_ref=security_reference("import_batch", batch.id),
+        details=_batch_event_details(batch),
+    )
     return _summary(batch)
 
 
@@ -426,6 +473,12 @@ def persist_import(
             exc,
         )
         raise
+    log_security_event(
+        "import.completed",
+        actor_ref=security_reference("user", batch.user_id),
+        target_ref=security_reference("import_batch", batch.id),
+        details=_batch_event_details(batch),
+    )
     return _summary(batch)
 
 

@@ -17,6 +17,7 @@ from app.schemas import (
     InvitationResponse,
     UserResponse,
 )
+from app.security_events import log_security_event, security_reference
 
 router = APIRouter(prefix="/users", tags=["Benutzer"])
 
@@ -67,6 +68,11 @@ def create_invitation(
     db.add(invitation)
     db.commit()
     db.refresh(invitation)
+    log_security_event(
+        "auth.invitation.created",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("invitation", invitation.id),
+    )
     return InvitationCreatedResponse(
         id=invitation.id,
         invitation_url=f"{settings.calograph_public_url}/einladung#token={raw}",
@@ -91,3 +97,8 @@ def revoke_invitation(
         raise HTTPException(status_code=404, detail="Einladung nicht gefunden")
     invitation.revoked_at = datetime.now(UTC)
     db.commit()
+    log_security_event(
+        "auth.invitation.revoked",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("invitation", invitation.id),
+    )

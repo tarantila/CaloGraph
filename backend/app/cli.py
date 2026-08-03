@@ -33,6 +33,7 @@ from app.models import (
     WebAuthnUserHandle,
     YazioConnection,
 )
+from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     generate_credential_key,
@@ -86,6 +87,11 @@ def create_user(args: argparse.Namespace) -> None:
             )
         )
         db.commit()
+        user_id = user.id
+    log_security_event(
+        "admin.user.created",
+        target_ref=security_reference("user", user_id),
+    )
     print(f"Benutzer '{username}' wurde angelegt.")
 
 
@@ -96,7 +102,14 @@ def create_token(args: argparse.Namespace) -> None:
         user = db.scalar(select(User).where(User.username == username))
         if not user:
             raise SystemExit("Benutzer nicht gefunden.")
-        _, raw = create_api_token(db, user, label)
+        token, raw = create_api_token(db, user, label)
+        user_id = user.id
+        token_id = token.id
+    log_security_event(
+        "auth.api_token.created",
+        actor_ref=security_reference("user", user_id),
+        target_ref=security_reference("api_token", token_id),
+    )
     print("Import-Token (wird nur dieses eine Mal angezeigt):")
     print(raw)
 
@@ -122,6 +135,11 @@ def reset_mfa(args: argparse.Namespace) -> None:
         )
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
         db.commit()
+        user_id = user.id
+    log_security_event(
+        "admin.mfa.reset",
+        target_ref=security_reference("user", user_id),
+    )
     print(
         f"Anmeldefaktoren für '{username}' wurden zurückgesetzt; "
         "alle Sitzungen wurden widerrufen."
@@ -266,6 +284,19 @@ def sync_yazio(args: argparse.Namespace) -> None:
     except YazioSyncError as exc:
         raise SystemExit(str(exc)) from exc
 
+    log_security_event(
+        "integration.yazio.sync_completed",
+        actor_ref=security_reference("user", user.id),
+        details={
+            "mode": "manual",
+            "received": summary.received,
+            "inserted": summary.inserted,
+            "updated": summary.updated,
+            "skipped": summary.skipped,
+            "failed": summary.failed,
+        },
+    )
+
     print(
         f"YAZIO-Sync {start_day.isoformat()} bis {end_day.isoformat()}: "
         f"{summary.inserted} neu, {summary.updated} aktualisiert, "
@@ -307,6 +338,11 @@ def configure_yazio(args: argparse.Namespace) -> None:
         ) from exc
     except (ValueError, YazioSyncError) as exc:
         raise SystemExit(str(exc)) from exc
+    log_security_event(
+        "integration.yazio.connection_configured",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("yazio_connection", connection.id),
+    )
     print(
         f"Automatischer YAZIO-Sync für '{username}' aktiviert: "
         f"alle {connection.sync_interval_minutes // 60} Stunden, "
@@ -326,6 +362,13 @@ def disable_yazio(args: argparse.Namespace) -> None:
             raise SystemExit("Für diesen Benutzer ist keine YAZIO-Verbindung eingerichtet.")
         connection.sync_enabled = False
         db.commit()
+        connection_id = connection.id
+        user_id = connection.user_id
+    log_security_event(
+        "integration.yazio.connection_disabled",
+        actor_ref=security_reference("user", user_id),
+        target_ref=security_reference("yazio_connection", connection_id),
+    )
     print(f"Automatischer YAZIO-Sync für '{username}' deaktiviert.")
 
 

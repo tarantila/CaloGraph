@@ -41,8 +41,11 @@ backups, and the availability of the private application.
   The scheduler does not receive browser-session or MFA-encryption keys.
   Direct environment variables remain a legacy/test interface and cannot be
   combined ambiguously with `_FILE` settings.
-- **Sensitive logs:** payloads and health values are excluded; request IDs are
-  logged instead of user data.
+- **Sensitive logs:** security events use a fixed JSON schema with allowlisted
+  fields and HMAC-pseudonymized actor, client, and target references. Payloads,
+  health values, credentials, tokens, filenames, and arbitrary exception text
+  are excluded. The public proxy retains the validated client IP for host-level
+  blocking while application events carry the correlated request ID.
 - **Unsafe production defaults:** `ENVIRONMENT` must be explicit. Production
   startup validates HTTPS, secure cookies, HSTS, independent non-default
   secrets, PostgreSQL credentials, explicit host/origin allowlists, an exact

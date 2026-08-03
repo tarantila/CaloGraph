@@ -98,9 +98,11 @@ map $uri $calograph_log_path {
 }
 
 log_format calograph_safe
-    '$remote_addr [$time_local] '
-    '"$request_method $calograph_log_path $server_protocol" '
-    '$status $body_bytes_sent';
+    escape=json
+    '{"time":"$time_iso8601","remote_addr":"$remote_addr",'
+    '"method":"$request_method","path":"$calograph_log_path",'
+    '"protocol":"$server_protocol","status":$status,'
+    '"bytes":$body_bytes_sent,"request_id":"$request_id"}';
 
 access_log /var/log/nginx/calograph-access.log calograph_safe;
 ```
@@ -141,9 +143,12 @@ map $uri $calograph_log_path {
 }
 
 log_format calograph_safe
-    '$remote_addr [$time_local] '
-    '"$request_method $calograph_log_path $server_protocol" '
-    '$status $body_bytes_sent "$http_user_agent"';
+    escape=json
+    '{"time":"$time_iso8601","remote_addr":"$remote_addr",'
+    '"method":"$request_method","path":"$calograph_log_path",'
+    '"protocol":"$server_protocol","status":$status,'
+    '"bytes":$body_bytes_sent,"request_id":"$request_id",'
+    '"user_agent":"$http_user_agent"}';
 
 upstream calograph_frontend {
     server 127.0.0.1:8180;
@@ -192,6 +197,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Request-ID $request_id;
 
         # Avoid duplicate HSTS fields; the public proxy owns this header.
         proxy_hide_header Strict-Transport-Security;
@@ -215,6 +221,8 @@ Nginx validated at that trust boundary.
 frontend https_in
   bind :443 ssl crt /etc/haproxy/certs/calograph.pem
   mode http
+  unique-id-format %[uuid()]
+  http-request set-header X-Request-ID %[unique-id]
   http-request set-header X-Forwarded-Proto https
   http-request set-header X-Forwarded-Host %[req.hdr(Host)]
   http-request set-header X-Forwarded-For %[src]

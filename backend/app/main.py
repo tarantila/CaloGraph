@@ -13,6 +13,12 @@ from app.api.router import api_router
 from app.auth.password_policy import validate_password_blocklist
 from app.config import settings
 from app.database import engine
+from app.security_events import (
+    log_security_event,
+    security_reference,
+    security_request_context,
+)
+from app.services.rate_limit import RateLimitExceeded, normalize_client_ip
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("calograph")
@@ -54,7 +60,13 @@ async def security_and_request_id(
         else uuid.uuid4().hex
     )
     request.state.request_id = request_id
-    response = await call_next(request)
+    client = normalize_client_ip(request.client.host if request.client else None)
+    with security_request_context(request_id, security_reference("client", client)):
+        try:
+            response = await call_next(request)
+        except Exception:
+            log_security_event("request.failed", reason="unhandled_exception")
+            raise
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -79,6 +91,21 @@ async def security_and_request_id(
 
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    if isinstance(exc, RateLimitExceeded):
+        log_security_event(
+            "security.rate_limit.triggered",
+            target_ref=exc.key_ref,
+            details={"action": exc.action, "retry_after": exc.retry_after},
+        )
+    elif (
+        request.url.path.startswith("/api/v1/import/")
+        and exc.status_code in {400, 409, 413, 415, 422}
+    ):
+        log_security_event(
+            "import.rejected",
+            reason=f"http_{exc.status_code}",
+            details={"status_code": exc.status_code},
+        )
     return JSONResponse(
         status_code=exc.status_code,
         headers=exc.headers,

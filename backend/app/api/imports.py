@@ -25,6 +25,7 @@ from app.schemas import (
     ImportErrorResponse,
     ImportSummary,
 )
+from app.security_events import log_security_event, security_reference
 from app.services.import_guard import ImportAlreadyRunning, import_slot
 from app.services.import_service import persist_apple_health_stream, persist_import
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
@@ -128,14 +129,27 @@ def _user_import_slot(user: User) -> Iterator[None]:
         ) from exc
 
 
-def _validate_result(result: AdapterResult) -> ImportSummary:
-    return ImportSummary(
+def _validate_result(result: AdapterResult, user: User) -> ImportSummary:
+    summary = ImportSummary(
         status="valid" if not result.failed_count else "valid_with_errors",
         received=result.received,
         skipped=result.unknown_count,
         failed=result.failed_count,
         unknown_types=sorted(result.unknown_types),
     )
+    log_security_event(
+        "import.validation_completed",
+        actor_ref=security_reference("user", user.id),
+        details={
+            "source_type": result.source_type,
+            "received": summary.received,
+            "inserted": summary.inserted,
+            "updated": summary.updated,
+            "skipped": summary.skipped,
+            "failed": summary.failed,
+        },
+    )
+    return summary
 
 
 @router.post("/import/apple-health", response_model=ImportSummary)
@@ -179,7 +193,7 @@ async def validate_json(
             result = await run_in_threadpool(parse_json_payload, payload, user.timezone)
         except ValueError as exc:
             _raise_invalid_import(exc)
-        return _validate_result(result)
+        return _validate_result(result, user)
 
 
 @router.post("/import/yazio", response_model=ImportSummary)
@@ -233,7 +247,7 @@ async def validate_yazio_json(
             )
         except ValueError as exc:
             _raise_invalid_import(exc)
-        return _validate_result(result)
+        return _validate_result(result, user)
 
 
 @router.post("/import/apple-health/file", response_model=ImportSummary)

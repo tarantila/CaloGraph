@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import User, YazioConnection
 from app.schemas import ImportSummary, YazioConnectionInput, YazioStatusResponse
+from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import CredentialEncryptionError
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.yazio_sync import (
@@ -22,6 +23,7 @@ from app.services.yazio_sync import (
     configure_yazio_connection,
     run_manual_yazio_sync,
     validate_yazio_credentials,
+    yazio_failure_reason,
 )
 
 router = APIRouter(prefix="/yazio", tags=["YAZIO"])
@@ -97,12 +99,27 @@ def save_yazio_connection(
             sync_days=payload.sync_days,
         )
     except CredentialEncryptionError as exc:
+        log_security_event(
+            "integration.yazio.connection_failed",
+            actor_ref=security_reference("user", user.id),
+            reason="credential_encryption_unavailable",
+        )
         raise HTTPException(
             status_code=503,
             detail="Verschlüsselung für YAZIO-Verbindungen ist nicht eingerichtet.",
         ) from exc
     except YazioSyncError as exc:
+        log_security_event(
+            "integration.yazio.connection_failed",
+            actor_ref=security_reference("user", user.id),
+            reason=yazio_failure_reason(exc),
+        )
         _raise_yazio_http_error(exc)
+    log_security_event(
+        "integration.yazio.connection_configured",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("yazio_connection", connection.id),
+    )
     return YazioStatusResponse(
         available=True,
         configured=True,
@@ -155,6 +172,12 @@ def sync_yazio_now(
     try:
         return run_manual_yazio_sync(user.id, sync_days=days)
     except YazioConnectionNotConfigured as exc:
+        log_security_event(
+            "integration.yazio.sync_failed",
+            actor_ref=security_reference("user", user.id),
+            reason="connection_not_configured",
+            details={"mode": "manual"},
+        )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except YazioSyncError as exc:
         _raise_yazio_http_error(exc)
