@@ -118,7 +118,9 @@ class Settings(BaseSettings):
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
     trusted_proxy_networks: str = "127.0.0.1/32"
+    enable_api_docs: bool = False
     enable_hsts: bool = False
+    hsts_include_subdomains: bool = False
     max_json_payload_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024**2)
     max_upload_bytes: int = Field(default=500 * 1024 * 1024, ge=1024, le=2 * 1024**3)
     max_zip_uncompressed_bytes: int = Field(

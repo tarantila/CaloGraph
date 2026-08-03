@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.security import create_api_token
-from app.models import HealthSample, ImportBatch, ImportError, User
+from app.models import ApiToken, HealthSample, ImportBatch, ImportError, User
 
 
 def _import_headers(db: Session, user: User) -> dict[str, str]:
@@ -15,6 +16,59 @@ def _import_headers(db: Session, user: User) -> dict[str, str]:
         "Authorization": f"Bearer {raw}",
         "Content-Type": "application/json",
     }
+
+
+def test_import_token_activity_timestamp_is_throttled(
+    client: TestClient,
+    user: User,
+    db: Session,
+) -> None:
+    token, raw = create_api_token(db, user, "activity-test")
+    headers = {
+        "Authorization": f"Bearer {raw}",
+        "Content-Type": "application/json",
+    }
+
+    first = client.post(
+        "/api/v1/import/apple-health/validate",
+        headers=headers,
+        json={"samples": []},
+    )
+    assert first.status_code == 200
+    db.expire_all()
+    stored = db.get(ApiToken, token.id)
+    assert stored is not None
+    first_last_used_at = stored.last_used_at
+    assert first_last_used_at is not None
+
+    second = client.post(
+        "/api/v1/import/apple-health/validate",
+        headers=headers,
+        json={"samples": []},
+    )
+    assert second.status_code == 200
+    db.expire_all()
+    stored = db.get(ApiToken, token.id)
+    assert stored is not None
+    assert stored.last_used_at == first_last_used_at
+
+    stale_last_used_at = datetime.now(UTC) - timedelta(minutes=6)
+    stored.last_used_at = stale_last_used_at
+    db.commit()
+    third = client.post(
+        "/api/v1/import/apple-health/validate",
+        headers=headers,
+        json={"samples": []},
+    )
+    assert third.status_code == 200
+    db.expire_all()
+    stored = db.get(ApiToken, token.id)
+    assert stored is not None
+    assert stored.last_used_at is not None
+    refreshed_last_used_at = stored.last_used_at
+    if refreshed_last_used_at.tzinfo is None:
+        refreshed_last_used_at = refreshed_last_used_at.replace(tzinfo=UTC)
+    assert refreshed_last_used_at > stale_last_used_at
 
 
 @pytest.mark.parametrize(

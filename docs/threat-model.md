@@ -15,7 +15,9 @@ backups, and the availability of the private application.
   third-party scripts. Production cookies use the `__Host-` prefix, `Secure`,
   `Path=/`, no `Domain`, and `SameSite=Lax`. Server-side idle and absolute
   timeouts limit a stolen cookie's lifetime. A compromised endpoint can still
-  read data visible to that user.
+  read data visible to that user. Activity timestamps are written at most once
+  every five minutes to preserve idle expiry without turning every authenticated
+  read into a database commit.
 - **Stolen password:** optional TOTP prevents a password-only login from
   creating a session. A signed five-minute, `HttpOnly`, `SameSite=Strict`
   challenge carries the login between factors. TOTP secrets use a dedicated
@@ -50,7 +52,9 @@ backups, and the availability of the private application.
   startup validates HTTPS, secure cookies, HSTS, independent non-default
   secrets, PostgreSQL credentials, explicit host/origin allowlists, an exact
   proxy subnet, YAZIO encryption, and consistent upload capacities. Failure
-  messages contain variable names rather than secret values.
+  messages contain variable names rather than secret values. Generated OpenAPI
+  routes are disabled by the production template. HSTS is required, while
+  descendant-host enforcement remains an explicit operator choice.
 - **YAZIO credentials:** manual retrieval does not persist credentials.
   Scheduled sync stores each user's email and password using authenticated
   Fernet encryption. The host-side key file is mounted only into the backend
@@ -106,6 +110,8 @@ backups, and the availability of the private application.
   atomically, unknown accounts still perform Argon2 verification against a
   dummy hash, expired buckets are deleted, and authentication events contain
   only pseudonymous identifiers. The reverse proxy may add further limits.
+  Optional Fail2ban guidance uses the public proxy's validated client address
+  for temporary host-firewall bans without replacing application limits.
 - **Weak new passwords:** single-factor passwords require at least 15
   characters and are compared locally against a bundled digest blocklist of
   common and breached values plus application-specific identifiers. No

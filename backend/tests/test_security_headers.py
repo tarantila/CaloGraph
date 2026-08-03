@@ -27,12 +27,46 @@ def test_api_responses_include_security_and_privacy_headers(client: TestClient) 
 
 def test_hsts_is_only_sent_when_enabled(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(settings, "enable_hsts", True)
+    monkeypatch.setattr(settings, "hsts_include_subdomains", False, raising=False)
+
+    response = client.get("/health/live")
+
+    assert response.headers["strict-transport-security"] == "max-age=31536000"
+
+
+def test_hsts_subdomains_require_explicit_opt_in(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "enable_hsts", True)
+    monkeypatch.setattr(settings, "hsts_include_subdomains", True, raising=False)
 
     response = client.get("/health/live")
 
     assert response.headers["strict-transport-security"] == (
         "max-age=31536000; includeSubDomains"
     )
+
+
+def test_api_docs_are_disabled_unless_enabled(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "enable_api_docs", False, raising=False)
+
+    assert client.get("/api/docs").status_code == 404
+    assert client.get("/api/openapi.json").status_code == 404
+
+
+def test_api_docs_can_be_enabled(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "enable_api_docs", True, raising=False)
+
+    docs = client.get("/api/docs")
+    schema = client.get("/api/openapi.json")
+
+    assert docs.status_code == 200
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "CaloGraph API"
 
 
 def test_request_ids_are_bounded_and_invalid_client_values_are_replaced(

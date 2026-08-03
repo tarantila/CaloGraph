@@ -88,6 +88,44 @@ def test_idle_and_absolute_session_timeouts_are_server_enforced(
     assert client.get("/api/v1/auth/me").status_code == 401
 
 
+def test_session_activity_timestamp_is_throttled(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session_id = session.id
+    initial_last_used_at = session.last_used_at
+    assert initial_last_used_at is not None
+
+    assert client.get("/api/v1/auth/me").status_code == 200
+    db.expire_all()
+    session = db.get(UserSession, session_id)
+    assert session is not None
+    assert session.last_used_at == initial_last_used_at
+
+    stale_last_used_at = datetime.now(UTC) - timedelta(minutes=6)
+    session.last_used_at = stale_last_used_at
+    db.commit()
+
+    assert client.get("/api/v1/auth/me").status_code == 200
+    db.expire_all()
+    session = db.get(UserSession, session_id)
+    assert session is not None
+    assert session.last_used_at is not None
+    refreshed_last_used_at = session.last_used_at
+    if refreshed_last_used_at.tzinfo is None:
+        refreshed_last_used_at = refreshed_last_used_at.replace(tzinfo=UTC)
+    assert refreshed_last_used_at > stale_last_used_at
+
+
 def test_expired_and_revoked_sessions_are_purged(
     client: TestClient,
     user: User,

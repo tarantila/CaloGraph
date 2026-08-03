@@ -11,6 +11,16 @@ from app.database import get_db
 from app.models import ApiToken, User, UserSession
 
 bearer = HTTPBearer(auto_error=False)
+AUTH_ACTIVITY_WRITE_INTERVAL = timedelta(minutes=5)
+
+
+def _activity_write_is_due(last_used_at: datetime | None, now: datetime) -> bool:
+    if last_used_at is None:
+        return True
+    comparable_last_used_at = last_used_at
+    if comparable_last_used_at.tzinfo is None:
+        comparable_last_used_at = comparable_last_used_at.replace(tzinfo=UTC)
+    return comparable_last_used_at <= now - AUTH_ACTIVITY_WRITE_INTERVAL
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -35,8 +45,9 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, session.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Konto inaktiv")
-    session.last_used_at = now
-    db.commit()
+    if _activity_write_is_due(session.last_used_at, now):
+        session.last_used_at = now
+        db.commit()
     return user
 
 
@@ -86,6 +97,7 @@ def import_token(
     user = db.get(User, token.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Import-Konto inaktiv")
-    token.last_used_at = now
-    db.commit()
+    if _activity_write_is_due(token.last_used_at, now):
+        token.last_used_at = now
+        db.commit()
     return user, token

@@ -29,13 +29,13 @@ validate_password_blocklist()
 
 app = FastAPI(
     title="CaloGraph API",
-    version="0.2.1",
+    version="0.2.2",
     description=(
         "Lokale Analyse- und Import-API. CaloGraph greift nicht serverseitig auf Apple Health "
         "oder iCloud zu."
     ),
     docs_url=None,
-    openapi_url="/api/openapi.json",
+    openapi_url=None,
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.include_router(api_router)
@@ -43,10 +43,19 @@ app.include_router(api_router)
 
 @app.get("/api/docs", response_class=HTMLResponse, include_in_schema=False)
 def api_docs() -> str:
+    if not settings.enable_api_docs:
+        raise HTTPException(status_code=404, detail="Nicht gefunden")
     return """<!doctype html><html lang="de"><meta charset="utf-8">
     <title>CaloGraph API</title><body><h1>CaloGraph API</h1>
     <p>Das maschinenlesbare OpenAPI-Schema ist unter
     <a href="/api/openapi.json">/api/openapi.json</a> verfügbar.</p></body></html>"""
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+def api_openapi() -> JSONResponse:
+    if not settings.enable_api_docs:
+        raise HTTPException(status_code=404, detail="Nicht gefunden")
+    return JSONResponse(app.openapi())
 
 
 @app.middleware("http")
@@ -78,7 +87,10 @@ async def security_and_request_id(
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     if settings.enable_hsts:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        hsts = "max-age=31536000"
+        if settings.hsts_include_subdomains:
+            hsts += "; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = hsts
     logger.info(
         "request method=%s path=%s status=%s request_id=%s",
         request.method,

@@ -233,8 +233,17 @@ if [ "$forwarded_https_status" != "200" ]; then
   fail "Trusted proxy HTTPS request returned HTTP $forwarded_https_status instead of 200."
 fi
 if ! tr -d '\r' <"$response_headers" \
-  | grep -Eiq '^strict-transport-security: max-age=31536000; includeSubDomains$'; then
+  | grep -Eiq '^strict-transport-security: max-age=31536000$'; then
   fail "Trusted proxy HTTPS request did not receive HSTS."
+fi
+
+docs_status=$(curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  http://127.0.0.1:18180/api/docs)
+if [ "$docs_status" != "404" ]; then
+  fail "Production API documentation returned HTTP $docs_status instead of 404."
 fi
 
 attempt=1

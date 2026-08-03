@@ -3,6 +3,7 @@ set -eu
 
 upload_limit="${NGINX_MAX_UPLOAD_BYTES:-536870912}"
 hsts_enabled="${ENABLE_HSTS:-false}"
+hsts_include_subdomains="${HSTS_INCLUDE_SUBDOMAINS:-false}"
 proxy_gateway_ip="${CALOGRAPH_EDGE_GATEWAY_IP:-172.30.0.1}"
 case "$upload_limit" in
   ""|*[!0-9]*)
@@ -21,6 +22,15 @@ case "$hsts_enabled" in
     ;;
   *)
     echo "[calograph] ENABLE_HSTS must be true or false" >&2
+    exit 1
+    ;;
+esac
+
+case "$hsts_include_subdomains" in
+  true|false)
+    ;;
+  *)
+    echo "[calograph] HSTS_INCLUDE_SUBDOMAINS must be true or false" >&2
     exit 1
     ;;
 esac
@@ -60,7 +70,11 @@ printf 'client_max_body_size %s;\n' "$upload_limit" \
   printf 'map $calograph_forwarded_proto $calograph_hsts {\n'
   printf '  default "";\n'
   if [ "$hsts_enabled" = "true" ]; then
-    printf '  https "max-age=31536000; includeSubDomains";\n'
+    if [ "$hsts_include_subdomains" = "true" ]; then
+      printf '  https "max-age=31536000; includeSubDomains";\n'
+    else
+      printf '  https "max-age=31536000";\n'
+    fi
   fi
   printf '}\n'
 } > /tmp/calograph-hsts-map.conf

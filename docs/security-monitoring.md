@@ -61,10 +61,12 @@ be joined on `request_id`. Do not accept an Internet client's forwarding chain.
 
 Fail2ban should read the public Nginx or HAProxy access log, where the validated
 client address is available, rather than trying to ban an HMAC `client_ref`.
-A concrete filter depends on the chosen public proxy format. At minimum, alert
-on repeated `401` and `429` responses for authentication, invitation exchange,
-MFA, passkey, and YAZIO connection routes. Keep application rate limits enabled;
-Fail2ban is an additional host-level control, not a replacement.
+A concrete filter and jail matching CaloGraph's documented JSON Nginx format
+are provided in [Reverse proxy and TLS](reverse-proxy.md#optional-fail2ban).
+At minimum, alert on repeated `401` and `429` responses for authentication,
+invitation exchange, MFA, passkey, and YAZIO connection routes. Keep application
+rate limits enabled; Fail2ban is an additional host-level control, not a
+replacement.
 
 ## Retention and alerting
 
