@@ -1,5 +1,6 @@
 import json
 import zipfile
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from decimal import Decimal
@@ -31,6 +32,12 @@ from app.services.import_service import persist_apple_health_stream, persist_imp
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
 
 router = APIRouter(tags=["Import"])
+
+_ZIP_INTEGRITY_CHUNK_SIZE = 64 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 200
+_SUPPORTED_ZIP_COMPRESSION_METHODS = frozenset(
+    {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+)
 
 
 async def _json_body(request: Request) -> tuple[bytes, dict[str, object]]:
@@ -336,6 +343,41 @@ def _upload_size(file: UploadFile) -> int:
     return size
 
 
+def _open_zip_entry(
+    archive: zipfile.ZipFile,
+    candidate: zipfile.ZipInfo,
+) -> IO[bytes]:
+    try:
+        return archive.open(candidate, "r")
+    except (zipfile.BadZipFile, NotImplementedError) as exc:
+        raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei") from exc
+
+
+def _validate_zip_entry_integrity(
+    archive: zipfile.ZipFile,
+    candidate: zipfile.ZipInfo,
+) -> None:
+    bytes_read = 0
+    with _open_zip_entry(archive, candidate) as stream:
+        while True:
+            try:
+                chunk = stream.read(_ZIP_INTEGRITY_CHUNK_SIZE)
+            except (zipfile.BadZipFile, zlib.error) as exc:
+                raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei") from exc
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            if bytes_read > settings.max_zip_uncompressed_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail="ZIP überschreitet sichere Entpackgrenzen",
+                )
+            if bytes_read > candidate.file_size:
+                raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei")
+    if bytes_read != candidate.file_size:
+        raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei")
+
+
 def _import_zip(
     buffer: IO[bytes],
     user: User,
@@ -354,7 +396,7 @@ def _import_zip(
         total_compressed = max(1, sum(item.compress_size for item in entries))
         if (
             total_uncompressed > settings.max_zip_uncompressed_bytes
-            or total_uncompressed / total_compressed > 200
+            or total_uncompressed / total_compressed > _MAX_ZIP_COMPRESSION_RATIO
         ):
             raise HTTPException(status_code=413, detail="ZIP überschreitet sichere Entpackgrenzen")
         candidates = []
@@ -366,7 +408,18 @@ def _import_zip(
                 candidates.append(item)
         if len(candidates) != 1:
             raise HTTPException(status_code=422, detail="ZIP muss genau eine export.xml enthalten")
-        with archive.open(candidates[0], "r") as xml_stream:
+        candidate = candidates[0]
+        if candidate.compress_type not in _SUPPORTED_ZIP_COMPRESSION_METHODS:
+            raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei")
+        if candidate.flag_bits & 0x1:
+            raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei")
+        if (
+            candidate.file_size / max(1, candidate.compress_size)
+            > _MAX_ZIP_COMPRESSION_RATIO
+        ):
+            raise HTTPException(status_code=413, detail="ZIP überschreitet sichere Entpackgrenzen")
+        _validate_zip_entry_integrity(archive, candidate)
+        with _open_zip_entry(archive, candidate) as xml_stream:
             return persist_apple_health_stream(
                 db,
                 user,

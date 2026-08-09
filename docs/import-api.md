@@ -60,8 +60,10 @@ measurements; those are omitted and reported through `valid_with_errors` or
 `POST /api/v1/import/apple-health/file` accepts one Apple Health `export.xml`
 or ZIP of up to 500 MiB by default. The ZIP may expand to at most 2 GiB, must
 contain exactly one `export.xml`, and is checked for unsafe paths, entry count,
-and excessive compression. XML is parsed incrementally and accepted samples
-are persisted in configurable batches of 500.
+per-entry and aggregate compression ratio, and entry integrity before any
+import data is persisted. The `export.xml` entry may be stored or Deflate
+compressed. XML is parsed incrementally and accepted samples are persisted in
+configurable batches of 500.
 
 `POST /api/v1/import/yazio/file` accepts one YAZIO JSON file of up to 10 MiB.
 The frontend proxy permits at most one concurrent large Apple Health upload,
