@@ -11,7 +11,7 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
   "alembic==1.18.5",
   "argon2-cffi==25.1.0",
-  "cryptography==49.0.0",
+  "cryptography==50.0.0",
   "defusedxml==0.7.1",
   "fastapi==0.140.13",
   "httpx2==2.9.1",
