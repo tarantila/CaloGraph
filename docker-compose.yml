@@ -248,7 +248,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: frontend-build
+      target: frontend-development
     command: ["npm", "run", "test:unit"]
     networks: [edge]
 
