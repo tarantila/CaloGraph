@@ -25,10 +25,6 @@ project.
 > issues. Keep tested backups and review the changelog before updating. It is
 > not medical software and must not be used for diagnosis or treatment.
 
-> [!NOTE]
-> CaloGraph is source-available for noncommercial use. Commercial use is not
-> permitted by the project license.
-
 > [!IMPORTANT]
 > A server cannot retrieve Apple Health or HealthKit data from iCloud. An
 > authorized iPhone app such as Health Auto Export must send the data to
