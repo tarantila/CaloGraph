@@ -540,7 +540,7 @@ def new_token(
 
 @router.delete("/tokens/{token_id}", status_code=204)
 def revoke_token(
-    token_id: str, user: User = Depends(require_csrf), db: Session = Depends(get_db)
+    token_id: UUID, user: User = Depends(require_csrf), db: Session = Depends(get_db)
 ) -> None:
     token = db.scalar(select(ApiToken).where(ApiToken.id == token_id, ApiToken.user_id == user.id))
     if not token:
