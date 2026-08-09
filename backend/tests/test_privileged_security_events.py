@@ -465,7 +465,7 @@ def test_password_change_events_distinguish_failure_from_committed_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     username = "PRIVATE.password.owner"
-    invalid_new_password = "123456789qwerty"
+    invalid_new_password = "short-password"
     _set_user_identity(db, user, username)
     old_password_hash = user.password_hash
     csrf_token, session_cookie = _login(client, username)
