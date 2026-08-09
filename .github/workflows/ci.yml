@@ -99,7 +99,7 @@ jobs:
       - working-directory: backend
         run: uv run alembic upgrade head
       - working-directory: backend
-        run: uv run pytest tests/test_rate_limit_postgres.py
+        run: uv run pytest tests/test_rate_limit_postgres.py tests/test_yazio_migration_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

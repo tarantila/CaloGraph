@@ -296,7 +296,7 @@ services:
     depends_on:
       postgres-ci:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && pytest tests/test_rate_limit_postgres.py"]
+    command: ["sh", "-c", "alembic upgrade head && pytest tests/test_rate_limit_postgres.py tests/test_yazio_migration_postgres.py"]
     networks: [data]
 
   e2e:
