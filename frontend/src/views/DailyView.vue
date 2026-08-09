@@ -108,7 +108,7 @@ const missingPoints = computed(() =>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Datum</th><th>Status</th><th class="number">Kalorien</th><th class="number">Abweichung</th><th class="number">Eiweiß</th><th class="number">Kohlenhydrate</th><th class="number">Fett</th></tr></thead>
+          <thead><tr><th>Datum</th><th>Status</th><th class="number">Kalorien</th><th class="number">Abweichung</th><th class="number">Protein</th><th class="number">Kohlenhydrate</th><th class="number">Fett</th></tr></thead>
           <tbody>
             <tr v-for="point in points" :key="point.date">
               <td>{{ new Date(`${point.date}T12:00:00`).toLocaleDateString('de-DE') }}</td>

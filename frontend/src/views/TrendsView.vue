@@ -10,6 +10,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import { formatGermanDayMonth } from '../date-format'
 import type { DailyPoint } from '../types'
 
 const points = ref<DailyPoint[]>([])
@@ -78,7 +79,7 @@ const calorieOption = computed<EChartsOption>(() => ({
   grid: { left: 58, right: 18, top: 54, bottom: 38 },
   xAxis: {
     type: 'category',
-    data: points.value.map((item) => item.date.slice(5)),
+    data: points.value.map((item) => formatGermanDayMonth(item.date)),
     axisLine,
     axisTick: { show: false },
     axisLabel: { ...axisLabel, hideOverlap: true },
@@ -142,7 +143,7 @@ const nutritionOption = computed<EChartsOption>(() => ({
   grid: { left: 58, right: 18, top: 48, bottom: 38 },
   xAxis: {
     type: 'category',
-    data: points.value.map((item) => item.date.slice(5)),
+    data: points.value.map((item) => formatGermanDayMonth(item.date)),
     axisLine,
     axisTick: { show: false },
     axisLabel: { ...axisLabel, hideOverlap: true },

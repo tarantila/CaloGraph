@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
+import { formatGermanDate } from '../date-format'
 import { useAuthStore } from '../stores/auth'
 import type { Target, User, YazioStatus } from '../types'
 import {
@@ -194,7 +195,7 @@ async function saveTarget() {
       existing ? `/settings/targets/${target.valid_from}` : '/settings/targets',
       { method: existing ? 'PUT' : 'POST', body: JSON.stringify(payload) },
     )
-    message.value = `Budget und Ziele ab ${new Date(`${target.valid_from}T12:00:00`).toLocaleDateString('de-DE')} gespeichert.`
+    message.value = `Budget und Ziele ab ${formatGermanDate(target.valid_from)} gespeichert.`
     await loadTargets()
   } catch (cause) {
     error.value =
@@ -463,8 +464,8 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <thead><tr><th>Gültig ab</th><th>Gültig bis</th><th class="number">Kalorienbudget</th><th class="number">Erhaltungsbedarf</th><th class="number">Proteinziel</th></tr></thead>
             <tbody>
               <tr v-for="item in targets" :key="item.id">
-                <td>{{ item.valid_from }}</td>
-                <td>{{ item.valid_to ?? 'aktuell' }}</td>
+                <td>{{ formatGermanDate(item.valid_from) }}</td>
+                <td>{{ item.valid_to ? formatGermanDate(item.valid_to) : 'aktuell' }}</td>
                 <td class="number">{{ integer.format(Number(item.calories_kcal)) }} kcal</td>
                 <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} kcal` }}</td>
                 <td class="number">{{ integer.format(Number(item.protein_g)) }} g</td>

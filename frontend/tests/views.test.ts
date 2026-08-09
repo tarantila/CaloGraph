@@ -255,8 +255,15 @@ describe('main views', () => {
 
     expect(wrapper.text()).toContain('Protein am letzten Tag')
     expect(wrapper.text()).not.toContain('Gewicht')
-    const chartTitles = wrapper.findAllComponents(ChartPanel).map((panel) => panel.props('title'))
-    expect(chartTitles).toEqual(['Kalorien und gleitende Mittelwerte', 'Makronährstoffe'])
+    const chartPanels = wrapper.findAllComponents(ChartPanel)
+    expect(chartPanels.map((panel) => panel.props('title'))).toEqual([
+      'Kalorien und gleitende Mittelwerte',
+      'Makronährstoffe',
+    ])
+    const calorieOption = chartPanels[0].props('option') as {
+      xAxis: { data: string[] }
+    }
+    expect(calorieOption.xAxis.data).toEqual(['23-07'])
   })
 
   it('calculates the weekly calorie budget from daily targets with a current-budget fallback', async () => {
@@ -351,6 +358,9 @@ describe('main views', () => {
     expect(wrapper.findAll('.calendar-day.under_budget')).toHaveLength(1)
     expect(wrapper.findAll('.calendar-day.over_budget')).toHaveLength(1)
     expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(1)
+    expect(wrapper.get('.calendar-day.under_budget').attributes('aria-label')).toBe(
+      '18-07-2026: Im Budget',
+    )
     const calorieProgress = wrapper.findAll<HTMLProgressElement>(
       'progress.calendar-calorie-progress',
     )
@@ -413,6 +423,8 @@ describe('main views', () => {
 
     expect(wrapper.text()).toContain('1.800 kcal')
     expect(wrapper.text()).not.toContain('NaN')
+    expect(wrapper.text()).toContain('Protein')
+    expect(wrapper.text()).not.toContain('Eiweiß')
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/daily\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
     )
@@ -571,9 +583,10 @@ describe('main views', () => {
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
     const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }
+    const historicalTarget = { ...currentTarget, id: 'historical-target', valid_from: '2026-07-27', valid_to: '2026-08-02' }
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/profile') return Promise.resolve(user)
-      if (path === '/settings/targets') return Promise.resolve([currentTarget])
+      if (path === '/settings/targets') return Promise.resolve([currentTarget, historicalTarget])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
       if (path === '/settings/passkeys') return Promise.resolve([])
@@ -601,11 +614,19 @@ describe('main views', () => {
     expect(targetsWrapper.text()).toContain('2.100 kcal')
     expect(targetsWrapper.text()).toContain('2.600 kcal')
     expect(targetsWrapper.text()).not.toContain('2100.000')
+    expect(targetsWrapper.text()).toContain('27-07-2026')
+    expect(targetsWrapper.text()).toContain('02-08-2026')
+    expect(targetsWrapper.text()).not.toContain('2026-07-27')
+    expect(targetsWrapper.text()).not.toContain('2026-08-02')
     expect(targetsWrapper.text()).not.toContain('Persönliche YAZIO-Verbindung')
     const calories = targetsWrapper.find('input[type="number"]')
     await calories.setValue('2300')
     await targetsWrapper.find('form').trigger('submit')
     await flushPromises()
+    const [year, month, day] = today.split('-')
+    expect(targetsWrapper.text()).toContain(
+      `Budget und Ziele ab ${day}-${month}-${year} gespeichert.`,
+    )
     expect(apiMock).toHaveBeenCalledWith(`/settings/targets/${today}`, {
       method: 'PUT',
       body: JSON.stringify({

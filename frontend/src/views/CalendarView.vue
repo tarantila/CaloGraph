@@ -11,6 +11,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
+import { formatGermanDate } from '../date-format'
 import type { DailyPoint } from '../types'
 
 const now = new Date()
@@ -190,7 +191,7 @@ const averageCalories = computed(() => {
           v-for="day in days"
           :key="day.date"
           :class="['calendar-day', day.classification]"
-          :aria-label="`${day.date}: ${labels[day.classification ?? 'no_data']}`"
+          :aria-label="`${formatGermanDate(day.date)}: ${labels[day.classification ?? 'no_data']}`"
         >
           <div class="calendar-day-heading">
             <strong>{{ new Date(`${day.date}T12:00:00`).toLocaleDateString('de-DE', { weekday: 'short' }) }}</strong>

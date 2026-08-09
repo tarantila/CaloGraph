@@ -5,6 +5,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected German date ordering in budget history, trend axes, and calendar
+  accessibility labels, and standardized the daily protein heading.
+
 ## [0.2.2] - 2026-08-03
 
 ### Changed
