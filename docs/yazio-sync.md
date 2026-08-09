@@ -53,10 +53,14 @@ docker compose exec backend python -m app.cli sync-yazio \
 ```
 
 The YAZIO password is requested interactively without echo. CaloGraph stores
-neither the password nor the access token for this manual operation. To
-separate multiple accounts, only a shortened SHA-256 identifier derived from
-the normalized email address is used; the address itself is not stored in
-health samples.
+neither the password nor the access token for this manual operation. Unless
+`--source-identifier` is supplied, manual retrieval uses
+`yazio:<CaloGraph user UUID>`, the same stable source identifier as scheduled
+synchronization. It is based only on CaloGraph's random internal user UUID;
+neither the YAZIO email address nor an unkeyed digest of it is stored in health
+samples. An explicit `--source-identifier` can separate the provenance of
+multiple YAZIO accounts under one CaloGraph user; because it is persisted with
+the samples, it must be stable and non-sensitive.
 
 ### Configure scheduled synchronization
 

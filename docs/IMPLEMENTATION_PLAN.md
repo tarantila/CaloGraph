@@ -62,10 +62,12 @@ YAZIO scheduler runs as a dedicated Compose service. Administrators can create
 revocable one-time invitations; invited users receive a personal login,
 strictly isolated health data, and their own YAZIO connection.
 
-The current release checks cover Ruff, mypy, 32 backend tests, ESLint, Vue
-type-checking, 15 frontend unit tests, three Playwright end-to-end scenarios,
-the Vite production build, Docker images, Alembic against PostgreSQL 18.4, and
-the documented backup/restore path. The example installation uses
+The authoritative release-check matrix is defined in
+`.github/workflows/ci.yml`, and the latest CI runs are the source of truth for
+the checks and test set that currently pass. The pipeline covers backend and
+frontend quality checks, tests and builds, PostgreSQL migrations, container and
+end-to-end validation, and the production backup/restore smoke path; exact test
+counts are intentionally not duplicated here. The example installation uses
 `127.0.0.1:8180`.
 
 The project remains work in progress while its public API, migrations,
