@@ -1,7 +1,11 @@
 .git
 .github
-.agents
-.codex/ralph-audit
+# Local AI / agent tooling
+.omp/
+.codex/
+.claude/
+.agents/
+.mcp.json
 .venv
 **/__pycache__
 **/.pytest_cache
