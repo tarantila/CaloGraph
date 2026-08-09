@@ -90,7 +90,7 @@ def test_xml_import_emits_started_then_completed_with_safe_aggregates(
 ) -> None:
     records = _capture_security_events(monkeypatch)
     filename = "PRIVATE_FILENAME_SENTINEL.xml"
-    source_name = "PRIVATE_XML_SOURCE_SENTINEL"
+    source_name = "PRIVATE_IMPORT_EMAIL_SENTINEL@example.invalid"
     health_value = "987654.125"
     xml = (
         '<?xml version="1.0"?><HealthData><Record '
@@ -140,6 +140,7 @@ def test_xml_import_emits_started_then_completed_with_safe_aggregates(
         health_value,
         xml.decode(),
         user.id,
+        user.username,
         summary.batch_id,
     )
 
@@ -210,6 +211,7 @@ def test_completed_with_errors_event_contains_only_safe_counts(
         credential_sentinel,
         raw_payload.decode(),
         user.id,
+        user.username,
         summary.batch_id,
     )
 
@@ -293,6 +295,7 @@ def test_partial_failure_emits_one_fixed_reason_without_exception_text(
         "654321.125",
         xml.decode(),
         user.id,
+        user.username,
         batch.id,
     )
 
@@ -372,6 +375,7 @@ def test_validation_endpoint_emits_one_safe_aggregate_event(
         "222.125",
         json.dumps(payload),
         user.id,
+        user.username,
     )
 
 
@@ -440,4 +444,5 @@ def test_http_import_rejections_emit_fixed_events_without_request_data(
         filename,
         file_payload.decode(),
         user.id,
+        user.username,
     )
