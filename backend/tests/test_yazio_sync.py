@@ -1,3 +1,5 @@
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,12 +8,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import security_events
 from app.api import yazio as yazio_api
 from app.config import settings
 from app.models import HealthSample, User, YazioConnection
 from app.schemas import ImportSummary
+from app.security_events import security_reference
 from app.services import yazio_sync
 from app.services.credential_crypto import (
+    CredentialEncryptionError,
     decrypt_credential,
     encrypt_credential,
 )
@@ -251,6 +256,83 @@ def test_scheduled_sync_records_safe_failure(
     retry_delay = stored.next_sync_at - stored.last_attempt_at
     assert timedelta(hours=1, minutes=1) <= retry_delay <= timedelta(hours=1, minutes=30)
 
+
+
+@pytest.mark.parametrize("mode", ["manual", "scheduled"])
+def test_credential_decryption_failure_emits_one_safe_security_event(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    _configure_key(monkeypatch)
+    email = "sensitive-owner@example.com"
+    password = "sensitive-yazio-password"
+    raw_error = "sensitive-decryption-exception"
+    connection = configure_yazio_connection(user, email, password)
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    encrypted_email = stored.encrypted_email.decode()
+    encrypted_password = stored.encrypted_password.decode()
+    records: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        security_events.logger,
+        "log",
+        lambda level, message: records.append((level, message)),
+    )
+
+    def fail_decryption(_value: bytes) -> str:
+        raise CredentialEncryptionError(raw_error)
+
+    monkeypatch.setattr(yazio_sync, "decrypt_credential", fail_decryption)
+
+    if mode == "manual":
+        with pytest.raises(
+            YazioSyncError,
+            match="Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden",
+        ):
+            run_manual_yazio_sync(user.id)
+    else:
+        assert run_scheduled_yazio_sync(connection.id) is None
+
+    assert len(records) == 1
+    level, serialized = records[0]
+    payload = json.loads(serialized)
+    assert level == logging.WARNING
+    assert set(payload) == {
+        "timestamp",
+        "event",
+        "outcome",
+        "actor_ref",
+        "target_ref",
+        "reason",
+        "mode",
+    }
+    assert payload["event"] == "integration.yazio.sync_failed"
+    assert payload["outcome"] == "failure"
+    assert payload["actor_ref"] == security_reference("user", user.id)
+    assert payload["target_ref"] == security_reference(
+        "yazio_connection", connection.id
+    )
+    assert payload["reason"] == "credential_decryption_error"
+    assert payload["mode"] == mode
+    for sensitive_value in (
+        email,
+        password,
+        encrypted_email,
+        encrypted_password,
+        raw_error,
+        str(user.id),
+        str(connection.id),
+    ):
+        assert sensitive_value not in serialized
+
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.last_success_at is None
+    assert stored.last_error == raw_error
+    assert stored.next_sync_at is not None
 
 def test_fully_rejected_payload_is_not_recorded_as_success(
     db: Session, user: User, monkeypatch

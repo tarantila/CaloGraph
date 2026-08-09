@@ -505,6 +505,13 @@ def _run_yazio_connection_sync_locked(
             password = decrypt_credential(connection.encrypted_password)
         except CredentialEncryptionError as exc:
             _record_failure(connection_id, attempted_at, exc)
+            log_security_event(
+                "integration.yazio.sync_failed",
+                actor_ref=security_reference("user", user.id),
+                target_ref=security_reference("yazio_connection", connection_id),
+                reason="credential_decryption_error",
+                details={"mode": mode},
+            )
             if raise_errors:
                 raise YazioSyncError(
                     "Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden."
