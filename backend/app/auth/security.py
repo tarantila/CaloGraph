@@ -69,6 +69,10 @@ def hash_invitation_token(raw: str) -> str:
     return _hmac_token(raw, settings.session_secret)
 
 
+def hash_account_recovery_token(raw: str) -> str:
+    return _hmac_token(f"account-recovery:{raw}", settings.session_secret)
+
+
 def hash_mfa_recovery_code(raw: str) -> str:
     return _hmac_token(f"mfa-recovery:{raw}", settings.session_secret)
 

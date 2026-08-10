@@ -32,10 +32,12 @@ The event stream covers:
 - password, MFA, passkey, session, invitation, registration, and API-token changes;
 - successful, rejected, and transaction-failed administrative user lifecycle
   actions (`admin.user.deactivated`, `admin.user.reactivated`,
-  `admin.user.deleted`, `admin.user.lifecycle_rejected`, and
+  `admin.user.deleted`, `admin.user.recovery_issued`,
+  `admin.authenticators.reset`, `admin.user.lifecycle_rejected`, and
   `admin.user.lifecycle_failed`);
+- successful and rejected password recovery completion;
 - rate-limit decisions for every HTTP endpoint using the shared limiter;
-- CLI user creation and MFA reset;
+- CLI user creation, recovery issuance, and authenticator reset;
 - YAZIO connection changes and manual or scheduled synchronization outcomes;
 - import starts, completions, partial failures, validation outcomes, and HTTP rejection;
 - otherwise unhandled application request failures.

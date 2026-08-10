@@ -13,17 +13,26 @@ from app.config import settings
 from app.database import get_db
 from app.models import User, UserInvitation
 from app.schemas import (
+    AccountRecoveryIssuedResponse,
+    AdminReauthenticationRequest,
+    HardDeleteRequest,
     InvitationCreatedResponse,
     InvitationCreateRequest,
     InvitationResponse,
     UserResponse,
 )
 from app.security_events import log_security_event, security_reference
+from app.services.admin_reauth import (
+    AdminReauthenticationRejected,
+    verify_admin_reauthentication,
+)
 from app.services.user_lifecycle import (
     UserLifecycleRejected,
     deactivate_user,
     delete_user,
+    issue_account_recovery,
     reactivate_user,
+    reset_user_authenticators,
 )
 
 router = APIRouter(prefix="/users", tags=["Benutzer"])
@@ -33,6 +42,30 @@ def _admin(user: User) -> None:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Administratorrechte erforderlich")
 
+
+
+def _reauthenticate_admin(
+    db: Session,
+    user: User,
+    payload: AdminReauthenticationRequest,
+) -> None:
+    try:
+        verify_admin_reauthentication(
+            db,
+            user.id,
+            payload.current_password,
+            payload.code,
+        )
+    except AdminReauthenticationRejected as exc:
+        if exc.reason == "not_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Aktive Administratorrechte erforderlich",
+            ) from exc
+        raise HTTPException(
+            status_code=400,
+            detail="Reauthentifizierung fehlgeschlagen",
+        ) from exc
 
 def _raise_lifecycle_rejection(exc: UserLifecycleRejected) -> Never:
     if exc.reason == "not_admin":
@@ -47,6 +80,7 @@ def _raise_lifecycle_rejection(exc: UserLifecycleRejected) -> Never:
         "last_admin": "Der letzte aktive Administrator muss erhalten bleiben.",
         "target_active": "Der Benutzer muss vor dem Löschen deaktiviert werden.",
         "operation_busy": "Für dieses Konto läuft bereits eine Benutzeroperation.",
+        "target_confirmation": "Die Bestätigung des Benutzernamens ist ungültig.",
     }
     raise HTTPException(status_code=409, detail=details[exc.reason]) from exc
 
@@ -152,13 +186,51 @@ def reactivate_account(
         _raise_lifecycle_rejection(exc)
 
 
+@router.post(
+    "/{user_id}/recovery-links",
+    response_model=AccountRecoveryIssuedResponse,
+    status_code=201,
+)
+def create_recovery_link(
+    user_id: UUID,
+    payload: AdminReauthenticationRequest,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> AccountRecoveryIssuedResponse:
+    _reauthenticate_admin(db, user, payload)
+    try:
+        recovery_token, raw_token = issue_account_recovery(db, user.id, user_id)
+    except UserLifecycleRejected as exc:
+        _raise_lifecycle_rejection(exc)
+    return AccountRecoveryIssuedResponse(
+        recovery_token=raw_token,
+        expires_at=recovery_token.expires_at,
+    )
+
+
+@router.post("/{user_id}/authenticators/reset", status_code=204)
+def reset_authenticators(
+    user_id: UUID,
+    payload: AdminReauthenticationRequest,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> None:
+    _reauthenticate_admin(db, user, payload)
+    try:
+        reset_user_authenticators(db, user.id, user_id)
+    except UserLifecycleRejected as exc:
+        _raise_lifecycle_rejection(exc)
+
+
 @router.delete("/{user_id}", status_code=204)
 def delete_account(
+    payload: HardDeleteRequest,
     user_id: UUID,
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> None:
     try:
-        delete_user(db, user.id, user_id)
+        _reauthenticate_admin(db, user, payload)
+        delete_user(db, user.id, user_id, payload.confirm_username)
     except UserLifecycleRejected as exc:
         _raise_lifecycle_rejection(exc)

@@ -37,7 +37,9 @@ Administrators can manage another account through the lifecycle API:
   again.
 - `DELETE /api/v1/users/{user_id}` permanently deletes an already inactive
   account and all user-owned authentication, nutrition, import, target,
-  tracking, and YAZIO rows. This action is irreversible.
+  tracking, and YAZIO rows. It requires the active administrator's current
+  password, every enabled MFA factor, and the target username as an exact
+  confirmation. This action is irreversible.
 
 An administrator cannot deactivate or delete their own account. CaloGraph also
 serializes administrative lifecycle changes and ordinary account mutations
@@ -48,6 +50,48 @@ At least one active administrator is preserved.
 The `is_active` and `deactivated_at` fields form one state: active accounts have
 no deactivation timestamp; inactive accounts always have one. Repeating a
 deactivation or reactivation is safe and retains the same end state.
+
+## Administrative account recovery
+
+CaloGraph does not send recovery email. An active administrator can create a
+one-time recovery link for another account with
+`POST /api/v1/users/{user_id}/recovery-links`. Issuing a link requires the
+administrator's current password and every enabled MFA factor. It atomically
+deactivates the target, revokes its sessions and API tokens, pauses YAZIO, and
+revokes older open recovery links. The raw link token is returned only in the
+creation response, expires after 30 minutes, and is stored only as an HMAC
+digest.
+
+The unauthenticated `POST /api/v1/auth/recovery/complete` endpoint accepts that
+one-time token and a policy-compliant new password. A successful completion
+invalidates the token and all remaining sessions and API tokens, but deliberately
+keeps the account inactive and YAZIO paused. The administrator must verify the
+recovery out of band and explicitly reactivate the account before login is
+possible. Invalid, expired, revoked, used, or concurrently consumed tokens have
+the same public failure response. PostgreSQL-backed limits apply independently
+to the normalized client address and token digest.
+
+For a lost authenticator, an active administrator can call
+`POST /api/v1/users/{user_id}/authenticators/reset`. The target must already be
+inactive, and the administrator must freshly reauthenticate. The operation
+removes the target's TOTP credential, recovery codes, passkeys, WebAuthn handle
+and challenges, and revokes sessions and API tokens. It does not change the
+password, nutrition data, imports, profile, or encrypted YAZIO credentials, and
+it does not reactivate the account.
+
+The corresponding operator commands are:
+
+```bash
+docker compose exec backend python -m app.cli issue-account-recovery \
+  --username TARGET --admin-username ADMIN
+docker compose exec backend python -m app.cli reset-authenticators \
+  --username TARGET --admin-username ADMIN --confirm TARGET
+```
+
+Both commands prompt without echo for the administrator password and, when
+configured, an MFA code. Recovery tokens are printed exactly once. Administrative
+recovery issuance, completion, authenticator reset, and hard deletion all use
+the same cross-worker lifecycle locks as deactivation and reactivation.
 
 ## Invite another user
 
@@ -93,17 +137,12 @@ valid, previously unused TOTP time step or recovery code. Replacing recovery
 codes or disabling TOTP requires both the current password and an active
 second factor. These changes revoke every other session for that account.
 
-If a user loses both the Authenticator and all recovery codes, an operator can
-perform an emergency reset:
-
-```bash
-docker compose exec backend python -m app.cli reset-mfa \
-  --username USERNAME --confirm USERNAME
-```
-
-The explicit confirmation must match the username. The reset removes the
-TOTP credential, recovery codes, and all passkeys and revokes every session;
-the user must sign in with their password and enroll again.
+If a user loses every second factor, an active administrator can deactivate
+the account and perform the authenticator reset described under
+**Administrative account recovery**. The explicit confirmation must match the
+target username. Reset removes TOTP, recovery codes, passkeys, WebAuthn state,
+sessions, and API tokens; the account remains inactive until the administrator
+separately reactivates it.
 
 ## Passkeys
 

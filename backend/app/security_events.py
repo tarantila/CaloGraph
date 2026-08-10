@@ -23,10 +23,12 @@ class EventSpec:
 
 _COUNT_FIELDS = frozenset({"received", "inserted", "updated", "skipped", "failed"})
 EVENT_SPECS: Final[dict[str, EventSpec]] = {
-    "admin.mfa.reset": EventSpec("success", logging.WARNING),
+    "admin.authenticators.reset": EventSpec("success", logging.WARNING),
+    "admin.reauthentication.failed": EventSpec("failure", logging.WARNING),
     "admin.user.created": EventSpec("success", logging.INFO),
     "admin.user.deactivated": EventSpec("success", logging.WARNING),
     "admin.user.deleted": EventSpec("success", logging.WARNING),
+    "admin.user.recovery_issued": EventSpec("success", logging.WARNING),
     "admin.user.lifecycle_failed": EventSpec(
         "failure",
         logging.ERROR,
@@ -58,6 +60,9 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "auth.passkey.removed": EventSpec("success", logging.WARNING),
     "auth.password.change_failed": EventSpec("failure", logging.WARNING),
     "auth.password.changed": EventSpec("success", logging.WARNING),
+    "auth.password.recovered": EventSpec("success", logging.WARNING),
+    "auth.password.recovery_failed": EventSpec("failure", logging.ERROR),
+    "auth.password.recovery_rejected": EventSpec("failure", logging.WARNING),
     "auth.registration.succeeded": EventSpec("success", logging.INFO),
     "auth.session.logged_out": EventSpec("success", logging.INFO),
     "import.completed": EventSpec("success", logging.INFO, _COUNT_FIELDS | {"source_type"}),

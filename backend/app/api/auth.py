@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Never
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.auth.security import (
     create_mfa_login_state,
     create_registration_state,
     create_session,
+    hash_account_recovery_token,
     hash_invitation_token,
     hash_password,
     hash_session_token,
@@ -38,6 +39,7 @@ from app.models import (
     UserTotpCredential,
 )
 from app.schemas import (
+    AccountRecoveryCompleteRequest,
     CsrfResponse,
     InvitationExchangeRequest,
     InvitationStateResponse,
@@ -50,6 +52,10 @@ from app.schemas import (
     WebAuthnOptionsResponse,
 )
 from app.security_events import log_security_event, security_reference
+from app.services.account_recovery import (
+    AccountRecoveryRejected,
+    complete_account_recovery,
+)
 from app.services.mfa import consume_mfa_factor
 from app.services.passkeys import (
     PasskeyAuthenticationError,
@@ -225,6 +231,63 @@ def invitation_status(
     return InvitationStateResponse(
         valid=_active_invitation_from_state(request, db, datetime.now(UTC)) is not None
     )
+
+
+@router.post("/recovery/complete", status_code=204)
+def complete_recovery(
+    payload: AccountRecoveryCompleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> None:
+    ip_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
+    token_key = f"token:{hash_account_recovery_token(payload.recovery_token)}"
+    ensure_rate_limit_available(
+        db,
+        "recovery-complete-ip",
+        ip_key,
+        settings.recovery_ip_rate_limit,
+        settings.recovery_rate_limit_window_seconds,
+    )
+    ensure_rate_limit_available(
+        db,
+        "recovery-complete-token",
+        token_key,
+        settings.recovery_rate_limit,
+        settings.recovery_rate_limit_window_seconds,
+    )
+    try:
+        complete_account_recovery(
+            db,
+            payload.recovery_token,
+            payload.new_password,
+        )
+    except AccountRecoveryRejected:
+        log_security_event(
+            "auth.password.recovery_rejected",
+            reason="invalid_token",
+        )
+        check_rate_limit(
+            db,
+            "recovery-complete-ip",
+            ip_key,
+            settings.recovery_ip_rate_limit,
+            settings.recovery_rate_limit_window_seconds,
+        )
+        check_rate_limit(
+            db,
+            "recovery-complete-token",
+            token_key,
+            settings.recovery_rate_limit,
+            settings.recovery_rate_limit_window_seconds,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Recovery-Token ist ungültig oder abgelaufen",
+        ) from None
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    clear_rate_limit(db, "recovery-complete-ip", ip_key)
+    clear_rate_limit(db, "recovery-complete-token", token_key)
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)

@@ -164,16 +164,20 @@ Passkeys** and then sign in passwordlessly with their device's biometric check
 or PIN. Passkeys require HTTPS, except for browser-recognized localhost
 development.
 
-An operator can recover an account whose authentication factors are unavailable
-with:
+An operator can recover an account after verifying the user out of band:
 
 ```bash
-docker compose exec backend python -m app.cli reset-mfa \
-  --username USERNAME --confirm USERNAME
+docker compose exec backend python -m app.cli issue-account-recovery \
+  --username USERNAME --admin-username ADMIN
+docker compose exec backend python -m app.cli reset-authenticators \
+  --username USERNAME --admin-username ADMIN --confirm USERNAME
 ```
 
-The command removes TOTP, recovery codes, and passkeys, then revokes every
-session for that account.
+Both commands require fresh administrator reauthentication. Recovery replaces
+the password through a one-time token but keeps the account inactive until an
+administrator explicitly reactivates it. Authenticator reset is available only
+for an inactive account and removes TOTP, recovery codes, passkeys, sessions,
+and API tokens without changing the password or reactivating the account.
 
 ### Create an import token
 

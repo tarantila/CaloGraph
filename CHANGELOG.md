@@ -11,6 +11,12 @@ follows [Semantic Versioning](https://semver.org/).
   and irreversible deletion of already inactive users, with cross-worker
   operation locks, last-administrator protection, and pseudonymous audit
   events.
+- Added administrator-issued, single-use account recovery links with
+  policy-checked password replacement, uniform public failures, per-client and
+  per-token rate limits, and explicit administrator reactivation.
+- Added freshly reauthenticated administrator operations for authenticator
+  reset and irreversible account deletion, plus matching CLI recovery and
+  authenticator-reset commands.
 
 ### Changed
 
@@ -18,6 +24,9 @@ follows [Semantic Versioning](https://semver.org/).
   pending WebAuthn challenges while preserving nutrition data and
   authentication factors; YAZIO synchronization remains paused after
   reactivation until explicitly reconfigured.
+- User lifecycle serialization now also covers recovery issuance and
+  completion, authenticator reset, and destructive reauthentication so those
+  operations cannot race across API, CLI, imports, or the YAZIO scheduler.
 
 ### Fixed
 

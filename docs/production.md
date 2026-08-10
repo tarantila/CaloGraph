@@ -101,10 +101,12 @@ secret is encrypted with a dedicated key that is mounted only into the
 backend. Ten one-time recovery codes are generated during activation and
 stored only as HMAC digests. Accepted TOTP time steps are persisted to prevent
 replay, while login and MFA-management attempts use temporary database-backed
-limits. If a user loses both factors, an operator can run
-`python -m app.cli reset-mfa --username USER --confirm USER`; the command
-removes TOTP, recovery codes, and passkeys and revokes all sessions for that
-account.
+limits. If a user loses all factors, an active administrator can first
+deactivate the account and then run
+`python -m app.cli reset-authenticators --username USER --admin-username ADMIN
+--confirm USER`. The command requires the administrator's current password and
+enabled MFA, removes every target authenticator, and revokes sessions and API
+tokens. The target stays inactive until separately reactivated.
 
 Users can enroll discoverable passkeys after confirming their password and,
 when enabled, TOTP. Passkey authentication requires user verification and is

@@ -16,6 +16,8 @@
 - `user_invitations`: hashed one-time invitation tokens, expiration, creator,
   recipient, and revocation.
 - `api_tokens`: label, prefix, HMAC hash, scopes, expiration, and revocation.
+- `account_recovery_tokens`: HMAC-only one-time administrator-issued recovery
+  tokens with creation, expiration, consumption, and revocation timestamps.
 - `nutrition_targets`: versioned calorie budgets, optional maintenance-calorie
   estimates, and nutrient targets using the half-open interval
   `valid_from <= day < valid_to`. A maintenance estimate cannot be lower than
@@ -38,6 +40,6 @@ ID. Decimal values avoid rounding errors. Timestamps are stored in UTC;
 `local_date` is calculated during import using the user's time zone.
 
 Deleting an inactive user relies on database foreign-key cascades for all
-user-owned authentication, import, nutrition, target, tracking, and YAZIO
-rows. Related rate-limit buckets use HMAC keys rather than foreign keys and are
-removed explicitly by the lifecycle service in the same transaction.
+user-owned authentication, recovery, import, nutrition, target, tracking, and
+YAZIO rows. Related rate-limit buckets use HMAC keys rather than foreign keys
+and are removed explicitly by the lifecycle service in the same transaction.

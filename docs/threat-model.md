@@ -77,6 +77,16 @@ backups, and the availability of the private application.
   adding Redis or a general-purpose queue. Backend and scheduler receive the
   same rate-limit secret so provider failures map to the same HMAC-pseudonymized
   circuit-breaker bucket.
+- **Account-recovery token theft or replay:** administrator-issued recovery
+  tokens contain at least 256 bits of entropy, are stored only as
+  installation-keyed HMAC digests, expire after 30 minutes, and can be consumed
+  only once under the target's cross-worker lifecycle lock. Issuance first
+  deactivates the target and invalidates credentials; completion changes only
+  the password and keeps login and YAZIO disabled until an administrator
+  explicitly reactivates the account. Uniform public failures and independent
+  client-address and token-digest limits reduce enumeration and brute-force
+  value. Raw tokens, passwords, MFA factors, and credential identifiers are
+  excluded from events and application error responses.
 - **Duplicate sources:** do not use Apple Health and YAZIO for the same time
   range. Cross-source deduplication would hide provenance.
 - **Manipulated JSON:** Pydantic and adapter validation, finite non-negative

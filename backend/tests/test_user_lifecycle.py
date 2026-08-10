@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from app import security_events
 from app.auth.security import create_api_token, create_session
-from app.cli import configure_yazio, create_token, disable_yazio, reset_mfa, seed_demo
+from app.cli import configure_yazio, create_token, disable_yazio, seed_demo
 from app.database import SessionLocal
 from app.importers.json_adapter import AdapterResult
 from app.models import (
@@ -374,9 +374,9 @@ def test_hard_delete_requires_inactive_target_and_cascades_owned_data(
     events = _capture_security_events(monkeypatch)
 
     with pytest.raises(UserLifecycleRejected, match="target_active"):
-        delete_user(db, user.id, target.id)
+        delete_user(db, user.id, target.id, target.username)
     deactivate_user(db, user.id, target.id)
-    delete_user(db, user.id, target.id)
+    delete_user(db, user.id, target.id, target.username)
     db.expire_all()
 
     assert db.get(User, target_id) is None
@@ -432,7 +432,15 @@ def test_lifecycle_api_enforces_admin_self_and_active_target_contracts(
     self_action = client.post(f"/api/v1/users/{user.id}/deactivate", headers=headers)
     assert self_action.status_code == 409
     assert self_action.json()["detail"] == "Die Aktion auf dem eigenen Konto ist nicht erlaubt."
-    active_delete = client.delete(f"/api/v1/users/{regular.id}", headers=headers)
+    active_delete = client.request(
+        "DELETE",
+        f"/api/v1/users/{regular.id}",
+        headers=headers,
+        json={
+            "current_password": PASSWORD,
+            "confirm_username": regular.username,
+        },
+    )
     assert active_delete.status_code == 409
     assert (
         client.post(f"/api/v1/users/{second_admin.id}/deactivate", headers=headers).status_code
@@ -443,7 +451,18 @@ def test_lifecycle_api_enforces_admin_self_and_active_target_contracts(
         == 200
     )
     assert client.post(f"/api/v1/users/{regular.id}/deactivate", headers=headers).status_code == 200
-    assert client.delete(f"/api/v1/users/{regular.id}", headers=headers).status_code == 204
+    assert (
+        client.request(
+            "DELETE",
+            f"/api/v1/users/{regular.id}",
+            headers=headers,
+            json={
+                "current_password": PASSWORD,
+                "confirm_username": regular.username,
+            },
+        ).status_code
+        == 204
+    )
     assert client.post(f"/api/v1/users/{regular.id}/reactivate", headers=headers).status_code == 404
 
     client.cookies.clear()
@@ -536,13 +555,6 @@ def test_inactive_user_is_rejected_by_all_operator_mutation_paths(
     monkeypatch.setattr("app.cli.SessionLocal", SessionLocal)
     with pytest.raises(SystemExit, match="inaktiven Benutzer"):
         create_token(argparse.Namespace(username=target.username, label="blocked"))
-    with pytest.raises(SystemExit, match="MFA nicht zurückgesetzt"):
-        reset_mfa(
-            argparse.Namespace(
-                username=target.username,
-                confirm=target.username,
-            )
-        )
     with pytest.raises(SystemExit, match="keine Demodaten"):
         seed_demo(argparse.Namespace(username=target.username))
     with pytest.raises(SystemExit, match="nicht deaktiviert"):
@@ -578,7 +590,7 @@ def test_lifecycle_rollback_emits_failure_but_no_success_event(
 
     monkeypatch.setattr(OrmSession, "commit", fail_commit)
     with pytest.raises(RuntimeError, match="synthetic commit failure"):
-        delete_user(db, user.id, target.id)
+        delete_user(db, user.id, target.id, target.username)
     db.expire_all()
 
     assert db.get(User, target.id) is not None

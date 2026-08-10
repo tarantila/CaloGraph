@@ -1,4 +1,3 @@
-import argparse
 import base64
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -9,7 +8,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.auth.security import create_session
-from app.cli import reset_mfa
 from app.main import app
 from app.models import (
     PasskeyCredential,
@@ -269,12 +267,11 @@ def test_passkey_login_rejects_wrong_user_handle_with_generic_error(
     assert db.scalar(select(func.count(UserSession.id))) == sessions_before
 
 
-def test_passkey_removal_requires_password_and_admin_reset_removes_passkeys(
+def test_passkey_removal_requires_current_password(
     client: TestClient,
     user: User,
     db,
     monkeypatch,
-    capsys,
 ) -> None:
     passkey = _register_passkey(client, monkeypatch)
     csrf = client.get("/api/v1/auth/csrf").json()["csrf_token"]
@@ -287,12 +284,6 @@ def test_passkey_removal_requires_password_and_admin_reset_removes_passkeys(
     assert wrong_password.status_code == 400
     assert db.get(PasskeyCredential, UUID(str(passkey["id"]))) is not None
 
-    reset_mfa(argparse.Namespace(username=user.username, confirm=user.username))
-    db.expire_all()
-    assert db.scalar(select(PasskeyCredential)) is None
-    assert db.get(WebAuthnUserHandle, user.id) is None
-    assert db.scalar(select(func.count(UserSession.id))) == 0
-    assert "Anmeldefaktoren" in capsys.readouterr().out
 
 
 def test_expired_webauthn_challenges_are_purged(db) -> None:

@@ -9,7 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.auth.password_policy import (
     MIN_PASSWORD_LENGTH,
@@ -21,26 +22,25 @@ from app.config import ProductionConfigurationError, settings
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import (
-    MfaRecoveryCode,
-    NutritionTarget,
-    PasskeyCredential,
-    TrackingQualitySettings,
-    User,
-    UserSession,
-    UserTotpCredential,
-    WebAuthnChallenge,
-    WebAuthnUserHandle,
-    YazioConnection,
-)
+from app.models import NutritionTarget, TrackingQualitySettings, User, YazioConnection
 from app.security_events import log_security_event, security_reference
+from app.services.account_recovery import purge_account_recovery_tokens
+from app.services.admin_reauth import (
+    AdminReauthenticationRejected,
+    verify_admin_reauthentication,
+)
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     generate_credential_key,
 )
 from app.services.import_service import persist_import, purge_expired_raw_payloads
 from app.services.passkeys import purge_expired_webauthn_challenges
-from app.services.rate_limit import purge_expired_rate_limit_buckets
+from app.services.rate_limit import RateLimitExceeded, purge_expired_rate_limit_buckets
+from app.services.user_lifecycle import (
+    UserLifecycleRejected,
+    issue_account_recovery,
+    reset_user_authenticators,
+)
 from app.services.user_operation_lock import (
     InactiveUserOperation,
     UserOperationBusy,
@@ -126,47 +126,78 @@ def create_token(args: argparse.Namespace) -> None:
     print(raw)
 
 
-def reset_mfa(args: argparse.Namespace) -> None:
+def _reauthenticate_cli_admin(
+    db: Session,
+    args: argparse.Namespace,
+) -> User:
+    admin_username = getattr(args, "admin_username", None) or input(
+        "Administrator-Benutzername: "
+    ).strip()
+    admin = db.scalar(select(User).where(User.username == admin_username))
+    if admin is None:
+        raise SystemExit("Administrator-Reauthentifizierung fehlgeschlagen.")
+    password = getattr(args, "admin_password", None) or getpass.getpass(
+        "Aktuelles Administrator-Passwort: "
+    )
+    code = getattr(args, "code", None)
+    if code is None:
+        code = getpass.getpass("Administrator-MFA-Code (falls aktiviert): ").strip() or None
+    try:
+        verify_admin_reauthentication(db, admin.id, password, code)
+    except (AdminReauthenticationRejected, RateLimitExceeded) as exc:
+        raise SystemExit("Administrator-Reauthentifizierung fehlgeschlagen.") from exc
+    return admin
+
+
+def reset_authenticators(args: argparse.Namespace) -> None:
     username = args.username or input("Benutzername: ").strip()
     if args.confirm != username:
         raise SystemExit(
-            "MFA-Rücksetzung abgebrochen. --confirm muss exakt dem Benutzernamen entsprechen."
+            "Authenticator-Rücksetzung abgebrochen. "
+            "--confirm muss exakt dem Benutzernamen entsprechen."
         )
-    try:
-        with SessionLocal() as db:
-            user = db.scalar(select(User).where(User.username == username))
-            if user is None:
-                raise SystemExit("Benutzer nicht gefunden.")
-            with shared_user_operation(db, user.id) as active_user:
-                db.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == active_user.id))
-                db.execute(
-                    delete(UserTotpCredential).where(UserTotpCredential.user_id == active_user.id)
-                )
-                db.execute(
-                    delete(PasskeyCredential).where(PasskeyCredential.user_id == active_user.id)
-                )
-                db.execute(
-                    delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == active_user.id)
-                )
-                db.execute(
-                    delete(WebAuthnUserHandle).where(WebAuthnUserHandle.user_id == active_user.id)
-                )
-                db.execute(delete(UserSession).where(UserSession.user_id == active_user.id))
-                db.commit()
-                user_id = active_user.id
-    except InactiveUserOperation as exc:
-        raise SystemExit(
-            "Für einen inaktiven Benutzer kann MFA nicht zurückgesetzt werden."
-        ) from exc
-    except UserOperationBusy as exc:
-        raise SystemExit("Für diesen Benutzer läuft gerade eine administrative Operation.") from exc
-    log_security_event(
-        "admin.mfa.reset",
-        target_ref=security_reference("user", user_id),
-    )
+    with SessionLocal() as db:
+        admin = _reauthenticate_cli_admin(db, args)
+        target = db.scalar(select(User).where(User.username == username))
+        if target is None:
+            raise SystemExit("Benutzer nicht gefunden.")
+        try:
+            reset_user_authenticators(db, admin.id, target.id)
+        except UserLifecycleRejected as exc:
+            messages = {
+                "not_admin": "Aktive Administratorrechte erforderlich.",
+                "self_action": "Die Aktion auf dem eigenen Konto ist nicht erlaubt.",
+                "target_active": "Der Benutzer muss zuerst deaktiviert werden.",
+                "target_missing": "Benutzer nicht gefunden.",
+                "operation_busy": "Für diesen Benutzer läuft eine administrative Operation.",
+                "last_admin": "Der letzte aktive Administrator muss erhalten bleiben.",
+                "target_confirmation": "Die Bestätigung des Benutzernamens ist ungültig.",
+            }
+            raise SystemExit(messages[exc.reason]) from exc
     print(
-        f"Anmeldefaktoren für '{username}' wurden zurückgesetzt; alle Sitzungen wurden widerrufen."
+        f"Authentikatoren für '{username}' wurden zurückgesetzt; "
+        "Sitzungen und API-Tokens wurden widerrufen."
     )
+
+
+
+
+def issue_recovery(args: argparse.Namespace) -> None:
+    username = args.username or input("Benutzername: ").strip()
+    with SessionLocal() as db:
+        admin = _reauthenticate_cli_admin(db, args)
+        target = db.scalar(select(User).where(User.username == username))
+        if target is None:
+            raise SystemExit("Benutzer nicht gefunden.")
+        try:
+            recovery_token, raw_token = issue_account_recovery(db, admin.id, target.id)
+        except UserLifecycleRejected as exc:
+            raise SystemExit(f"Recovery konnte nicht ausgestellt werden: {exc.reason}.") from exc
+    print(
+        "Recovery-Token (nur einmal sichtbar, "
+        f"gültig bis {recovery_token.expires_at.isoformat()}):"
+    )
+    print(raw_token)
 
 
 def seed_demo(args: argparse.Namespace) -> None:
@@ -465,6 +496,7 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                         db,
                         settings.rate_limit_retention_hours,
                     )
+                    recovery_token_deleted = purge_account_recovery_tokens(db)
                     session_deleted = purge_expired_sessions(db)
                     webauthn_challenge_deleted = (
                         purge_expired_webauthn_challenges(db)
@@ -481,6 +513,11 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                     logger.info(
                         "webauthn_challenge_cleanup deleted=%s",
                         webauthn_challenge_deleted,
+                    )
+                if recovery_token_deleted:
+                    logger.info(
+                        "account_recovery_token_cleanup deleted=%s",
+                        recovery_token_deleted,
                     )
         except Exception:
             logger.exception("yazio_scheduler_cycle_failed")
@@ -515,10 +552,15 @@ def parser() -> argparse.ArgumentParser:
     token.add_argument("--username")
     token.add_argument("--label")
     token.set_defaults(handler=create_token)
-    mfa_reset = commands.add_parser("reset-mfa")
-    mfa_reset.add_argument("--username")
-    mfa_reset.add_argument("--confirm", required=True)
-    mfa_reset.set_defaults(handler=reset_mfa)
+    authenticator_reset = commands.add_parser("reset-authenticators")
+    authenticator_reset.add_argument("--username")
+    authenticator_reset.add_argument("--admin-username", default="admin")
+    authenticator_reset.add_argument("--confirm", required=True)
+    authenticator_reset.set_defaults(handler=reset_authenticators)
+    recovery = commands.add_parser("issue-account-recovery")
+    recovery.add_argument("--username")
+    recovery.add_argument("--admin-username", default="admin")
+    recovery.set_defaults(handler=issue_recovery)
     seed = commands.add_parser("seed-demo-data")
     seed.add_argument("--username", default="admin")
     seed.set_defaults(handler=seed_demo)

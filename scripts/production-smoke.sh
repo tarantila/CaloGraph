@@ -96,6 +96,9 @@ sed -i \
   -e 's/CALOGRAPH_EDGE_SUBNET=172\.30\.0\.0\/24/CALOGRAPH_EDGE_SUBNET=172.31.250.0\/24/g' \
   -e 's/CALOGRAPH_EDGE_GATEWAY_IP=172\.30\.0\.1/CALOGRAPH_EDGE_GATEWAY_IP=172.31.250.1/g' \
   -e 's/CALOGRAPH_FRONTEND_PROXY_IP=172\.30\.0\.10/CALOGRAPH_FRONTEND_PROXY_IP=172.31.250.10/g' \
+  -e 's/RECOVERY_RATE_LIMIT=10/RECOVERY_RATE_LIMIT=7/g' \
+  -e 's/RECOVERY_IP_RATE_LIMIT=30/RECOVERY_IP_RATE_LIMIT=11/g' \
+  -e 's/RECOVERY_RATE_LIMIT_WINDOW_SECONDS=900/RECOVERY_RATE_LIMIT_WINDOW_SECONDS=777/g' \
   -e "s|POSTGRES_PASSWORD_FILE=.*|POSTGRES_PASSWORD_FILE=$postgres_password|" \
   -e "s|SESSION_SECRET_FILE=.*|SESSION_SECRET_FILE=$session_secret|" \
   -e "s|RATE_LIMIT_SECRET_FILE=.*|RATE_LIMIT_SECRET_FILE=$rate_limit_secret|" \
@@ -139,6 +142,15 @@ if ! printf '%s\n' "$backend_environment" \
   | grep -q '^TRUSTED_PROXY_NETWORKS=172.31.250.10/32$'; then
   fail "Backend does not trust only the fixed frontend proxy address."
 fi
+for expected_setting in \
+  RECOVERY_RATE_LIMIT=7 \
+  RECOVERY_IP_RATE_LIMIT=11 \
+  RECOVERY_RATE_LIMIT_WINDOW_SECONDS=777
+do
+  if ! printf '%s\n' "$backend_environment" | grep -q "^${expected_setting}$"; then
+    fail "Backend did not receive ${expected_setting} from the Compose environment."
+  fi
+done
 for required_file_name in \
   DATABASE_PASSWORD_FILE \
   SESSION_SECRET_FILE \

@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import security_events
 from app.api import settings as settings_api
 from app.auth.security import create_api_token, hash_password, verify_password
-from app.cli import create_token, create_user, reset_mfa
+from app.cli import create_token, create_user, reset_authenticators
 from app.models import (
     ApiToken,
     MfaRecoveryCode,
@@ -827,9 +828,31 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
     token = db.scalar(select(ApiToken).where(ApiToken.user_id == created_user.id))
     assert token is not None
     password_hash = created_user.password_hash
-    with pytest.raises(SystemExit, match="MFA-Rücksetzung abgebrochen"):
-        reset_mfa(argparse.Namespace(username=username, confirm="PRIVATE.wrong.confirmation"))
-    reset_mfa(argparse.Namespace(username=username, confirm=username))
+    target_username = "PRIVATE.cli.target"
+    target = User(
+        username=target_username,
+        password_hash=hash_password("PRIVATE-target-password-73!safe"),
+        is_active=False,
+        deactivated_at=datetime.now(UTC),
+    )
+    db.add(target)
+    db.commit()
+    with pytest.raises(SystemExit, match="Authenticator-Rücksetzung abgebrochen"):
+        reset_authenticators(
+            argparse.Namespace(
+                username=target_username,
+                confirm="PRIVATE.wrong.confirmation",
+            )
+        )
+    reset_authenticators(
+        argparse.Namespace(
+            username=target_username,
+            confirm=target_username,
+            admin_username=username,
+            admin_password=password,
+            code="",
+        )
+    )
 
     db.expire_all()
     assert db.get(User, created_user.id) is not None
@@ -837,6 +860,7 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
     payloads = _event_payloads(records)
     user_ref = security_reference("user", created_user.id)
     token_ref = security_reference("api_token", token.id)
+    target_ref = security_reference("user", target.id)
     assert [level for level, _ in records] == [logging.INFO, logging.INFO, logging.WARNING]
     assert [_contract_fields(payload) for payload in payloads] == [
         {
@@ -851,9 +875,10 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
             "target_ref": token_ref,
         },
         {
-            "event": "admin.mfa.reset",
+            "event": "admin.authenticators.reset",
             "outcome": "success",
-            "target_ref": user_ref,
+            "actor_ref": user_ref,
+            "target_ref": target_ref,
         },
     ]
     _assert_cli_metadata(payloads)
@@ -869,4 +894,6 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
         created_user.id,
         token.id,
         "PRIVATE.wrong.confirmation",
+        target_username,
+        target.id,
     )

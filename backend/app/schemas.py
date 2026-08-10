@@ -24,6 +24,25 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=1, max_length=1024)
 
 
+class AdminReauthenticationRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    code: str | None = Field(default=None, max_length=64)
+
+
+class HardDeleteRequest(AdminReauthenticationRequest):
+    confirm_username: str = Field(min_length=1, max_length=190)
+
+
+class AccountRecoveryCompleteRequest(BaseModel):
+    recovery_token: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
+class AccountRecoveryIssuedResponse(BaseModel):
+    recovery_token: str
+    expires_at: datetime
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

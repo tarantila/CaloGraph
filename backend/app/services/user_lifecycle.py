@@ -1,19 +1,26 @@
+import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Never
 from uuid import UUID
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.auth.security import hash_account_recovery_token
 from app.models import (
+    AccountRecoveryToken,
     ApiToken,
+    MfaRecoveryCode,
+    PasskeyCredential,
     RateLimitBucket,
     User,
     UserInvitation,
     UserSession,
+    UserTotpCredential,
     WebAuthnChallenge,
+    WebAuthnUserHandle,
     YazioConnection,
 )
 from app.security_events import log_security_event, security_reference
@@ -24,15 +31,24 @@ from app.services.user_operation_lock import (
     exclusive_user_lifecycle_operation,
 )
 
-LifecycleAction = Literal["deactivate", "reactivate", "delete"]
+LifecycleAction = Literal[
+    "deactivate",
+    "delete",
+    "reactivate",
+    "recovery_issue",
+    "reset_authenticators",
+]
 LifecycleReason = Literal[
     "not_admin",
     "self_action",
     "last_admin",
     "target_active",
+    "target_confirmation",
     "target_missing",
     "operation_busy",
 ]
+
+ACCOUNT_RECOVERY_TOKEN_TTL = timedelta(minutes=30)
 
 
 class UserLifecycleRejected(RuntimeError):
@@ -177,6 +193,50 @@ def _success_event(event: str, actor_id: UUID, target_id: UUID) -> None:
     )
 
 
+def _revoke_open_recovery_tokens(
+    db: Session,
+    target_id: UUID,
+    changed_at: datetime,
+) -> None:
+    db.execute(
+        update(AccountRecoveryToken)
+        .where(
+            AccountRecoveryToken.user_id == target_id,
+            AccountRecoveryToken.used_at.is_(None),
+            AccountRecoveryToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=changed_at)
+    )
+
+
+def _apply_deactivation(db: Session, target: User, changed_at: datetime) -> None:
+    if target.is_active:
+        target.is_active = False
+        target.deactivated_at = changed_at
+    _revoke_open_recovery_tokens(db, target.id, changed_at)
+    db.execute(delete(UserSession).where(UserSession.user_id == target.id))
+    db.execute(
+        update(ApiToken)
+        .where(ApiToken.user_id == target.id, ApiToken.revoked_at.is_(None))
+        .values(revoked_at=changed_at)
+    )
+    db.execute(
+        update(UserInvitation)
+        .where(
+            UserInvitation.invited_by_user_id == target.id,
+            UserInvitation.used_at.is_(None),
+            UserInvitation.revoked_at.is_(None),
+        )
+        .values(revoked_at=changed_at)
+    )
+    db.execute(delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == target.id))
+    db.execute(
+        update(YazioConnection)
+        .where(YazioConnection.user_id == target.id)
+        .values(sync_enabled=False, next_sync_at=None)
+    )
+
+
 def deactivate_user(
     db: Session,
     actor_id: UUID,
@@ -191,33 +251,38 @@ def deactivate_user(
     with _lifecycle_operation(db, action, actor_id, target_id):
         _, target = _locked_actor_and_target(db, action, actor_id, target_id)
         _ensure_admin_survives(db, action, target)
-        if target.is_active:
-            target.is_active = False
-            target.deactivated_at = changed_at
-        db.execute(delete(UserSession).where(UserSession.user_id == target.id))
-        db.execute(
-            update(ApiToken)
-            .where(ApiToken.user_id == target.id, ApiToken.revoked_at.is_(None))
-            .values(revoked_at=changed_at)
-        )
-        db.execute(
-            update(UserInvitation)
-            .where(
-                UserInvitation.invited_by_user_id == target.id,
-                UserInvitation.used_at.is_(None),
-                UserInvitation.revoked_at.is_(None),
-            )
-            .values(revoked_at=changed_at)
-        )
-        db.execute(delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == target.id))
-        db.execute(
-            update(YazioConnection)
-            .where(YazioConnection.user_id == target.id)
-            .values(sync_enabled=False, next_sync_at=None)
-        )
+        _apply_deactivation(db, target, changed_at)
         db.commit()
     _success_event("admin.user.deactivated", actor_id, target_id)
     return target
+
+
+def issue_account_recovery(
+    db: Session,
+    actor_id: UUID,
+    target_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> tuple[AccountRecoveryToken, str]:
+    action: LifecycleAction = "recovery_issue"
+    _ensure_actor_may_manage(db, action, actor_id, target_id)
+    _ensure_not_self_action(action, actor_id, target_id)
+    changed_at = now or datetime.now(UTC)
+    raw_token = secrets.token_urlsafe(32)
+    recovery_token = AccountRecoveryToken(
+        user_id=target_id,
+        token_hash=hash_account_recovery_token(raw_token),
+        created_at=changed_at,
+        expires_at=changed_at + ACCOUNT_RECOVERY_TOKEN_TTL,
+    )
+    with _lifecycle_operation(db, action, actor_id, target_id):
+        _, target = _locked_actor_and_target(db, action, actor_id, target_id)
+        _ensure_admin_survives(db, action, target)
+        _apply_deactivation(db, target, changed_at)
+        db.add(recovery_token)
+        db.commit()
+    _success_event("admin.user.recovery_issued", actor_id, target_id)
+    return recovery_token, raw_token
 
 
 def reactivate_user(
@@ -238,22 +303,64 @@ def reactivate_user(
                 .where(YazioConnection.user_id == target.id)
                 .values(sync_enabled=False, next_sync_at=None)
             )
+        _revoke_open_recovery_tokens(db, target.id, datetime.now(UTC))
         db.commit()
     _success_event("admin.user.reactivated", actor_id, target_id)
     return target
 
 
+def reset_user_authenticators(
+    db: Session,
+    actor_id: UUID,
+    target_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> None:
+    action: LifecycleAction = "reset_authenticators"
+    _ensure_actor_may_manage(db, action, actor_id, target_id)
+    _ensure_not_self_action(action, actor_id, target_id)
+    changed_at = now or datetime.now(UTC)
+    with _lifecycle_operation(db, action, actor_id, target_id):
+        _, target = _locked_actor_and_target(db, action, actor_id, target_id)
+        if target.is_active:
+            _reject(action, "target_active")
+        db.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == target.id))
+        db.execute(delete(UserTotpCredential).where(UserTotpCredential.user_id == target.id))
+        db.execute(delete(PasskeyCredential).where(PasskeyCredential.user_id == target.id))
+        db.execute(delete(WebAuthnUserHandle).where(WebAuthnUserHandle.user_id == target.id))
+        db.execute(delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == target.id))
+        db.execute(delete(UserSession).where(UserSession.user_id == target.id))
+        db.execute(
+            update(ApiToken)
+            .where(ApiToken.user_id == target.id, ApiToken.revoked_at.is_(None))
+            .values(revoked_at=changed_at)
+        )
+        db.commit()
+    _success_event("admin.authenticators.reset", actor_id, target_id)
+
+
 def _target_rate_limit_hashes(db: Session, target: User) -> set[str]:
     token_ids = db.scalars(select(ApiToken.id).where(ApiToken.user_id == target.id))
+    recovery_hashes = db.scalars(
+        select(AccountRecoveryToken.token_hash).where(
+            AccountRecoveryToken.user_id == target.id
+        )
+    )
     raw_keys = {
         f"user:{target.id}",
         f"account:{normalize_account_identifier(target.username)}",
         *(f"token:{token_id}" for token_id in token_ids),
+        *(f"token:{token_hash}" for token_hash in recovery_hashes),
     }
     return {hash_rate_limit_key(key) for key in raw_keys}
 
 
-def delete_user(db: Session, actor_id: UUID, target_id: UUID) -> None:
+def delete_user(
+    db: Session,
+    actor_id: UUID,
+    target_id: UUID,
+    confirmed_username: str,
+) -> None:
     action: LifecycleAction = "delete"
     _ensure_actor_may_manage(db, action, actor_id, target_id)
     _ensure_not_self_action(action, actor_id, target_id)
@@ -261,6 +368,8 @@ def delete_user(db: Session, actor_id: UUID, target_id: UUID) -> None:
         _, target = _locked_actor_and_target(db, action, actor_id, target_id)
         if target.is_active:
             _reject(action, "target_active")
+        if not secrets.compare_digest(target.username, confirmed_username):
+            _reject(action, "target_confirmation")
         rate_limit_hashes = _target_rate_limit_hashes(db, target)
         if rate_limit_hashes:
             db.execute(

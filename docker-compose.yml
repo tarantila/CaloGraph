@@ -83,6 +83,9 @@ services:
       LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS:-300}
       PASSWORD_CHANGE_RATE_LIMIT: ${PASSWORD_CHANGE_RATE_LIMIT:-5}
       PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS: ${PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS:-900}
+      RECOVERY_RATE_LIMIT: ${RECOVERY_RATE_LIMIT:-10}
+      RECOVERY_IP_RATE_LIMIT: ${RECOVERY_IP_RATE_LIMIT:-30}
+      RECOVERY_RATE_LIMIT_WINDOW_SECONDS: ${RECOVERY_RATE_LIMIT_WINDOW_SECONDS:-900}
       MFA_RATE_LIMIT: ${MFA_RATE_LIMIT:-10}
       MFA_RATE_LIMIT_WINDOW_SECONDS: ${MFA_RATE_LIMIT_WINDOW_SECONDS:-300}
       MFA_IP_RATE_LIMIT: ${MFA_IP_RATE_LIMIT:-30}
@@ -303,6 +306,7 @@ services:
         alembic upgrade head &&
         pytest
         tests/test_rate_limit_postgres.py
+        tests/test_account_recovery_postgres.py
         tests/test_user_lifecycle_migration_postgres.py
         tests/test_yazio_migration_postgres.py
     networks: [data]

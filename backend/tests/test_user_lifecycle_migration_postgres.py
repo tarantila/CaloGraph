@@ -68,7 +68,7 @@ def test_user_lifecycle_migration_backfills_state_and_enforces_consistency() -> 
     updated_at = datetime(2026, 8, 9, 12, tzinfo=UTC)
 
     try:
-        command.stamp(alembic_config, TARGET_REVISION)
+        command.stamp(alembic_config, "head")
         command.downgrade(alembic_config, PREVIOUS_REVISION)
         with engine.begin() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == PREVIOUS_REVISION
@@ -144,7 +144,7 @@ def test_user_lifecycle_migration_backfills_state_and_enforces_consistency() -> 
             assert "deactivated_at" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("users")
             }
-        command.upgrade(alembic_config, TARGET_REVISION)
+        command.upgrade(alembic_config, "head")
     finally:
         engine.dispose()
 
@@ -307,7 +307,7 @@ def test_postgres_hard_delete_cascades_all_user_owned_rows() -> None:
         actor_id = actor.id
         target_id = target.id
 
-        delete_user(db, actor_id, target_id)
+        delete_user(db, actor_id, target_id, "postgres-delete-target")
 
         assert db.get(User, target_id) is None
         assert db.get(User, actor_id) is not None

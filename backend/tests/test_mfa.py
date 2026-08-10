@@ -1,4 +1,3 @@
-import argparse
 from datetime import UTC, datetime, timedelta
 
 import pyotp
@@ -13,9 +12,8 @@ from app.auth.security import (
     create_session,
     verify_mfa_login_state,
 )
-from app.cli import reset_mfa
 from app.config import settings
-from app.models import MfaRecoveryCode, User, UserSession, UserTotpCredential
+from app.models import MfaRecoveryCode, User, UserTotpCredential
 from app.services.mfa_crypto import MfaEncryptionError, decrypt_mfa_secret
 from app.services.user_operation_lock import (
     UserOperationBusy,
@@ -224,22 +222,6 @@ def test_recovery_codes_can_be_replaced_and_totp_can_be_disabled(
     assert _login(client)["mfa_required"] is False
 
 
-def test_admin_reset_removes_mfa_and_all_sessions(
-    client: TestClient,
-    user: User,
-    db,
-    capsys,
-) -> None:
-    del user
-    _enable_totp(client, db)
-
-    reset_mfa(argparse.Namespace(username="admin", confirm="admin"))
-    db.expire_all()
-
-    assert db.scalar(select(UserTotpCredential)) is None
-    assert db.scalar(select(func.count(MfaRecoveryCode.id))) == 0
-    assert db.scalar(select(func.count(UserSession.id))) == 0
-    assert "alle Sitzungen wurden widerrufen" in capsys.readouterr().out
 
 
 def test_signed_mfa_login_state_rejects_tampering_and_expiry(user: User) -> None:
