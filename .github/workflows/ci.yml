@@ -414,21 +414,21 @@ jobs:
             'The release tag must be published after the repository becomes public.'
       - name: Attest backend build provenance
         if: github.event.repository.private == false
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ steps.images.outputs.backend }}
           subject-digest: ${{ steps.publish.outputs.backend_digest }}
           push-to-registry: true
       - name: Attest frontend build provenance
         if: github.event.repository.private == false
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ steps.images.outputs.frontend }}
           subject-digest: ${{ steps.publish.outputs.frontend_digest }}
           push-to-registry: true
       - name: Attest backend SPDX SBOM
         if: github.event.repository.private == false
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ steps.images.outputs.backend }}
           subject-digest: ${{ steps.publish.outputs.backend_digest }}
@@ -436,7 +436,7 @@ jobs:
           push-to-registry: true
       - name: Attest frontend SPDX SBOM
         if: github.event.repository.private == false
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ steps.images.outputs.frontend }}
           subject-digest: ${{ steps.publish.outputs.frontend_digest }}
