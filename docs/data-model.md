@@ -1,7 +1,8 @@
 # Data model
 
 - `users`: account, language, IANA time zone, first weekday, administrator
-  flag, and active status.
+  flag, and lifecycle state. `is_active=true` requires `deactivated_at=NULL`;
+  an inactive account requires a UTC deactivation timestamp.
 - `user_sessions`: hashed session and CSRF keys, expiration, and revocation.
 - `user_totp_credentials`: encrypted TOTP seed, activation time, and the last
   accepted time step used to reject replay.
@@ -35,3 +36,8 @@ Stable external IDs are unique per user, adapter, and source identifier.
 `(user_id, fingerprint)` additionally prevents duplicates without an external
 ID. Decimal values avoid rounding errors. Timestamps are stored in UTC;
 `local_date` is calculated during import using the user's time zone.
+
+Deleting an inactive user relies on database foreign-key cascades for all
+user-owned authentication, import, nutrition, target, tracking, and YAZIO
+rows. Related rate-limit buckets use HMAC keys rather than foreign keys and are
+removed explicitly by the lifecycle service in the same transaction.

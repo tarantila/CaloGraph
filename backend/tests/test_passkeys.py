@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from app.auth.security import create_session
 from app.cli import reset_mfa
 from app.main import app
 from app.models import (
@@ -19,6 +21,10 @@ from app.models import (
 from app.services.passkeys import (
     PASSKEY_CHALLENGE_TTL_SECONDS,
     purge_expired_webauthn_challenges,
+)
+from app.services.user_operation_lock import (
+    UserOperationBusy,
+    exclusive_user_lifecycle_operation,
 )
 
 PASSWORD = "correct-horse-battery-staple"
@@ -199,6 +205,20 @@ def test_passkey_login_creates_session_and_updates_counter(
 
     options = client.post("/api/v1/auth/passkey/options")
     assert options.status_code == 200
+    original_create_session = create_session
+    outer_lock_observed = False
+
+    def create_session_while_locked(session, target, now=None):
+        nonlocal outer_lock_observed
+        with (
+            pytest.raises(UserOperationBusy),
+            exclusive_user_lifecycle_operation(session, target.id),
+        ):
+            pass
+        outer_lock_observed = True
+        return original_create_session(session, target, now)
+
+    monkeypatch.setattr("app.api.auth.create_session", create_session_while_locked)
     response = client.post(
         "/api/v1/auth/passkey/verify",
         json={
@@ -206,6 +226,7 @@ def test_passkey_login_creates_session_and_updates_counter(
             "credential": _authentication_credential(identity.user_handle),
         },
     )
+    assert outer_lock_observed is True
 
     assert response.status_code == 200
     assert response.json()["user"]["username"] == "admin"

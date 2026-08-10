@@ -19,6 +19,7 @@ from app.security_events import (
     security_request_context,
 )
 from app.services.rate_limit import RateLimitExceeded, normalize_client_ip
+from app.services.user_operation_lock import InactiveUserOperation, UserOperationBusy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("calograph")
@@ -101,6 +102,54 @@ async def security_and_request_id(
     return response
 
 
+def _log_import_rejection(request: Request, status_code: int) -> None:
+    if (
+        request.url.path.startswith("/api/v1/import/")
+        and status_code in {400, 409, 413, 415, 422}
+    ):
+        log_security_event(
+            "import.rejected",
+            reason=f"http_{status_code}",
+            details={"status_code": status_code},
+        )
+
+
+@app.exception_handler(InactiveUserOperation)
+async def inactive_user_operation(
+    request: Request,
+    _exc: InactiveUserOperation,
+) -> JSONResponse:
+    _log_import_rejection(request, 409)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "type": "about:blank",
+            "title": "Anfrage fehlgeschlagen",
+            "status": 409,
+            "detail": "Das Konto ist nicht aktiv.",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(UserOperationBusy)
+async def busy_user_operation(
+    request: Request,
+    _exc: UserOperationBusy,
+) -> JSONResponse:
+    _log_import_rejection(request, 409)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "type": "about:blank",
+            "title": "Anfrage fehlgeschlagen",
+            "status": 409,
+            "detail": "Für dieses Konto läuft gerade eine administrative Operation.",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     if isinstance(exc, RateLimitExceeded):
@@ -109,15 +158,8 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
             target_ref=exc.key_ref,
             details={"action": exc.action, "retry_after": exc.retry_after},
         )
-    elif (
-        request.url.path.startswith("/api/v1/import/")
-        and exc.status_code in {400, 409, 413, 415, 422}
-    ):
-        log_security_event(
-            "import.rejected",
-            reason=f"http_{exc.status_code}",
-            details={"status_code": exc.status_code},
-        )
+    else:
+        _log_import_rejection(request, exc.status_code)
     return JSONResponse(
         status_code=exc.status_code,
         headers=exc.headers,

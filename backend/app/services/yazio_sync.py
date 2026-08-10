@@ -1,12 +1,13 @@
 import secrets
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
@@ -25,6 +26,11 @@ from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
     ensure_rate_limit_available,
+)
+from app.services.user_operation_lock import (
+    InactiveUserOperation,
+    UserOperationBusy,
+    shared_user_operation,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_transport import (
@@ -69,6 +75,19 @@ class YazioCircuitOpen(YazioSyncError):
     def __init__(self, retry_after: int) -> None:
         self.retry_after = retry_after
         super().__init__("YAZIO ist nach mehreren Providerfehlern vorübergehend pausiert.")
+
+
+@contextmanager
+def _active_yazio_user_operation(db: Session, user_id: UUID) -> Iterator[User]:
+    try:
+        with shared_user_operation(db, user_id) as user:
+            yield user
+    except InactiveUserOperation as exc:
+        raise YazioSyncError("CaloGraph-Benutzer ist nicht aktiv.") from exc
+    except UserOperationBusy as exc:
+        raise YazioOperationCapacityExceeded(
+            "Für dieses Konto läuft gerade eine administrative Operation."
+        ) from exc
 
 
 def yazio_failure_reason(error: Exception) -> str:
@@ -261,9 +280,13 @@ def sync_yazio_user(
     include_micronutrients: bool = True,
 ) -> ImportSummary:
     try:
-        with yazio_operation_slot(user.id):
+        with (
+            yazio_operation_slot(user.id),
+            SessionLocal() as db,
+            _active_yazio_user_operation(db, user.id) as active_user,
+        ):
             return _sync_yazio_user_unlocked(
-                user,
+                active_user,
                 email,
                 password,
                 start_day,
@@ -331,10 +354,10 @@ def configure_yazio_connection(
     if not 1 <= sync_days <= 366:
         raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
 
-    with SessionLocal() as db:
-        attached_user = db.get(User, user.id)
-        if attached_user is None:
-            raise ValueError("CaloGraph-Benutzer nicht gefunden.")
+    with (
+        SessionLocal() as db,
+        _active_yazio_user_operation(db, user.id) as attached_user,
+    ):
         connection = db.scalar(
             select(YazioConnection).where(YazioConnection.user_id == attached_user.id)
         )
@@ -452,7 +475,11 @@ def _run_yazio_connection_sync(
             return None
         user_id = connection.user_id
     try:
-        with yazio_operation_slot(user_id):
+        with (
+            yazio_operation_slot(user_id),
+            SessionLocal() as db,
+            _active_yazio_user_operation(db, user_id),
+        ):
             return _run_yazio_connection_sync_locked(
                 connection_id,
                 fetcher=fetcher,
@@ -462,7 +489,7 @@ def _run_yazio_connection_sync(
                 raise_errors=raise_errors,
                 mode=mode,
             )
-    except YazioOperationBusy as exc:
+    except (YazioOperationBusy, YazioOperationCapacityExceeded) as exc:
         log_security_event(
             "integration.yazio.sync_failed",
             actor_ref=security_reference("user", user_id),
@@ -471,6 +498,8 @@ def _run_yazio_connection_sync(
             details={"mode": mode},
         )
         if raise_errors:
+            if isinstance(exc, YazioOperationCapacityExceeded):
+                raise
             raise YazioOperationCapacityExceeded(
                 "Für dieses Konto läuft bereits ein YAZIO-Vorgang."
             ) from exc

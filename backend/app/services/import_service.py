@@ -19,6 +19,7 @@ from app.importers.json_adapter import AdapterResult
 from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.schemas import ImportSummary
 from app.security_events import log_security_event, security_reference
+from app.services.user_operation_lock import shared_user_operation
 
 
 @dataclass(slots=True)
@@ -325,6 +326,23 @@ def persist_apple_health_stream(
     content_type: str,
     client_identifier: str | None,
 ) -> ImportSummary:
+    with shared_user_operation(db, user.id) as active_user:
+        return _persist_apple_health_stream_locked(
+            db,
+            active_user,
+            stream,
+            content_type,
+            client_identifier,
+        )
+
+
+def _persist_apple_health_stream_locked(
+    db: Session,
+    user: User,
+    stream: IO[bytes],
+    content_type: str,
+    client_identifier: str | None,
+) -> ImportSummary:
     del content_type
     batch = _start_batch(db, user, "apple_health_xml", client_identifier)
     counters = ImportCounters()
@@ -410,6 +428,25 @@ def persist_apple_health_stream(
 
 
 def persist_import(
+    db: Session,
+    user: User,
+    result: AdapterResult,
+    raw_payload: bytes | None,
+    content_type: str,
+    client_identifier: str | None,
+) -> ImportSummary:
+    with shared_user_operation(db, user.id) as active_user:
+        return _persist_import_locked(
+            db,
+            active_user,
+            result,
+            raw_payload,
+            content_type,
+            client_identifier,
+        )
+
+
+def _persist_import_locked(
     db: Session,
     user: User,
     result: AdapterResult,

@@ -190,6 +190,21 @@ def begin_passkey_authentication(
     return challenge.id, options_to_json_dict(options)
 
 
+def passkey_authentication_user_id(
+    db: Session,
+    credential_input: WebAuthnAuthenticationCredentialInput,
+) -> UUID | None:
+    try:
+        credential_id = base64url_to_bytes(credential_input.id)
+    except ValueError:
+        return None
+    return db.scalar(
+        select(PasskeyCredential.user_id).where(
+            PasskeyCredential.credential_id == credential_id
+        )
+    )
+
+
 def complete_passkey_authentication(
     db: Session,
     challenge_id: UUID,

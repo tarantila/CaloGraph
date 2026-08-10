@@ -25,6 +25,19 @@ _COUNT_FIELDS = frozenset({"received", "inserted", "updated", "skipped", "failed
 EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "admin.mfa.reset": EventSpec("success", logging.WARNING),
     "admin.user.created": EventSpec("success", logging.INFO),
+    "admin.user.deactivated": EventSpec("success", logging.WARNING),
+    "admin.user.deleted": EventSpec("success", logging.WARNING),
+    "admin.user.lifecycle_failed": EventSpec(
+        "failure",
+        logging.ERROR,
+        frozenset({"action", "reason"}),
+    ),
+    "admin.user.lifecycle_rejected": EventSpec(
+        "blocked",
+        logging.WARNING,
+        frozenset({"action", "reason"}),
+    ),
+    "admin.user.reactivated": EventSpec("success", logging.INFO),
     "auth.api_token.created": EventSpec("success", logging.INFO),
     "auth.api_token.revoked": EventSpec("success", logging.INFO),
     "auth.invitation.created": EventSpec("success", logging.INFO),

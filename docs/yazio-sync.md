@@ -179,6 +179,10 @@ medical diagnosis.
   shared circuit breaker. Authentication failures do not open the circuit. An
   authentication failure pauses that user's scheduled sync until the
   credentials are saved and verified again.
+- Deactivating a CaloGraph account pauses its scheduled YAZIO connection and
+  blocks manual and scheduled writes. Reactivation preserves the encrypted
+  credentials but does not resume the schedule; the user must verify and save
+  the connection again.
 - Set `YAZIO_ENABLED=false` to disable credential setup, manual retrieval, and
   scheduled synchronization immediately. Existing encrypted credentials
   remain stored so the feature can be re-enabled later.

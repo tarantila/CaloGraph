@@ -20,6 +20,35 @@ Later CLI users receive administrator rights only with `--admin`. When an
 existing single-user installation is upgraded, the oldest existing user is
 promoted once.
 
+## Account lifecycle
+
+Administrators can manage another account through the lifecycle API:
+
+- `POST /api/v1/users/{user_id}/deactivate` changes an active account to
+  inactive. The operation removes every session, revokes every still-valid API
+  token and open invitation created by that account, removes outstanding
+  WebAuthn challenges, and pauses its YAZIO schedule. Nutrition data, import
+  history, targets, profile settings, password, TOTP credentials, recovery
+  codes, passkeys, and encrypted YAZIO credentials remain stored.
+- `POST /api/v1/users/{user_id}/reactivate` restores login with the existing
+  password and authentication factors. It does not restore sessions, API
+  tokens, invitations, or challenges, and it deliberately leaves YAZIO
+  synchronization paused until the user verifies and saves the connection
+  again.
+- `DELETE /api/v1/users/{user_id}` permanently deletes an already inactive
+  account and all user-owned authentication, nutrition, import, target,
+  tracking, and YAZIO rows. This action is irreversible.
+
+An administrator cannot deactivate or delete their own account. CaloGraph also
+serializes administrative lifecycle changes and ordinary account mutations
+across backend workers and the scheduler, so a deactivation or deletion cannot
+race with a new import, token, settings, authentication-factor, or YAZIO write.
+At least one active administrator is preserved.
+
+The `is_active` and `deactivated_at` fields form one state: active accounts have
+no deactivation timestamp; inactive accounts always have one. Repeating a
+deactivation or reactivation is safe and retains the same end state.
+
 ## Invite another user
 
 Under **Konto → Benutzerverwaltung**, an administrator creates an invitation

@@ -12,6 +12,7 @@ from app.schemas import ImportSummary, YazioConnectionInput, YazioStatusResponse
 from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import CredentialEncryptionError
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
+from app.services.user_operation_lock import shared_user_operation
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioCircuitOpen,
@@ -34,21 +35,22 @@ def _rate_limit_yazio_action(
     request: Request,
     user: User,
 ) -> None:
-    client = normalize_client_ip(request.client.host if request.client else None)
-    check_rate_limit(
-        db,
-        "yazio-action-ip",
-        f"ip:{client}",
-        settings.yazio_rate_limit,
-        settings.yazio_rate_limit_window_seconds,
-    )
-    check_rate_limit(
-        db,
-        "yazio-action-user",
-        f"user:{user.id}",
-        settings.yazio_rate_limit,
-        settings.yazio_rate_limit_window_seconds,
-    )
+    with shared_user_operation(db, user.id):
+        client = normalize_client_ip(request.client.host if request.client else None)
+        check_rate_limit(
+            db,
+            "yazio-action-ip",
+            f"ip:{client}",
+            settings.yazio_rate_limit,
+            settings.yazio_rate_limit_window_seconds,
+        )
+        check_rate_limit(
+            db,
+            "yazio-action-user",
+            f"user:{user.id}",
+            settings.yazio_rate_limit,
+            settings.yazio_rate_limit_window_seconds,
+        )
 
 
 def _raise_yazio_http_error(exc: YazioSyncError) -> NoReturn:

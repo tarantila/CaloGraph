@@ -2,6 +2,7 @@ import argparse
 from datetime import UTC, datetime, timedelta
 
 import pyotp
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -9,12 +10,17 @@ from sqlalchemy import func, select
 from app.auth.security import (
     MFA_LOGIN_STATE_TTL_SECONDS,
     create_mfa_login_state,
+    create_session,
     verify_mfa_login_state,
 )
 from app.cli import reset_mfa
 from app.config import settings
 from app.models import MfaRecoveryCode, User, UserSession, UserTotpCredential
 from app.services.mfa_crypto import MfaEncryptionError, decrypt_mfa_secret
+from app.services.user_operation_lock import (
+    UserOperationBusy,
+    exclusive_user_lifecycle_operation,
+)
 
 PASSWORD = "correct-horse-battery-staple"
 
@@ -61,6 +67,7 @@ def test_totp_login_blocks_session_until_factor_and_prevents_replay(
     client: TestClient,
     user: User,
     db,
+    monkeypatch,
 ) -> None:
     del user
     secret, recovery_codes = _enable_totp(client, db)
@@ -92,11 +99,26 @@ def test_totp_login_blocks_session_until_factor_and_prevents_replay(
     # The setup confirmation consumed the current time step. The configured
     # one-step clock-skew window lets us use the following step without sleep.
     following_code = pyotp.TOTP(secret).at(datetime.now(UTC) + timedelta(seconds=30))
+    original_create_session = create_session
+    outer_lock_observed = False
+
+    def create_session_while_locked(session, target, now=None):
+        nonlocal outer_lock_observed
+        with (
+            pytest.raises(UserOperationBusy),
+            exclusive_user_lifecycle_operation(session, target.id),
+        ):
+            pass
+        outer_lock_observed = True
+        return original_create_session(session, target, now)
+
+    monkeypatch.setattr("app.api.auth.create_session", create_session_while_locked)
     verified = client.post(
         "/api/v1/auth/mfa/totp/verify",
         json={"code": following_code},
     )
     assert verified.status_code == 200
+    assert outer_lock_observed is True
     assert verified.json()["mfa_required"] is False
     assert "csrf_token" in verified.json()
 

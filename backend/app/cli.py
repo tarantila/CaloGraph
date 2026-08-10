@@ -41,6 +41,11 @@ from app.services.credential_crypto import (
 from app.services.import_service import persist_import, purge_expired_raw_payloads
 from app.services.passkeys import purge_expired_webauthn_challenges
 from app.services.rate_limit import purge_expired_rate_limit_buckets
+from app.services.user_operation_lock import (
+    InactiveUserOperation,
+    UserOperationBusy,
+    shared_user_operation,
+)
 from app.services.yazio_sync import (
     YazioSyncError,
     configure_yazio_connection,
@@ -98,13 +103,20 @@ def create_user(args: argparse.Namespace) -> None:
 def create_token(args: argparse.Namespace) -> None:
     username = args.username or input("Benutzername: ").strip()
     label = args.label or input("Bezeichnung des Import-Clients: ").strip()
-    with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.username == username))
-        if not user:
-            raise SystemExit("Benutzer nicht gefunden.")
-        token, raw = create_api_token(db, user, label)
-        user_id = user.id
-        token_id = token.id
+    try:
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.username == username))
+            if not user:
+                raise SystemExit("Benutzer nicht gefunden.")
+            token, raw = create_api_token(db, user, label)
+            user_id = user.id
+            token_id = token.id
+    except InactiveUserOperation as exc:
+        raise SystemExit(
+            "Für einen inaktiven Benutzer kann kein Import-Token erstellt werden."
+        ) from exc
+    except UserOperationBusy as exc:
+        raise SystemExit("Für diesen Benutzer läuft gerade eine administrative Operation.") from exc
     log_security_event(
         "auth.api_token.created",
         actor_ref=security_reference("user", user_id),
@@ -120,74 +132,102 @@ def reset_mfa(args: argparse.Namespace) -> None:
         raise SystemExit(
             "MFA-Rücksetzung abgebrochen. --confirm muss exakt dem Benutzernamen entsprechen."
         )
-    with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.username == username))
-        if user is None:
-            raise SystemExit("Benutzer nicht gefunden.")
-        db.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user.id))
-        db.execute(
-            delete(UserTotpCredential).where(UserTotpCredential.user_id == user.id)
-        )
-        db.execute(delete(PasskeyCredential).where(PasskeyCredential.user_id == user.id))
-        db.execute(delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == user.id))
-        db.execute(
-            delete(WebAuthnUserHandle).where(WebAuthnUserHandle.user_id == user.id)
-        )
-        db.execute(delete(UserSession).where(UserSession.user_id == user.id))
-        db.commit()
-        user_id = user.id
+    try:
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.username == username))
+            if user is None:
+                raise SystemExit("Benutzer nicht gefunden.")
+            with shared_user_operation(db, user.id) as active_user:
+                db.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == active_user.id))
+                db.execute(
+                    delete(UserTotpCredential).where(UserTotpCredential.user_id == active_user.id)
+                )
+                db.execute(
+                    delete(PasskeyCredential).where(PasskeyCredential.user_id == active_user.id)
+                )
+                db.execute(
+                    delete(WebAuthnChallenge).where(WebAuthnChallenge.user_id == active_user.id)
+                )
+                db.execute(
+                    delete(WebAuthnUserHandle).where(WebAuthnUserHandle.user_id == active_user.id)
+                )
+                db.execute(delete(UserSession).where(UserSession.user_id == active_user.id))
+                db.commit()
+                user_id = active_user.id
+    except InactiveUserOperation as exc:
+        raise SystemExit(
+            "Für einen inaktiven Benutzer kann MFA nicht zurückgesetzt werden."
+        ) from exc
+    except UserOperationBusy as exc:
+        raise SystemExit("Für diesen Benutzer läuft gerade eine administrative Operation.") from exc
     log_security_event(
         "admin.mfa.reset",
         target_ref=security_reference("user", user_id),
     )
     print(
-        f"Anmeldefaktoren für '{username}' wurden zurückgesetzt; "
-        "alle Sitzungen wurden widerrufen."
+        f"Anmeldefaktoren für '{username}' wurden zurückgesetzt; alle Sitzungen wurden widerrufen."
     )
 
 
 def seed_demo(args: argparse.Namespace) -> None:
-    with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.username == args.username))
-        if not user:
-            raise SystemExit("Benutzer nicht gefunden. Zuerst create-user ausführen.")
-        start = date(2026, 2, 15)
-        change_day = start + timedelta(days=60)
-        existing_target = db.scalar(
-            select(NutritionTarget).where(
-                NutritionTarget.user_id == user.id, NutritionTarget.valid_from == start
-            )
-        )
-        if not existing_target:
-            current = db.scalar(
-                select(NutritionTarget)
-                .where(NutritionTarget.user_id == user.id, NutritionTarget.valid_to.is_(None))
-                .order_by(NutritionTarget.valid_from.desc())
-            )
-            if current and current.valid_from < start:
-                current.valid_to = start
-            db.add(
-                NutritionTarget(
-                    user_id=user.id,
-                    valid_from=start,
-                    valid_to=change_day,
-                    calories_kcal=Decimal("2200"),
-                    protein_g=Decimal("140"),
+    try:
+        with SessionLocal() as db:
+            stored_user = db.scalar(select(User).where(User.username == args.username))
+            if not stored_user:
+                raise SystemExit("Benutzer nicht gefunden. Zuerst create-user ausführen.")
+            with shared_user_operation(db, stored_user.id) as user:
+                start = date(2026, 2, 15)
+                change_day = start + timedelta(days=60)
+                existing_target = db.scalar(
+                    select(NutritionTarget).where(
+                        NutritionTarget.user_id == user.id,
+                        NutritionTarget.valid_from == start,
+                    )
                 )
-            )
-            db.add(
-                NutritionTarget(
-                    user_id=user.id,
-                    valid_from=change_day,
-                    calories_kcal=Decimal("2050"),
-                    protein_g=Decimal("150"),
+                if not existing_target:
+                    current = db.scalar(
+                        select(NutritionTarget)
+                        .where(
+                            NutritionTarget.user_id == user.id,
+                            NutritionTarget.valid_to.is_(None),
+                        )
+                        .order_by(NutritionTarget.valid_from.desc())
+                    )
+                    if current and current.valid_from < start:
+                        current.valid_to = start
+                    db.add(
+                        NutritionTarget(
+                            user_id=user.id,
+                            valid_from=start,
+                            valid_to=change_day,
+                            calories_kcal=Decimal("2200"),
+                            protein_g=Decimal("140"),
+                        )
+                    )
+                    db.add(
+                        NutritionTarget(
+                            user_id=user.id,
+                            valid_from=change_day,
+                            calories_kcal=Decimal("2050"),
+                            protein_g=Decimal("150"),
+                        )
+                    )
+                    db.flush()
+                result = _demo_samples(user.timezone, start, 120)
+                summary = persist_import(
+                    db,
+                    user,
+                    result,
+                    None,
+                    "application/x-synthetic",
+                    "seed-demo-data",
                 )
-            )
-            db.flush()
-        result = _demo_samples(user.timezone, start, 120)
-        summary = persist_import(
-            db, user, result, None, "application/x-synthetic", "seed-demo-data"
-        )
+    except InactiveUserOperation as exc:
+        raise SystemExit(
+            "Für einen inaktiven Benutzer können keine Demodaten angelegt werden."
+        ) from exc
+    except UserOperationBusy as exc:
+        raise SystemExit("Für diesen Benutzer läuft gerade eine administrative Operation.") from exc
     print(
         f"Demo-Import abgeschlossen: {summary.inserted} neu, "
         f"{summary.updated} aktualisiert, {summary.skipped} unverändert."
@@ -310,32 +350,36 @@ def generate_credentials_key(_: argparse.Namespace) -> None:
 
 def configure_yazio(args: argparse.Namespace) -> None:
     username = args.username or input("CaloGraph-Benutzername: ").strip()
-    with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.username == username))
-        if not user:
-            raise SystemExit("CaloGraph-Benutzer nicht gefunden.")
-
-    email = args.email or input("YAZIO-E-Mail-Adresse: ").strip()
-    password = getpass.getpass("YAZIO-Passwort (wird verschlüsselt gespeichert): ")
-    if not email or not password:
-        raise SystemExit("YAZIO-E-Mail-Adresse und Passwort sind erforderlich.")
     try:
-        validate_yazio_credentials(
-            email,
-            password,
-            operation_key=user.id,
-        )
-        connection = configure_yazio_connection(
-            user,
-            email,
-            password,
-            sync_interval_minutes=args.interval_hours * 60,
-            sync_days=args.days,
-        )
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.username == username))
+            if not user:
+                raise SystemExit("CaloGraph-Benutzer nicht gefunden.")
+            email = args.email or input("YAZIO-E-Mail-Adresse: ").strip()
+            password = getpass.getpass(
+                "YAZIO-Passwort (wird verschlüsselt gespeichert): "
+            )
+            if not email or not password:
+                raise SystemExit("YAZIO-E-Mail-Adresse und Passwort sind erforderlich.")
+            with shared_user_operation(db, user.id):
+                validate_yazio_credentials(
+                    email,
+                    password,
+                    operation_key=user.id,
+                )
+                connection = configure_yazio_connection(
+                    user,
+                    email,
+                    password,
+                    sync_interval_minutes=args.interval_hours * 60,
+                    sync_days=args.days,
+                )
     except CredentialEncryptionError as exc:
         raise SystemExit(
             f"{exc} Zuerst CREDENTIAL_ENCRYPTION_KEY in .env setzen."
         ) from exc
+    except (InactiveUserOperation, UserOperationBusy) as exc:
+        raise SystemExit(f"YAZIO-Verbindung nicht konfiguriert: {exc}") from exc
     except (ValueError, YazioSyncError) as exc:
         raise SystemExit(str(exc)) from exc
     log_security_event(
@@ -352,18 +396,22 @@ def configure_yazio(args: argparse.Namespace) -> None:
 
 def disable_yazio(args: argparse.Namespace) -> None:
     username = args.username or input("CaloGraph-Benutzername: ").strip()
-    with SessionLocal() as db:
-        connection = db.scalar(
-            select(YazioConnection)
-            .join(User, User.id == YazioConnection.user_id)
-            .where(User.username == username)
-        )
-        if connection is None:
-            raise SystemExit("Für diesen Benutzer ist keine YAZIO-Verbindung eingerichtet.")
-        connection.sync_enabled = False
-        db.commit()
-        connection_id = connection.id
-        user_id = connection.user_id
+    try:
+        with SessionLocal() as db:
+            connection = db.scalar(
+                select(YazioConnection)
+                .join(User, User.id == YazioConnection.user_id)
+                .where(User.username == username)
+            )
+            if connection is None:
+                raise SystemExit("Für diesen Benutzer ist keine YAZIO-Verbindung eingerichtet.")
+            with shared_user_operation(db, connection.user_id):
+                connection.sync_enabled = False
+                db.commit()
+                connection_id = connection.id
+                user_id = connection.user_id
+    except (InactiveUserOperation, UserOperationBusy) as exc:
+        raise SystemExit(f"YAZIO-Verbindung nicht deaktiviert: {exc}") from exc
     log_security_event(
         "integration.yazio.connection_disabled",
         actor_ref=security_reference("user", user_id),

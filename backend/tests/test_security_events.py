@@ -3,9 +3,11 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from app import security_events
 from app.config import settings
+from app.main import busy_user_operation, inactive_user_operation
 from app.models import User
 from app.security_events import (
     EVENT_SPECS,
@@ -13,6 +15,7 @@ from app.security_events import (
     security_reference,
     security_request_context,
 )
+from app.services.user_operation_lock import InactiveUserOperation, UserOperationBusy
 
 
 def _capture_security_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str]]:
@@ -65,6 +68,11 @@ def test_security_event_rejects_unknown_fields_and_raw_references() -> None:
 def test_security_event_catalog_covers_required_sensitive_actions() -> None:
     required = {
         "admin.user.created",
+        "admin.user.deactivated",
+        "admin.user.deleted",
+        "admin.user.lifecycle_failed",
+        "admin.user.lifecycle_rejected",
+        "admin.user.reactivated",
         "auth.api_token.created",
         "auth.api_token.revoked",
         "auth.invitation.created",
@@ -142,3 +150,41 @@ def test_rate_limit_rejection_emits_one_pseudonymous_event(
     assert rate_events[0]["retry_after"] > 0
     assert "first-unknown" not in records[-1][1]
     assert "second-unknown" not in records[-1][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "error"),
+    (
+        (inactive_user_operation, InactiveUserOperation()),
+        (busy_user_operation, UserOperationBusy()),
+    ),
+)
+async def test_import_user_lock_rejection_emits_security_event(
+    handler,
+    error,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = _capture_security_events(monkeypatch)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/import/apple-health",
+            "raw_path": b"/api/v1/import/apple-health",
+            "query_string": b"",
+            "headers": [],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 12345),
+            "root_path": "",
+        }
+    )
+
+    response = await handler(request, error)
+
+    assert response.status_code == 409
+    payloads = [json.loads(message) for _, message in records]
+    assert [payload["event"] for payload in payloads] == ["import.rejected"]
+    assert payloads[0]["reason"] == "http_409"
+    assert payloads[0]["status_code"] == 409

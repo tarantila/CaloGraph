@@ -1,4 +1,5 @@
 import secrets
+from contextlib import nullcontext
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Never
@@ -54,6 +55,7 @@ from app.services.passkeys import (
     PasskeyAuthenticationError,
     begin_passkey_authentication,
     complete_passkey_authentication,
+    passkey_authentication_user_id,
 )
 from app.services.rate_limit import (
     RateLimitExceeded,
@@ -63,6 +65,10 @@ from app.services.rate_limit import (
     normalize_account_identifier,
     normalize_client_ip,
     rate_limit_key_id,
+)
+from app.services.user_operation_lock import (
+    InactiveUserOperation,
+    shared_user_operation,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
@@ -343,6 +349,37 @@ def raise_invalid_login() -> Never:
     raise HTTPException(status_code=401, detail="Benutzername oder Passwort ist falsch")
 
 
+def _reject_mfa_login(
+    db: Session,
+    request: Request,
+    client_key: str,
+    account_key: str,
+) -> Never:
+    rate_limit_error: RateLimitExceeded | None = None
+    for action, key, limit in (
+        ("mfa-ip", client_key, settings.mfa_ip_rate_limit),
+        ("mfa-account", account_key, settings.mfa_rate_limit),
+    ):
+        try:
+            check_rate_limit(
+                db,
+                action,
+                key,
+                limit,
+                settings.mfa_rate_limit_window_seconds,
+            )
+        except RateLimitExceeded as exc:
+            if (
+                rate_limit_error is None
+                or exc.retry_after > rate_limit_error.retry_after
+            ):
+                rate_limit_error = exc
+    if rate_limit_error:
+        raise rate_limit_error
+    _log_login(request, "mfa_failed", client_key, account_key)
+    raise_invalid_login()
+
+
 @router.post("/passkey/options", response_model=WebAuthnOptionsResponse)
 def passkey_login_options(
     request: Request,
@@ -380,13 +417,22 @@ def verify_passkey_login(
         settings.passkey_ip_rate_limit,
         settings.passkey_rate_limit_window_seconds,
     )
+    authentication_user_id = passkey_authentication_user_id(db, payload.credential)
+    operation = (
+        shared_user_operation(db, authentication_user_id)
+        if authentication_user_id is not None
+        else nullcontext()
+    )
     try:
-        user = complete_passkey_authentication(
-            db,
-            payload.challenge_id,
-            payload.credential,
-        )
-    except PasskeyAuthenticationError:
+        with operation:
+            user = complete_passkey_authentication(
+                db,
+                payload.challenge_id,
+                payload.credential,
+            )
+            clear_rate_limit(db, "passkey-verify-ip", client_key)
+            session, raw_token, csrf_token = create_session(db, user)
+    except (PasskeyAuthenticationError, InactiveUserOperation):
         check_rate_limit(
             db,
             "passkey-verify-ip",
@@ -400,9 +446,6 @@ def verify_passkey_login(
             reason="invalid_assertion",
         )
         raise_invalid_login()
-
-    clear_rate_limit(db, "passkey-verify-ip", client_key)
-    session, raw_token, csrf_token = create_session(db, user)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
     log_security_event(
@@ -449,49 +492,29 @@ def verify_totp_login(
         settings.mfa_rate_limit_window_seconds,
     )
 
-    user = db.get(User, user_id)
-    credential = db.scalar(
-        select(UserTotpCredential)
-        .where(
-            UserTotpCredential.user_id == user_id,
-            UserTotpCredential.enabled_at.is_not(None),
-        )
-        .with_for_update()
-    )
-    if (
-        user is None
-        or not user.is_active
-        or credential is None
-        or not consume_mfa_factor(db, credential, payload.code)
-    ):
-        rate_limit_error: RateLimitExceeded | None = None
-        for action, key, limit in (
-            ("mfa-ip", client_key, settings.mfa_ip_rate_limit),
-            ("mfa-account", account_key, settings.mfa_rate_limit),
-        ):
-            try:
-                check_rate_limit(
-                    db,
-                    action,
-                    key,
-                    limit,
-                    settings.mfa_rate_limit_window_seconds,
+    try:
+        with shared_user_operation(db, user_id) as user:
+            credential = db.scalar(
+                select(UserTotpCredential)
+                .where(
+                    UserTotpCredential.user_id == user_id,
+                    UserTotpCredential.enabled_at.is_not(None),
                 )
-            except RateLimitExceeded as exc:
-                if (
-                    rate_limit_error is None
-                    or exc.retry_after > rate_limit_error.retry_after
-                ):
-                    rate_limit_error = exc
-        if rate_limit_error:
-            raise rate_limit_error
-        _log_login(request, "mfa_failed", client_key, account_key)
-        raise_invalid_login()
+                .with_for_update()
+            )
+            if credential is None or not consume_mfa_factor(
+                db,
+                credential,
+                payload.code,
+            ):
+                _reject_mfa_login(db, request, client_key, account_key)
 
-    db.commit()
-    clear_rate_limit(db, "mfa-ip", client_key)
-    clear_rate_limit(db, "mfa-account", account_key)
-    session, raw_token, csrf_token = create_session(db, user)
+            db.commit()
+            clear_rate_limit(db, "mfa-ip", client_key)
+            clear_rate_limit(db, "mfa-account", account_key)
+            session, raw_token, csrf_token = create_session(db, user)
+    except InactiveUserOperation:
+        _reject_mfa_login(db, request, client_key, account_key)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
     _log_login(request, "succeeded_with_mfa", client_key, account_key)

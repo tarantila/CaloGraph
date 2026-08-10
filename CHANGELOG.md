@@ -5,6 +5,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added atomic administrator APIs for account deactivation, safe reactivation,
+  and irreversible deletion of already inactive users, with cross-worker
+  operation locks, last-administrator protection, and pseudonymous audit
+  events.
+
+### Changed
+
+- Deactivation now invalidates sessions, API tokens, open invitations, and
+  pending WebAuthn challenges while preserving nutrition data and
+  authentication factors; YAZIO synchronization remains paused after
+  reactivation until explicitly reconfigured.
+
 ### Fixed
 
 - Corrected German date ordering in budget history, trend axes, and calendar

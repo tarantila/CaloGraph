@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import ApiToken, User, UserSession
+from app.services.user_operation_lock import shared_user_operation
 
 password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 # Generated once per process so unknown accounts perform the same Argon2 work
@@ -140,40 +141,42 @@ def create_session(
     user: User,
     now: datetime | None = None,
 ) -> tuple[UserSession, str, str]:
-    created_at = now or datetime.now(UTC)
-    raw_token = secrets.token_urlsafe(48)
-    csrf_token = secrets.token_urlsafe(32)
-    session = UserSession(
-        user_id=user.id,
-        token_hash=hash_session_token(raw_token),
-        csrf_hash=hash_session_token(csrf_token),
-        created_at=created_at,
-        expires_at=created_at
-        + timedelta(days=settings.session_absolute_timeout_days),
-        last_used_at=created_at,
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session, raw_token, csrf_token
+    with shared_user_operation(db, user.id) as active_user:
+        created_at = now or datetime.now(UTC)
+        raw_token = secrets.token_urlsafe(48)
+        csrf_token = secrets.token_urlsafe(32)
+        session = UserSession(
+            user_id=active_user.id,
+            token_hash=hash_session_token(raw_token),
+            csrf_hash=hash_session_token(csrf_token),
+            created_at=created_at,
+            expires_at=created_at
+            + timedelta(days=settings.session_absolute_timeout_days),
+            last_used_at=created_at,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        return session, raw_token, csrf_token
 
 
 def create_api_token(
     db: Session, user: User, label: str, expires_at: datetime | None = None
 ) -> tuple[ApiToken, str]:
-    raw = f"cg_{secrets.token_urlsafe(40)}"
-    token = ApiToken(
-        user_id=user.id,
-        label=label,
-        token_prefix=raw[:12],
-        token_hash=hash_api_token(raw),
-        scopes=["import"],
-        expires_at=expires_at,
-    )
-    db.add(token)
-    db.commit()
-    db.refresh(token)
-    return token, raw
+    with shared_user_operation(db, user.id) as active_user:
+        raw = f"cg_{secrets.token_urlsafe(40)}"
+        token = ApiToken(
+            user_id=active_user.id,
+            label=label,
+            token_prefix=raw[:12],
+            token_hash=hash_api_token(raw),
+            scopes=["import"],
+            expires_at=expires_at,
+        )
+        db.add(token)
+        db.commit()
+        db.refresh(token)
+        return token, raw
 
 
 def revoke_user_sessions(db: Session, user_id: object) -> None:

@@ -30,6 +30,7 @@ from app.security_events import log_security_event, security_reference
 from app.services.import_guard import ImportAlreadyRunning, import_slot
 from app.services.import_service import persist_apple_health_stream, persist_import
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
+from app.services.user_operation_lock import shared_user_operation
 
 router = APIRouter(tags=["Import"])
 
@@ -85,21 +86,22 @@ def _rate_limit_api_import(
     request: Request,
     token: ApiToken,
 ) -> None:
-    client = normalize_client_ip(request.client.host if request.client else None)
-    check_rate_limit(
-        db,
-        "import-ip",
-        f"ip:{client}",
-        settings.import_ip_rate_limit,
-        settings.import_rate_limit_window_seconds,
-    )
-    check_rate_limit(
-        db,
-        "import-token",
-        f"token:{token.id}",
-        settings.import_rate_limit,
-        settings.import_rate_limit_window_seconds,
-    )
+    with shared_user_operation(db, token.user_id):
+        client = normalize_client_ip(request.client.host if request.client else None)
+        check_rate_limit(
+            db,
+            "import-ip",
+            f"ip:{client}",
+            settings.import_ip_rate_limit,
+            settings.import_rate_limit_window_seconds,
+        )
+        check_rate_limit(
+            db,
+            "import-token",
+            f"token:{token.id}",
+            settings.import_rate_limit,
+            settings.import_rate_limit_window_seconds,
+        )
 
 
 def _rate_limit_file_import(
@@ -107,21 +109,22 @@ def _rate_limit_file_import(
     request: Request,
     user: User,
 ) -> None:
-    client = normalize_client_ip(request.client.host if request.client else None)
-    check_rate_limit(
-        db,
-        "file-import-ip",
-        f"ip:{client}",
-        settings.file_import_ip_rate_limit,
-        settings.file_import_rate_limit_window_seconds,
-    )
-    check_rate_limit(
-        db,
-        "file-import-user",
-        f"user:{user.id}",
-        settings.file_import_user_rate_limit,
-        settings.file_import_rate_limit_window_seconds,
-    )
+    with shared_user_operation(db, user.id):
+        client = normalize_client_ip(request.client.host if request.client else None)
+        check_rate_limit(
+            db,
+            "file-import-ip",
+            f"ip:{client}",
+            settings.file_import_ip_rate_limit,
+            settings.file_import_rate_limit_window_seconds,
+        )
+        check_rate_limit(
+            db,
+            "file-import-user",
+            f"user:{user.id}",
+            settings.file_import_user_rate_limit,
+            settings.file_import_rate_limit_window_seconds,
+        )
 
 
 @contextmanager

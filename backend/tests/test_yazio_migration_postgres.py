@@ -340,6 +340,10 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
         )
         assert len({row["fingerprint"] for row in migrated_samples}) == len(sample_rows)
 
+        # Runtime models follow Alembic head even though this test isolates the
+        # 0009 data rewrite above.
+        command.upgrade(alembic_config, "head")
+
         def fetch_existing_sample(
             email: str,
             password: str,

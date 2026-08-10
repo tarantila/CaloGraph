@@ -80,10 +80,16 @@ single-use across backend workers. Registration is additionally bound to the
 current user session. Verification requires a matching
 `CALOGRAPH_PUBLIC_URL` relying-party host and origin plus authenticator user
 verification.
-PostgreSQL advisory locks enforce one operation per user and a small
-deployment-wide concurrency budget across HTTP workers and the scheduler. The
-same database also stores temporary rate-limit and circuit-breaker buckets, so
-these protections need no additional service.
+PostgreSQL advisory locks coordinate user operations across backend workers
+and the scheduler. Ordinary user mutations hold a shared per-user lock;
+deactivation, reactivation, and hard deletion hold the exclusive form plus a
+deployment-wide administrator-invariant lock. The lifecycle service re-reads
+the account only after acquiring those locks and commits status changes,
+credential/session invalidation, YAZIO pausing, and deletion atomically.
+Separate YAZIO advisory locks still enforce one YAZIO operation per user and a
+small deployment-wide provider concurrency budget. PostgreSQL also stores
+temporary rate-limit and circuit-breaker buckets, so these protections need no
+additional service.
 
 Historical uploads are streamed during the request and expose upload progress
 in the browser. Nginx forwards the Apple Health request without buffering it a

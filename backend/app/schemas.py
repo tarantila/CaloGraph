@@ -34,6 +34,8 @@ class UserResponse(BaseModel):
     week_starts_on: int
     raw_payload_retention_days: int
     is_admin: bool
+    is_active: bool
+    deactivated_at: datetime | None
 
 
 class CsrfResponse(BaseModel):

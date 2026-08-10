@@ -30,6 +30,13 @@ def utcnow() -> datetime:
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "(is_active AND deactivated_at IS NULL) "
+            "OR (NOT is_active AND deactivated_at IS NOT NULL)",
+            name="ck_users_active_deactivation_state",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(190), unique=True, index=True)
@@ -40,6 +47,7 @@ class User(Base):
     preferred_weight_unit: Mapped[str] = mapped_column(String(8), default="kg")
     raw_payload_retention_days: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

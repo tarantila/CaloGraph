@@ -100,4 +100,8 @@ Authenticated users can view their latest runs through `GET /api/v1/imports`.
 position, metric, error code, and a readable description. Both endpoints are
 strictly restricted to the authenticated user's import batches.
 
+Import tokens belong to an active account. Deactivation revokes all existing
+tokens; an inactive account is rejected before token activity or import data
+can be written. Reactivation does not restore revoked tokens.
+
 Health values are never included in error responses or normal logs.
