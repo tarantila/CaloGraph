@@ -326,6 +326,23 @@ if ! tr -d '\r' <"$response_headers" \
   fail "Production API proxy did not return a generated bounded request ID."
 fi
 
+if ! compose exec -T postgres psql \
+  --username calograph \
+  --dbname calograph \
+  --set ON_ERROR_STOP=1 \
+  --command \
+    "CREATE TABLE backup_stream_probe (
+       id integer PRIMARY KEY,
+       payload text NOT NULL
+     );
+     INSERT INTO backup_stream_probe
+     SELECT item_id, string_agg(md5((item_id * 1000 + part_id)::text), '')
+     FROM generate_series(1, 4096) AS item_id
+     CROSS JOIN generate_series(1, 64) AS part_id
+     GROUP BY item_id;" >/dev/null; then
+  fail "Large synthetic backup-stream probe could not be created."
+fi
+
 if ! COMPOSE_PROJECT_NAME="$project_name" \
   COMPOSE_ENV_FILES="$smoke_env" \
   BACKUP_DIR="$backup_dir" \
@@ -338,16 +355,202 @@ database_backup=$(find "$backup_dir" -maxdepth 1 -name '*.dump.age' -print -quit
 if [ -z "$database_backup" ]; then
   fail "Encrypted database backup was not created."
 fi
+if [ "$(stat -c '%a' "$backup_dir")" != "700" ] \
+  || [ "$(stat -c '%a' "$database_backup")" != "600" ] \
+  || [ "$(stat -c '%a' "$database_backup.sha256")" != "600" ]; then
+  fail "Encrypted database backup permissions are too broad."
+fi
+if ! (
+  cd "$backup_dir"
+  sha256sum --check --status "$(basename "$database_backup.sha256")"
+); then
+  fail "Encrypted database backup checksum could not be verified."
+fi
+if find "$backup_dir" -maxdepth 1 -type f \
+  ! -name '*.age' ! -name '*.sha256' -print -quit | grep -q .; then
+  fail "Database backup left a plaintext or partial artifact."
+fi
+
+docker_bin=$(command -v docker)
+docker_wrapper_dir="$smoke_root/docker-wrapper"
+mkdir "$docker_wrapper_dir"
+cat >"$docker_wrapper_dir/docker" <<EOF
+#!/usr/bin/env sh
+if [ "\${CALOGRAPH_TEST_FAIL_PG_DUMP:-0}" = "1" ]; then
+  case " \$* " in
+    *" compose exec -T postgres pg_dump "*) exit 73 ;;
+  esac
+fi
+exec "$docker_bin" "\$@"
+EOF
+chmod 700 "$docker_wrapper_dir/docker"
+
+pg_dump_failure_dir="$smoke_root/pg-dump-failure"
+mkdir "$pg_dump_failure_dir"
+if PATH="$docker_wrapper_dir:$PATH" \
+  CALOGRAPH_TEST_FAIL_PG_DUMP=1 \
+  COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_DIR="$pg_dump_failure_dir" \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/backup-postgres.sh; then
+  fail "Database backup masked a pg_dump failure."
+fi
+if find "$pg_dump_failure_dir" -mindepth 1 -print -quit | grep -q .; then
+  fail "Failed pg_dump left a database backup artifact."
+fi
+
+age_failure="$smoke_root/fail-age"
+printf '%s\n' '#!/usr/bin/env sh' 'exit 74' >"$age_failure"
+chmod 700 "$age_failure"
+age_failure_dir="$smoke_root/age-failure"
+mkdir "$age_failure_dir"
+if AGE_BIN="$age_failure" \
+  COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_DIR="$age_failure_dir" \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/backup-postgres.sh; then
+  fail "Database backup masked an age encryption failure."
+fi
+if find "$age_failure_dir" -mindepth 1 -print -quit | grep -q .; then
+  fail "Failed age encryption left a database backup artifact."
+publish_wrapper_dir="$smoke_root/publish-wrapper"
+mkdir "$publish_wrapper_dir"
+ln_bin=$(command -v ln)
+date_bin=$(command -v date)
+cat >"$publish_wrapper_dir/ln" <<EOF
+#!/usr/bin/env sh
+case " \$* " in
+  *".sha256")
+    if [ "\${CALOGRAPH_TEST_FAIL_CHECKSUM_LINK:-0}" = "1" ]; then
+      exit 75
+    fi
+    ;;
+esac
+exec "$ln_bin" "\$@"
+EOF
+cat >"$publish_wrapper_dir/date" <<EOF
+#!/usr/bin/env sh
+if [ "\${CALOGRAPH_TEST_FIXED_DATE:-0}" = "1" ]; then
+  printf '%s\n' '20000101T000000Z'
+  exit 0
+fi
+exec "$date_bin" "\$@"
+EOF
+chmod 700 "$publish_wrapper_dir/ln" "$publish_wrapper_dir/date"
+
+checksum_failure_dir="$smoke_root/checksum-publication-failure"
+mkdir "$checksum_failure_dir"
+if PATH="$publish_wrapper_dir:$PATH" \
+  CALOGRAPH_TEST_FAIL_CHECKSUM_LINK=1 \
+  COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_DIR="$checksum_failure_dir" \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/backup-postgres.sh >/dev/null 2>&1; then
+  fail "Database backup masked a checksum publication failure."
+fi
+if find "$checksum_failure_dir" -mindepth 1 -print -quit | grep -q .; then
+  fail "Failed checksum publication left a database backup artifact."
+fi
+
+collision_dir="$smoke_root/final-name-collision"
+mkdir "$collision_dir"
+collision_backup="$collision_dir/calograph-20000101T000000Z.dump.age"
+printf 'preexisting-synthetic-sentinel' >"$collision_backup"
+if PATH="$publish_wrapper_dir:$PATH" \
+  CALOGRAPH_TEST_FIXED_DATE=1 \
+  COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_DIR="$collision_dir" \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/backup-postgres.sh >/dev/null 2>&1; then
+  fail "Database backup overwrote a colliding final name."
+fi
+if [ "$(cat "$collision_backup")" != "preexisting-synthetic-sentinel" ] \
+  || find "$collision_dir" -mindepth 1 \
+    ! -path "$collision_backup" -print -quit | grep -q .; then
+  fail "Final-name collision damaged the existing file or left an artifact."
+fi
+
+fi
+
+truncated_backup="$smoke_root/truncated.dump.age"
+backup_size=$(stat -c '%s' "$database_backup")
+dd if="$database_backup" of="$truncated_backup" \
+  bs=1 count=$((backup_size / 2)) status=none
+truncated_checksum=$(sha256sum -- "$truncated_backup" | awk '{print $1}')
+printf '%s  %s\n' "$truncated_checksum" "$(basename "$truncated_backup")" \
+  >"$truncated_backup.sha256"
+if COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/verify-backup.sh "$truncated_backup" >/dev/null 2>&1; then
+  fail "Truncated encrypted database backup was accepted."
+fi
+
+checksum_mismatch_backup="$smoke_root/checksum-mismatch.dump.age"
+cp "$database_backup" "$checksum_mismatch_backup"
+cp "$database_backup.sha256" "$checksum_mismatch_backup.sha256"
+printf 'transfer-corruption' >>"$checksum_mismatch_backup"
+if COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/verify-backup.sh "$checksum_mismatch_backup" >/dev/null 2>&1; then
+  fail "Database backup with a mismatched checksum was accepted."
+fi
 
 tampered_backup="$smoke_root/tampered.dump.age"
 cp "$database_backup" "$tampered_backup"
-cp "$database_backup.sha256" "$tampered_backup.sha256"
 printf 'tampered' >>"$tampered_backup"
+tampered_checksum=$(sha256sum -- "$tampered_backup" | awk '{print $1}')
+printf '%s  %s\n' "$tampered_checksum" "$(basename "$tampered_backup")" \
+  >"$tampered_backup.sha256"
 if COMPOSE_PROJECT_NAME="$project_name" \
   COMPOSE_ENV_FILES="$smoke_env" \
   BACKUP_AGE_IDENTITY_FILE="$age_identity" \
   scripts/verify-backup.sh "$tampered_backup" >/dev/null 2>&1; then
-  fail "Tampered encrypted backup was accepted."
+  fail "Tampered encrypted database backup was accepted."
+fi
+
+wrong_identity="$smoke_root/wrong-backup-identity.txt"
+age-keygen -o "$wrong_identity" >/dev/null 2>&1
+if COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_AGE_IDENTITY_FILE="$wrong_identity" \
+  scripts/verify-backup.sh "$database_backup" >/dev/null 2>&1; then
+  fail "Database backup was accepted with the wrong age identity."
+fi
+wrong_identity_failure_dir="$smoke_root/wrong-identity-failure"
+mkdir "$wrong_identity_failure_dir"
+if COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_DIR="$wrong_identity_failure_dir" \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_AGE_IDENTITY_FILE="$wrong_identity" \
+  scripts/backup-postgres.sh >/dev/null 2>&1; then
+  fail "Database backup was published before identity verification."
+fi
+if find "$wrong_identity_failure_dir" -mindepth 1 -print -quit | grep -q .; then
+  fail "Failed identity verification left a database backup artifact."
+fi
+
+invalid_archive="$smoke_root/invalid.dump.age"
+printf 'not-a-postgresql-custom-archive' \
+  | age --encrypt --recipients-file "$age_recipients" >"$invalid_archive"
+invalid_checksum=$(sha256sum -- "$invalid_archive" | awk '{print $1}')
+printf '%s  %s\n' "$invalid_checksum" "$(basename "$invalid_archive")" \
+  >"$invalid_archive.sha256"
+if COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
+  BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  scripts/verify-backup.sh "$invalid_archive" >/dev/null 2>&1; then
+  fail "Authenticated non-PostgreSQL archive was accepted."
 fi
 
 if ! BACKUP_DIR="$backup_dir" \
@@ -381,4 +584,15 @@ if ! COMPOSE_PROJECT_NAME="$project_name" \
   CONFIRM_RESTORE=calograph \
   scripts/restore-postgres.sh "$database_backup"; then
   fail "Encrypted database restore failed."
+fi
+restored_probe_count=$(
+  compose exec -T postgres psql \
+    --username calograph \
+    --dbname calograph \
+    --tuples-only \
+    --no-align \
+    --command 'SELECT count(*) FROM backup_stream_probe;'
+)
+if [ "$restored_probe_count" != "4096" ]; then
+  fail "The complete large backup stream was not restored."
 fi

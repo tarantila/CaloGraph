@@ -32,7 +32,8 @@ else
 fi
 
 cd "$project_root"
-if [[ "$absolute_backup" == *.age ]]; then
+if [[ "$absolute_backup" == *.age ]] \
+  || head -c 64 "$absolute_backup" | grep -q 'age-encryption.org/v1'; then
   identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
   if ! command -v "$age_bin" >/dev/null 2>&1; then
     printf 'age is required to verify encrypted backups.\n' >&2
@@ -43,13 +44,17 @@ if [[ "$absolute_backup" == *.age ]]; then
     exit 1
   fi
   "$age_bin" --decrypt --identity "$identity_file" "$absolute_backup" \
-    | docker compose exec -T postgres pg_restore --list >/dev/null
-  printf 'Backup is authenticated and structurally readable: %s\n' \
+    | docker compose exec -T postgres pg_restore \
+      --file=/dev/null \
+      --no-owner
+  printf 'Backup is authenticated and fully readable: %s\n' \
     "$absolute_backup"
 else
   printf 'Warning: verifying a legacy unencrypted database dump.\n' >&2
-  docker compose exec -T postgres pg_restore --list \
-    <"$absolute_backup" >/dev/null
-  printf 'Legacy backup is structurally readable but unencrypted: %s\n' \
+  docker compose exec -T postgres pg_restore \
+    --file=/dev/null \
+    --no-owner \
+    <"$absolute_backup"
+  printf 'Legacy backup is fully readable but unencrypted: %s\n' \
     "$absolute_backup"
 fi

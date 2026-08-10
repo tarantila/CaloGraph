@@ -45,7 +45,9 @@
   `/api/docs` and `/api/openapi.json` to an operator network.
 - Backups are encrypted with a dedicated `age` recipient, stored outside the
   Docker host with an immutable or offline copy, and a restore has been tested
-  in practice. Keep the private `age` identity off the Docker host.
+  in practice. Keep the long-lived private identity off the Docker host; make
+  only a read-only working copy available during a controlled backup,
+  verification, or restore, then remove that copy immediately.
 - Docker and host security updates are installed regularly.
 
 ## Runtime

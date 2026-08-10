@@ -39,23 +39,25 @@ chmod 644 /etc/calograph/backup-recipients.txt
 
 `backup-recipients.txt` contains only the public recipient and may remain on
 the Docker host. Keep `backup-identity.txt` outside the Docker host, ideally
-offline except during a controlled verification or restore. Losing the
-identity makes the encrypted backups unrecoverable.
+offline except during a controlled backup, verification, or restore. Losing
+the identity makes the encrypted backups unrecoverable.
 
 ## Create an encrypted database backup
 
 ```bash
 export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
+export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
 BACKUP_DIR=/srv/calograph-backups scripts/backup-postgres.sh
 ```
 
 The script:
 
-- performs a plaintext-free `pg_dump | pg_restore --list` preflight;
-- creates a fresh custom-format dump and streams it directly into `age`;
-- writes atomically through a randomized encrypted temporary file;
+- creates one custom-format dump and streams it directly into `age`;
+- writes only to a randomized encrypted temporary file;
+- fully decrypts, authenticates, and processes the PostgreSQL archive before
+  publishing the final backup name atomically;
 - applies directory mode `0700` and file mode `0600`;
-- creates a SHA-256 checksum for the encrypted file.
+- creates a SHA-256 checksum only after successful archive verification.
 
 The output is named `calograph-TIMESTAMP.dump.age`. The SHA-256 file detects
 accidental transfer corruption. Authenticity and tamper detection come from
@@ -70,8 +72,9 @@ scripts/verify-backup.sh \
   /srv/calograph-backups/calograph-TIMESTAMP.dump.age
 ```
 
-Verification decrypts into a pipe and passes the plaintext directly to
-`pg_restore --list`; it does not write a decrypted dump.
+Verification decrypts the complete archive into a pipe and makes
+`pg_restore` process it fully while discarding generated restore SQL. It does
+not write a decrypted dump.
 
 ## Back up secrets separately
 
@@ -186,6 +189,7 @@ After selecting a tested release through `CALOGRAPH_VERSION` in `.env`:
 
 ```bash
 export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
+export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
 BACKUP_DIR=/srv/calograph-backups \
   BACKUP_SECRETS=1 \
   scripts/update-containers.sh
