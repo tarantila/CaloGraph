@@ -140,9 +140,19 @@ and expiry, not the original token. The raw token is invalidated by the
 exchange, and the cookie is deleted after registration.
 
 The recipient then chooses a username and a password containing at least
-15 characters and signs in normally. New passwords are checked locally against
-a bundled common and breached-password digest list; no password or hash prefix
-is sent to a third party. CaloGraph does not send email.
+15 characters and signs in normally. New passwords are checked server-side
+against a bundled common and breached-password digest list and for obvious
+repetition or sequence patterns; no password or hash prefix is sent to a third
+party. The same policy applies to registration, password changes, account
+recovery, and CLI user creation.
+
+Registration and CLI user creation deliberately create no nutrition target.
+After the first successful login, the frontend requires the user to enter their
+own calorie budget and protein target under **Budgets & Ziele**. Optional
+maintenance, carbohydrate, fat, and fiber values remain empty unless the user
+sets them. The existing user-scoped target API persists only those submitted
+values; no cross-account or synthetic fallback target is used. Technical
+tracking-quality defaults remain independent of this onboarding step.
 Path-based links from older versions must be revoked and regenerated because
 supporting them would expose their token during the first HTTP request.
 

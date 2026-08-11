@@ -83,14 +83,6 @@ def create_user(args: argparse.Namespace) -> None:
         db.add(user)
         db.flush()
         db.add(TrackingQualitySettings(user_id=user.id))
-        db.add(
-            NutritionTarget(
-                user_id=user.id,
-                valid_from=date.today(),
-                calories_kcal=Decimal("2200"),
-                protein_g=Decimal("140"),
-            )
-        )
         db.commit()
         user_id = user.id
     log_security_event(
@@ -130,9 +122,9 @@ def _reauthenticate_cli_admin(
     db: Session,
     args: argparse.Namespace,
 ) -> User:
-    admin_username = getattr(args, "admin_username", None) or input(
-        "Administrator-Benutzername: "
-    ).strip()
+    admin_username = (
+        getattr(args, "admin_username", None) or input("Administrator-Benutzername: ").strip()
+    )
     admin = db.scalar(select(User).where(User.username == admin_username))
     if admin is None:
         raise SystemExit("Administrator-Reauthentifizierung fehlgeschlagen.")
@@ -180,8 +172,6 @@ def reset_authenticators(args: argparse.Namespace) -> None:
     )
 
 
-
-
 def issue_recovery(args: argparse.Namespace) -> None:
     username = args.username or input("Benutzername: ").strip()
     with SessionLocal() as db:
@@ -194,8 +184,7 @@ def issue_recovery(args: argparse.Namespace) -> None:
         except UserLifecycleRejected as exc:
             raise SystemExit(f"Recovery konnte nicht ausgestellt werden: {exc.reason}.") from exc
     print(
-        "Recovery-Token (nur einmal sichtbar, "
-        f"gültig bis {recovery_token.expires_at.isoformat()}):"
+        f"Recovery-Token (nur einmal sichtbar, gültig bis {recovery_token.expires_at.isoformat()}):"
     )
     print(raw_token)
 
@@ -387,9 +376,7 @@ def configure_yazio(args: argparse.Namespace) -> None:
             if not user:
                 raise SystemExit("CaloGraph-Benutzer nicht gefunden.")
             email = args.email or input("YAZIO-E-Mail-Adresse: ").strip()
-            password = getpass.getpass(
-                "YAZIO-Passwort (wird verschlüsselt gespeichert): "
-            )
+            password = getpass.getpass("YAZIO-Passwort (wird verschlüsselt gespeichert): ")
             if not email or not password:
                 raise SystemExit("YAZIO-E-Mail-Adresse und Passwort sind erforderlich.")
             with shared_user_operation(db, user.id):
@@ -406,9 +393,7 @@ def configure_yazio(args: argparse.Namespace) -> None:
                     sync_days=args.days,
                 )
     except CredentialEncryptionError as exc:
-        raise SystemExit(
-            f"{exc} Zuerst CREDENTIAL_ENCRYPTION_KEY in .env setzen."
-        ) from exc
+        raise SystemExit(f"{exc} Zuerst CREDENTIAL_ENCRYPTION_KEY in .env setzen.") from exc
     except (InactiveUserOperation, UserOperationBusy) as exc:
         raise SystemExit(f"YAZIO-Verbindung nicht konfiguriert: {exc}") from exc
     except (ValueError, YazioSyncError) as exc:
@@ -498,9 +483,7 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                     )
                     recovery_token_deleted = purge_account_recovery_tokens(db)
                     session_deleted = purge_expired_sessions(db)
-                    webauthn_challenge_deleted = (
-                        purge_expired_webauthn_challenges(db)
-                    )
+                    webauthn_challenge_deleted = purge_expired_webauthn_challenges(db)
                 last_security_cleanup = monotonic_now
                 if rate_limit_deleted:
                     logger.info(

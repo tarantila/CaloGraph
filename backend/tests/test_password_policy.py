@@ -20,9 +20,16 @@ def test_packaged_password_blocklist_is_substantial() -> None:
         "x" * 1_025,
         "123456789qwerty",
         "123456789QWERTY",
+        "testtesttesttest1",
+        "abcabcabcabcabc1",
+        "passwordpassword1",
+        "aaaaaaaaaaaaaaa1",
+        "abcdefghijklmnop",
+        "123456789012345",
+        "111111111111111",
     ],
 )
-def test_new_password_policy_rejects_short_or_common_passwords(
+def test_new_password_policy_rejects_short_common_or_guessable_passwords(
     password: str,
 ) -> None:
     with pytest.raises(PasswordPolicyError):
@@ -36,3 +43,7 @@ def test_new_password_policy_rejects_context_specific_derivative() -> None:
 
 def test_new_password_policy_accepts_long_passphrase() -> None:
     validate_new_password("four unusual words stay memorable", "owner")
+
+
+def test_new_password_policy_accepts_password_manager_value() -> None:
+    validate_new_password("vN7!Qp2#Lx9@Tm4$Rs8", "owner")

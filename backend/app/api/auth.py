@@ -1,7 +1,6 @@
 import secrets
 from contextlib import nullcontext
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Never
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -31,7 +30,6 @@ from app.auth.security import (
 from app.config import settings
 from app.database import get_db
 from app.models import (
-    NutritionTarget,
     TrackingQualitySettings,
     User,
     UserInvitation,
@@ -202,12 +200,14 @@ def exchange_invitation(
     check_rate_limit(db, "invitation-exchange", f"ip:{client}", 5, 15 * 60)
     now = datetime.now(UTC)
     invitation = db.scalar(
-        select(UserInvitation).where(
+        select(UserInvitation)
+        .where(
             UserInvitation.token_hash == hash_invitation_token(payload.token),
             UserInvitation.used_at.is_(None),
             UserInvitation.revoked_at.is_(None),
             UserInvitation.expires_at > now,
-        ).with_for_update()
+        )
+        .with_for_update()
     )
     if invitation is None:
         from fastapi import HTTPException
@@ -323,14 +323,6 @@ def register(
     db.add(user)
     db.flush()
     db.add(TrackingQualitySettings(user_id=user.id))
-    db.add(
-        NutritionTarget(
-            user_id=user.id,
-            valid_from=date.today(),
-            calories_kcal=Decimal("2200"),
-            protein_g=Decimal("140"),
-        )
-    )
     invitation.used_at = now
     db.commit()
     db.refresh(user)
@@ -353,9 +345,7 @@ def register(
 def login(
     payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)
 ) -> dict[str, object]:
-    client_key = (
-        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
-    )
+    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
     account_key = f"account:{normalize_account_identifier(payload.username)}"
     check_rate_limit(
         db,
@@ -432,10 +422,7 @@ def _reject_mfa_login(
                 settings.mfa_rate_limit_window_seconds,
             )
         except RateLimitExceeded as exc:
-            if (
-                rate_limit_error is None
-                or exc.retry_after > rate_limit_error.retry_after
-            ):
+            if rate_limit_error is None or exc.retry_after > rate_limit_error.retry_after:
                 rate_limit_error = exc
     if rate_limit_error:
         raise rate_limit_error
@@ -448,9 +435,7 @@ def passkey_login_options(
     request: Request,
     db: Session = Depends(get_db),
 ) -> WebAuthnOptionsResponse:
-    client_key = (
-        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
-    )
+    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
     check_rate_limit(
         db,
         "passkey-options-ip",
@@ -495,7 +480,7 @@ def verify_passkey_login(
             )
             clear_rate_limit(db, "passkey-verify-ip", client_key)
             session, raw_token, csrf_token = create_session(db, user)
-    except (PasskeyAuthenticationError, InactiveUserOperation):
+    except PasskeyAuthenticationError, InactiveUserOperation:
         check_rate_limit(
             db,
             "passkey-verify-ip",
@@ -530,15 +515,11 @@ def verify_totp_login(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    user_id = verify_mfa_login_state(
-        request.cookies.get(mfa_challenge_cookie_name(), "")
-    )
+    user_id = verify_mfa_login_state(request.cookies.get(mfa_challenge_cookie_name(), ""))
     if user_id is None:
         raise_invalid_login()
 
-    client_key = (
-        f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
-    )
+    client_key = f"ip:{normalize_client_ip(request.client.host if request.client else None)}"
     account_key = f"user:{user_id}"
     ensure_rate_limit_available(
         db,

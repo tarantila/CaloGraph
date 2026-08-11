@@ -13,6 +13,12 @@ calories or automatically treated as complete fasting days. Rolling 7-, 14-,
 and 28-calendar-day averages use only recorded days with a status of `complete`
 or `probably_complete` by default.
 
+A user without a nutrition target still receives ordinary analytics data, but
+target, maintenance, deviation, and budget values remain `null`; calendar
+entries use the neutral `no_target` classification until that user saves a
+target. CaloGraph never substitutes another account's target or a synthetic
+calorie/protein default.
+
 ## Data availability
 
 A day is recorded as soon as a calorie value has been imported. The value's

@@ -55,9 +55,7 @@ def test_daily_totals_missing_days_and_target_change(db: Session, user: User) ->
     assert points[2].target_kcal == Decimal("1800")
 
 
-def test_all_zero_primary_nutrition_is_treated_as_missing(
-    db: Session, user: User
-) -> None:
+def test_all_zero_primary_nutrition_is_treated_as_missing(db: Session, user: User) -> None:
     samples = [
         metric(2, "dietary_energy_kcal", "0"),
         metric(2, "protein_g", "0"),
@@ -75,9 +73,7 @@ def test_all_zero_primary_nutrition_is_treated_as_missing(
     assert point.tracking_status == "no_data"
 
 
-def test_low_calorie_day_is_accepted_as_recorded_data(
-    db: Session, user: User
-) -> None:
+def test_low_calorie_day_is_accepted_as_recorded_data(db: Session, user: User) -> None:
     samples = [metric(2, "dietary_energy_kcal", "250")]
     persist_import(db, user, AdapterResult("test", samples, received=1), None, "x-test", "test")
 
@@ -89,9 +85,37 @@ def test_low_calorie_day_is_accepted_as_recorded_data(
     assert point.tracking_reasons == ["Kalorienwert vorhanden"]
 
 
-def test_calendar_uses_budget_and_maintenance_thresholds(
-    db: Session, user: User
-) -> None:
+def test_targetless_nutrition_has_no_budget_or_classification(db: Session, user: User) -> None:
+    db.delete(user.targets[0])
+    db.commit()
+    persist_import(
+        db,
+        user,
+        AdapterResult(
+            "test",
+            [metric(2, "dietary_energy_kcal", "1900")],
+            received=1,
+        ),
+        None,
+        "x-test",
+        "test",
+    )
+
+    point = daily_points(db, user, date(2024, 1, 2), date(2024, 1, 2))[0]
+    result = calendar(
+        start=date(2024, 1, 2),
+        end=date(2024, 1, 2),
+        user=user,
+        db=db,
+    )
+
+    assert point.calories_kcal == Decimal("1900")
+    assert point.target_kcal is None
+    assert point.deviation_kcal is None
+    assert result["days"][0]["classification"] == "no_target"
+
+
+def test_calendar_uses_budget_and_maintenance_thresholds(db: Session, user: User) -> None:
     target = user.targets[0]
     target.maintenance_kcal = Decimal("2200")
     samples = [

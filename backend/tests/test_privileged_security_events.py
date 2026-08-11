@@ -20,6 +20,7 @@ from app.cli import create_token, create_user, reset_authenticators
 from app.models import (
     ApiToken,
     MfaRecoveryCode,
+    NutritionTarget,
     PasskeyCredential,
     User,
     UserInvitation,
@@ -814,6 +815,19 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
         admin=True,
         if_not_exists=False,
     )
+    guessable_username = "PRIVATE.cli.guessable"
+    with pytest.raises(SystemExit, match="Wiederholungs- oder Sequenzmuster"):
+        create_user(
+            argparse.Namespace(
+                username=guessable_username,
+                password="testtesttesttest1",
+                timezone="Europe/Berlin",
+                raw_retention_days=0,
+                admin=False,
+                if_not_exists=False,
+            )
+        )
+    assert db.scalar(select(User).where(User.username == guessable_username)) is None
 
     create_user(create_args)
     with pytest.raises(SystemExit, match="Benutzer existiert bereits"):
@@ -825,6 +839,9 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
     db.expire_all()
     created_user = db.scalar(select(User).where(User.username == username))
     assert created_user is not None
+    assert (
+        db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == created_user.id)) is None
+    )
     token = db.scalar(select(ApiToken).where(ApiToken.user_id == created_user.id))
     assert token is not None
     password_hash = created_user.password_hash

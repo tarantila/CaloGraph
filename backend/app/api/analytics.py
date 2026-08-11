@@ -41,6 +41,13 @@ def _range(
     return resolved_start, resolved_end
 
 
+def _complete_budget(days: list[DailyPoint]) -> Decimal | None:
+    targets = [day.target_kcal for day in days]
+    if not targets or any(target is None for target in targets):
+        return None
+    return sum((target for target in targets if target is not None), Decimal())
+
+
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(
     start: date | None = None,
@@ -102,9 +109,7 @@ def micronutrients(
     )
     if source:
         sample_query = sample_query.where(HealthSample.source_type == source)
-        nutrition_day_query = nutrition_day_query.where(
-            HealthSample.source_type == source
-        )
+        nutrition_day_query = nutrition_day_query.where(HealthSample.source_type == source)
 
     samples = list(db.scalars(sample_query))
     recorded_dates = set(db.scalars(nutrition_day_query))
@@ -122,11 +127,7 @@ def micronutrients(
     for definition in MICRONUTRIENTS:
         total = totals.get(definition.metric_type)
         available_days = len(days_with_value.get(definition.metric_type, set()))
-        average = (
-            total / recorded_days
-            if total is not None and recorded_days
-            else None
-        )
+        average = total / recorded_days if total is not None and recorded_days else None
         coverage_ratio = available_days / recorded_days if recorded_days else 0.0
         reference_percent = (
             average / definition.eu_nrv * Decimal("100")
@@ -167,9 +168,7 @@ def micronutrients(
         "end_date": end.isoformat(),
         "source": source,
         "recorded_days": recorded_days,
-        "last_updated_at": filtered_updated_at.isoformat()
-        if filtered_updated_at
-        else None,
+        "last_updated_at": filtered_updated_at.isoformat() if filtered_updated_at else None,
         "available_sources": [
             {
                 "source_type": source_type,
@@ -198,7 +197,7 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     current_week = [point for point in points if week_start <= point.date <= today]
     full_week = [point for point in points if week_start <= point.date <= week_end]
     consumed = sum([point.calories_kcal or Decimal() for point in current_week], Decimal())
-    budget = sum([point.target_kcal or Decimal() for point in full_week], Decimal())
+    budget = _complete_budget(full_week)
     protein_values = [
         point.protein_g for point in points_through_today[-7:] if point.protein_g is not None
     ]
@@ -224,8 +223,8 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
         "week": {
             "consumed_kcal": serialize_decimal(consumed),
             "budget_kcal": serialize_decimal(budget),
-            "deviation_kcal": serialize_decimal(consumed - budget),
-            "remaining_kcal": serialize_decimal(budget - consumed),
+            "deviation_kcal": serialize_decimal(consumed - budget if budget is not None else None),
+            "remaining_kcal": serialize_decimal(budget - consumed if budget is not None else None),
         },
         "protein_7d_average_g": serialize_decimal(
             sum(protein_values, Decimal()) / len(protein_values) if protein_values else None
@@ -255,13 +254,17 @@ def weekly(
     weeks = []
     for week_start, days in sorted(grouped.items()):
         consumed = sum([day.calories_kcal or Decimal() for day in days], Decimal())
-        budget = sum([day.target_kcal or Decimal() for day in days], Decimal())
+        budget = _complete_budget(days)
         present = [day.calories_kcal for day in days if day.calories_kcal is not None]
         cumulative = []
-        running_consumed = running_budget = Decimal()
+        running_consumed = Decimal()
+        running_budget: Decimal | None = Decimal()
         for day in days:
             running_consumed += day.calories_kcal or Decimal()
-            running_budget += day.target_kcal or Decimal()
+            if running_budget is not None:
+                running_budget = (
+                    running_budget + day.target_kcal if day.target_kcal is not None else None
+                )
             cumulative.append(
                 {
                     "date": day.date.isoformat(),
@@ -274,8 +277,12 @@ def weekly(
                 "week_start": week_start.isoformat(),
                 "consumed_kcal": serialize_decimal(consumed),
                 "budget_kcal": serialize_decimal(budget),
-                "deviation_kcal": serialize_decimal(consumed - budget),
-                "remaining_kcal": serialize_decimal(budget - consumed),
+                "deviation_kcal": serialize_decimal(
+                    consumed - budget if budget is not None else None
+                ),
+                "remaining_kcal": serialize_decimal(
+                    budget - consumed if budget is not None else None
+                ),
                 "mean_kcal": serialize_decimal(
                     sum(present, Decimal()) / len(present) if present else None
                 ),
@@ -382,12 +389,13 @@ def calendar(
     output = []
     for point in daily_points(db, user, start, end):
         classification = "no_data"
-        if point.calories_kcal is not None and point.target_kcal is not None:
-            if point.calories_kcal <= point.target_kcal:
+        if point.calories_kcal is not None:
+            if point.target_kcal is None:
+                classification = "no_target"
+            elif point.calories_kcal <= point.target_kcal:
                 classification = "under_budget"
             elif (
-                point.maintenance_kcal is not None
-                and point.calories_kcal > point.maintenance_kcal
+                point.maintenance_kcal is not None and point.calories_kcal > point.maintenance_kcal
             ):
                 classification = "above_maintenance"
             else:

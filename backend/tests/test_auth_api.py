@@ -7,7 +7,7 @@ from app.api import analytics
 from app.auth import security
 from app.config import settings
 from app.main import app
-from app.models import User, UserSession
+from app.models import NutritionTarget, TrackingQualitySettings, User, UserSession
 
 
 def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
@@ -78,9 +78,7 @@ def test_idle_and_absolute_session_timeouts_are_server_enforced(
         json={"username": "admin", "password": "correct-horse-battery-staple"},
     )
     assert login.status_code == 200
-    newest = db.scalars(
-        select(UserSession).order_by(UserSession.created_at.desc())
-    ).first()
+    newest = db.scalars(select(UserSession).order_by(UserSession.created_at.desc())).first()
     assert newest is not None
     newest.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     db.commit()
@@ -166,6 +164,29 @@ def test_password_change_rejects_common_password(
 
     assert response.status_code == 422
     assert "häufig verwendet" in response.json()["detail"]
+
+
+def test_password_change_rejects_guessable_repetition(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    response = client.post(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={
+            "current_password": "correct-horse-battery-staple",
+            "new_password": "testtesttesttest1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Wiederholungs- oder Sequenzmuster" in response.json()["detail"]
 
 
 def test_successful_password_change_revokes_every_existing_session(
@@ -614,6 +635,14 @@ def test_admin_invitation_creates_isolated_personal_account(
     )
     state = client.get("/api/v1/auth/invitation/status")
 
+    guessable = client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "friend",
+            "password": "abcabcabcabcabc1",
+        },
+    )
+
     registered = client.post(
         "/api/v1/auth/register",
         json={
@@ -641,11 +670,20 @@ def test_admin_invitation_creates_isolated_personal_account(
     assert "path=/api/v1/auth" in registration_cookie
     assert replayed_exchange.status_code == 400
     assert state.json() == {"valid": True}
+    assert guessable.status_code == 422
+    assert "Wiederholungs- oder Sequenzmuster" in guessable.json()["detail"]
     assert registered.status_code == 201
     assert registered.json()["is_admin"] is False
     assert "calograph_registration=" in registered.headers["set-cookie"].lower()
     assert "max-age=0" in registered.headers["set-cookie"].lower()
     assert reused.status_code == 400
+    registered_user = db.scalar(select(User).where(User.username == "friend"))
+    assert registered_user is not None
+    assert (
+        db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == registered_user.id))
+        is None
+    )
+    assert db.get(TrackingQualitySettings, registered_user.id) is not None
 
     client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
     friend_login = client.post(
@@ -656,6 +694,33 @@ def test_admin_invitation_creates_isolated_personal_account(
     assert client.get("/api/v1/imports").json() == []
     assert client.get("/api/v1/yazio/status").json()["configured"] is False
     assert client.get("/api/v1/users").status_code == 403
+    assert client.get("/api/v1/settings/targets").json() == []
+    targetless = client.get("/api/v1/analytics/daily?start=2026-08-11&end=2026-08-11")
+    assert targetless.status_code == 200
+    assert targetless.json()[0]["target_kcal"] is None
+    targetless_summary = client.get("/api/v1/dashboard/summary")
+    assert targetless_summary.status_code == 200
+    assert targetless_summary.json()["week"]["budget_kcal"] is None
+    assert targetless_summary.json()["week"]["deviation_kcal"] is None
+    targetless_week = client.get("/api/v1/analytics/weekly?start=2026-08-11&end=2026-08-11")
+    assert targetless_week.status_code == 200
+    assert targetless_week.json()["weeks"][0]["budget_kcal"] is None
+    assert targetless_week.json()["weeks"][0]["remaining_kcal"] is None
+    created_target = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": friend_login.json()["csrf_token"]},
+        json={
+            "valid_from": "2026-08-11",
+            "calories_kcal": 2150,
+            "maintenance_kcal": None,
+            "protein_g": 135,
+            "carbs_g": None,
+            "fat_g": None,
+            "fiber_g": None,
+        },
+    )
+    assert created_target.status_code == 201
+    assert client.get("/api/v1/settings/targets").json()[0]["calories_kcal"] == "2150.000"
 
 
 def test_invitation_expiration_is_capped_at_seven_days(

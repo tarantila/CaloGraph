@@ -163,23 +163,21 @@ def test_recovery_issue_deactivates_target_and_returns_only_raw_token_once(
     raw_token, expires_at = _issue_via_api(client, user, target)
     db.expire_all()
 
-    stored = db.scalar(select(AccountRecoveryToken).where(AccountRecoveryToken.user_id == target.id))
+    stored = db.scalar(
+        select(AccountRecoveryToken).where(AccountRecoveryToken.user_id == target.id)
+    )
     assert stored is not None
     assert len(raw_token) >= 43
     assert stored.token_hash == hash_account_recovery_token(raw_token)
     assert raw_token != stored.token_hash
-    assert (
-        expires_at.astimezone(UTC)
-        - stored.created_at.replace(tzinfo=stored.created_at.tzinfo or UTC)
-        == timedelta(minutes=30)
-    )
+    assert expires_at.astimezone(UTC) - stored.created_at.replace(
+        tzinfo=stored.created_at.tzinfo or UTC
+    ) == timedelta(minutes=30)
     assert db.get(User, target.id).is_active is False
     assert db.get(User, target.id).deactivated_at is not None
     assert db.get(UserSession, target_session_id) is None
     assert db.get(ApiToken, target_api_token_id).revoked_at is not None
-    connection = db.scalar(
-        select(YazioConnection).where(YazioConnection.user_id == target.id)
-    )
+    connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == target.id))
     assert connection is not None
     assert connection.sync_enabled is False
     assert connection.next_sync_at is None
@@ -263,25 +261,29 @@ def test_admin_reauthentication_requires_enabled_mfa_and_accepts_recovery_code(
     target = _add_user(db, "recovery-mfa-target")
     csrf = _login(client, user.username, ADMIN_PASSWORD)
     secret, recovery_code = _enable_admin_totp(db, user)
-    assert client.post(
-        f"/api/v1/users/{target.id}/recovery-links",
-        headers={"X-CSRF-Token": csrf},
-        json={"current_password": ADMIN_PASSWORD},
-    ).status_code == 400
-    assert client.post(
-        f"/api/v1/users/{target.id}/recovery-links",
-        headers={"X-CSRF-Token": csrf},
-        json={"current_password": ADMIN_PASSWORD, "code": "000000"},
-    ).status_code == 400
+    assert (
+        client.post(
+            f"/api/v1/users/{target.id}/recovery-links",
+            headers={"X-CSRF-Token": csrf},
+            json={"current_password": ADMIN_PASSWORD},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            f"/api/v1/users/{target.id}/recovery-links",
+            headers={"X-CSRF-Token": csrf},
+            json={"current_password": ADMIN_PASSWORD, "code": "000000"},
+        ).status_code
+        == 400
+    )
     accepted = client.post(
         f"/api/v1/users/{target.id}/recovery-links",
         headers={"X-CSRF-Token": csrf},
         json={"current_password": ADMIN_PASSWORD, "code": recovery_code},
     )
     assert accepted.status_code == 201
-    recovery = db.scalar(
-        select(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user.id)
-    )
+    recovery = db.scalar(select(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user.id))
     assert recovery is not None and recovery.used_at is not None
     assert pyotp.TOTP(secret).now()
 
@@ -330,7 +332,9 @@ def test_recovery_completion_changes_password_but_keeps_account_inactive(
     assert stored_target is not None and stored_target.is_active is False
     assert verify_password(stored_target.password_hash, NEW_PASSWORD)
     assert stored_recovery is not None and stored_recovery.used_at is not None
-    assert db.scalar(select(func.count(UserSession.id)).where(UserSession.user_id == target.id)) == 0
+    assert (
+        db.scalar(select(func.count(UserSession.id)).where(UserSession.user_id == target.id)) == 0
+    )
     blocked_login = client.post(
         "/api/v1/auth/login",
         json={"username": target.username, "password": NEW_PASSWORD},
@@ -339,15 +343,21 @@ def test_recovery_completion_changes_password_but_keeps_account_inactive(
 
     reactivate_user(db, user.id, target.id)
     client.cookies.clear()
-    assert client.post(
-        "/api/v1/auth/login",
-        json={"username": target.username, "password": NEW_PASSWORD},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": target.username, "password": NEW_PASSWORD},
+        ).status_code
+        == 200
+    )
     client.cookies.clear()
-    assert client.post(
-        "/api/v1/auth/login",
-        json={"username": target.username, "password": TARGET_PASSWORD},
-    ).status_code == 401
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": target.username, "password": TARGET_PASSWORD},
+        ).status_code
+        == 401
+    )
 
 
 def test_recovery_completion_rollback_preserves_password_and_token(
@@ -406,10 +416,21 @@ def test_recovery_completion_uses_existing_password_policy_without_consuming_tok
     assert common.status_code == 422
     db.expire_all()
     assert db.get(AccountRecoveryToken, recovery.id).used_at is None
-    assert client.post(
+    guessable = client.post(
         "/api/v1/auth/recovery/complete",
-        json={"recovery_token": raw_token, "new_password": NEW_PASSWORD},
-    ).status_code == 204
+        json={"recovery_token": raw_token, "new_password": "passwordpassword1"},
+    )
+    assert guessable.status_code == 422
+    assert "Wiederholungs- oder Sequenzmuster" in guessable.json()["detail"]
+    db.expire_all()
+    assert db.get(AccountRecoveryToken, recovery.id).used_at is None
+    assert (
+        client.post(
+            "/api/v1/auth/recovery/complete",
+            json={"recovery_token": raw_token, "new_password": NEW_PASSWORD},
+        ).status_code
+        == 204
+    )
 
 
 def test_invalid_recovery_tokens_have_uniform_response_and_no_secret_leakage(
@@ -576,16 +597,24 @@ def test_authenticator_reset_removes_only_authenticators_and_revokes_credentials
     db.expire_all()
     assert db.get(UserTotpCredential, target.id) is None
     assert db.scalar(select(MfaRecoveryCode).where(MfaRecoveryCode.user_id == target.id)) is None
-    assert db.scalar(select(PasskeyCredential).where(PasskeyCredential.user_id == target.id)) is None
+    assert (
+        db.scalar(select(PasskeyCredential).where(PasskeyCredential.user_id == target.id)) is None
+    )
     assert db.get(WebAuthnUserHandle, target.id) is None
-    assert db.scalar(select(WebAuthnChallenge).where(WebAuthnChallenge.user_id == target.id)) is None
+    assert (
+        db.scalar(select(WebAuthnChallenge).where(WebAuthnChallenge.user_id == target.id)) is None
+    )
     assert db.get(UserSession, target_session_id) is None
     assert db.get(ApiToken, target_token_id).revoked_at is not None
     stored_target = db.get(User, target.id)
     assert stored_target is not None and stored_target.is_active is False
     assert stored_target.password_hash == original_hash
-    assert db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == target.id)) is not None
-    assert db.scalar(select(YazioConnection).where(YazioConnection.user_id == target.id)) is not None
+    assert (
+        db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == target.id)) is not None
+    )
+    assert (
+        db.scalar(select(YazioConnection).where(YazioConnection.user_id == target.id)) is not None
+    )
     assert db.get(WebAuthnUserHandle, other.id) is not None
 
 
@@ -724,7 +753,9 @@ def test_issue_recovery_cli_prints_raw_token_once_and_uses_central_reauth(
     )
     output = capsys.readouterr().out
     db.expire_all()
-    stored = db.scalar(select(AccountRecoveryToken).where(AccountRecoveryToken.user_id == target.id))
+    stored = db.scalar(
+        select(AccountRecoveryToken).where(AccountRecoveryToken.user_id == target.id)
+    )
     assert stored is not None
     raw_line = next(
         line

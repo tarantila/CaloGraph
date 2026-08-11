@@ -33,6 +33,38 @@ def validate_password_blocklist() -> None:
         raise RuntimeError("The packaged password blocklist is unexpectedly small")
 
 
+def _password_pattern_candidates(value: str) -> set[str]:
+    compact = "".join(character for character in value if character.isalnum())
+    return {compact, compact.strip("0123456789")}
+
+
+def _has_repeated_pattern(value: str) -> bool:
+    return any(
+        len(candidate) >= 8
+        and any(
+            len(candidate) % unit_length == 0
+            and candidate == candidate[:unit_length] * (len(candidate) // unit_length)
+            for unit_length in range(1, len(candidate) // 2 + 1)
+        )
+        for candidate in _password_pattern_candidates(value)
+    )
+
+
+def _has_obvious_sequence(value: str) -> bool:
+    sequences = (
+        "0123456789",
+        "9876543210",
+        "abcdefghijklmnopqrstuvwxyz",
+        "zyxwvutsrqponmlkjihgfedcba",
+        "qwertyuiopasdfghjklzxcvbnm",
+        "mnbvcxzlkjhgfdsaqpoiuytrewq",
+    )
+    return any(
+        len(candidate) >= 8 and any(candidate in sequence * 2 for sequence in sequences)
+        for candidate in _password_pattern_candidates(value)
+    )
+
+
 def validate_new_password(password: str, username: str | None = None) -> None:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise PasswordPolicyError(
@@ -49,6 +81,13 @@ def validate_new_password(password: str, username: str | None = None) -> None:
         raise PasswordPolicyError(
             "Dieses Passwort ist häufig verwendet oder aus Datenlecks bekannt. "
             "Bitte wähle ein anderes Passwort."
+        )
+
+    if _has_repeated_pattern(normalized) or _has_obvious_sequence(normalized):
+        raise PasswordPolicyError(
+            "Dieses Passwort enthält ein leicht erratbares Wiederholungs- oder "
+            "Sequenzmuster. Verwende eine ungewöhnliche lange Passphrase oder "
+            "ein vom Passwortmanager erzeugtes Passwort."
         )
 
     contextual_values = {"calograph", "calograph123", "calograph-password"}
