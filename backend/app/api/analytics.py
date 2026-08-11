@@ -392,6 +392,7 @@ def calendar(
         if point.calories_kcal is not None:
             if point.target_kcal is None:
                 classification = "no_target"
+            # The calorie budget remains primary even when maintenance is lower.
             elif point.calories_kcal <= point.target_kcal:
                 classification = "under_budget"
             elif (

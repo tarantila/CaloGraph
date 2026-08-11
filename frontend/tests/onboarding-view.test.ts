@@ -93,7 +93,8 @@ describe('SetupView', () => {
     apiMock.mockResolvedValue({})
     const { auth, router, wrapper } = await mountSetup()
 
-    await wrapper.get('input[name="calories-kcal"]').setValue('2100')
+    await wrapper.get('input[name="calories-kcal"]').setValue('3000')
+    await wrapper.get('input[name="maintenance-kcal"]').setValue('2500')
     await wrapper.get('input[name="protein-g"]').setValue('135')
     const carbs = wrapper.get('input[name="carbs-g"]')
     await carbs.setValue('200')
@@ -105,8 +106,8 @@ describe('SetupView', () => {
       method: 'POST',
       body: JSON.stringify({
         valid_from: '2026-08-10',
-        calories_kcal: 2100,
-        maintenance_kcal: null,
+        calories_kcal: 3000,
+        maintenance_kcal: 2500,
         protein_g: 135,
         carbs_g: null,
         fat_g: null,

@@ -18,10 +18,10 @@
 - `api_tokens`: label, prefix, HMAC hash, scopes, expiration, and revocation.
 - `account_recovery_tokens`: HMAC-only one-time administrator-issued recovery
   tokens with creation, expiration, consumption, and revocation timestamps.
-- `nutrition_targets`: versioned calorie budgets, optional maintenance-calorie
-  estimates, and nutrient targets using the half-open interval
-  `valid_from <= day < valid_to`. A maintenance estimate cannot be lower than
-  the calorie budget.
+- `nutrition_targets`: versioned calorie budgets, independent optional
+  maintenance-calorie estimates, and nutrient targets using the half-open
+  interval `valid_from <= day < valid_to`. Calorie budgets and finite, positive
+  maintenance estimates have no ordering relationship.
 - `tracking_quality_settings`: legacy settings from the former completeness
   heuristic; no longer used for new analysis.
 - `health_samples`: canonical and original values, UTC timestamps, local date,

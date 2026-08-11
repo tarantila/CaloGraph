@@ -42,6 +42,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Allowed calorie budgets below, equal to, or above the optional maintenance
+  estimate while retaining budget-first calendar classification.
 - Standardized visible German calendar dates as `TT.MM.JJJJ` (or `TT.MM.` on
   compact axes) without changing ISO API values.
 

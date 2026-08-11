@@ -105,6 +105,7 @@ jobs:
           tests/test_account_recovery_postgres.py
           tests/test_user_lifecycle_migration_postgres.py
           tests/test_yazio_migration_postgres.py
+          tests/test_target_maintenance_migration_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

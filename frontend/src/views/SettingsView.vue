@@ -454,7 +454,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
           <form class="form-grid" @submit.prevent="saveTarget">
             <label class="field">Gültig ab<DateInput v-model="target.valid_from" required /></label>
             <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
-            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal ?? TARGET_LIMITS.caloriesMin" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
+            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
             <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
             <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
@@ -468,7 +468,8 @@ function passkeyDeviceLabel(passkey: Passkey) {
         <section class="card form-card budget-help">
           <h2>So wird die Änderung verwendet</h2>
           <p>Das Kalorienbudget ist deine tägliche Obergrenze. Das Proteinziel wird als Wert behandelt, den du möglichst erreichen möchtest.</p>
-          <p>Der optionale Erhaltungsbedarf liegt mindestens auf Höhe des Budgets. Im Kalender werden Tage bis zum Budget grün, Überschreitungen bis zum Erhaltungsbedarf orange und Werte darüber rot dargestellt.</p>
+          <p>Der optionale Erhaltungsbedarf ist deine geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt. Dein Kalorienbudget kann darunter, darauf oder darüber liegen.</p>
+          <p>Im Kalender bleibt das Budget maßgeblich: Werte bis zum Budget sind grün, Werte über dem Budget orange und Werte über Budget und Erhaltungsbedarf rot.</p>
           <p>Mit „Gültig ab“ bestimmst du den ersten Tag der neuen Werte. Gibt es für dieses Datum bereits eine Version, wird sie aktualisiert. Frühere Auswertungen behalten die damals gültigen Werte.</p>
         </section>
       </div>

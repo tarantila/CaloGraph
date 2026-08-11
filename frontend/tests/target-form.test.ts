@@ -1,0 +1,58 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
+vi.mock('../src/api', () => ({ api: apiMock }))
+
+import { saveTargetDraft, type TargetDraft } from '../src/target-form'
+
+function targetDraft(caloriesKcal: number, maintenanceKcal: number | null): TargetDraft {
+  return {
+    valid_from: '2026-08-11',
+    calories_kcal: caloriesKcal,
+    maintenance_kcal: maintenanceKcal,
+    protein_g: 140,
+    carbs_g: null,
+    fat_g: null,
+    fiber_g: null,
+  }
+}
+
+describe('target form persistence', () => {
+  beforeEach(() => {
+    apiMock.mockReset()
+    apiMock.mockResolvedValue({})
+  })
+
+  it.each([
+    ['deficit', 2000, 2500],
+    ['maintenance', 2500, 2500],
+    ['surplus', 3000, 2500],
+    ['without maintenance', 3000, null],
+    ['minimal positive maintenance', 3000, 0.001],
+  ])('accepts %s targets', async (_label, caloriesKcal, maintenanceKcal) => {
+    await saveTargetDraft(targetDraft(caloriesKcal, maintenanceKcal))
+
+    expect(apiMock).toHaveBeenCalledWith('/settings/targets', {
+      method: 'POST',
+      body: JSON.stringify({
+        valid_from: '2026-08-11',
+        calories_kcal: caloriesKcal,
+        maintenance_kcal: maintenanceKcal,
+        protein_g: 140,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+      }),
+    })
+  })
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'rejects invalid maintenance value %s',
+    async (maintenanceKcal) => {
+      await expect(
+        saveTargetDraft(targetDraft(3000, maintenanceKcal)),
+      ).rejects.toThrow('Erhaltungsbedarf muss größer als 0 sein')
+      expect(apiMock).not.toHaveBeenCalled()
+    },
+  )
+})

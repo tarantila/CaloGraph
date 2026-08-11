@@ -372,28 +372,32 @@ describe('main views', () => {
         { date: '2026-07-18', calories_kcal: '1600.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'under_budget' },
         { date: '2026-07-19', calories_kcal: '2000.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'over_budget' },
         { date: '2026-07-20', calories_kcal: '2400.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'above_maintenance' },
+        { date: '2026-07-21', calories_kcal: '2800.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', tracking_status: 'complete', classification: 'under_budget' },
+        { date: '2026-07-22', calories_kcal: '3200.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', tracking_status: 'complete', classification: 'above_maintenance' },
       ],
     })
     const wrapper = mount(CalendarView)
     await flushPromises()
     expect(wrapper.text()).toContain('Im Budget')
     expect(wrapper.text()).toContain('Über Budget')
-    expect(wrapper.text()).toContain('Über Erhaltungsbedarf')
-    expect(wrapper.text()).toContain('2.000 kcal')
+    expect(wrapper.text()).toContain('Über Budget und Erhaltungsbedarf')
+    expect(wrapper.text()).toContain('2.400 kcal')
     expect(wrapper.text()).not.toContain('NaN')
-    expect(wrapper.findAll('.calendar-day.under_budget')).toHaveLength(1)
+    expect(wrapper.findAll('.calendar-day.under_budget')).toHaveLength(2)
     expect(wrapper.findAll('.calendar-day.over_budget')).toHaveLength(1)
-    expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(1)
+    expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(2)
     expect(wrapper.get('.calendar-day.under_budget').attributes('aria-label')).toBe(
       '18.07.2026: Im Budget',
     )
     const calorieProgress = wrapper.findAll<HTMLProgressElement>(
       'progress.calendar-calorie-progress',
     )
-    expect(calorieProgress).toHaveLength(3)
+    expect(calorieProgress).toHaveLength(5)
     expect(Number(calorieProgress[0].attributes('value'))).toBeCloseTo(1600 / 1800)
     expect(calorieProgress[1].attributes('value')).toBe('1')
     expect(calorieProgress[2].attributes('value')).toBe('1')
+    expect(Number(calorieProgress[3].attributes('value'))).toBeCloseTo(2800 / 3000)
+    expect(calorieProgress[4].attributes('value')).toBe('1')
     expect(calorieProgress[0].attributes('aria-label')).toBe(
       '1.600 von 1.800 kcal Tagesbudget',
     )

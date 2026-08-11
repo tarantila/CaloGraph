@@ -250,8 +250,9 @@ class NutritionTarget(Base):
         UniqueConstraint("user_id", "valid_from", name="uq_target_user_valid_from"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="ck_target_date_range"),
         CheckConstraint(
-            "maintenance_kcal IS NULL OR maintenance_kcal >= calories_kcal",
-            name="ck_target_maintenance_at_least_budget",
+            "maintenance_kcal IS NULL OR "
+            "(maintenance_kcal > 0 AND maintenance_kcal < 'Infinity')",
+            name="ck_target_maintenance_positive_finite",
         ),
     )
 

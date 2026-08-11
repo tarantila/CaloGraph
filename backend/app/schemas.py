@@ -1,9 +1,9 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal, Self
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProblemDetail(BaseModel):
@@ -336,16 +336,6 @@ class TargetInput(BaseModel):
     fat_g: Decimal | None = Field(default=None, ge=0)
     fiber_g: Decimal | None = Field(default=None, ge=0)
 
-    @model_validator(mode="after")
-    def maintenance_is_not_below_budget(self) -> Self:
-        if (
-            self.maintenance_kcal is not None
-            and self.maintenance_kcal < self.calories_kcal
-        ):
-            raise ValueError(
-                "Der Erhaltungsbedarf darf nicht unter dem Kalorienbudget liegen"
-            )
-        return self
 
 
 class TargetResponse(TargetInput):

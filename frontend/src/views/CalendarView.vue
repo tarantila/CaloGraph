@@ -23,7 +23,7 @@ const loading = ref(true)
 const labels: Record<string, string> = {
   under_budget: 'Im Budget',
   over_budget: 'Über Budget',
-  above_maintenance: 'Über Erhaltungsbedarf',
+  above_maintenance: 'Über Budget und Erhaltungsbedarf',
   probably_incomplete: 'Kalorienwert fehlt',
   no_target: 'Kein Ziel festgelegt',
   no_data: 'Keine Daten',
@@ -168,7 +168,7 @@ const averageCalories = computed(() => {
       <article class="card insight-card">
         <span class="insight-icon red"><PhWarningCircle :size="20" weight="duotone" /></span>
         <span>
-          <small>Über Erhaltungsbedarf</small>
+          <small>Über Budget und Erhaltungsbedarf</small>
           <strong>{{ maintenanceConfigured ? `${aboveMaintenanceDays.length} ${aboveMaintenanceDays.length === 1 ? 'Tag' : 'Tage'}` : '–' }}</strong>
         </span>
       </article>
@@ -178,12 +178,12 @@ const averageCalories = computed(() => {
       <div class="section-card-header calendar-card-header">
         <div>
           <h2>Tagesübersicht</h2>
-          <p>Grün liegt im Budget, Orange darüber und Rot über dem optionalen Erhaltungsbedarf.</p>
+          <p>Grün liegt im Budget, Orange darüber und Rot über Budget und optionalem Erhaltungsbedarf.</p>
         </div>
         <div class="calendar-legend" aria-label="Kalenderlegende">
           <span><i class="under"></i>Im Budget</span>
           <span><i class="over"></i>Über Budget</span>
-          <span><i class="maintenance"></i>Über Erhaltungsbedarf</span>
+          <span><i class="maintenance"></i>Über Budget und Erhaltungsbedarf</span>
           <span><i class="missing"></i>Keine Daten</span>
         </div>
       </div>

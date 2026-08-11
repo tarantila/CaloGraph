@@ -77,7 +77,7 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
   await expect(page.getByRole('heading', { name: 'Kalender' })).toBeVisible()
   await expect(page.getByText('Erfasste Tage')).toBeVisible()
   await expect(page.getByText('Über Budget', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('Über Erhaltungsbedarf', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Über Budget und Erhaltungsbedarf', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('NaN')).toHaveCount(0)
   await expect(page.locator('.calendar-day.under_budget')).not.toHaveCount(0)
   await expect(page.locator('.calendar-day.over_budget')).not.toHaveCount(0)

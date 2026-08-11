@@ -1,6 +1,9 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api import analytics
@@ -8,6 +11,7 @@ from app.auth import security
 from app.config import settings
 from app.main import app
 from app.models import NutritionTarget, TrackingQualitySettings, User, UserSession
+from app.schemas import TargetInput
 
 
 def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
@@ -368,9 +372,20 @@ def test_password_change_has_independent_failure_limit(
     assert "Retry-After" in responses[-1].headers
 
 
-def test_existing_target_version_can_be_updated(
+@pytest.mark.parametrize(
+    ("calories_kcal", "maintenance_kcal"),
+    [
+        (2000, 2500),
+        (2500, 2500),
+        (3000, 2500),
+        (3000, None),
+    ],
+)
+def test_existing_target_version_accepts_independent_maintenance_estimates(
     client: TestClient,
     user: User,
+    calories_kcal: int,
+    maintenance_kcal: int | None,
 ) -> None:
     login = client.post(
         "/api/v1/auth/login",
@@ -383,8 +398,8 @@ def test_existing_target_version_can_be_updated(
         headers={"X-CSRF-Token": csrf},
         json={
             "valid_from": "2024-01-01",
-            "calories_kcal": 2500,
-            "maintenance_kcal": 2800,
+            "calories_kcal": calories_kcal,
+            "maintenance_kcal": maintenance_kcal,
             "protein_g": 150,
             "carbs_g": 260,
             "fat_g": 80,
@@ -393,24 +408,56 @@ def test_existing_target_version_can_be_updated(
     )
 
     assert response.status_code == 200
-    assert response.json()["calories_kcal"] == "2500.000"
-    assert response.json()["maintenance_kcal"] == "2800.000"
+    expected_maintenance = (
+        None if maintenance_kcal is None else f"{maintenance_kcal}.000"
+    )
+    assert response.json()["calories_kcal"] == f"{calories_kcal}.000"
+    assert response.json()["maintenance_kcal"] == expected_maintenance
     saved = client.get("/api/v1/settings/targets")
     assert saved.status_code == 200
-    assert saved.json()[0]["calories_kcal"] == "2500.000"
-    assert saved.json()[0]["maintenance_kcal"] == "2800.000"
+    assert saved.json()[0]["calories_kcal"] == f"{calories_kcal}.000"
+    assert saved.json()[0]["maintenance_kcal"] == expected_maintenance
 
-    invalid = client.put(
+
+@pytest.mark.parametrize("maintenance_kcal", [0, -1])
+def test_target_rejects_non_positive_maintenance(
+    client: TestClient,
+    user: User,
+    maintenance_kcal: int,
+) -> None:
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    response = client.put(
         "/api/v1/settings/targets/2024-01-01",
-        headers={"X-CSRF-Token": csrf},
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
         json={
             "valid_from": "2024-01-01",
-            "calories_kcal": 2500,
-            "maintenance_kcal": 2400,
+            "calories_kcal": 3000,
+            "maintenance_kcal": maintenance_kcal,
             "protein_g": 150,
         },
     )
-    assert invalid.status_code == 422
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "maintenance_kcal",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_target_rejects_non_finite_maintenance(
+    maintenance_kcal: Decimal,
+) -> None:
+    with pytest.raises(ValidationError):
+        TargetInput(
+            valid_from=date(2026, 8, 11),
+            calories_kcal=Decimal("3000"),
+            maintenance_kcal=maintenance_kcal,
+            protein_g=Decimal("140"),
+        )
 
 
 def test_dashboard_week_budget_always_covers_monday_to_sunday(

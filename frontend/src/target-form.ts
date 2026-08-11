@@ -15,6 +15,7 @@ export interface TargetDraft {
 
 export const TARGET_LIMITS = {
   caloriesMin: 1,
+  maintenanceMin: 0.001,
   nutrientMin: 0,
 } as const
 
@@ -50,6 +51,17 @@ function normalizeOptionalNutrient(
   return value
 }
 
+function normalizeOptionalPositive(
+  value: TargetNumericValue,
+  label: string,
+): number | null {
+  if (value === null || value === '') return null
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TargetValidationError(`${label} muss größer als 0 sein.`)
+  }
+  return value
+}
+
 export async function saveTargetDraft(
   target: TargetDraft,
   existingTargets: Pick<Target, 'valid_from'>[] = [],
@@ -71,19 +83,10 @@ export async function saveTargetDraft(
   if (proteinG < TARGET_LIMITS.nutrientMin) {
     throw new TargetValidationError('Das Proteinziel darf nicht negativ sein.')
   }
-  const maintenanceKcal =
-    target.maintenance_kcal === '' ? null : target.maintenance_kcal
-  if (
-    maintenanceKcal !== null
-    && (
-      !Number.isFinite(maintenanceKcal)
-      || maintenanceKcal < caloriesKcal
-    )
-  ) {
-    throw new TargetValidationError(
-      'Der Erhaltungsbedarf darf nicht unter dem Kalorienbudget liegen.',
-    )
-  }
+  const maintenanceKcal = normalizeOptionalPositive(
+    target.maintenance_kcal,
+    'Der Erhaltungsbedarf',
+  )
   const carbsG = normalizeOptionalNutrient(target.carbs_g, 'Das Kohlenhydratziel')
   const fatG = normalizeOptionalNutrient(target.fat_g, 'Das Fettziel')
   const fiberG = normalizeOptionalNutrient(target.fiber_g, 'Das Ballaststoffziel')

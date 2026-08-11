@@ -111,11 +111,15 @@ async function signOut() {
                   v-model.number="target.maintenance_kcal"
                   name="maintenance-kcal"
                   type="number"
-                  :min="target.calories_kcal ?? TARGET_LIMITS.caloriesMin"
-                  step="1"
+                  :min="TARGET_LIMITS.maintenanceMin"
+                  step="0.001"
                 />
                 <span>kcal</span>
               </span>
+              <small>
+                Geschätzte Kalorienmenge für ein ungefähr stabiles Gewicht; dein Budget kann
+                darunter, darauf oder darüber liegen.
+              </small>
             </label>
             <label class="field">
               Kohlenhydrate

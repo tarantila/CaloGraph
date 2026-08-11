@@ -54,14 +54,16 @@ The calendar opens on the current month and can navigate to previous calendar
 months. The current month is month-to-date; completed months include every day
 from the first through the last day.
 
-Each day uses the target version valid on that date. Intake at or below the
-calorie budget is green. Intake above the budget is orange. If an optional
-maintenance-calorie estimate is configured, intake above that estimate is red.
-Without a maintenance estimate, a day above the budget remains orange instead
-of being assigned an arbitrary red threshold. Missing calorie values retain a
-separate neutral status. Text supplements every color.
+Each day uses the target version valid on that date. The calorie budget is the
+primary threshold regardless of the optional maintenance estimate: intake at
+or below the budget is green. Intake above the budget is orange unless it is
+also above a configured maintenance estimate, in which case it is red. Thus an
+intake above maintenance but still within a higher calorie budget remains
+green. Without a maintenance estimate, a day above the budget remains orange
+instead of being assigned an arbitrary red threshold. Missing calorie values
+retain a separate neutral status. Text supplements every color.
 
 The "over budget" count includes both orange and red days. The separate
-"above maintenance" count is shown only when a maintenance estimate applies
-within the selected month. Average calories use recorded calorie values only;
-missing days are excluded rather than interpreted as zero.
+"above maintenance" count includes only days that exceed both the calorie
+budget and the configured maintenance estimate. Average calories use recorded
+calorie values only; missing days are excluded rather than interpreted as zero.

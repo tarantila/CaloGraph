@@ -147,6 +147,42 @@ def test_calendar_uses_budget_and_maintenance_thresholds(db: Session, user: User
     assert Decimal(result["days"][0]["maintenance_kcal"]) == Decimal("2200")
 
 
+def test_calendar_budget_remains_primary_above_maintenance(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.calories_kcal = Decimal("3000")
+    target.maintenance_kcal = Decimal("2500")
+    samples = [
+        metric(1, "dietary_energy_kcal", "2800"),
+        metric(2, "dietary_energy_kcal", "3200"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test",
+        "test",
+    )
+
+    result = calendar(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 2),
+        user=user,
+        db=db,
+    )
+
+    assert [day["classification"] for day in result["days"]] == [
+        "under_budget",
+        "above_maintenance",
+    ]
+    assert [Decimal(day["deviation_kcal"]) for day in result["days"]] == [
+        Decimal("-200"),
+        Decimal("200"),
+    ]
+
+
 def test_percentiles() -> None:
     values = [Decimal(value) for value in (1, 2, 3, 4, 5)]
     assert percentile(values, Decimal("0.25")) == Decimal("2")
