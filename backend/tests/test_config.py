@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,24 @@ def test_validation_errors_do_not_echo_sensitive_inputs() -> None:
         )
 
     assert invalid_key not in str(captured.value)
+
+
+def test_pydantic_settings_debug_does_not_log_secret_values(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "synthetic-debug-secret-0123456789abcdef"
+    monkeypatch.setenv("PYDANTIC_SETTINGS_DEBUG", "1")
+    caplog.set_level(logging.DEBUG)
+
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        session_secret=secret,
+    )
+
+    assert configured.session_secret == secret
+    assert secret not in caplog.text
 
 
 def write_secret(path: Path, value: str | bytes) -> Path:

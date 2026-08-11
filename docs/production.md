@@ -22,6 +22,10 @@
   password, YAZIO credential key, and shared rate-limit key required by the
   deployment-wide provider circuit breaker, and `frontend` receives none. The
   scheduler never receives the session or MFA-encryption key.
+- The default `docker-compose.yml` defines only the four runtime services.
+  Test runners and the ephemeral test database are isolated in
+  `docker-compose.test.yml` and are not part of normal production Compose
+  commands.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.

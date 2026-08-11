@@ -31,6 +31,7 @@ def utcnow() -> datetime:
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
+        UniqueConstraint("username"),
         CheckConstraint(
             "(is_active AND deactivated_at IS NULL) "
             "OR (NOT is_active AND deactivated_at IS NOT NULL)",
@@ -39,7 +40,7 @@ class User(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    username: Mapped[str] = mapped_column(String(190), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(190), index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     language: Mapped[str] = mapped_column(String(16), default="de")
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Berlin")
@@ -63,6 +64,7 @@ class User(Base):
 class YazioConnection(Base):
     __tablename__ = "yazio_connections"
     __table_args__ = (
+        UniqueConstraint("user_id"),
         CheckConstraint(
             "sync_interval_minutes BETWEEN 60 AND 10080",
             name="ck_yazio_sync_interval",
@@ -72,7 +74,7 @@ class YazioConnection(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     encrypted_email: Mapped[bytes] = mapped_column(LargeBinary)
     encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
@@ -97,9 +99,10 @@ class YazioConnection(Base):
 
 class UserInvitation(Base):
     __tablename__ = "user_invitations"
+    __table_args__ = (UniqueConstraint("token_hash"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), index=True)
     invited_by_user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )

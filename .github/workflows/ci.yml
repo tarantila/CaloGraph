@@ -99,6 +99,8 @@ jobs:
       - working-directory: backend
         run: uv run alembic upgrade head
       - working-directory: backend
+        run: uv run alembic check
+      - working-directory: backend
         run: >-
           uv run pytest
           tests/test_rate_limit_postgres.py

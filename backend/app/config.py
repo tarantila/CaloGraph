@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import os
 import sys
 from functools import lru_cache
@@ -10,6 +11,10 @@ from cryptography.fernet import Fernet
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
+
+# pydantic-settings can emit raw source values when its debug flag is enabled.
+logging.getLogger("pydantic_settings").setLevel(logging.INFO)
+
 
 MAX_SECRET_FILE_BYTES = 16 * 1024
 RuntimeRole = Literal["backend", "scheduler"]

@@ -4,13 +4,6 @@
 
 <h1 align="center">CaloGraph</h1>
 
-<p align="center">
-  <a href="CODE_OF_CONDUCT.md">Code of Conduct</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="LICENSE">License</a> ·
-  <a href="SECURITY.md">Security Policy</a>
-</p>
-
 CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
 It puts individual days into the context of weekly budgets, trends,
 micronutrients, and data coverage without moral judgment or external telemetry.
@@ -130,6 +123,11 @@ production template instead pins `CALOGRAPH_VERSION` to its matching tested
 `vX.Y.Z` release. Review and update that value deliberately when upgrading.
 Contributors can build the checked-out source with `make dev` or
 `docker compose up -d --build`.
+
+The default `docker-compose.yml` contains only the four runtime services:
+PostgreSQL, backend, YAZIO scheduler, and frontend. Test runners and the
+ephemeral test database live in `docker-compose.test.yml`; the Make targets and
+test scripts select that overlay explicitly.
 
 Both application images are built from the central multi-stage
 [`Dockerfile`](Dockerfile). Compose selects separate backend and frontend

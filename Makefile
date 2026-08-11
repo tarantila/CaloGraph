@@ -1,4 +1,5 @@
 .PHONY: dev up down logs migrate test lint typecheck frontend-test e2e build backup backup-secrets update
+TEST_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.test.yml
 
 dev:
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
@@ -16,19 +17,19 @@ migrate:
 	docker compose run --rm backend alembic upgrade head
 
 test:
-	docker compose --profile test run --rm --build backend-ci pytest
+	$(TEST_COMPOSE) run --rm --build backend-ci pytest
 	./scripts/test-postgres.sh
 
 lint:
-	docker compose --profile test run --rm --build backend-ci ruff check app tests
-	docker compose run --rm frontend-ci npm run lint
+	$(TEST_COMPOSE) run --rm --build backend-ci ruff check app tests
+	$(TEST_COMPOSE) run --rm frontend-ci npm run lint
 
 typecheck:
-	docker compose --profile test run --rm --build backend-ci mypy app
-	docker compose run --rm frontend-ci npm run typecheck
+	$(TEST_COMPOSE) run --rm --build backend-ci mypy app
+	$(TEST_COMPOSE) run --rm frontend-ci npm run typecheck
 
 frontend-test:
-	docker compose run --rm frontend-ci npm run test:unit
+	$(TEST_COMPOSE) run --rm frontend-ci npm run test:unit
 
 e2e:
 	./scripts/e2e.sh

@@ -5,6 +5,27 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-11
+
+### Changed
+
+- Updated the supported FastAPI, Alembic, pydantic-settings, Uvicorn, Vue,
+  Vite, ESLint, typescript-eslint, vue-tsc, Playwright, test-tooling, and
+  GitHub artifact-attestation dependencies.
+- Moved the five test and E2E services from the production Compose file into
+  the explicit `docker-compose.test.yml` overlay, with matching Make and script
+  consumers.
+- Simplified the README header navigation and documented the production/test
+  Compose boundary.
+
+### Fixed
+
+- Prevented the pydantic-settings debug mode from emitting raw settings-source
+  values, including secrets, through application logging.
+- Aligned SQLAlchemy constraint metadata with the existing PostgreSQL schema,
+  enabled `alembic check` in CI, and adopted Alembic's current path-separator
+  configuration without creating a migration.
+
 ## [0.3.0] - 2026-08-11
 
 ### Added
@@ -280,7 +301,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tarantila/CaloGraph/compare/661990b...v0.3.0
 [0.2.2]: https://github.com/tarantila/CaloGraph/compare/55fc57d...661990b
 [0.2.1]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...55fc57d

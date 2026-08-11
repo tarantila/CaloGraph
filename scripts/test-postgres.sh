@@ -5,7 +5,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 project_name=${POSTGRES_TEST_PROJECT:-calograph-postgres-tests}
 
 compose() {
-  docker compose --project-name "$project_name" --profile test "$@"
+  docker compose -f docker-compose.yml -f docker-compose.test.yml --project-name "$project_name" "$@"
 }
 
 cleanup() {

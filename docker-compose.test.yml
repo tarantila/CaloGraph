@@ -1,0 +1,75 @@
+services:
+  frontend-ci:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-development
+    command: ["npm", "run", "test:unit"]
+    networks: [edge]
+
+  backend-ci:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
+    environment:
+      ENVIRONMENT: test
+    command: ["pytest"]
+    networks: [data]
+
+  postgres-ci:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: calograph_test
+      POSTGRES_USER: calograph_test
+      POSTGRES_PASSWORD: calograph-test-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calograph_test -d calograph_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql
+    networks: [data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+
+  backend-postgres-ci:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
+      CALOGRAPH_POSTGRES_TEST_URL: postgresql+psycopg://calograph_test:calograph-test-password@postgres-ci:5432/calograph_test
+      CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
+    depends_on:
+      postgres-ci:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        pytest
+        tests/test_rate_limit_postgres.py
+        tests/test_account_recovery_postgres.py
+        tests/test_user_lifecycle_migration_postgres.py
+        tests/test_yazio_migration_postgres.py
+        tests/test_target_maintenance_migration_postgres.py
+    networks: [data]
+
+  e2e:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-e2e
+    environment:
+      BASE_URL: http://frontend:8080
+    command: ["npx", "playwright", "test"]
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks: [edge]
