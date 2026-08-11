@@ -4,8 +4,16 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 e2e_username=${E2E_USERNAME:-e2e-admin}
 e2e_password=${E2E_PASSWORD:-e2e-password-change-me}
+CALOGRAPH_PUBLIC_URL=http://frontend:8080
+export CALOGRAPH_PUBLIC_URL
 TRUSTED_HOSTS=${TRUSTED_HOSTS:-localhost,127.0.0.1,frontend}
 export TRUSTED_HOSTS
+TRUSTED_ORIGINS=${TRUSTED_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
+case ",$TRUSTED_ORIGINS," in
+  *,http://frontend:8080,*) ;;
+  *) TRUSTED_ORIGINS="$TRUSTED_ORIGINS,http://frontend:8080" ;;
+esac
+export TRUSTED_ORIGINS
 
 cd "$project_root"
 if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
