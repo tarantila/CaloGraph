@@ -125,7 +125,7 @@ RUN npm run build \
           cp "$license_file" "$destination"; \
         done
 
-FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e7984f2814476b21571c5124a3fca2267d73041f5de7580e AS frontend-e2e
+FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS frontend-e2e
 
 WORKDIR /work
 COPY frontend/package.json frontend/package-lock.json ./
