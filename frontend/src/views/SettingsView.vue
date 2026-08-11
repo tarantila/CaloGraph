@@ -11,6 +11,12 @@ import {
   isoDateInTimeZone,
 } from '../date-format'
 import { useAuthStore } from '../stores/auth'
+import {
+  createEmptyTargetDraft,
+  saveTargetDraft,
+  TARGET_LIMITS,
+  TargetValidationError,
+} from '../target-form'
 import type { Target, User, YazioStatus } from '../types'
 import {
   createPasskey,
@@ -76,15 +82,7 @@ function supportedTimezones() {
 
 const props = defineProps<{ section: 'targets' | 'account' }>()
 const profile = reactive({ timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
-const target = reactive({
-  valid_from: '',
-  calories_kcal: null as number | null,
-  maintenance_kcal: null as number | null,
-  protein_g: null as number | null,
-  carbs_g: null as number | null,
-  fat_g: null as number | null,
-  fiber_g: null as number | null,
-})
+const target = reactive(createEmptyTargetDraft())
 const targets = ref<Target[]>([])
 const tokens = ref<Token[]>([])
 const tokenLabel = ref('iPhone')
@@ -207,21 +205,15 @@ async function saveTarget() {
   error.value = ''
   message.value = ''
   try {
-    const existing = targets.value.some((item) => item.valid_from === target.valid_from)
-    const payload = {
-      ...target,
-      maintenance_kcal: target.maintenance_kcal || null,
-    }
-    await api(
-      existing ? `/settings/targets/${target.valid_from}` : '/settings/targets',
-      { method: existing ? 'PUT' : 'POST', body: JSON.stringify(payload) },
-    )
+    await saveTargetDraft(target, targets.value)
     message.value = `Budget und Ziele ab ${formatGermanDate(target.valid_from)} gespeichert.`
     auth.completeTargetSetup()
     await loadTargets()
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'Budget und Ziele konnten nicht gespeichert werden.'
+      cause instanceof ApiError || cause instanceof TargetValidationError
+        ? cause.message
+        : 'Budget und Ziele konnten nicht gespeichert werden.'
   } finally {
     savingTarget.value = false
   }
@@ -461,12 +453,12 @@ function passkeyDeviceLabel(passkey: Passkey) {
           </p>
           <form class="form-grid" @submit.prevent="saveTarget">
             <label class="field">Gültig ab<DateInput v-model="target.valid_from" required /></label>
-            <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" min="1" step="1" required /></label>
-            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal ?? 1" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
-            <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" min="0" step="1" required /></label>
-            <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" min="0" step="1" /></label>
-            <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" min="0" step="1" /></label>
-            <label class="field">Ballaststoffe (g)<input v-model.number="target.fiber_g" type="number" min="0" step="1" /></label>
+            <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
+            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal ?? TARGET_LIMITS.caloriesMin" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
+            <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
+            <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            <label class="field">Ballaststoffe (g)<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <button class="button" type="submit" :disabled="savingTarget">
               {{ savingTarget ? 'Wird gespeichert …' : 'Budget und Ziele speichern' }}
             </button>

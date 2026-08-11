@@ -24,7 +24,7 @@ describe('first-run target routing', () => {
     await router.replace('/login')
   })
 
-  it('forces targetless users into goal setup after login', async () => {
+  it('forces targetless users into the dedicated setup route after login', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       const body = url.endsWith('/settings/targets') ? [] : user
@@ -36,7 +36,8 @@ describe('first-run target routing', () => {
 
     await router.push('/tage')
 
-    expect(router.currentRoute.value.name).toBe('targets')
+    expect(router.currentRoute.value.name).toBe('setup')
+    expect(router.currentRoute.value.path).toBe('/einrichtung')
     expect(useAuthStore().needsTargetSetup).toBe(true)
   })
 
@@ -54,5 +55,33 @@ describe('first-run target routing', () => {
 
     expect(router.currentRoute.value.name).toBe('daily')
     expect(useAuthStore().needsTargetSetup).toBe(false)
+  })
+
+  it('keeps users with targets out of the setup route', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await router.push('/einrichtung')
+
+    expect(router.currentRoute.value.name).toBe('overview')
+    expect(useAuthStore().needsTargetSetup).toBe(false)
+  })
+
+  it('leaves public login and recovery routes available during setup', async () => {
+    const auth = useAuthStore()
+    auth.user = user
+    auth.needsTargetSetup = true
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+
+    await router.push('/recovery')
+
+    expect(router.currentRoute.value.name).toBe('recovery')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

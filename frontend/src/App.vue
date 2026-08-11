@@ -22,7 +22,9 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const menuOpen = ref(false)
-const isLogin = computed(() => route.meta.public === true)
+const usesFocusedLayout = computed(
+  () => route.meta.public === true || route.meta.onboarding === true,
+)
 
 const navigation = [
   { to: { name: 'overview' }, label: 'Übersicht', icon: PhSquaresFour },
@@ -49,7 +51,7 @@ async function signOut() {
 </script>
 
 <template>
-  <RouterView v-if="isLogin" />
+  <RouterView v-if="usesFocusedLayout" />
   <div v-else class="app-shell">
     <aside :class="['sidebar', { open: menuOpen }]" aria-label="Hauptnavigation">
       <div class="brand">

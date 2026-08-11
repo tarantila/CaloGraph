@@ -623,7 +623,7 @@ describe('main views', () => {
     )
   })
 
-  it('keeps budgets and account settings on separate pages and updates today’s budget', async () => {
+  it('keeps budgets and account settings separate and clears an optional target', async () => {
     const now = new Date()
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
@@ -666,6 +666,8 @@ describe('main views', () => {
     expect(targetsWrapper.text()).not.toContain('Persönliche YAZIO-Verbindung')
     const calories = targetsWrapper.find('input[type="number"]')
     await calories.setValue('2300')
+    const maintenance = targetsWrapper.findAll<HTMLInputElement>('input[type="number"]')[1]
+    await maintenance.setValue('')
     await targetsWrapper.find('form').trigger('submit')
     await flushPromises()
     const [year, month, day] = today.split('-')
@@ -677,7 +679,7 @@ describe('main views', () => {
       body: JSON.stringify({
         valid_from: today,
         calories_kcal: 2300,
-        maintenance_kcal: 2600,
+        maintenance_kcal: null,
         protein_g: 140,
         carbs_g: null,
         fat_g: null,

@@ -9,6 +9,12 @@ const router = createRouter({
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
     { path: '/einladung', name: 'register', component: () => import('./views/RegisterView.vue'), meta: { public: true } },
     { path: '/recovery', name: 'recovery', component: () => import('./views/RecoveryView.vue'), meta: { public: true } },
+    {
+      path: '/einrichtung',
+      name: 'setup',
+      component: () => import('./views/SetupView.vue'),
+      meta: { onboarding: true },
+    },
     { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue') },
     { path: '/tage', name: 'daily', component: () => import('./views/DailyView.vue') },
     { path: '/wochen', name: 'weekly', component: () => import('./views/WeeklyView.vue') },
@@ -44,8 +50,11 @@ router.beforeEach(async (to) => {
   if (!(await auth.ensureUser())) {
     return { name: 'login', query: { next: to.fullPath } }
   }
-  if (auth.needsTargetSetup && to.name !== 'targets') {
-    return { name: 'targets' }
+  if (auth.needsTargetSetup && to.name !== 'setup') {
+    return { name: 'setup' }
+  }
+  if (!auth.needsTargetSetup && to.name === 'setup') {
+    return { name: 'overview' }
   }
   return true
 })

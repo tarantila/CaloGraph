@@ -147,12 +147,14 @@ party. The same policy applies to registration, password changes, account
 recovery, and CLI user creation.
 
 Registration and CLI user creation deliberately create no nutrition target.
-After the first successful login, the frontend requires the user to enter their
-own calorie budget and protein target under **Budgets & Ziele**. Optional
-maintenance, carbohydrate, fat, and fiber values remain empty unless the user
-sets them. The existing user-scoped target API persists only those submitted
-values; no cross-account or synthetic fallback target is used. Technical
-tracking-quality defaults remain independent of this onboarding step.
+After the first successful login, the frontend routes the user to a dedicated
+setup page and requires their own calorie budget and protein target before the
+normal application becomes available. Both values can later be changed under
+**Budgets & Ziele**. Optional maintenance, carbohydrate, fat, and fiber values
+remain empty unless the user sets them. The existing user-scoped target API
+persists only those submitted values; no cross-account or synthetic fallback
+target is used. Technical tracking-quality defaults remain independent of this
+onboarding step.
 Path-based links from older versions must be revoked and regenerated because
 supporting them would expose their token during the first HTTP request.
 

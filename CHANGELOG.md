@@ -20,8 +20,8 @@ follows [Semantic Versioning](https://semver.org/).
 - Added a German administrator interface for account lifecycle operations,
   transient recovery-link handoff through URL fragments, and an unauthenticated
   password-recovery page that never signs in or reactivates the account.
-- Added required first-login goal setup for accounts without a nutrition
-  target, using the existing user-scoped target history API.
+- Added a dedicated required first-login setup screen for accounts without a
+  nutrition target, using the existing user-scoped target history API.
 - Added locale-independent German calendar-date entry with manual
   `TT.MM.JJJJ` input and an optional native calendar picker.
 
