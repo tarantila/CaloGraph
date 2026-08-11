@@ -66,6 +66,7 @@ from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
     ensure_rate_limit_available,
+    login_password_slot,
     normalize_account_identifier,
     normalize_client_ip,
     rate_limit_key_id,
@@ -354,20 +355,7 @@ def login(
         settings.login_ip_rate_limit,
         settings.login_ip_rate_limit_window_seconds,
     )
-    ensure_rate_limit_available(
-        db,
-        "login-account",
-        account_key,
-        settings.login_rate_limit,
-        settings.login_rate_limit_window_seconds,
-    )
-
-    user = db.scalar(select(User).where(User.username == payload.username))
-    password_matches = verify_login_password(
-        payload.password,
-        user.password_hash if user is not None else None,
-    )
-    if user is None or not user.is_active or not password_matches:
+    with login_password_slot():
         check_rate_limit(
             db,
             "login-account",
@@ -375,6 +363,12 @@ def login(
             settings.login_rate_limit,
             settings.login_rate_limit_window_seconds,
         )
+        user = db.scalar(select(User).where(User.username == payload.username))
+        password_matches = verify_login_password(
+            payload.password,
+            user.password_hash if user is not None else None,
+        )
+    if user is None or not user.is_active or not password_matches:
         _log_login(request, "failed", client_key, account_key)
         raise_invalid_login()
 

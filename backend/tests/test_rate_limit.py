@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,9 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.models import RateLimitBucket
 from app.services.rate_limit import (
+    LOGIN_PASSWORD_MAX_PARALLEL,
     RateLimitExceeded,
     check_rate_limit,
     hash_rate_limit_key,
+    login_password_slot,
     normalize_account_identifier,
     normalize_client_ip,
     purge_expired_rate_limit_buckets,
@@ -40,6 +43,17 @@ def test_rate_limit_counter_uses_atomic_upsert(db: Session) -> None:
     assert error.value.headers is not None
     assert 1 <= int(error.value.headers["Retry-After"]) <= 300
     assert db.scalar(select(RateLimitBucket.count)) == 3
+
+
+def test_login_password_slots_are_bounded_and_released() -> None:
+    with ExitStack() as stack:
+        for _ in range(LOGIN_PASSWORD_MAX_PARALLEL):
+            stack.enter_context(login_password_slot())
+        with pytest.raises(RateLimitExceeded), login_password_slot():
+            pass
+
+    with login_password_slot():
+        pass
 
 
 def test_expired_rate_limit_buckets_are_deleted(db: Session) -> None:

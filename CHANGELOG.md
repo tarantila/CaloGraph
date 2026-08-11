@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-11
+
 ### Added
 
 - Added atomic administrator APIs for account deactivation, safe reactivation,
@@ -17,9 +19,10 @@ follows [Semantic Versioning](https://semver.org/).
 - Added freshly reauthenticated administrator operations for authenticator
   reset and irreversible account deletion, plus matching CLI recovery and
   authenticator-reset commands.
-- Added a German administrator interface for account lifecycle operations,
-  transient recovery-link handoff through URL fragments, and an unauthenticated
-  password-recovery page that never signs in or reactivates the account.
+- Added a German administrator interface for multi-user invitations and account
+  lifecycle operations, transient recovery-link handoff through URL fragments,
+  and an unauthenticated password-recovery page that never signs in or
+  reactivates the account.
 - Added a dedicated required first-login setup screen for accounts without a
   nutrition target, using the existing user-scoped target history API.
 - Added locale-independent German calendar-date entry with manual
@@ -46,6 +49,21 @@ follows [Semantic Versioning](https://semver.org/).
   estimate while retaining budget-first calendar classification.
 - Standardized visible German calendar dates as `TT.MM.JJJJ` (or `TT.MM.` on
   compact axes) without changing ISO API values.
+
+### Security
+
+- Hardened Apple Health ZIP imports so malformed archive metadata and integrity
+  failures are rejected before any samples are persisted.
+- Added pseudonymous security events for YAZIO credential-decryption failures
+  and expanded privileged account-operation coverage without logging secrets
+  or user-owned nutrition values.
+- Hardened encrypted database backups by authenticating and fully processing
+  the PostgreSQL archive before publishing the final backup and checksum.
+- Resolved known backend and frontend dependency advisories and extended CI
+  coverage for account-lifecycle migrations and exact release candidates.
+- Reserved login account attempts before password verification and capped
+  concurrent Argon2 work across backend workers to prevent parallel
+  rate-limit bypasses and authentication-driven resource exhaustion.
 
 ## [0.2.2] - 2026-08-03
 
@@ -262,8 +280,10 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tarantila/CaloGraph/compare/661990b...v0.3.0
+[0.2.2]: https://github.com/tarantila/CaloGraph/compare/55fc57d...661990b
+[0.2.1]: https://github.com/tarantila/CaloGraph/compare/v0.2.0...55fc57d
 [0.2.0]: https://github.com/tarantila/CaloGraph/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/tarantila/CaloGraph/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tarantila/CaloGraph/compare/b4ca2cf...v0.1.1

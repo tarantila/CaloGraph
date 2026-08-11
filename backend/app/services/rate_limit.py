@@ -1,16 +1,20 @@
 import hashlib
 import hmac
 import ipaddress
+import threading
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, select
+from sqlalchemy import case, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import engine
 from app.models import RateLimitBucket
 
 
@@ -53,6 +57,52 @@ def hash_rate_limit_key(key: str) -> str:
 
 def rate_limit_key_id(key: str) -> str:
     return hash_rate_limit_key(key)[:16]
+
+
+LOGIN_PASSWORD_MAX_PARALLEL = 4
+_local_login_slots = threading.BoundedSemaphore(LOGIN_PASSWORD_MAX_PARALLEL)
+
+
+def _login_slot_lock_id(slot: int) -> int:
+    digest = hashlib.sha256(f"calograph-login-password-slot:{slot}".encode()).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def _login_capacity_exceeded() -> RateLimitExceeded:
+    key_ref = hash_rate_limit_key("global:login-password-capacity")[:16]
+    return RateLimitExceeded(1, "login-capacity", key_ref)
+
+
+@contextmanager
+def login_password_slot() -> Iterator[None]:
+    if engine.dialect.name == "postgresql":
+        with engine.connect() as connection:
+            slot_lock_id: int | None = None
+            for slot in range(LOGIN_PASSWORD_MAX_PARALLEL):
+                candidate = _login_slot_lock_id(slot)
+                if connection.scalar(
+                    text("SELECT pg_try_advisory_lock(:lock_id)"),
+                    {"lock_id": candidate},
+                ):
+                    slot_lock_id = candidate
+                    break
+            if slot_lock_id is None:
+                raise _login_capacity_exceeded()
+            try:
+                yield
+            finally:
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": slot_lock_id},
+                )
+        return
+
+    if not _local_login_slots.acquire(blocking=False):
+        raise _login_capacity_exceeded()
+    try:
+        yield
+    finally:
+        _local_login_slots.release()
 
 
 def _window(now: datetime, window_seconds: int) -> tuple[datetime, int]:

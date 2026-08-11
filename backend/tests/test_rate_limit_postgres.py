@@ -1,10 +1,14 @@
 import base64
 import os
+import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import UTC, datetime
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -32,9 +36,12 @@ from app.services.passkeys import (
     complete_passkey_registration,
 )
 from app.services.rate_limit import (
+    LOGIN_PASSWORD_MAX_PARALLEL,
+    RateLimitExceeded,
     check_rate_limit,
     clear_rate_limit,
     hash_rate_limit_key,
+    login_password_slot,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 
@@ -84,6 +91,154 @@ def test_concurrent_rate_limit_updates_are_not_lost() -> None:
         with Session(engine) as db:
             clear_rate_limit(db, action, key)
         engine.dispose()
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
+)
+def test_postgres_login_password_slots_are_global_and_released() -> None:
+    with ExitStack() as stack:
+        for _ in range(LOGIN_PASSWORD_MAX_PARALLEL):
+            stack.enter_context(login_password_slot())
+
+        with pytest.raises(RateLimitExceeded), login_password_slot():
+            pass
+
+    with login_password_slot():
+        pass
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
+)
+def test_concurrent_login_account_limit_reserves_before_password_verification(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del user
+    monkeypatch.setattr(settings, "login_ip_rate_limit", 100)
+    monkeypatch.setattr(settings, "login_rate_limit", 2)
+    attempts = 6
+    start = threading.Barrier(attempts)
+    limit_reached = threading.Event()
+    release = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_verify(_password: str, _password_hash: str | None) -> bool:
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                limit_reached.set()
+        release.wait(timeout=10)
+        with state_lock:
+            active -= 1
+        return False
+
+    monkeypatch.setattr("app.api.auth.verify_login_password", fake_verify)
+
+    def attempt(_: int) -> int:
+        start.wait()
+        return client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=attempts) as executor:
+        futures = [executor.submit(attempt, index) for index in range(attempts)]
+        try:
+            assert limit_reached.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while (
+                sum(future.done() for future in futures) < attempts - 2
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            assert sum(future.done() for future in futures) == attempts - 2
+        finally:
+            release.set()
+        statuses = [future.result() for future in futures]
+
+    assert statuses.count(401) == 2
+    assert statuses.count(429) == attempts - 2
+    assert max_active == 2
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL integration tests are not explicitly enabled",
+)
+def test_login_endpoint_enforces_global_password_capacity(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "login_ip_rate_limit", 100)
+    monkeypatch.setattr(settings, "login_rate_limit", 100)
+    attempts = LOGIN_PASSWORD_MAX_PARALLEL * 2
+    start = threading.Barrier(attempts)
+    capacity_reached = threading.Event()
+    release = threading.Event()
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_verify(_password: str, _password_hash: str | None) -> bool:
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active == LOGIN_PASSWORD_MAX_PARALLEL:
+                capacity_reached.set()
+        release.wait(timeout=10)
+        with state_lock:
+            active -= 1
+        return False
+
+    monkeypatch.setattr("app.api.auth.verify_login_password", fake_verify)
+
+    def attempt(_: int) -> int:
+        start.wait()
+        return client.post(
+            "/api/v1/auth/login",
+            json={"username": "capacity-target", "password": "wrong-password"},
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=attempts) as executor:
+        futures = [executor.submit(attempt, index) for index in range(attempts)]
+        try:
+            assert capacity_reached.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while (
+                sum(future.done() for future in futures) < LOGIN_PASSWORD_MAX_PARALLEL
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            assert sum(future.done() for future in futures) == LOGIN_PASSWORD_MAX_PARALLEL
+        finally:
+            release.set()
+        statuses = [future.result() for future in futures]
+
+    assert statuses.count(401) == LOGIN_PASSWORD_MAX_PARALLEL
+    assert statuses.count(429) == LOGIN_PASSWORD_MAX_PARALLEL
+    assert max_active == LOGIN_PASSWORD_MAX_PARALLEL
+
+    account_key = "account:capacity-target"
+    with Session(application_engine) as db:
+        account_count = db.scalar(
+            select(RateLimitBucket.count).where(
+                RateLimitBucket.action == "login-account",
+                RateLimitBucket.key_hash == hash_rate_limit_key(account_key),
+            )
+        )
+        clear_rate_limit(db, "login-account", account_key)
+
+    assert account_count == LOGIN_PASSWORD_MAX_PARALLEL
 
 
 @pytest.mark.skipif(
