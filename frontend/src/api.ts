@@ -10,6 +10,7 @@ const publicAuthenticationPaths = new Set([
   '/auth/passkey/verify',
   '/auth/register',
   '/auth/invitation/exchange',
+  '/auth/recovery/complete',
 ])
 
 export class ApiError extends Error {
@@ -17,6 +18,7 @@ export class ApiError extends Error {
     message: string,
     public status: number,
     public requestId?: string,
+    public retryAfter?: string,
   ) {
     super(message)
   }
@@ -60,7 +62,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     path === '/auth/passkey/options' ||
     path === '/auth/passkey/verify' ||
     path === '/auth/register' ||
-    path === '/auth/invitation/exchange'
+    path === '/auth/invitation/exchange' ||
+    path === '/auth/recovery/complete'
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (mutating && !publicMutation) headers.set('X-CSRF-Token', csrfToken ?? (await refreshCsrf()))
@@ -80,7 +83,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     } catch {
       // Keep the status-based fallback without leaking response bodies.
     }
-    throw new ApiError(problem.detail, response.status, problem.request_id)
+    throw new ApiError(
+      problem.detail,
+      response.status,
+      problem.request_id,
+      response.headers.get('Retry-After') ?? undefined,
+    )
   }
   return (await response.json()) as T
 }

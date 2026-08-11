@@ -101,11 +101,12 @@ secret is encrypted with a dedicated key that is mounted only into the
 backend. Ten one-time recovery codes are generated during activation and
 stored only as HMAC digests. Accepted TOTP time steps are persisted to prevent
 replay, while login and MFA-management attempts use temporary database-backed
-limits. If a user loses all factors, an active administrator can first
-deactivate the account and then run
+limits. If a user loses all factors, an active
+administrator can first deactivate the account and reset its authenticators
+under **Konto → Benutzerverwaltung**. The equivalent operator command is
 `python -m app.cli reset-authenticators --username USER --admin-username ADMIN
---confirm USER`. The command requires the administrator's current password and
-enabled MFA, removes every target authenticator, and revokes sessions and API
+--confirm USER`. Both paths require the administrator's current password and
+enabled MFA, remove every target authenticator, and revoke sessions and API
 tokens. The target stays inactive until separately reactivated.
 
 Users can enroll discoverable passkeys after confirming their password and,

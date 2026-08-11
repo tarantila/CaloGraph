@@ -6,6 +6,8 @@ export interface User {
   week_starts_on: number
   raw_payload_retention_days: number
   is_admin: boolean
+  is_active: boolean
+  deactivated_at: string | null
 }
 
 export type TrackingStatus =

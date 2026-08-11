@@ -51,6 +51,29 @@ The `is_active` and `deactivated_at` fields form one state: active accounts have
 no deactivation timestamp; inactive accounts always have one. Repeating a
 deactivation or reactivation is safe and retains the same end state.
 
+## Administrator interface
+
+Under **Konto → Benutzerverwaltung**, administrators see every account's role
+and active state; inactive accounts also show their deactivation timestamp.
+The current administrator is marked explicitly and has no lifecycle controls
+in the interface. Active foreign accounts can be deactivated, while inactive
+foreign accounts can be reactivated, receive an administrator-issued recovery
+link, have their authenticators reset, or be permanently deleted.
+
+Deactivation and reactivation use explicit confirmation dialogs that describe
+which credentials and data remain valid. Recovery issuance, authenticator
+reset, and hard deletion require the current administrator password plus an MFA
+or recovery code when MFA is enabled. These credentials exist only in the open
+dialog and are cleared when it closes. Hard deletion additionally keeps its
+submit action disabled until the target username has been entered exactly.
+
+The recovery link is shown only after successful issuance and copied only by an
+explicit user action. Its secret is carried in `/recovery#token=…`, never in a
+query parameter. The public recovery page removes the fragment from browser
+history immediately, supports manual token entry, applies the backend password
+policy, creates no session, and confirms that the account remains inactive
+after password replacement.
+
 ## Administrative account recovery
 
 CaloGraph does not send recovery email. An active administrator can create a

@@ -30,6 +30,8 @@ const user = {
   week_starts_on: 0,
   raw_payload_retention_days: 0,
   is_admin: true,
+  is_active: true,
+  deactivated_at: null,
 }
 
 describe('main views', () => {

@@ -920,6 +920,64 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .invitation-result code { color: #c9b8ff; font-size: .68rem; overflow-wrap: anywhere; }
 .invitation-result .button { justify-self: start; }
 
+.user-management { margin-top: 1rem; }
+.user-management table { min-width: 720px; }
+.current-user-label {
+  display: inline-flex;
+  margin-left: .45rem;
+  border-radius: 999px;
+  padding: .12rem .42rem;
+  background: rgba(139, 92, 246, .18);
+  color: #c9b8ff;
+  font-size: .6rem;
+  font-weight: 700;
+}
+.status-badge {
+  display: inline-flex;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: .18rem .5rem;
+  font-size: .64rem;
+  font-weight: 700;
+}
+.status-badge.success { border-color: #276b5b; background: #102b29; color: #76dfbd; }
+.status-badge.inactive { border-color: #7a4550; background: #321a22; color: #ff9aaa; }
+.status-detail { display: block; margin-top: .3rem; color: var(--muted); font-size: .6rem; }
+.user-actions { display: flex; flex-wrap: wrap; gap: .45rem .75rem; }
+.danger-text { color: #ff9aaa; }
+.dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 1rem;
+  background: rgba(5, 8, 15, .82);
+}
+.action-dialog {
+  width: min(520px, 100%);
+  padding: 1.35rem;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, .45);
+}
+.action-dialog h2 { margin: 0 0 .75rem; color: #f5f7fb; font-size: 1.05rem; }
+.action-dialog p { color: var(--muted-strong); font-size: .78rem; line-height: 1.55; }
+.action-dialog form { display: grid; gap: .9rem; margin-top: 1rem; }
+.action-dialog .error { padding: .65rem; text-align: left; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1.1rem; }
+.button.danger { border-color: #a64458; background: #832f43; color: #fff; }
+.button.danger:hover { background: #9f3850; }
+.recovery-result code {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid #3d3567;
+  border-radius: .55rem;
+  padding: .8rem;
+  background: #10162a;
+  color: #c9b8ff;
+  font-size: .68rem;
+}
+
 .micronutrient-source-filter {
   display: flex;
   align-items: end;

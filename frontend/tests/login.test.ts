@@ -248,4 +248,32 @@ describe('authentication store', () => {
       expect(new Headers(options?.headers).has('X-CSRF-Token')).toBe(false)
     }
   })
+  it('preserves Retry-After for the public recovery endpoint without requesting CSRF', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: 'Zu viele Anfragen. Bitte später erneut versuchen.' }),
+        {
+          status: 429,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '45' },
+        },
+      ),
+    )
+
+    await expect(
+      api('/auth/recovery/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          recovery_token: 'synthetic-token',
+          new_password: 'a-long-personal-password',
+        }),
+      }),
+    ).rejects.toMatchObject({
+      status: 429,
+      retryAfter: '45',
+      message: 'Zu viele Anfragen. Bitte später erneut versuchen.',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has('X-CSRF-Token')).toBe(false)
+  })
+
 })

@@ -16,6 +16,7 @@ fi
 docker compose exec -T backend python -m app.cli create-user \
   --username "$e2e_username" \
   --password "$e2e_password" \
+  --admin \
   --if-not-exists
 token_output=$(docker compose exec -T backend python -m app.cli create-import-token \
   --username "$e2e_username" \

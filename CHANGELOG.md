@@ -17,6 +17,9 @@ follows [Semantic Versioning](https://semver.org/).
 - Added freshly reauthenticated administrator operations for authenticator
   reset and irreversible account deletion, plus matching CLI recovery and
   authenticator-reset commands.
+- Added a German administrator interface for account lifecycle operations,
+  transient recovery-link handoff through URL fragments, and an unauthenticated
+  password-recovery page that never signs in or reactivates the account.
 
 ### Changed
 

@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
+import UserManagement from '../components/UserManagement.vue'
 import { formatGermanDate } from '../date-format'
 import { useAuthStore } from '../stores/auth'
 import type { Target, User, YazioStatus } from '../types'
@@ -136,6 +137,22 @@ async function loadTargets() {
   target.valid_from = today()
 }
 
+async function loadAdmin() {
+  ;[users.value, invitations.value] = await Promise.all([
+    api<User[]>('/users'),
+    api<Invitation[]>('/users/invitations'),
+  ])
+}
+
+async function refreshAdmin() {
+  try {
+    await loadAdmin()
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError ? cause.message : 'Benutzerliste konnte nicht aktualisiert werden.'
+  }
+}
+
 async function loadAccount() {
   const [user, tokenResult, yazioResult, mfaResult, passkeyResult] = await Promise.all([
     api<User>('/settings/profile'),
@@ -152,12 +169,7 @@ async function loadAccount() {
   yazio.value = yazioResult
   mfa.value = mfaResult
   passkeys.value = passkeyResult
-  if (user.is_admin) {
-    ;[users.value, invitations.value] = await Promise.all([
-      api<User[]>('/users'),
-      api<Invitation[]>('/users/invitations'),
-    ])
-  }
+  if (user.is_admin) await loadAdmin()
 }
 
 async function load() {
@@ -695,12 +707,13 @@ function passkeyDeviceLabel(passkey: Passkey) {
           <code>{{ invitationUrl }}</code>
           <button class="button secondary" type="button" @click="copyInvitation">Kopieren</button>
         </div>
-        <div class="table-scroll" style="margin-top: 1rem">
-          <table>
-            <thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th></tr></thead>
-            <tbody><tr v-for="item in users" :key="item.id"><td>{{ item.username }}</td><td>{{ item.is_admin ? 'Administrator' : 'Benutzer' }}</td><td>{{ item.id === auth.user?.id ? 'Du' : 'Aktiv' }}</td></tr></tbody>
-          </table>
-        </div>
+        <UserManagement
+          :users="users"
+          :current-user-id="auth.user.id"
+          @refresh="refreshAdmin"
+          @message="message = $event"
+          @error="error = $event"
+        />
         <div v-if="invitations.length" class="table-scroll" style="margin-top: 1rem">
           <table>
             <thead><tr><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th></th></tr></thead>
