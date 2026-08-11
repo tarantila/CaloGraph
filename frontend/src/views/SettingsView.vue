@@ -2,8 +2,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
+import DateInput from '../components/DateInput.vue'
 import UserManagement from '../components/UserManagement.vue'
-import { formatGermanDate } from '../date-format'
+import {
+  formatGermanDate,
+  formatGermanDateTime,
+  formatGermanInstantDate,
+  isoDateInTimeZone,
+} from '../date-format'
 import { useAuthStore } from '../stores/auth'
 import type { Target, User, YazioStatus } from '../types'
 import {
@@ -70,7 +76,15 @@ function supportedTimezones() {
 
 const props = defineProps<{ section: 'targets' | 'account' }>()
 const profile = reactive({ timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
-const target = reactive({ valid_from: new Date().toISOString().slice(0, 10), calories_kcal: 2200, maintenance_kcal: null as number | null, protein_g: 140, carbs_g: null as number | null, fat_g: null as number | null, fiber_g: null as number | null })
+const target = reactive({
+  valid_from: '',
+  calories_kcal: null as number | null,
+  maintenance_kcal: null as number | null,
+  protein_g: null as number | null,
+  carbs_g: null as number | null,
+  fat_g: null as number | null,
+  fiber_g: null as number | null,
+})
 const targets = ref<Target[]>([])
 const tokens = ref<Token[]>([])
 const tokenLabel = ref('iPhone')
@@ -116,11 +130,6 @@ const yazioStatusLabel = computed(() => {
   return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
 })
 
-function today() {
-  const current = new Date()
-  const offset = current.getTimezoneOffset() * 60_000
-  return new Date(current.getTime() - offset).toISOString().slice(0, 10)
-}
 
 async function loadTargets() {
   const targetResult = await api<Target[]>('/settings/targets')
@@ -134,7 +143,7 @@ async function loadTargets() {
     target.fat_g = currentTarget.fat_g == null ? null : Number(currentTarget.fat_g)
     target.fiber_g = currentTarget.fiber_g == null ? null : Number(currentTarget.fiber_g)
   }
-  target.valid_from = today()
+  target.valid_from = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 }
 
 async function loadAdmin() {
@@ -208,6 +217,7 @@ async function saveTarget() {
       { method: existing ? 'PUT' : 'POST', body: JSON.stringify(payload) },
     )
     message.value = `Budget und Ziele ab ${formatGermanDate(target.valid_from)} gespeichert.`
+    auth.completeTargetSetup()
     await loadTargets()
   } catch (cause) {
     error.value =
@@ -445,10 +455,14 @@ function passkeyDeviceLabel(passkey: Passkey) {
       <div class="content-grid">
         <section class="card form-card">
           <h2>Budget und Ziele festlegen</h2>
+          <p v-if="!targets.length" class="setup-notice">
+            Lege zuerst deine persönlichen Ziele fest. Kalorienbudget und Proteinziel werden für Budget- und
+            Analytics-Auswertungen verwendet; optionale Makroziele kannst du später ergänzen.
+          </p>
           <form class="form-grid" @submit.prevent="saveTarget">
-            <label class="field">Gültig ab<input v-model="target.valid_from" type="date" required /></label>
+            <label class="field">Gültig ab<DateInput v-model="target.valid_from" required /></label>
             <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" min="1" step="1" required /></label>
-            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
+            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="target.calories_kcal ?? 1" step="1" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
             <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" min="0" step="1" required /></label>
             <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" min="0" step="1" /></label>
             <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" min="0" step="1" /></label>
@@ -591,9 +605,9 @@ function passkeyDeviceLabel(passkey: Passkey) {
               <strong>{{ passkey.label }}</strong>
               <small>
                 {{ passkeyDeviceLabel(passkey) }} · erstellt
-                {{ new Date(passkey.created_at).toLocaleDateString('de-DE') }}
+                {{ formatGermanInstantDate(passkey.created_at) }}
                 <template v-if="passkey.last_used_at">
-                  · zuletzt {{ new Date(passkey.last_used_at).toLocaleString('de-DE') }}
+                  · zuletzt {{ formatGermanDateTime(passkey.last_used_at) }}
                 </template>
               </small>
             </div>
@@ -695,7 +709,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
         <p>Tokens werden nur einmal angezeigt und danach ausschließlich gehasht gespeichert.</p>
         <div class="filters"><label class="field">Bezeichnung<input v-model="tokenLabel" /></label><button class="button" type="button" @click="createToken">Token erzeugen</button></div>
         <div v-if="newToken" class="card" style="padding: 1rem; margin-top: 1rem"><strong>Jetzt sicher kopieren:</strong><code style="display: block; overflow-wrap: anywhere; margin-top: .5rem">{{ newToken }}</code></div>
-        <div class="table-scroll"><table><thead><tr><th>Bezeichnung</th><th>Präfix</th><th>Letzte Verwendung</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? new Date(token.last_used_at).toLocaleString('de-DE') : 'nie' }}</td><td><button v-if="!token.revoked_at" class="text-button" type="button" @click="revokeToken(token.id)">Widerrufen</button><span v-else>Widerrufen</span></td></tr></tbody></table></div>
+        <div class="table-scroll"><table><thead><tr><th>Bezeichnung</th><th>Präfix</th><th>Letzte Verwendung</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? formatGermanDateTime(token.last_used_at) : 'nie' }}</td><td><button v-if="!token.revoked_at" class="text-button" type="button" @click="revokeToken(token.id)">Widerrufen</button><span v-else>Widerrufen</span></td></tr></tbody></table></div>
       </section>
 
       <section v-if="auth.user?.is_admin" class="card form-card" style="margin-top: 1rem">
@@ -717,7 +731,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
         <div v-if="invitations.length" class="table-scroll" style="margin-top: 1rem">
           <table>
             <thead><tr><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th></th></tr></thead>
-            <tbody><tr v-for="item in invitations" :key="item.id"><td>{{ new Date(item.created_at).toLocaleString('de-DE') }}</td><td>{{ new Date(item.expires_at).toLocaleString('de-DE') }}</td><td>{{ item.used_at ? 'Verwendet' : item.revoked_at ? 'Widerrufen' : 'Offen' }}</td><td><button v-if="!item.used_at && !item.revoked_at" class="text-button" type="button" @click="revokeInvitation(item.id)">Widerrufen</button></td></tr></tbody>
+            <tbody><tr v-for="item in invitations" :key="item.id"><td>{{ formatGermanDateTime(item.created_at) }}</td><td>{{ formatGermanDateTime(item.expires_at) }}</td><td>{{ item.used_at ? 'Verwendet' : item.revoked_at ? 'Widerrufen' : 'Offen' }}</td><td><button v-if="!item.used_at && !item.revoked_at" class="text-button" type="button" @click="revokeInvitation(item.id)">Widerrufen</button></td></tr></tbody>
           </table>
         </div>
       </section>

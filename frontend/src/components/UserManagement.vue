@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
+import { formatGermanDateTime } from '../date-format'
 import type { User } from '../types'
 import AdminReauthDialog, { type AdminReauthentication } from './AdminReauthDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -200,7 +201,7 @@ watch(recoveryResult, async (result) => {
 })
 
 function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString('de-DE')
+  return formatGermanDateTime(value)
 }
 </script>
 

@@ -9,6 +9,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError, ensureCsrfToken } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
+import { formatGermanDateTime } from '../date-format'
 import type { ImportBatch } from '../types'
 
 interface ImportErrorDetail {
@@ -244,7 +245,7 @@ const importsWithIssues = computed(() =>
           <tbody>
             <template v-for="batch in imports" :key="batch.id">
               <tr>
-                <td>{{ new Date(batch.started_at).toLocaleString('de-DE') }}</td>
+                <td>{{ formatGermanDateTime(batch.started_at) }}</td>
                 <td><strong>{{ sourceLabel(batch.source_type) }}</strong><small v-if="batch.client_identifier" class="table-secondary">{{ batch.client_identifier }}</small></td>
                 <td><StatusBadge :status="batch.status" /></td>
                 <td class="number">{{ integer.format(batch.received) }}</td>

@@ -40,6 +40,7 @@ describe('RegisterView', () => {
       method: 'POST',
       body: JSON.stringify({ token: 'invite_secret' }),
     })
+    expect(wrapper.text()).toContain('lange, schwer erratbare Passphrase')
     await wrapper.get('input[autocomplete="username"]').setValue('friend')
     await wrapper.get('input[autocomplete="new-password"]').setValue('friend-password-is-long')
     await wrapper

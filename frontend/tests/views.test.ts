@@ -21,6 +21,7 @@ import SettingsView from '../src/views/SettingsView.vue'
 import TrendsView from '../src/views/TrendsView.vue'
 import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
+import { useAuthStore } from '../src/stores/auth'
 
 const user = {
   id: 'user-1',
@@ -44,8 +45,8 @@ describe('main views', () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/dashboard/summary') {
         return Promise.resolve({
-          today: { date: '2026-07-19', calories_kcal: null, target_kcal: 2000, protein_g: null, tracking_status: 'no_data', tracking_reasons: ['Keine Daten'] },
-          week: { consumed_kcal: 0, budget_kcal: 14000, deviation_kcal: -14000, remaining_kcal: 14000 },
+          today: { date: '2026-07-19', calories_kcal: null, target_kcal: null, protein_g: null, tracking_status: 'no_data', tracking_reasons: ['Keine Daten'] },
+          week: { consumed_kcal: 0, budget_kcal: null, deviation_kcal: null, remaining_kcal: null },
           protein_7d_average_g: null,
           last_import_at: null,
           data_start_date: '2026-06-01',
@@ -74,7 +75,7 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Ernährungsüberblick')
     expect(wrapper.text()).toContain('Verbleibend')
     expect(wrapper.text()).toContain('Wochenrest')
-    expect(wrapper.text()).toContain('Mo–So')
+    expect(wrapper.text()).toContain('Noch kein vollständiges Wochenbudget')
     expect(wrapper.text()).toContain('Wochenzusammenfassung')
     expect(wrapper.text()).toContain('Datenstatus')
     expect(wrapper.text()).toContain('Datenabdeckung')
@@ -211,7 +212,7 @@ describe('main views', () => {
     expect(budgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
     expect(budgetSeries?.step).toBe('middle')
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
-      '20. Juli – 23. Juli 2026 · 4/4 mit Daten',
+      '20.07. – 23.07.2026 · 4/4 mit Daten',
     )
 
     const highlightSwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
@@ -265,10 +266,10 @@ describe('main views', () => {
     const calorieOption = chartPanels[0].props('option') as {
       xAxis: { data: string[] }
     }
-    expect(calorieOption.xAxis.data).toEqual(['23-07'])
+    expect(calorieOption.xAxis.data).toEqual(['23.07.'])
   })
 
-  it('calculates the weekly calorie budget from daily targets with a current-budget fallback', async () => {
+  it('does not backfill historical days with the current calorie target', async () => {
     const dailyPoints = [
       { date: '2026-07-20', calories_kcal: '1005.850', target_kcal: null },
       { date: '2026-07-21', calories_kcal: '1129.0668', target_kcal: null },
@@ -329,8 +330,8 @@ describe('main views', () => {
       .findAll('.weekly-summary-list > div')
       .find((row) => row.text().includes('Kalorienbudget eingehalten'))
     expect(budgetRow).toBeDefined()
-    expect(budgetRow!.text()).toContain('4 von 4 Tagen')
-    expect(budgetRow!.text()).not.toContain('mit aktuellem Budget bewertet')
+    expect(budgetRow!.text()).toContain('1 von 1 Tag')
+    expect(budgetRow!.text()).not.toContain('4 von 4 Tagen')
   })
 
   it('renders an empty weekly budget without converting missing data to zero days', async () => {
@@ -340,6 +341,29 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Wochenbudget')
     expect(wrapper.text()).toContain('Noch keine Wochenwerte vorhanden.')
     expect(wrapper.text()).not.toContain('0 kcal')
+  })
+
+  it('shows missing weekly targets as empty instead of a zero budget', async () => {
+    apiMock.mockResolvedValue({
+      weeks: [{
+        week_start: '2026-08-10',
+        consumed_kcal: 1900,
+        budget_kcal: null,
+        deviation_kcal: null,
+        remaining_kcal: null,
+        mean_kcal: 1900,
+        median_kcal: 1900,
+      }],
+    })
+    const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Noch verfügbar–')
+    expect(wrapper.text()).not.toContain('Noch verfügbar0 kcal')
+    expect(wrapper.findAll('td').filter((cell) => cell.text() === '–')).toHaveLength(2)
+    const differenceCell = wrapper.get('tbody tr').findAll('td')[3]
+    expect(differenceCell.classes()).not.toContain('under')
+    expect(differenceCell.classes()).not.toContain('over')
   })
 
   it('uses budget thresholds, calculates numeric averages, and navigates by month', async () => {
@@ -361,7 +385,7 @@ describe('main views', () => {
     expect(wrapper.findAll('.calendar-day.over_budget')).toHaveLength(1)
     expect(wrapper.findAll('.calendar-day.above_maintenance')).toHaveLength(1)
     expect(wrapper.get('.calendar-day.under_budget').attributes('aria-label')).toBe(
-      '18-07-2026: Im Budget',
+      '18.07.2026: Im Budget',
     )
     const calorieProgress = wrapper.findAll<HTMLProgressElement>(
       'progress.calendar-calorie-progress',
@@ -382,6 +406,25 @@ describe('main views', () => {
     await flushPromises()
     expect(apiMock).toHaveBeenCalledTimes(2)
     expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
+  })
+
+  it('labels nutrition without a target without assigning a budget class', async () => {
+    apiMock.mockResolvedValue({
+      days: [{
+        date: '2026-07-18',
+        calories_kcal: '1600.000',
+        target_kcal: null,
+        maintenance_kcal: null,
+        tracking_status: 'complete',
+        classification: 'no_target',
+      }],
+    })
+    const wrapper = mount(CalendarView)
+    await flushPromises()
+
+    expect(wrapper.get('.calendar-day.no_target').text()).toContain('Kein Ziel festgelegt')
+    expect(wrapper.find('.calendar-day.under_budget').exists()).toBe(false)
+    expect(wrapper.find('.calendar-day.over_budget').exists()).toBe(false)
   })
 
   it('calculates daily averages from decimal strings without rendering NaN', async () => {
@@ -507,7 +550,7 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Wann gilt ein Tag als erfasst?')
     expect(wrapper.text()).toContain('Niedrige Werte werden nicht als unvollständig interpretiert')
     expect(wrapper.text()).toContain('Ernährungsdaten vorhanden, aber kein Kalorienwert')
-    expect(wrapper.text()).toContain('21. Juli 2026')
+    expect(wrapper.text()).toContain('21.07.2026')
   })
 
   it('shows micronutrient orientation only with visible source coverage', async () => {
@@ -616,8 +659,8 @@ describe('main views', () => {
     expect(targetsWrapper.text()).toContain('2.100 kcal')
     expect(targetsWrapper.text()).toContain('2.600 kcal')
     expect(targetsWrapper.text()).not.toContain('2100.000')
-    expect(targetsWrapper.text()).toContain('27-07-2026')
-    expect(targetsWrapper.text()).toContain('02-08-2026')
+    expect(targetsWrapper.text()).toContain('27.07.2026')
+    expect(targetsWrapper.text()).toContain('02.08.2026')
     expect(targetsWrapper.text()).not.toContain('2026-07-27')
     expect(targetsWrapper.text()).not.toContain('2026-08-02')
     expect(targetsWrapper.text()).not.toContain('Persönliche YAZIO-Verbindung')
@@ -627,7 +670,7 @@ describe('main views', () => {
     await flushPromises()
     const [year, month, day] = today.split('-')
     expect(targetsWrapper.text()).toContain(
-      `Budget und Ziele ab ${day}-${month}-${year} gespeichert.`,
+      `Budget und Ziele ab ${day}.${month}.${year} gespeichert.`,
     )
     expect(apiMock).toHaveBeenCalledWith(`/settings/targets/${today}`, {
       method: 'PUT',
@@ -674,6 +717,49 @@ describe('main views', () => {
     expect(accountWrapper.text()).toContain(
       'https://nutrition.example.test/einladung#token=invite_example',
     )
+  })
+
+  it('starts targetless users with empty required goals and saves only their values', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([])
+      return Promise.resolve({})
+    })
+    const auth = useAuthStore()
+    auth.needsTargetSetup = true
+    const wrapper = mount(SettingsView, { props: { section: 'targets' } })
+    await flushPromises()
+
+    const now = new Date()
+    const offset = now.getTimezoneOffset() * 60_000
+    const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
+    const [year, month, day] = today.split('-')
+    const numbers = wrapper.findAll<HTMLInputElement>('input[type="number"]')
+
+    expect(wrapper.text()).toContain('Lege zuerst deine persönlichen Ziele fest.')
+    expect(wrapper.get<HTMLInputElement>('input[type="text"]').element.value).toBe(
+      `${day}.${month}.${year}`,
+    )
+    expect(numbers[0].element.value).toBe('')
+    expect(numbers[2].element.value).toBe('')
+
+    await numbers[0].setValue('2100')
+    await numbers[2].setValue('130')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('/settings/targets', {
+      method: 'POST',
+      body: JSON.stringify({
+        valid_from: today,
+        calories_kcal: 2100,
+        maintenance_kcal: null,
+        protein_g: 130,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+      }),
+    })
+    expect(auth.needsTargetSetup).toBe(false)
   })
 
   it('clears a stale YAZIO error before a successful retry', async () => {

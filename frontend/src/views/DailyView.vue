@@ -11,12 +11,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, ApiError } from '../api'
 import DateFilter from '../components/DateFilter.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { useAuthStore } from '../stores/auth'
 import type { DailyPoint } from '../types'
 
 const route = useRoute()
 const router = useRouter()
-const today = new Date().toISOString().slice(0, 10)
-const before = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10)
+const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
+const before = shiftIsoDate(today, -29)
 const start = ref(String(route.query.start ?? before))
 const end = ref(String(route.query.end ?? today))
 const source = ref(String(route.query.source ?? ''))
@@ -111,7 +113,7 @@ const missingPoints = computed(() =>
           <thead><tr><th>Datum</th><th>Status</th><th class="number">Kalorien</th><th class="number">Abweichung</th><th class="number">Protein</th><th class="number">Kohlenhydrate</th><th class="number">Fett</th></tr></thead>
           <tbody>
             <tr v-for="point in points" :key="point.date">
-              <td>{{ new Date(`${point.date}T12:00:00`).toLocaleDateString('de-DE') }}</td>
+              <td>{{ formatGermanDate(point.date) }}</td>
               <td><StatusBadge :status="point.tracking_status" /></td>
               <td class="number">{{ display(point.calories_kcal, ' kcal') }}</td>
               <td class="number">{{ display(point.deviation_kcal, ' kcal') }}</td>

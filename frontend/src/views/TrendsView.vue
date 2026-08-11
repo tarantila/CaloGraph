@@ -10,7 +10,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
-import { formatGermanDayMonth } from '../date-format'
+import { formatGermanDate, formatGermanDayMonth } from '../date-format'
 import type { DailyPoint } from '../types'
 
 const points = ref<DailyPoint[]>([])
@@ -42,15 +42,8 @@ const latestSevenDayAverage = computed(() =>
 )
 const rangeLabel = computed(() => {
   if (!points.value.length) return 'Keine Daten'
-  const first = new Date(`${points.value[0].date}T12:00:00`).toLocaleDateString('de-DE', {
-    day: '2-digit',
-    month: 'short',
-  })
-  const last = new Date(`${points.value.at(-1)!.date}T12:00:00`).toLocaleDateString('de-DE', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  })
+  const first = formatGermanDayMonth(points.value[0].date)
+  const last = formatGermanDate(points.value.at(-1)!.date)
   return `${first} – ${last}`
 })
 

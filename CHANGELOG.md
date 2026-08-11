@@ -20,6 +20,10 @@ follows [Semantic Versioning](https://semver.org/).
 - Added a German administrator interface for account lifecycle operations,
   transient recovery-link handoff through URL fragments, and an unauthenticated
   password-recovery page that never signs in or reactivates the account.
+- Added required first-login goal setup for accounts without a nutrition
+  target, using the existing user-scoped target history API.
+- Added locale-independent German calendar-date entry with manual
+  `TT.MM.JJJJ` input and an optional native calendar picker.
 
 ### Changed
 
@@ -30,11 +34,16 @@ follows [Semantic Versioning](https://semver.org/).
 - User lifecycle serialization now also covers recovery issuance and
   completion, authenticator reset, and destructive reauthentication so those
   operations cannot race across API, CLI, imports, or the YAZIO scheduler.
+- New account registration and CLI user creation no longer persist synthetic
+  2200 kcal / 140 g nutrition targets.
+- The central password policy now rejects obvious repetition and sequence
+  patterns across registration, password changes, recovery, and CLI creation
+  while retaining long passphrases and password-manager values.
 
 ### Fixed
 
-- Corrected German date ordering in budget history, trend axes, and calendar
-  accessibility labels, and standardized the daily protein heading.
+- Standardized visible German calendar dates as `TT.MM.JJJJ` (or `TT.MM.` on
+  compact axes) without changing ISO API values.
 
 ## [0.2.2] - 2026-08-03
 

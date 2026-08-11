@@ -10,6 +10,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
+import { formatGermanDate, formatGermanDateTime, shiftIsoDate } from '../date-format'
 import type { DailyPoint } from '../types'
 
 interface QualityImport {
@@ -59,11 +60,7 @@ onMounted(async () => {
 })
 
 function dateLabel(value: string) {
-  return new Date(`${value}T12:00:00`).toLocaleDateString('de-DE', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  })
+  return formatGermanDate(value)
 }
 
 function sourceLabel(source: string) {
@@ -87,9 +84,8 @@ const missingRanges = computed(() => {
       groups.push({ start: current, end: current })
       continue
     }
-    const expected = new Date(`${previous.end}T12:00:00`)
-    expected.setDate(expected.getDate() + 1)
-    if (expected.toISOString().slice(0, 10) === current) previous.end = current
+    const expected = shiftIsoDate(previous.end, 1)
+    if (expected === current) previous.end = current
     else groups.push({ start: current, end: current })
   }
   return groups.map((group) =>
@@ -195,7 +191,7 @@ const issueImports = computed(() =>
           <thead><tr><th>Zeitpunkt</th><th>Quelle</th><th>Status</th><th class="number">Empfangen</th><th class="number">Übernommen</th><th class="number">Fehler</th><th>Hinweis</th></tr></thead>
           <tbody>
             <tr v-for="item in quality.imports" :key="item.id">
-              <td>{{ new Date(item.started_at).toLocaleString('de-DE') }}</td>
+              <td>{{ formatGermanDateTime(item.started_at) }}</td>
               <td><strong>{{ sourceLabel(item.source_type) }}</strong></td>
               <td><StatusBadge :status="item.status" /></td>
               <td class="number">{{ integer.format(item.received) }}</td>

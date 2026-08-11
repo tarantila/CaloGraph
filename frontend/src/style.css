@@ -553,6 +553,34 @@ td strong { color: #f0f4f9; font-weight: 600; }
 }
 .field input::placeholder { color: #718096; opacity: 1; }
 .field small { color: var(--muted); font-size: .63rem; line-height: 1.4; }
+.date-input {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) auto;
+  gap: .4rem;
+}
+.date-input-picker-button {
+  min-height: 2.5rem;
+  border: 1px solid var(--accent);
+  border-radius: .55rem;
+  padding: .5rem .68rem;
+  background: transparent;
+  color: #b69aff;
+  cursor: pointer;
+}
+.date-input-picker-button:disabled { opacity: .55; cursor: wait; }
+.field .date-input-native-picker {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
 .button {
   min-height: 2.5rem;
   border: 1px solid var(--accent);
@@ -702,6 +730,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .calendar-day.above_maintenance::before { background: #fb7185; }
 .calendar-day.probably_incomplete { border-style: dashed; border-color: #7b6129; }
 .calendar-day.probably_incomplete::before { background: #f5c864; }
+.calendar-day.no_target { border-style: dashed; }
 .calendar-day.no_data { opacity: .74; }
 
 .quality-explainer {

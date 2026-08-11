@@ -83,7 +83,7 @@ async function submit() {
         <label class="field">Benutzername<input v-model="username" autocomplete="username" required /></label>
         <label class="field">Passwort<input v-model="password" type="password" minlength="15" autocomplete="new-password" required /></label>
         <label class="field">Passwort wiederholen<input v-model="passwordRepeat" type="password" minlength="15" autocomplete="new-password" required /></label>
-        <p class="muted">Mindestens 15 Zeichen. Lange Passphrasen und Passwortmanager werden unterstützt.</p>
+        <p class="muted">Mindestens 15 Zeichen. Verwende eine lange, schwer erratbare Passphrase oder einen Passwortmanager.</p>
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <button class="button" type="submit" :disabled="loading">
           {{ loading ? 'Konto wird erstellt …' : 'Konto erstellen' }}

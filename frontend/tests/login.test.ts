@@ -34,6 +34,83 @@ describe('authentication store', () => {
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
   })
 
+  it('detects targetless users without inventing goal values', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: '1',
+            username: 'friend',
+            language: 'de',
+            timezone: 'Europe/Berlin',
+            week_starts_on: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    const auth = useAuthStore()
+
+    expect(await auth.ensureUser()).toBe(true)
+    expect(auth.needsTargetSetup).toBe(true)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/auth/me',
+      '/api/v1/settings/targets',
+    ])
+
+    auth.completeTargetSetup()
+    expect(auth.needsTargetSetup).toBe(false)
+  })
+
+  it('reloads the target setup state when another user logs in', async () => {
+    const firstUser = {
+      id: '1',
+      username: 'first',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+    }
+    const secondUser = { ...firstUser, id: '2', username: 'second' }
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(firstUser), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'target' }]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        mfa_required: false,
+        user: secondUser,
+        csrf_token: 'second-csrf',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(secondUser), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    const auth = useAuthStore()
+
+    expect(await auth.ensureUser()).toBe(true)
+    expect(auth.needsTargetSetup).toBe(false)
+    expect(await auth.login('second', 'second-password')).toBe(true)
+    expect(auth.needsTargetSetup).toBeNull()
+    expect(await auth.ensureUser()).toBe(true)
+    expect(auth.needsTargetSetup).toBe(true)
+  })
+
   it('revalidates and clears a cached user after the server session expires', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')

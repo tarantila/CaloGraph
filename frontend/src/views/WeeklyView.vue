@@ -10,13 +10,14 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import { formatGermanDate, formatGermanDayMonth, shiftIsoDate } from '../date-format'
 
 interface Week {
   week_start: string
   consumed_kcal: number
-  budget_kcal: number
-  deviation_kcal: number
-  remaining_kcal: number
+  budget_kcal: number | null
+  deviation_kcal: number | null
+  remaining_kcal: number | null
   mean_kcal: number | null
   median_kcal: number | null
 }
@@ -48,7 +49,9 @@ const averageWeek = computed(() =>
     : null,
 )
 const weeksWithinBudget = computed(() =>
-  recordedWeeks.value.filter((week) => week.deviation_kcal <= 0).length,
+  recordedWeeks.value.filter(
+    (week) => week.deviation_kcal != null && week.deviation_kcal <= 0,
+  ).length,
 )
 
 const option = computed<EChartsOption>(() => ({
@@ -69,12 +72,7 @@ const option = computed<EChartsOption>(() => ({
   grid: { left: 58, right: 18, top: 48, bottom: 40 },
   xAxis: {
     type: 'category',
-    data: weeks.value.map((week) =>
-      new Date(`${week.week_start}T12:00:00`).toLocaleDateString('de-DE', {
-        day: '2-digit',
-        month: 'short',
-      }),
-    ),
+    data: weeks.value.map((week) => formatGermanDayMonth(week.week_start)),
     axisLine: { lineStyle: { color: '#263449' } },
     axisTick: { show: false },
     axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
@@ -106,10 +104,7 @@ const option = computed<EChartsOption>(() => ({
 }))
 
 function weekLabel(value: string) {
-  const start = new Date(`${value}T12:00:00`)
-  const end = new Date(start)
-  end.setDate(start.getDate() + 6)
-  return `${start.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })} – ${end.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })}`
+  return `${formatGermanDayMonth(value)} – ${formatGermanDate(shiftIsoDate(value, 6))}`
 }
 </script>
 
@@ -134,7 +129,7 @@ function weekLabel(value: string) {
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhGauge :size="20" weight="duotone" /></span>
-        <span><small>Noch verfügbar</small><strong>{{ latestWeek ? `${format.format(Math.max(latestWeek.remaining_kcal, 0))} kcal` : '–' }}</strong></span>
+        <span><small>Noch verfügbar</small><strong>{{ latestWeek?.remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.remaining_kcal, 0))} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhClockCounterClockwise :size="20" weight="duotone" /></span>
@@ -170,9 +165,10 @@ function weekLabel(value: string) {
             <tr v-for="week in [...weeks].reverse()" :key="week.week_start">
               <td><strong>{{ weekLabel(week.week_start) }}</strong></td>
               <td class="number">{{ format.format(week.consumed_kcal) }} kcal</td>
-              <td class="number">{{ format.format(week.budget_kcal) }} kcal</td>
-              <td :class="['number', 'difference-value', week.deviation_kcal > 0 ? 'over' : 'under']">
-                {{ week.deviation_kcal > 0 ? '+' : '' }}{{ format.format(week.deviation_kcal) }} kcal
+              <td class="number">{{ week.budget_kcal == null ? '–' : `${format.format(week.budget_kcal)} kcal` }}</td>
+              <td :class="['number', 'difference-value', week.deviation_kcal == null ? null : week.deviation_kcal > 0 ? 'over' : 'under']">
+                <template v-if="week.deviation_kcal != null">{{ week.deviation_kcal > 0 ? '+' : '' }}{{ format.format(week.deviation_kcal) }} kcal</template>
+                <template v-else>–</template>
               </td>
               <td class="number">{{ week.mean_kcal == null ? '–' : `${format.format(week.mean_kcal)} kcal` }}</td>
               <td class="number">{{ week.median_kcal == null ? '–' : `${format.format(week.median_kcal)} kcal` }}</td>

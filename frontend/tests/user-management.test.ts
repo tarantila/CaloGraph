@@ -85,7 +85,7 @@ describe('UserManagement', () => {
     expect(rowFor(wrapper, 'active-user').text()).toContain('Aktiv')
     expect(rowFor(wrapper, 'active-user').text()).toContain('Deaktivieren')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Deaktiviert')
-    expect(rowFor(wrapper, 'inactive-user').text()).toContain('seit 10.8.2026')
+    expect(rowFor(wrapper, 'inactive-user').text()).toContain('seit 10.08.2026')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Recovery ausstellen')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Authentikatoren zurücksetzen')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Endgültig löschen')

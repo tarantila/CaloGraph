@@ -17,15 +17,22 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import {
+  formatGermanDate,
+  formatGermanDateTime,
+  formatGermanDayMonth,
+  isoWeekday,
+  shiftIsoDate,
+} from '../date-format'
 import type { DailyPoint, ImportBatch, ImportSummary, Target, YazioStatus } from '../types'
 
 interface Summary {
   today: DailyPoint
   week: {
     consumed_kcal: number
-    budget_kcal: number
-    deviation_kcal: number
-    remaining_kcal: number
+    budget_kcal: number | null
+    deviation_kcal: number | null
+    remaining_kcal: number | null
   }
   protein_7d_average_g: number | null
   last_import_at: string | null
@@ -60,14 +67,9 @@ const decimal = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
 const percentage = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 })
 
 function addDays(value: string, amount: number) {
-  const result = new Date(`${value}T12:00:00`)
-  result.setDate(result.getDate() + amount)
-  return result.toISOString().slice(0, 10)
+  return shiftIsoDate(value, amount)
 }
 
-function formatDate(value: string, options: Intl.DateTimeFormatOptions) {
-  return new Date(`${value}T12:00:00`).toLocaleDateString('de-DE', options)
-}
 
 function hasNutritionData(point: DailyPoint) {
   return [point.calories_kcal, point.protein_g, point.carbs_g, point.fat_g].some(
@@ -206,24 +208,13 @@ const todayComparison = computed(() => {
 })
 
 const dateHeading = computed(() =>
-  summary.value
-    ? formatDate(summary.value.today.date, {
-        weekday: 'long',
-        day: '2-digit',
-        month: 'long',
-        year: 'numeric',
-      })
-    : '',
+  summary.value ? formatGermanDate(summary.value.today.date) : '',
 )
 
 const rangeLabel = computed(() => {
   if (!trends.value.length) return 'Keine erfassten Tage'
-  const first = formatDate(trends.value[0].date, { day: '2-digit', month: 'short' })
-  const last = formatDate(trends.value.at(-1)!.date, {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  })
+  const first = formatGermanDayMonth(trends.value[0].date)
+  const last = formatGermanDate(trends.value.at(-1)!.date)
   const recordedDays = trends.value.filter(hasNutritionData).length
   return `${first} – ${last} · ${recordedDays}/${trends.value.length} mit Daten`
 })
@@ -243,9 +234,7 @@ const lastImportLabel = computed(() => {
     yazioStatus.value?.last_success_at ??
     summary.value?.last_import_at ??
     latestImport.value?.finished_at
-  return value
-    ? new Date(value).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-    : 'noch nicht synchronisiert'
+  return value ? formatGermanDateTime(value) : 'noch nicht synchronisiert'
 })
 const sourceDescription = computed(() =>
   yazioStatus.value?.last_success_at ||
@@ -271,8 +260,9 @@ const syncScheduleLabel = computed(() => {
 
 const currentWeekPoints = computed(() => {
   if (!summary.value) return []
-  const today = new Date(`${summary.value.today.date}T12:00:00`)
-  const mondayBasedWeekday = (today.getDay() + 6) % 7
+  const weekday = isoWeekday(summary.value.today.date)
+  if (weekday == null) return []
+  const mondayBasedWeekday = (weekday + 6) % 7
   const start = addDays(summary.value.today.date, -mondayBasedWeekday)
   return trends.value.filter((point) => point.date >= start && point.date <= summary.value!.today.date)
 })
@@ -289,7 +279,7 @@ const weekAverageProtein = computed(() =>
 const weekBudgetComparisons = computed(() =>
   recordedWeekPoints.value.flatMap((point) => {
     if (point.calories_kcal == null) return []
-    const rawBudgetKcal = point.target_kcal ?? calorieTarget.value
+    const rawBudgetKcal = point.target_kcal
     if (rawBudgetKcal == null) return []
     const caloriesKcal = Number(point.calories_kcal)
     const budgetKcal = Number(rawBudgetKcal)
@@ -315,8 +305,9 @@ const weekBudgetResultLabel = computed(() => {
 })
 const elapsedWeekDays = computed(() => {
   if (!summary.value) return 0
-  const today = new Date(`${summary.value.today.date}T12:00:00`)
-  const mondayBasedWeekday = (today.getDay() + 6) % 7
+  const weekday = isoWeekday(summary.value.today.date)
+  if (weekday == null) return 0
+  const mondayBasedWeekday = (weekday + 6) % 7
   return mondayBasedWeekday + 1
 })
 
@@ -390,9 +381,7 @@ const calorieChart = computed<EChartsOption>(() => ({
   grid: { left: 54, right: 18, top: 46, bottom: 40 },
   xAxis: {
     type: 'category',
-    data: trends.value.map((item) =>
-      formatDate(item.date, { day: '2-digit', month: 'short' }).replace('.', ''),
-    ),
+    data: trends.value.map((item) => formatGermanDayMonth(item.date)),
     axisLine: { lineStyle: { color: chartGrid } },
     axisTick: { show: false },
     axisLabel: {
@@ -450,9 +439,7 @@ const macroChart = computed<EChartsOption>(() => ({
   grid: { left: 48, right: 16, top: 20, bottom: 50 },
   xAxis: {
     type: 'category',
-    data: trends.value.map((item) =>
-      formatDate(item.date, { day: '2-digit', month: 'short' }).replace('.', ''),
-    ),
+    data: trends.value.map((item) => formatGermanDayMonth(item.date)),
     axisLine: { lineStyle: { color: chartGrid } },
     axisTick: { show: false },
     axisLabel: {
@@ -566,15 +553,16 @@ const macroChart = computed<EChartsOption>(() => ({
       <article class="card metric-card">
         <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>Wochenrest</span></div>
         <div class="metric-card-value">
-          {{ integer.format(Math.max(summary.week.remaining_kcal, 0)) }}
-          <small>kcal</small>
+          {{ summary.week.remaining_kcal == null ? '–' : integer.format(Math.max(summary.week.remaining_kcal, 0)) }}
+          <small v-if="summary.week.remaining_kcal != null">kcal</small>
         </div>
-        <p v-if="summary.week.remaining_kcal < 0">
+        <p v-if="summary.week.remaining_kcal == null">Noch kein vollständiges Wochenbudget</p>
+        <p v-else-if="summary.week.remaining_kcal < 0">
           {{ integer.format(Math.abs(summary.week.remaining_kcal)) }} kcal über Wochenbudget
         </p>
         <p v-else>
           Mo–So · {{ integer.format(summary.week.consumed_kcal) }} von
-          {{ integer.format(summary.week.budget_kcal) }} kcal
+          {{ integer.format(summary.week.budget_kcal!) }} kcal
         </p>
       </article>
     </section>

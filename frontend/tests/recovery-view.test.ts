@@ -82,6 +82,7 @@ describe('RecoveryView', () => {
     apiMock.mockRejectedValue(new ApiError('Passwort ist zu häufig verwendet.', 422))
     const { wrapper } = await mountRecovery()
 
+    expect(wrapper.text()).toContain('lange, schwer erratbare Passphrase')
     await wrapper.get('input[autocomplete="off"]').setValue('manually-pasted-token')
     await wrapper.get('input[autocomplete="new-password"]').setValue('too-short-but-matching')
     await wrapper.findAll('input[autocomplete="new-password"]')[1].setValue('too-short-but-matching')

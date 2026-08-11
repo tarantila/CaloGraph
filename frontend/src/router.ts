@@ -41,7 +41,13 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.public) return true
-  return (await auth.ensureUser()) ? true : { name: 'login', query: { next: to.fullPath } }
+  if (!(await auth.ensureUser())) {
+    return { name: 'login', query: { next: to.fullPath } }
+  }
+  if (auth.needsTargetSetup && to.name !== 'targets') {
+    return { name: 'targets' }
+  }
+  return true
 })
 
 setAuthenticationExpiredHandler(() => {

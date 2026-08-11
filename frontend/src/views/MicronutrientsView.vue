@@ -11,6 +11,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { api, ApiError } from '../api'
 import DateFilter from '../components/DateFilter.vue'
+import { formatGermanDateTime, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { useAuthStore } from '../stores/auth'
 
 type NutrientStatus =
   | 'no_data'
@@ -49,8 +51,8 @@ interface MicronutrientResponse {
 
 const route = useRoute()
 const router = useRouter()
-const today = new Date().toISOString().slice(0, 10)
-const before = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10)
+const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
+const before = shiftIsoDate(today, -29)
 const start = ref(String(route.query.start ?? before))
 const end = ref(String(route.query.end ?? today))
 const source = ref(String(route.query.source ?? 'yazio_export_v1'))
@@ -129,7 +131,7 @@ const minerals = computed(
 )
 const freshness = computed(() => {
   if (!result.value?.last_updated_at) return 'Noch keine Daten'
-  return `Aktualisiert ${new Date(result.value.last_updated_at).toLocaleString('de-DE')}`
+  return `Aktualisiert ${formatGermanDateTime(result.value.last_updated_at)}`
 })
 
 function unitLabel(unit: Nutrient['unit']) {

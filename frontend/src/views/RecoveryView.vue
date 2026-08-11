@@ -100,7 +100,7 @@ async function submit() {
           Neues Passwort wiederholen
           <input v-model="passwordRepeat" type="password" minlength="15" autocomplete="new-password" required />
         </label>
-        <p class="muted">Mindestens 15 Zeichen. Lange Passphrasen und Passwortmanager werden unterstützt.</p>
+        <p class="muted">Mindestens 15 Zeichen. Verwende eine lange, schwer erratbare Passphrase oder einen Passwortmanager.</p>
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <p v-if="retryAfterSeconds" class="muted" role="status">
           Erneut versuchen in {{ retryAfterSeconds }} Sekunden.

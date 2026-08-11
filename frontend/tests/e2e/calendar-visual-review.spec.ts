@@ -50,6 +50,21 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
         },
       })
     }
+    if (path.endsWith('/settings/targets')) {
+      return route.fulfill({
+        json: [{
+          id: 'calendar-target',
+          valid_from: '2026-01-01',
+          valid_to: null,
+          calories_kcal: 2000,
+          maintenance_kcal: 2300,
+          protein_g: 140,
+          carbs_g: null,
+          fat_g: null,
+          fiber_g: null,
+        }],
+      })
+    }
     if (path.endsWith('/analytics/calendar')) {
       return route.fulfill({ json: { days: calendarDays } })
     }

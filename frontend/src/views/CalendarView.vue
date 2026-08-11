@@ -11,7 +11,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, ApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
-import { formatGermanDate } from '../date-format'
+import { formatGermanDate, formatGermanDayMonth, formatGermanWeekday } from '../date-format'
 import type { DailyPoint } from '../types'
 
 const now = new Date()
@@ -25,6 +25,7 @@ const labels: Record<string, string> = {
   over_budget: 'Über Budget',
   above_maintenance: 'Über Erhaltungsbedarf',
   probably_incomplete: 'Kalorienwert fehlt',
+  no_target: 'Kein Ziel festgelegt',
   no_data: 'Keine Daten',
 }
 const format = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
@@ -194,8 +195,8 @@ const averageCalories = computed(() => {
           :aria-label="`${formatGermanDate(day.date)}: ${labels[day.classification ?? 'no_data']}`"
         >
           <div class="calendar-day-heading">
-            <strong>{{ new Date(`${day.date}T12:00:00`).toLocaleDateString('de-DE', { weekday: 'short' }) }}</strong>
-            <time :datetime="day.date">{{ new Date(`${day.date}T12:00:00`).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) }}</time>
+            <strong>{{ formatGermanWeekday(day.date) }}</strong>
+            <time :datetime="day.date">{{ formatGermanDayMonth(day.date) }}</time>
           </div>
           <b>{{ calorieValue(day) == null ? '–' : format.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
           <span>{{ labels[day.classification ?? 'no_data'] }}</span>
