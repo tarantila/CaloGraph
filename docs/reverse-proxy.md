@@ -319,7 +319,11 @@ the pseudonymous application events. The following filter matches the JSON
 
 ```ini
 [Definition]
-failregex = ^\{"time":"[^"]+","remote_addr":"<HOST>","method":"(?:POST|PUT)","path":"/api/v1/(?:auth/(?:login|passkey/verify|mfa/totp/verify|invitation/exchange)|yazio/connection)","protocol":"HTTP/[0-9.]+","status":(?:401|429),
+
+datepattern = ^\{"time":"{DATE}",
+
+failregex = ^"remote_addr":"<HOST>","method":"(?:POST|PUT)","path":"/api/v1/(?:auth/(?:login|passkey/verify|mfa/totp/verify|invitation/exchange)|yazio/connection)","protocol":"HTTP/[0-9.]+","status":(?:401|429),
+
 ignoreregex =
 ```
 
@@ -347,6 +351,12 @@ iptables action on a host using nftables. Validate before reload:
 fail2ban-regex \
   /var/log/nginx/calograph-access.log \
   /etc/fail2ban/filter.d/calograph-login.conf
+```
+
+Before loading the jail, use a synthetic failed request to confirm that
+`fail2ban-regex` reports exactly one match.
+
+```bash
 fail2ban-client -t
 systemctl reload fail2ban
 fail2ban-client status calograph-login
