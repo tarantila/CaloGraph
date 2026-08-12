@@ -71,7 +71,7 @@ async function signOut() {
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
-        <small>CaloGraph v0.3.1</small>
+        <small>CaloGraph v0.3.2</small>
         <button class="sidebar-signout" type="button" @click="signOut">
           <PhSignOut :size="18" aria-hidden="true" />
           Abmelden

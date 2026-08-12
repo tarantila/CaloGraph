@@ -5,6 +5,34 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-12
+
+### Added
+
+- Added persistent, resumable YAZIO history synchronization with complete-history
+  and user-selected date-range backfills. Long backfills are split into
+  consecutive 366-day requests with persisted queue, cursor, completion, and
+  retry state.
+- Added historical-sync controls and progress/error status to **Importe**, plus
+  `sync-yazio-history` CLI support for complete and date-range jobs.
+- Added deployment-wide `YAZIO_SYNC_INTERVAL_HOURS=6` and `YAZIO_SYNC_DAYS=7`
+  defaults. Connections may retain explicit per-connection overrides.
+- Added migration `20260812_0013` for existing v0.3.1 YAZIO connections. They
+  inherit the deployment defaults without an automatic full-history job; newly
+  configured connections can receive their initial full-history import.
+
+### Changed
+
+- Improved the YAZIO scheduler heartbeat and health checks while historical
+  jobs run, without blocking other eligible connections.
+
+### Security
+
+- Protected history queueing with CSRF validation, user-scoped operation locks,
+  existing rate and global-concurrency limits, and resumable jobs that do not
+  expose credentials.
+
+
 ## [0.3.1] - 2026-08-11
 
 ### Changed
@@ -301,7 +329,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tarantila/CaloGraph/compare/661990b...v0.3.0
 [0.2.2]: https://github.com/tarantila/CaloGraph/compare/55fc57d...661990b
