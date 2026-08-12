@@ -125,7 +125,6 @@ def yazio_source_identifier(user_id: UUID) -> str:
 
 YAZIO_HISTORY_DISCOVERY_START = date(2000, 1, 1)
 MAX_YAZIO_RANGE_DAYS = 366
-MAX_YAZIO_HISTORY_RANGE_DAYS = 366
 
 
 
@@ -137,24 +136,35 @@ def effective_sync_days(connection: YazioConnection) -> int:
     return connection.sync_days or settings.yazio_sync_days
 
 
+def _validate_historical_range(
+    start_day: date | None,
+    end_day: date | None,
+    *,
+    local_today: date,
+) -> tuple[date, date]:
+    if start_day is None or end_day is None:
+        raise ValueError(
+            "Für den historischen YAZIO-Import müssen Von- und Bis-Datum angegeben werden."
+        )
+    if start_day > end_day:
+        raise ValueError("Das Von-Datum darf nicht nach dem Bis-Datum liegen.")
+    if start_day < YAZIO_HISTORY_DISCOVERY_START:
+        raise ValueError(
+            "Der historische YAZIO-Import kann frühestens am 2000-01-01 beginnen."
+        )
+    if end_day > local_today:
+        raise ValueError("Das Bis-Datum darf nicht in der Zukunft liegen.")
+    return start_day, end_day
+
+
 def enqueue_historical_yazio_sync(
     user_id: UUID,
     *,
-    kind: Literal["full", "range"],
-    start_day: date | None = None,
-    end_day: date | None = None,
+    start_day: date,
+    end_day: date,
     now: datetime | None = None,
 ) -> YazioConnection:
     _require_yazio_enabled()
-    if kind == "range" and (
-        start_day is None
-        or end_day is None
-        or start_day > end_day
-        or (end_day - start_day).days >= MAX_YAZIO_HISTORY_RANGE_DAYS
-    ):
-        raise ValueError(
-            "Der historische Zeitraum ist ungültig oder länger als 366 Tage."
-        )
     requested_at = now or datetime.now(UTC)
     with SessionLocal() as db, _active_yazio_user_operation(db, user_id):
         connection = db.scalar(
@@ -168,15 +178,24 @@ def enqueue_historical_yazio_sync(
             raise YazioConnectionDisabled(
                 "Die automatische YAZIO-Synchronisierung ist deaktiviert."
             )
+        user = db.get(User, connection.user_id)
+        if user is None:
+            raise YazioConnectionNotConfigured(
+                "Für dieses Konto ist keine YAZIO-Verbindung eingerichtet."
+            )
+        start_day, end_day = _validate_historical_range(
+            start_day,
+            end_day,
+            local_today=requested_at.astimezone(ZoneInfo(user.timezone)).date(),
+        )
         if connection.historical_sync_state in {"pending", "running"}:
             raise YazioOperationCapacityExceeded(
                 "Für dieses Konto läuft bereits ein YAZIO-Vorgang."
             )
-        connection.historical_sync_kind = kind
         connection.historical_sync_state = "pending"
         connection.historical_sync_start_date = start_day
         connection.historical_sync_end_date = end_day
-        connection.historical_sync_cursor_date = end_day if kind == "range" else None
+        connection.historical_sync_cursor_date = end_day
         connection.historical_sync_started_at = None
         connection.historical_sync_completed_at = None
         connection.historical_sync_last_error = None
@@ -413,21 +432,47 @@ def configure_yazio_connection(
     *,
     sync_interval_minutes: int | None = None,
     sync_days: int | None = None,
+    start_day: date | None = None,
+    end_day: date | None = None,
+    now: datetime | None = None,
 ) -> YazioConnection:
     _require_yazio_enabled()
     if sync_interval_minutes is not None and not 60 <= sync_interval_minutes <= 10080:
         raise ValueError("Das Sync-Intervall muss zwischen 60 und 10080 Minuten liegen.")
     if sync_days is not None and not 1 <= sync_days <= 366:
         raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
+    if (start_day is None) != (end_day is None):
+        raise ValueError(
+            "Für den historischen YAZIO-Import müssen Von- und Bis-Datum "
+            "zusammen angegeben werden."
+        )
 
+    configured_at = now or datetime.now(UTC)
     with SessionLocal() as db, _active_yazio_user_operation(db, user.id) as attached_user:
         connection = db.scalar(
             select(YazioConnection).where(YazioConnection.user_id == attached_user.id)
         )
-        is_new = connection is None
         if connection is None:
+            start_day, end_day = _validate_historical_range(
+                start_day,
+                end_day,
+                local_today=configured_at.astimezone(
+                    ZoneInfo(attached_user.timezone)
+                ).date(),
+            )
             connection = YazioConnection(user_id=attached_user.id)
             db.add(connection)
+            queue_historical_sync = True
+        else:
+            queue_historical_sync = start_day is not None
+            if queue_historical_sync:
+                start_day, end_day = _validate_historical_range(
+                    start_day,
+                    end_day,
+                    local_today=configured_at.astimezone(
+                        ZoneInfo(attached_user.timezone)
+                    ).date(),
+                )
         connection.encrypted_email = encrypt_credential(email.strip())
         connection.encrypted_password = encrypt_credential(password)
         connection.source_identifier = yazio_source_identifier(attached_user.id)
@@ -436,21 +481,15 @@ def configure_yazio_connection(
             connection.sync_interval_minutes = sync_interval_minutes
         if sync_days is not None:
             connection.sync_days = sync_days
-        if is_new:
-            connection.initial_sync_state = "pending"
-            connection.historical_sync_kind = "initial"
+        if queue_historical_sync:
             connection.historical_sync_state = "pending"
-            connection.historical_sync_start_date = None
-            connection.historical_sync_end_date = None
-            connection.historical_sync_cursor_date = None
+            connection.historical_sync_start_date = start_day
+            connection.historical_sync_end_date = end_day
+            connection.historical_sync_cursor_date = end_day
             connection.historical_sync_started_at = None
             connection.historical_sync_completed_at = None
             connection.historical_sync_last_error = None
-            connection.next_sync_at = datetime.now(UTC)
-        elif connection.initial_sync_state in {"pending", "running", "failed"}:
-            connection.historical_sync_state = "pending"
-            connection.historical_sync_last_error = None
-            connection.next_sync_at = datetime.now(UTC)
+            connection.next_sync_at = configured_at
         connection.last_error = None
         db.commit()
         db.refresh(connection)
@@ -602,18 +641,8 @@ def _run_historical_yazio_sync_locked(
         user = db.get(User, connection.user_id)
         if user is None or not user.is_active:
             return None
-        kind = connection.historical_sync_kind
-        if kind not in {"initial", "full", "range"}:
-            return None
-        local_today = attempted_at.astimezone(ZoneInfo(user.timezone)).date()
-        history_start: date | None
-        history_end: date | None
-        if kind in {"initial", "full"}:
-            history_start = YAZIO_HISTORY_DISCOVERY_START
-            history_end = connection.historical_sync_end_date or local_today
-        else:
-            history_start = connection.historical_sync_start_date
-            history_end = connection.historical_sync_end_date
+        history_start = connection.historical_sync_start_date
+        history_end = connection.historical_sync_end_date
         if history_start is None or history_end is None:
             raise YazioSyncError("Der historische YAZIO-Auftrag ist ungültig.")
         end_day = connection.historical_sync_cursor_date or history_end
@@ -623,14 +652,10 @@ def _run_historical_yazio_sync_locked(
             start_day = end_day - timedelta(days=MAX_YAZIO_RANGE_DAYS - 1)
         completed = start_day == history_start
         next_cursor = None if completed else start_day - timedelta(days=1)
-        connection.historical_sync_start_date = history_start
-        connection.historical_sync_end_date = history_end
         connection.historical_sync_state = "running"
         connection.historical_sync_started_at = (
             connection.historical_sync_started_at or attempted_at
         )
-        if kind == "initial":
-            connection.initial_sync_state = "running"
         connection.last_attempt_at = attempted_at
         connection.historical_sync_last_error = None
         db.commit()
@@ -663,7 +688,7 @@ def _run_historical_yazio_sync_locked(
             actor_ref=security_reference("user", user_id),
             target_ref=security_reference("yazio_connection", connection_id),
             reason=yazio_failure_reason(exc),
-            details={"mode": kind},
+            details={"mode": "range"},
         )
         return None
     completed_at = datetime.now(UTC)
@@ -677,8 +702,6 @@ def _run_historical_yazio_sync_locked(
             if completed:
                 connection.historical_sync_state = "completed"
                 connection.historical_sync_completed_at = completed_at
-                if kind == "initial":
-                    connection.initial_sync_state = "completed"
                 connection.next_sync_at = _next_sync_at(
                     completed_at,
                     effective_sync_interval_minutes(connection),
@@ -692,7 +715,7 @@ def _run_historical_yazio_sync_locked(
         actor_ref=security_reference("user", user_id),
         target_ref=security_reference("yazio_connection", connection_id),
         details={
-            "mode": kind,
+            "mode": "range",
             "received": summary.received,
             "inserted": summary.inserted,
             "updated": summary.updated,
@@ -871,8 +894,6 @@ def _record_failure(
         if historical:
             connection.historical_sync_state = "failed"
             connection.historical_sync_last_error = safe_error
-            if connection.historical_sync_kind == "initial":
-                connection.initial_sync_state = "failed"
         if isinstance(error, YazioAuthenticationError):
             connection.sync_enabled = False
             connection.last_error = safe_error

@@ -436,7 +436,7 @@ def test_yazio_empty_nutrition_day_omits_zero_placeholders() -> None:
 
     assert result.samples == []
     assert result.received == 0
-    assert result.errors[0][2] == "empty_day"
+    assert result.errors == []
 
 
 def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:

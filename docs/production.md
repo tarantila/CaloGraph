@@ -152,7 +152,7 @@ per-IP limits of two attempts per ten minutes. PostgreSQL advisory locks cap
 active YAZIO operations at two across all backend workers and the scheduler,
 while a database-backed circuit breaker pauses provider calls after five
 provider or deadline failures in ten minutes. No Redis service or
-general-purpose job queue is required. Complete historical YAZIO imports are
+general-purpose job queue is required. Historical YAZIO date ranges are
 persisted scheduler jobs and execute in sequential requests of at most 366
 days, so their runtime must not be assumed to fit in an HTTP request.
 

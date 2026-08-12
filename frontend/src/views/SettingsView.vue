@@ -92,6 +92,8 @@ const auth = useAuthStore()
 const yazio = ref<YazioStatus | null>(null)
 const yazioEmail = ref('')
 const yazioPassword = ref('')
+const yazioHistoryFrom = ref('')
+const yazioHistoryTo = ref('')
 const savingYazio = ref(false)
 const users = ref<User[]>([])
 const invitations = ref<Invitation[]>([])
@@ -118,15 +120,16 @@ const timezoneOptions = computed(() =>
   ),
 )
 const yazioCredentialsComplete = computed(
-  () => Boolean(yazioEmail.value.trim()) && Boolean(yazioPassword.value),
+  () => Boolean(yazioEmail.value.trim()) && Boolean(yazioPassword.value)
+    && (yazio.value?.configured === true || Boolean(yazioHistoryFrom.value && yazioHistoryTo.value)),
 )
 const yazioAvailable = computed(() => yazio.value?.available !== false)
 const yazioStatusLabel = computed(() => {
   if (!yazioAvailable.value) return 'serverseitig deaktiviert'
   if (!yazio.value?.configured) return 'noch nicht eingerichtet'
   if (!yazio.value.sync_enabled) return 'pausiert · Zugangsdaten aktualisieren'
-  if (['pending', 'running', 'failed'].includes(yazio.value.initial_sync_state ?? '')) {
-    return 'Ersteinrichtung · gesamte Historie wird im Hintergrund nachgeladen'
+  if (['pending', 'running', 'failed'].includes(yazio.value.historical_sync?.state ?? '')) {
+    return 'Historische Synchronisierung · Details unter Importe'
   }
   return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
 })
@@ -177,6 +180,7 @@ async function loadAccount() {
   auth.user = user
   tokens.value = tokenResult
   yazio.value = yazioResult
+  if (!yazioResult.configured) yazioHistoryTo.value = isoDateInTimeZone(user.timezone)
   mfa.value = mfaResult
   passkeys.value = passkeyResult
   if (user.is_admin) await loadAdmin()
@@ -225,13 +229,23 @@ async function createToken() { const result = await api<{ token: string }>('/set
 async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { method: 'DELETE' }); await load() }
 async function saveYazio() {
   if (!yazioCredentialsComplete.value) return
+  if (!yazio.value?.configured && yazioHistoryFrom.value > yazioHistoryTo.value) {
+    error.value = 'Das Von-Datum darf nicht nach dem Bis-Datum liegen.'
+    return
+  }
   savingYazio.value = true
   error.value = ''
   message.value = ''
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {
       method: 'PUT',
-      body: JSON.stringify({ email: yazioEmail.value.trim(), password: yazioPassword.value }),
+      body: JSON.stringify({
+        email: yazioEmail.value.trim(),
+        password: yazioPassword.value,
+        ...(!yazio.value?.configured
+          ? { from_date: yazioHistoryFrom.value, end_date: yazioHistoryTo.value }
+          : {}),
+      }),
     })
     yazioEmail.value = ''
     yazioPassword.value = ''
@@ -690,12 +704,23 @@ function passkeyDeviceLabel(passkey: Passkey) {
             />
             <small v-if="yazio?.configured">Gespeichert · wird niemals angezeigt</small>
           </label>
+          <template v-if="!yazio?.configured">
+            <label class="field">
+              Erster Datenimport von
+              <DateInput v-model="yazioHistoryFrom" required :disabled="!yazioAvailable" />
+            </label>
+            <label class="field">
+              Bis
+              <DateInput v-model="yazioHistoryTo" required :disabled="!yazioAvailable" />
+            </label>
+            <p class="table-secondary">Wähle den Zeitraum aus, aus dem deine bisherigen YAZIO-Daten übernommen werden sollen. Tage ohne Einträge werden übersprungen.</p>
+          </template>
           <button
             class="button"
             type="submit"
             :disabled="savingYazio || !yazioCredentialsComplete || !yazioAvailable"
           >
-            {{ savingYazio ? 'Verbindung wird geprüft …' : yazio?.configured ? 'Verbindung aktualisieren' : 'YAZIO verbinden' }}
+            {{ savingYazio ? 'Verbindung wird geprüft …' : yazio?.configured ? 'Verbindung aktualisieren' : 'Verbindung einrichten' }}
           </button>
         </form>
       </section>

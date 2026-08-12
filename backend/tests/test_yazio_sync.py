@@ -25,12 +25,14 @@ from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioConnectionDisabled,
     YazioSyncError,
-    configure_yazio_connection,
     due_yazio_connection_ids,
     enqueue_historical_yazio_sync,
     run_due_yazio_syncs,
     run_manual_yazio_sync,
     run_scheduled_yazio_sync,
+)
+from app.services.yazio_sync import (
+    configure_yazio_connection as _configure_yazio_connection,
 )
 
 
@@ -38,6 +40,22 @@ def _configure_key(monkeypatch) -> str:
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(settings, "credential_encryption_key", key)
     return key
+
+
+def configure_yazio_connection(
+    user: User,
+    email: str,
+    password: str,
+    **kwargs,
+) -> YazioConnection:
+    kwargs.setdefault("start_day", date(2026, 7, 23))
+    kwargs.setdefault("end_day", date(2026, 7, 23))
+    return _configure_yazio_connection(
+        user,
+        email,
+        password,
+        **kwargs,
+    )
 
 
 def test_credentials_are_authenticated_and_encrypted(monkeypatch) -> None:
@@ -74,6 +92,106 @@ def test_connection_is_per_user_and_due(
     assert stored.sync_days == 7
     assert connection.id in due_yazio_connection_ids()
 
+
+def test_new_connection_requires_a_complete_initial_range_and_updates_keep_it(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_key(monkeypatch)
+
+    with pytest.raises(ValueError, match="Von- und Bis-Datum"):
+        _configure_yazio_connection(user, "owner@example.com", "yazio-password")
+
+    connection = _configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "yazio-password",
+        start_day=date(2026, 7, 20),
+        end_day=date(2026, 7, 23),
+    )
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    stored.historical_sync_state = "completed"
+    stored.historical_sync_cursor_date = None
+    stored.historical_sync_started_at = datetime(2026, 7, 20, 10, tzinfo=UTC)
+    stored.historical_sync_completed_at = datetime(2026, 7, 20, 11, tzinfo=UTC)
+    stored.historical_sync_last_error = None
+    stored.next_sync_at = datetime(2026, 7, 21, 10, tzinfo=UTC)
+    db.commit()
+
+    updated = _configure_yazio_connection(
+        user,
+        "new-owner@example.com",
+        "new-yazio-password",
+    )
+
+    assert updated.id == connection.id
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.historical_sync_state == "completed"
+    assert stored.historical_sync_start_date == date(2026, 7, 20)
+    assert stored.historical_sync_end_date == date(2026, 7, 23)
+    assert stored.historical_sync_cursor_date is None
+    assert stored.historical_sync_started_at is not None
+    assert stored.historical_sync_started_at.replace(tzinfo=UTC) == datetime(
+        2026, 7, 20, 10, tzinfo=UTC
+    )
+    assert stored.historical_sync_completed_at is not None
+    assert stored.historical_sync_completed_at.replace(tzinfo=UTC) == datetime(
+        2026, 7, 20, 11, tzinfo=UTC
+    )
+    assert stored.next_sync_at is not None
+    assert stored.next_sync_at.replace(tzinfo=UTC) == datetime(
+        2026, 7, 21, 10, tzinfo=UTC
+    )
+
+
+def test_empty_historical_range_completes_without_a_processing_failure(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
+
+    def empty_fetch(_email, _password, _start_day, end_day, _include_micronutrients):
+        return {end_day.isoformat(): {"daily_summary": {"meals": {}}}}
+
+    summary = run_scheduled_yazio_sync(connection.id, fetcher=empty_fetch)
+
+    assert summary is not None
+    assert summary.status == "completed"
+    assert summary.failed == 0
+    db.expire_all()
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.historical_sync_state == "completed"
+
+
+
+def test_historical_range_rejects_reversed_and_future_dates(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    stored.historical_sync_state = "completed"
+    db.commit()
+
+    with pytest.raises(ValueError, match="Von-Datum"):
+        enqueue_historical_yazio_sync(
+            user.id,
+            start_day=date(2026, 7, 23),
+            end_day=date(2026, 7, 20),
+            now=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        )
+    with pytest.raises(ValueError, match="Zukunft"):
+        enqueue_historical_yazio_sync(
+            user.id,
+            start_day=date(2026, 7, 20),
+            end_day=date(2026, 7, 24),
+            now=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        )
 
 def test_reconfiguring_yazio_email_keeps_opaque_source_identifier(
     db: Session, user: User, monkeypatch
@@ -190,7 +308,6 @@ def test_manual_sync_imports_only_for_connection_user(
     assert stored.next_sync_at is not None
     delay = stored.next_sync_at - stored.last_success_at
     assert timedelta(hours=6, minutes=1) <= delay <= timedelta(hours=6, minutes=30)
-    stored.initial_sync_state = "completed"
     stored.historical_sync_state = "completed"
     db.commit()
 
@@ -321,7 +438,7 @@ def test_credential_decryption_failure_emits_one_safe_security_event(
         "yazio_connection", connection.id
     )
     assert payload["reason"] == "credential_decryption_error"
-    assert payload["mode"] == ("initial" if mode == "scheduled" else mode)
+    assert payload["mode"] == ("range" if mode == "scheduled" else mode)
     for sensitive_value in (
         email,
         password,
@@ -469,6 +586,8 @@ def test_yazio_connection_attempts_are_rate_limited(
         "password": "yazio-password",
         "interval_hours": 6,
         "sync_days": 7,
+        "from_date": "2026-07-20",
+        "end_date": "2026-07-23",
     }
 
     responses = [
@@ -483,6 +602,39 @@ def test_yazio_connection_attempts_are_rate_limited(
     assert [response.status_code for response in responses] == [200, 200, 429]
     assert responses[0].json()["available"] is True
     assert "Retry-After" in responses[-1].headers
+
+
+
+def test_yazio_connection_api_rejects_invalid_initial_range(
+    client: TestClient, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del user
+    _configure_key(monkeypatch)
+    monkeypatch.setattr(
+        yazio_api,
+        "validate_yazio_credentials",
+        lambda *_args, **_kwargs: None,
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+    response = client.put(
+        "/api/v1/yazio/connection",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "email": "owner@example.com",
+            "password": "yazio-password",
+            "from_date": "2100-01-01",
+            "end_date": "2100-01-02",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Das Bis-Datum darf nicht in der Zukunft liegen."
+    )
 
 
 def test_yazio_api_status_and_manual_sync_are_user_scoped(
@@ -532,18 +684,19 @@ def test_yazio_api_status_and_manual_sync_are_user_scoped(
     assert called_for == user.id
 
 
-def test_initial_history_runs_in_bounded_chunks_before_regular_sync(
+def test_initial_range_runs_in_bounded_chunks_before_regular_sync(
     db: Session,
     user: User,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_key(monkeypatch)
-    monkeypatch.setattr(yazio_sync, "YAZIO_HISTORY_DISCOVERY_START", date(2026, 7, 20))
     monkeypatch.setattr(yazio_sync, "MAX_YAZIO_RANGE_DAYS", 2)
     connection = configure_yazio_connection(
         user,
         "owner@example.com",
         "yazio-password",
+        start_day=date(2026, 7, 20),
+        end_day=date(2026, 7, 23),
     )
     calls: list[tuple[date, date, bool]] = []
 
@@ -575,11 +728,8 @@ def test_initial_history_runs_in_bounded_chunks_before_regular_sync(
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
-    assert stored.initial_sync_state == "completed"
     assert stored.historical_sync_state == "completed"
     assert stored.next_sync_at is not None
-
-
 def test_explicit_range_history_is_chunked_and_replaces_prior_values(
     db: Session,
     user: User,
@@ -587,19 +737,13 @@ def test_explicit_range_history_is_chunked_and_replaces_prior_values(
 ) -> None:
     _configure_key(monkeypatch)
     monkeypatch.setattr(yazio_sync, "MAX_YAZIO_RANGE_DAYS", 2)
-    connection = configure_yazio_connection(
-        user,
-        "owner@example.com",
-        "yazio-password",
-    )
+    connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
     stored_connection = db.get(YazioConnection, connection.id)
     assert stored_connection is not None
-    stored_connection.initial_sync_state = "completed"
     stored_connection.historical_sync_state = "completed"
     db.commit()
     queued = enqueue_historical_yazio_sync(
         user.id,
-        kind="range",
         start_day=date(2026, 7, 20),
         end_day=date(2026, 7, 23),
     )
@@ -625,28 +769,10 @@ def test_explicit_range_history_is_chunked_and_replaces_prior_values(
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
-    assert stored.historical_sync_kind == "range"
     assert stored.historical_sync_state == "completed"
 
 
-
-
-def test_explicit_history_range_is_limited_to_366_days(
-    user: User,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _configure_key(monkeypatch)
-    configure_yazio_connection(user, "owner@example.com", "yazio-password")
-
-    with pytest.raises(ValueError, match="länger als 366 Tage"):
-        enqueue_historical_yazio_sync(
-            user.id,
-            kind="range",
-            start_day=date(2026, 1, 1),
-            end_day=date(2027, 1, 2),
-        )
-
-def test_history_range_at_minimum_date_completes_without_underflow(
+def test_explicit_history_range_allows_more_than_366_days(
     db: Session,
     user: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -657,32 +783,38 @@ def test_history_range_at_minimum_date_completes_without_underflow(
     )
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
-    stored.initial_sync_state = "completed"
     stored.historical_sync_state = "completed"
     db.commit()
-    enqueue_historical_yazio_sync(
+
+    queued = enqueue_historical_yazio_sync(
         user.id,
-        kind="range",
-        start_day=date.min,
-        end_day=date.min,
+        start_day=date(2025, 1, 1),
+        end_day=date(2026, 7, 2),
     )
 
-    def fake_fetch(_email, _password, _start_day, end_day, _include_micronutrients):
-        return {
-            end_day.isoformat(): {
-                "daily_summary": {
-                    "meals": {"dinner": {"nutrients": {"energy.energy": 1800}}}
-                }
-            }
-        }
+    assert queued.historical_sync_cursor_date == date(2026, 7, 2)
 
-    assert run_scheduled_yazio_sync(connection.id, fetcher=fake_fetch) is not None
-    db.expire_all()
+
+def test_history_range_rejects_dates_before_discovery_boundary(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(
+        user, "owner@example.com", "yazio-password"
+    )
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
-    assert stored.historical_sync_state == "completed"
-    assert stored.historical_sync_cursor_date is None
+    stored.historical_sync_state = "completed"
+    db.commit()
 
+    with pytest.raises(ValueError, match="frühestens am 2000-01-01"):
+        enqueue_historical_yazio_sync(
+            user.id,
+            start_day=date.min,
+            end_day=date.min,
+        )
 
 
 def test_due_yazio_sync_reports_progress_after_each_connection(
@@ -723,19 +855,25 @@ def test_history_queue_rejects_disabled_connection(
     db.commit()
 
     with pytest.raises(YazioConnectionDisabled):
-        enqueue_historical_yazio_sync(user.id, kind="full")
+        enqueue_historical_yazio_sync(
+            user.id,
+            start_day=date(2026, 7, 20),
+            end_day=date(2026, 7, 23),
+        )
 
     login = client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "correct-horse-battery-staple"},
     )
     response = client.post(
-        "/api/v1/yazio/sync/history",
+        "/api/v1/yazio/sync/history/range",
+        json={"from_date": "2026-07-20", "end_date": "2026-07-23"},
         headers={"X-CSRF-Token": login.json()["csrf_token"]},
     )
     assert response.status_code == 409
 
-def test_history_api_requires_csrf_and_rejects_overlapping_jobs(
+
+def test_history_range_api_requires_csrf_and_rejects_overlapping_jobs(
     client: TestClient,
     db: Session,
     user: User,
@@ -745,7 +883,6 @@ def test_history_api_requires_csrf_and_rejects_overlapping_jobs(
     connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
-    stored.initial_sync_state = "completed"
     stored.historical_sync_state = "completed"
     db.commit()
     login = client.post(
@@ -754,7 +891,7 @@ def test_history_api_requires_csrf_and_rejects_overlapping_jobs(
     )
     csrf = login.json()["csrf_token"]
 
-    assert client.post("/api/v1/yazio/sync/history").status_code == 403
+    assert client.post("/api/v1/yazio/sync/history/range").status_code == 403
     response = client.post(
         "/api/v1/yazio/sync/history/range",
         json={"from_date": "2026-07-20", "end_date": "2026-07-23"},
@@ -762,7 +899,6 @@ def test_history_api_requires_csrf_and_rejects_overlapping_jobs(
     )
     assert response.status_code == 200
     assert response.json()["historical_sync"] == {
-        "kind": "range",
         "state": "pending",
         "start_date": "2026-07-20",
         "end_date": "2026-07-23",
@@ -771,7 +907,8 @@ def test_history_api_requires_csrf_and_rejects_overlapping_jobs(
         "last_error": None,
     }
     response = client.post(
-        "/api/v1/yazio/sync/history",
+        "/api/v1/yazio/sync/history/range",
+        json={"from_date": "2026-07-20", "end_date": "2026-07-23"},
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 429

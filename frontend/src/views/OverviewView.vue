@@ -247,8 +247,8 @@ const syncScheduleLabel = computed(() => {
   if (yazioStatus.value?.available === false) return 'YAZIO ist auf diesem Server deaktiviert'
   if (!yazioStatus.value?.configured) return 'Keine persönliche YAZIO-Verbindung eingerichtet'
   if (!yazioStatus.value.sync_enabled) return 'Automatik pausiert · Zugangsdaten aktualisieren'
-  if (['pending', 'running', 'failed'].includes(yazioStatus.value.initial_sync_state ?? '')) {
-    return 'Ersteinrichtung läuft im Hintergrund · Details unter Importe'
+  if (['pending', 'running', 'failed'].includes(yazioStatus.value.historical_sync?.state ?? '')) {
+    return 'Historische Synchronisierung läuft im Hintergrund · Details unter Importe'
   }
   const minutes = yazioStatus.value.sync_interval_minutes
   const interval =

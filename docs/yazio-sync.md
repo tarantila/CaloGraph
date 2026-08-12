@@ -91,15 +91,17 @@ Configure a personal connection:
 ```bash
 docker compose exec backend python -m app.cli configure-yazio \
   --username admin \
-  --email name@example.com
+  --email name@example.com \
+  --from-date 2026-01-01 \
+  --end-date 2026-03-31
 ```
 
 The password is requested without echo and verified through a real YAZIO
-request before it is stored. New connections first enqueue a complete,
-resumable historical import. The scheduler processes this import in chunks of
-at most 366 calendar days; only after it completes does the regular rolling
-sync begin. A failed or interrupted chunk remains retryable from its persisted
-cursor without creating duplicate samples.
+request before it is stored. A new connection requires an explicit initial
+date range, starting no earlier than 2000-01-01. The scheduler processes this
+range in chunks of at most 366 calendar days; only after it completes does the
+regular rolling sync begin. A failed or interrupted chunk remains retryable
+from its persisted cursor without creating duplicate samples.
 
 `YAZIO_SYNC_INTERVAL_HOURS` (default `6`) and `YAZIO_SYNC_DAYS` (default `7`)
 are deployment-wide defaults. Connections with no stored override inherit them,
@@ -116,19 +118,17 @@ CSRF validation. Saving credentials and starting a manual sync share a default
 limit of two attempts per ten minutes, independently enforced for the
 authenticated CaloGraph user and the normalized client IP network.
 
-Historical operations are in **Importe**. There, the user can queue either the
-complete available history or an explicit date range to re-fetch corrected
-periods. The request returns immediately; status, failures, and completion are
-persisted and shown in the same area. Existing connections upgraded from
-v0.3.1 are not automatically backfilled. Their owner must explicitly queue
-**Gesamte Historie synchronisieren**.
+Historical operations are in **Importe**. There, the user can queue an explicit
+date range to import initial data or re-fetch corrected periods. The request
+returns immediately; status, failures, and completion are persisted and shown
+in the same area. Existing connections upgraded from v0.3.2 are not
+automatically backfilled.
 
 Operators can inspect status, disable automation, or queue the same background
-history job without the browser:
+range job without the browser:
 
 ```bash
 docker compose exec backend python -m app.cli yazio-status --username admin
-docker compose exec backend python -m app.cli sync-yazio-history --username admin
 docker compose exec backend python -m app.cli sync-yazio-history --username admin \
   --from-date 2026-01-01 --end-date 2026-03-31
 docker compose exec backend python -m app.cli disable-yazio --username admin
@@ -205,9 +205,8 @@ medical diagnosis.
   recovered and must be configured again.
 - Anyone who can read both the database and credential key file can decrypt
   credentials. File permissions and encrypted backups must protect both.
-- A single provider request and an explicit date-range history job are limited
-  to 366 days. Complete history jobs are split into sequential requests of that
-  size.
+- A single provider request is limited to 366 days. Longer explicit historical
+  ranges are split into sequential requests of that size.
 - The timeout, concurrency, rate-limit, circuit-breaker, and regular-sync
   defaults are configurable through the documented `YAZIO_*` values in
   `.env`. Raising these limits can increase both local resource use and the

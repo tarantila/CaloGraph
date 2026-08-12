@@ -141,7 +141,6 @@ def parse_yazio_export(
                 )
             )
             continue
-        imported_for_day = 0
         for input_name, metric_type, value, incoming_unit, canonical_unit in values:
             result.add_received()
             try:
@@ -175,17 +174,7 @@ def parse_yazio_export(
                     )
                 )
                 continue
-            imported_for_day += 1
 
-        if imported_for_day == 0 and not values:
-            result.add_error(
-                (
-                    item_index,
-                    day.isoformat(),
-                    "empty_day",
-                    "Keine unterstützten YAZIO-Tageswerte gefunden",
-                )
-            )
 
     for day, nutrient_id, value in _micronutrient_items(micronutrient_root):
         found_entry = True

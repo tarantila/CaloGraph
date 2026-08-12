@@ -12,6 +12,7 @@ vi.mock('../src/api', () => ({
 
 import CalendarView from '../src/views/CalendarView.vue'
 import ChartPanel from '../src/components/ChartPanel.vue'
+import DateInput from '../src/components/DateInput.vue'
 import DailyView from '../src/views/DailyView.vue'
 import ImportsView from '../src/views/ImportsView.vue'
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
@@ -536,7 +537,8 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Messwert ist keine gültige Zahl')
   })
 
-  it('queues a complete YAZIO history import from the imports view', async () => {
+
+  it('shows German date fields while queuing a YAZIO date range as ISO values', async () => {
     const status = {
       available: true,
       configured: true,
@@ -545,9 +547,7 @@ describe('main views', () => {
       sync_days: 7,
       sync_interval_override_minutes: null,
       sync_days_override: null,
-      initial_sync_state: 'completed',
       historical_sync: {
-        kind: null,
         state: 'idle',
         start_date: null,
         end_date: null,
@@ -563,10 +563,15 @@ describe('main views', () => {
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') return Promise.resolve(status)
-      if (path === '/yazio/sync/history' && options?.method === 'POST') {
+      if (path === '/yazio/sync/history/range' && options?.method === 'POST') {
         return Promise.resolve({
           ...status,
-          historical_sync: { ...status.historical_sync, kind: 'full', state: 'pending' },
+          historical_sync: {
+            ...status.historical_sync,
+            state: 'pending',
+            start_date: '2024-03-01',
+            end_date: '2026-08-12',
+          },
         })
       }
       return Promise.resolve({})
@@ -574,19 +579,57 @@ describe('main views', () => {
 
     const wrapper = mount(ImportsView)
     await flushPromises()
-    const button = wrapper
+    const dateInputs = wrapper.findAll<HTMLInputElement>('input[type="text"]')
+    expect(dateInputs).toHaveLength(2)
+    expect(dateInputs[0].attributes('placeholder')).toBe('TT.MM.JJJJ')
+    expect(dateInputs[1].attributes('placeholder')).toBe('TT.MM.JJJJ')
+
+    await dateInputs[0].setValue('01.03.2024')
+    await dateInputs[1].setValue('12.08.2026')
+    await wrapper
       .findAll('button')
-      .find((item) => item.text().includes('Gesamte Historie synchronisieren'))
-    expect(button).toBeDefined()
-    expect((button!.element as HTMLButtonElement).disabled).toBe(false)
-    await button!.trigger('click')
+      .find((button) => button.text() === 'Zeitraum synchronisieren')!
+      .trigger('click')
     await flushPromises()
 
-    expect(apiMock).toHaveBeenCalledWith('/yazio/sync/history', {
+    expect(apiMock).toHaveBeenCalledWith('/yazio/sync/history/range', {
       method: 'POST',
-      body: undefined,
+      body: JSON.stringify({ from_date: '2024-03-01', end_date: '2026-08-12' }),
     })
-    expect(wrapper.text()).toContain('wartet auf den Scheduler')
+  })
+
+  it('stops historical polling when its initial request settles after unmount', async () => {
+    vi.useFakeTimers()
+    let resolveImports!: (value: never[]) => void
+    let resolveStatus!: (value: Record<string, unknown>) => void
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/imports') {
+        return new Promise<never[]>((resolve) => {
+          resolveImports = resolve
+        })
+      }
+      if (path === '/yazio/status') {
+        return new Promise<Record<string, unknown>>((resolve) => {
+          resolveStatus = resolve
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(ImportsView)
+    expect(apiMock).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+    resolveImports([])
+    resolveStatus({
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      historical_sync: { state: 'pending' },
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(apiMock).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
   })
 
   it('explains that failed history imports need credential renewal when sync is paused', async () => {
@@ -598,9 +641,7 @@ describe('main views', () => {
       sync_days: 7,
       sync_interval_override_minutes: null,
       sync_days_override: null,
-      initial_sync_state: 'failed',
       historical_sync: {
-        kind: 'initial',
         state: 'failed',
         start_date: null,
         end_date: null,
@@ -622,12 +663,6 @@ describe('main views', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('fehlgeschlagen; Zugangsdaten aktualisieren')
-    expect(
-      wrapper
-        .findAll('button')
-        .find((button) => button.text().includes('Gesamte Historie synchronisieren'))
-        ?.attributes('disabled'),
-    ).toBeDefined()
     expect(
       wrapper
         .findAll('button')
@@ -868,12 +903,72 @@ describe('main views', () => {
     expect(auth.needsTargetSetup).toBe(false)
   })
 
-  it('clears a stale YAZIO error before a successful retry', async () => {
-    let saveAttempts = 0
+  it('requires and submits an explicit German date range for initial YAZIO setup', async () => {
     const status = {
       available: true,
       configured: false,
       sync_enabled: false,
+      sync_interval_minutes: null,
+      sync_days: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') {
+        return Promise.resolve({
+          totp_enabled: false,
+          totp_setup_pending: false,
+          recovery_codes_remaining: 0,
+        })
+      }
+      if (path === '/yazio/status') return Promise.resolve(status)
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      if (path === '/yazio/connection') {
+        return Promise.resolve({ ...status, configured: true, sync_enabled: true })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Erster Datenimport von')
+    const dateInputs = wrapper
+      .findAllComponents(DateInput)
+      .map((component) => component.get<HTMLInputElement>('input[type="text"]'))
+    expect(dateInputs).toHaveLength(2)
+    expect(
+      wrapper.get<HTMLButtonElement>('.yazio-connection-card button[type="submit"]').element.disabled,
+    ).toBe(true)
+    await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
+    await wrapper.get('input[name="yazio-password"]').setValue('very-secret')
+    await dateInputs[0].setValue('20.07.2026')
+    await dateInputs[1].setValue('23.07.2026')
+    await wrapper.get('.yazio-connection-card form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenLastCalledWith('/yazio/connection', {
+      method: 'PUT',
+      body: JSON.stringify({
+        email: 'owner@example.com',
+        password: 'very-secret',
+        from_date: '2026-07-20',
+        end_date: '2026-07-23',
+      }),
+    })
+  })
+
+  it('clears a stale YAZIO error before a successful retry', async () => {
+    let saveAttempts = 0
+    const status = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
       sync_interval_minutes: null,
       sync_days: null,
       last_attempt_at: null,
@@ -906,6 +1001,9 @@ describe('main views', () => {
 
     const wrapper = mount(SettingsView, { props: { section: 'account' } })
     await flushPromises()
+    expect(
+      wrapper.find('.yazio-connection-card .date-input').exists(),
+    ).toBe(false)
     await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
     await wrapper.get('input[name="yazio-password"]').setValue('very-secret')
 
@@ -916,6 +1014,13 @@ describe('main views', () => {
 
     await form.trigger('submit')
     await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/yazio/connection', {
+      method: 'PUT',
+      body: JSON.stringify({
+        email: 'owner@example.com',
+        password: 'very-secret',
+      }),
+    })
     expect(wrapper.text()).not.toContain('YAZIO-Verbindung konnte nicht gespeichert werden.')
     expect(wrapper.text()).toContain('Persönliche YAZIO-Verbindung gespeichert.')
   })

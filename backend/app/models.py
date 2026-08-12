@@ -74,16 +74,8 @@ class YazioConnection(Base):
             name="ck_yazio_sync_days",
         ),
         CheckConstraint(
-            "initial_sync_state IN ('not_confirmed', 'pending', 'running', 'completed', 'failed')",
-            name="ck_yazio_initial_sync_state",
-        ),
-        CheckConstraint(
             "historical_sync_state IN ('idle', 'pending', 'running', 'completed', 'failed')",
             name="ck_yazio_historical_sync_state",
-        ),
-        CheckConstraint(
-            "historical_sync_kind IS NULL OR historical_sync_kind IN ('initial', 'full', 'range')",
-            name="ck_yazio_historical_sync_kind",
         ),
     )
 
@@ -98,8 +90,6 @@ class YazioConnection(Base):
     # Null means inherit the deployment-wide settings values.
     sync_interval_minutes: Mapped[int | None] = mapped_column(Integer)
     sync_days: Mapped[int | None] = mapped_column(Integer)
-    initial_sync_state: Mapped[str] = mapped_column(String(32), default="not_confirmed")
-    historical_sync_kind: Mapped[str | None] = mapped_column(String(16))
     historical_sync_state: Mapped[str] = mapped_column(String(16), default="idle")
     historical_sync_start_date: Mapped[date | None] = mapped_column(Date)
     historical_sync_end_date: Mapped[date | None] = mapped_column(Date)

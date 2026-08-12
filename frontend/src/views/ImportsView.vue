@@ -5,11 +5,12 @@ import {
   PhDownloadSimple,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import { api, ApiError, ensureCsrfToken } from '../api'
+import DateInput from '../components/DateInput.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { formatGermanDateTime } from '../date-format'
+import { formatGermanDate, formatGermanDateTime } from '../date-format'
 import type { ImportBatch, YazioStatus } from '../types'
 
 interface ImportErrorDetail {
@@ -41,6 +42,23 @@ const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const maxJsonBytes = 10 * 1024 * 1024
 const maxAppleHealthBytes = 500 * 1024 * 1024
 
+let historicalPollTimer: ReturnType<typeof setTimeout> | undefined
+let isViewActive = false
+
+function historicalSyncActive() {
+  const state = yazioStatus.value?.historical_sync?.state
+  return state === 'pending' || state === 'running'
+}
+
+function scheduleHistoricalStatusRefresh() {
+  if (historicalPollTimer) clearTimeout(historicalPollTimer)
+  if (!isViewActive || !historicalSyncActive()) return
+  historicalPollTimer = setTimeout(() => {
+    historicalPollTimer = undefined
+    void load()
+  }, 5_000)
+}
+
 async function load() {
   error.value = ''
   try {
@@ -55,9 +73,17 @@ async function load() {
       cause instanceof ApiError ? cause.message : 'Importläufe konnten nicht geladen werden.'
   } finally {
     loading.value = false
+    if (isViewActive) scheduleHistoricalStatusRefresh()
   }
 }
-onMounted(load)
+onMounted(() => {
+  isViewActive = true
+  void load()
+})
+onUnmounted(() => {
+  isViewActive = false
+  if (historicalPollTimer) clearTimeout(historicalPollTimer)
+})
 
 function selectFile(event: Event) {
   const input = event.target as HTMLInputElement
@@ -162,30 +188,27 @@ const historicalSyncLabel = computed(() => {
   return labels[sync.state]
 })
 
-async function queueHistoricalSync(kind: 'full' | 'range') {
-  if (kind === 'range' && (!historyFrom.value || !historyTo.value)) {
+async function queueHistoricalSync() {
+  if (!historyFrom.value || !historyTo.value) {
     messageIsError.value = true
     message.value = 'Bitte Beginn und Ende des Zeitraums auswählen.'
+    return
+  }
+  if (historyFrom.value > historyTo.value) {
+    messageIsError.value = true
+    message.value = 'Das Von-Datum darf nicht nach dem Bis-Datum liegen.'
     return
   }
   historicalSyncing.value = true
   message.value = ''
   messageIsError.value = false
   try {
-    yazioStatus.value = await api<YazioStatus>(
-      kind === 'full' ? '/yazio/sync/history' : '/yazio/sync/history/range',
-      {
-        method: 'POST',
-        body:
-          kind === 'full'
-            ? undefined
-            : JSON.stringify({ from_date: historyFrom.value, end_date: historyTo.value }),
-      },
-    )
-    message.value =
-      kind === 'full'
-        ? 'Gesamte verfügbare YAZIO-Historie wurde für den Scheduler vorgemerkt.'
-        : 'YAZIO-Zeitraum wurde für den Scheduler vorgemerkt.'
+    yazioStatus.value = await api<YazioStatus>('/yazio/sync/history/range', {
+      method: 'POST',
+      body: JSON.stringify({ from_date: historyFrom.value, end_date: historyTo.value }),
+    })
+    message.value = 'YAZIO-Zeitraum wurde für den Scheduler vorgemerkt.'
+    scheduleHistoricalStatusRefresh()
   } catch (cause) {
     messageIsError.value = true
     message.value =
@@ -316,30 +339,27 @@ const importsWithIssues = computed(() =>
       >
         {{ yazioStatus.historical_sync.last_error }}
       </p>
-      <div class="filters">
-        <button
-          class="button"
-          type="button"
-          :disabled="!yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled || historicalSyncing || yazioStatus?.historical_sync?.state === 'pending' || yazioStatus?.historical_sync?.state === 'running'"
-          @click="queueHistoricalSync('full')"
-        >
-          {{ historicalSyncing ? 'Wird vorgemerkt …' : 'Gesamte Historie synchronisieren' }}
-        </button>
-      </div>
+      <p
+        v-if="yazioStatus?.historical_sync?.start_date && yazioStatus.historical_sync.end_date"
+        class="table-secondary"
+      >
+        Zeitraum: {{ formatGermanDate(yazioStatus.historical_sync.start_date) }} bis
+        {{ formatGermanDate(yazioStatus.historical_sync.end_date) }}
+      </p>
       <div class="form-grid" style="margin-top: 1rem">
         <label class="field">
           Von
-          <input v-model="historyFrom" type="date" :disabled="historicalSyncing" />
+          <DateInput v-model="historyFrom" :disabled="historicalSyncing" />
         </label>
         <label class="field">
           Bis
-          <input v-model="historyTo" type="date" :disabled="historicalSyncing" />
+          <DateInput v-model="historyTo" :disabled="historicalSyncing" />
         </label>
         <button
           class="button secondary"
           type="button"
           :disabled="!yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled || historicalSyncing || yazioStatus?.historical_sync?.state === 'pending' || yazioStatus?.historical_sync?.state === 'running'"
-          @click="queueHistoricalSync('range')"
+          @click="queueHistoricalSync"
         >
           Zeitraum synchronisieren
         </button>

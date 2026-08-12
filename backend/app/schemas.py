@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProblemDetail(BaseModel):
@@ -282,7 +282,6 @@ class ImportBatchDetailResponse(ImportBatchResponse):
 
 
 class YazioHistoricalSyncResponse(BaseModel):
-    kind: Literal["initial", "full", "range"] | None = None
     state: Literal["idle", "pending", "running", "completed", "failed"]
     start_date: date | None = None
     end_date: date | None = None
@@ -299,7 +298,6 @@ class YazioStatusResponse(BaseModel):
     sync_days: int | None = None
     sync_interval_override_minutes: int | None = None
     sync_days_override: int | None = None
-    initial_sync_state: Literal["not_confirmed", "pending", "running", "completed", "failed"] | None = None
     historical_sync: YazioHistoricalSyncResponse | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
@@ -312,11 +310,31 @@ class YazioConnectionInput(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
     interval_hours: int | None = Field(default=None, ge=1, le=168)
     sync_days: int | None = Field(default=None, ge=1, le=366)
+    from_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def date_range_is_complete(self) -> YazioConnectionInput:
+        if (self.from_date is None) != (self.end_date is None):
+            raise ValueError("Von- und Bis-Datum müssen zusammen angegeben werden.")
+        if (
+            self.from_date is not None
+            and self.end_date is not None
+            and self.from_date > self.end_date
+        ):
+            raise ValueError("Das Von-Datum darf nicht nach dem Bis-Datum liegen.")
+        return self
 
 
 class YazioHistoricalRangeInput(BaseModel):
     from_date: date
     end_date: date
+
+    @model_validator(mode="after")
+    def dates_are_ordered(self) -> YazioHistoricalRangeInput:
+        if self.from_date > self.end_date:
+            raise ValueError("Das Von-Datum darf nicht nach dem Bis-Datum liegen.")
+        return self
 
 
 class TokenCreateRequest(BaseModel):

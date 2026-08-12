@@ -39,6 +39,7 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
     user_id = uuid.UUID("10000000-0000-0000-0000-000000000001")
     secondary_user_id = uuid.UUID("10000000-0000-0000-0000-000000000002")
     connection_id = uuid.UUID("20000000-0000-0000-0000-000000000001")
+    range_connection_id = uuid.UUID("20000000-0000-0000-0000-000000000002")
     batch_id = uuid.UUID("30000000-0000-0000-0000-000000000001")
     secondary_batch_id = uuid.UUID("30000000-0000-0000-0000-000000000002")
     active_source = "yazio:0123456789abcdef"
@@ -342,24 +343,126 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
 
         # Runtime models follow Alembic head even though this test isolates the
         # 0009 data rewrite above.
+        command.upgrade(alembic_config, "20260812_0013")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE yazio_connections
+                    SET initial_sync_state = 'failed',
+                        historical_sync_kind = 'full',
+                        historical_sync_state = 'failed',
+                        historical_sync_start_date = DATE '2000-01-01',
+                        historical_sync_end_date = DATE '2026-07-23',
+                        historical_sync_cursor_date = DATE '2026-07-22',
+                        historical_sync_started_at = :now,
+                        historical_sync_completed_at = :now,
+                        historical_sync_last_error = 'legacy failure'
+                    WHERE id = :id
+                    """
+                ),
+                {"id": connection_id, "now": now},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO yazio_connections (
+                        id, user_id, encrypted_email, encrypted_password,
+                        source_identifier, sync_enabled, sync_interval_minutes,
+                        sync_days, initial_sync_state, historical_sync_state,
+                        next_sync_at, created_at, updated_at
+                    ) VALUES (
+                        :id, :user_id, :encrypted_email, :encrypted_password,
+                        :source_identifier, true, NULL, NULL, 'completed', 'idle',
+                        :next_sync_at, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": range_connection_id,
+                    "user_id": secondary_user_id,
+                    "encrypted_email": encrypted_email,
+                    "encrypted_password": encrypted_password,
+                    "source_identifier": f"yazio:{secondary_user_id}",
+                    "next_sync_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE yazio_connections
+                    SET initial_sync_state = 'completed',
+                        historical_sync_kind = 'range',
+                        historical_sync_state = 'failed',
+                        historical_sync_start_date = DATE '2026-07-01',
+                        historical_sync_end_date = DATE '2026-07-23',
+                        historical_sync_cursor_date = DATE '2026-07-12',
+                        historical_sync_started_at = :now,
+                        historical_sync_completed_at = NULL,
+                        historical_sync_last_error = 'retryable range failure'
+                    WHERE id = :id
+                    """
+                ),
+                {"id": range_connection_id, "now": now},
+            )
+
         command.upgrade(alembic_config, "head")
         with engine.connect() as connection:
+            columns = {
+                column["name"]
+                for column in sa.inspect(connection).get_columns("yazio_connections")
+            }
             upgraded_connection = connection.execute(
                 text(
                     """
-                    SELECT sync_interval_minutes, sync_days, initial_sync_state,
-                           historical_sync_state
+                    SELECT sync_interval_minutes, sync_days, historical_sync_state,
+                           historical_sync_start_date, historical_sync_end_date,
+                           historical_sync_cursor_date, historical_sync_started_at,
+                           historical_sync_completed_at, historical_sync_last_error
                     FROM yazio_connections
                     WHERE id = :id
                     """
                 ),
                 {"id": connection_id},
             ).mappings().one()
+            preserved_range_connection = connection.execute(
+                text(
+                    """
+                    SELECT sync_interval_minutes, sync_days, historical_sync_state,
+                           historical_sync_start_date, historical_sync_end_date,
+                           historical_sync_cursor_date, historical_sync_started_at,
+                           historical_sync_completed_at, historical_sync_last_error
+                    FROM yazio_connections
+                    WHERE id = :id
+                    """
+                ),
+                {"id": range_connection_id},
+            ).mappings().one()
+        assert "initial_sync_state" not in columns
+        assert "historical_sync_kind" not in columns
         assert upgraded_connection == {
             "sync_interval_minutes": None,
             "sync_days": None,
-            "initial_sync_state": "not_confirmed",
             "historical_sync_state": "idle",
+            "historical_sync_start_date": None,
+            "historical_sync_end_date": None,
+            "historical_sync_cursor_date": None,
+            "historical_sync_started_at": None,
+            "historical_sync_completed_at": None,
+            "historical_sync_last_error": None,
+        }
+        assert preserved_range_connection == {
+            "sync_interval_minutes": None,
+            "sync_days": None,
+            "historical_sync_state": "failed",
+            "historical_sync_start_date": date(2026, 7, 1),
+            "historical_sync_end_date": date(2026, 7, 23),
+            "historical_sync_cursor_date": date(2026, 7, 12),
+            "historical_sync_started_at": now,
+            "historical_sync_completed_at": None,
+            "historical_sync_last_error": "retryable range failure",
         }
 
 
@@ -414,5 +517,23 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
                 "value": Decimal("1850.000000"),
             }
         ]
+        command.downgrade(alembic_config, "20260812_0013")
+        with engine.connect() as connection:
+            rolled_back_range_connection = connection.execute(
+                text(
+                    """
+                    SELECT initial_sync_state, historical_sync_kind, historical_sync_state
+                    FROM yazio_connections
+                    WHERE id = :id
+                    """
+                ),
+                {"id": range_connection_id},
+            ).mappings().one()
+        assert rolled_back_range_connection == {
+            "initial_sync_state": "not_confirmed",
+            "historical_sync_kind": "range",
+            "historical_sync_state": "failed",
+        }
+        command.upgrade(alembic_config, "head")
     finally:
         engine.dispose()

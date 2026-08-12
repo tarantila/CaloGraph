@@ -111,6 +111,8 @@ def save_yazio_connection(
             payload.password,
             sync_interval_minutes=payload.interval_hours * 60 if payload.interval_hours is not None else None,
             sync_days=payload.sync_days,
+            start_day=payload.from_date,
+            end_day=payload.end_date,
         )
     except CredentialEncryptionError as exc:
         log_security_event(
@@ -122,6 +124,8 @@ def save_yazio_connection(
             status_code=503,
             detail="Verschlüsselung für YAZIO-Verbindungen ist nicht eingerichtet.",
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except YazioSyncError as exc:
         log_security_event(
             "integration.yazio.connection_failed",
@@ -152,9 +156,7 @@ def _status_response(connection: YazioConnection | None) -> YazioStatusResponse:
         sync_days=effective_sync_days(connection),
         sync_interval_override_minutes=connection.sync_interval_minutes,
         sync_days_override=connection.sync_days,
-        initial_sync_state=connection.initial_sync_state,
         historical_sync=YazioHistoricalSyncResponse(
-            kind=connection.historical_sync_kind,
             state=connection.historical_sync_state,
             start_date=connection.historical_sync_start_date,
             end_date=connection.historical_sync_end_date,
@@ -206,27 +208,6 @@ def sync_yazio_now(
         _raise_yazio_http_error(exc)
 
 
-@router.post("/sync/history", response_model=YazioStatusResponse)
-def sync_yazio_history(
-    request: Request,
-    user: User = Depends(require_csrf),
-    db: Session = Depends(get_db),
-) -> YazioStatusResponse:
-    _rate_limit_yazio_action(db, request, user)
-    try:
-        connection = enqueue_historical_yazio_sync(user.id, kind="full")
-    except YazioConnectionNotConfigured as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except YazioSyncError as exc:
-        _raise_yazio_http_error(exc)
-    log_security_event(
-        "integration.yazio.history_queued",
-        actor_ref=security_reference("user", user.id),
-        target_ref=security_reference("yazio_connection", connection.id),
-        details={"mode": "full"},
-    )
-    return _status_response(connection)
-
 
 @router.post("/sync/history/range", response_model=YazioStatusResponse)
 def sync_yazio_history_range(
@@ -239,7 +220,6 @@ def sync_yazio_history_range(
     try:
         connection = enqueue_historical_yazio_sync(
             user.id,
-            kind="range",
             start_day=payload.from_date,
             end_day=payload.end_date,
         )

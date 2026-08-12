@@ -399,6 +399,16 @@ def configure_yazio(args: argparse.Namespace) -> None:
                         else None
                     ),
                     sync_days=args.days,
+                    start_day=(
+                        date.fromisoformat(args.from_date)
+                        if args.from_date is not None
+                        else None
+                    ),
+                    end_day=(
+                        date.fromisoformat(args.end_date)
+                        if args.end_date is not None
+                        else None
+                    ),
                 )
     except CredentialEncryptionError as exc:
         raise SystemExit(f"{exc} Zuerst CREDENTIAL_ENCRYPTION_KEY in .env setzen.") from exc
@@ -458,12 +468,7 @@ def yazio_status(args: argparse.Namespace) -> None:
         print(f"Aktiv: {'ja' if connection.sync_enabled else 'nein'}")
         print(f"Intervall: {effective_sync_interval_minutes(connection) // 60} Stunden")
         print(f"Abrufzeitraum: {effective_sync_days(connection)} Tage")
-        print(f"Initialer Abruf: {connection.initial_sync_state}")
-        print(
-            "Historischer Abruf: "
-            f"{connection.historical_sync_kind or 'keiner'} · "
-            f"{connection.historical_sync_state}"
-        )
+        print(f"Historischer Abruf: {connection.historical_sync_state}")
         print(f"Letzter Versuch: {connection.last_attempt_at or 'noch keiner'}")
         print(f"Letzter Erfolg: {connection.last_success_at or 'noch keiner'}")
         print(f"Nächster Lauf: {connection.next_sync_at or 'sofort'}")
@@ -472,11 +477,9 @@ def yazio_status(args: argparse.Namespace) -> None:
 
 def queue_yazio_history(args: argparse.Namespace) -> None:
     username = args.username or input("CaloGraph-Benutzername: ").strip()
-    if bool(args.from_date) != bool(args.end_date):
-        raise SystemExit("--from-date und --end-date müssen zusammen angegeben werden.")
     try:
-        start_day = date.fromisoformat(args.from_date) if args.from_date else None
-        end_day = date.fromisoformat(args.end_date) if args.end_date else None
+        start_day = date.fromisoformat(args.from_date)
+        end_day = date.fromisoformat(args.end_date)
     except ValueError as exc:
         raise SystemExit("Datumsangaben müssen das Format YYYY-MM-DD verwenden.") from exc
     with SessionLocal() as db:
@@ -487,7 +490,6 @@ def queue_yazio_history(args: argparse.Namespace) -> None:
     try:
         connection = enqueue_historical_yazio_sync(
             user_id,
-            kind="range" if start_day else "full",
             start_day=start_day,
             end_day=end_day,
         )
@@ -497,9 +499,9 @@ def queue_yazio_history(args: argparse.Namespace) -> None:
         "integration.yazio.history_queued",
         actor_ref=security_reference("user", user_id),
         target_ref=security_reference("yazio_connection", connection.id),
-        details={"mode": connection.historical_sync_kind},
+        details={"mode": "range"},
     )
-    print("Historischer YAZIO-Abruf wurde für den Scheduler vorgemerkt.")
+    print("Historischer YAZIO-Zeitraum wurde für den Scheduler vorgemerkt.")
 
 
 def _touch_yazio_scheduler_heartbeat() -> None:
@@ -646,6 +648,8 @@ def parser() -> argparse.ArgumentParser:
         metavar="1-366",
         help="Individueller Zeitraum; ohne Angabe gilt YAZIO_SYNC_DAYS.",
     )
+    configure.add_argument("--from-date", help="Startdatum YYYY-MM-DD")
+    configure.add_argument("--end-date", help="Enddatum YYYY-MM-DD")
     configure.set_defaults(handler=configure_yazio)
     disable = commands.add_parser(
         "disable-yazio",
@@ -653,11 +657,11 @@ def parser() -> argparse.ArgumentParser:
     )
     history = commands.add_parser(
         "sync-yazio-history",
-        help="Historischen YAZIO-Abruf für den Scheduler vormerken",
+        help="Historischen YAZIO-Zeitraum für den Scheduler vormerken",
     )
     history.add_argument("--username", default="admin")
-    history.add_argument("--from-date", help="Startdatum YYYY-MM-DD")
-    history.add_argument("--end-date", help="Enddatum YYYY-MM-DD")
+    history.add_argument("--from-date", required=True, help="Startdatum YYYY-MM-DD")
+    history.add_argument("--end-date", required=True, help="Enddatum YYYY-MM-DD")
     history.set_defaults(handler=queue_yazio_history)
     disable.add_argument("--username", default="admin")
     disable.set_defaults(handler=disable_yazio)
