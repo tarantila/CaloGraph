@@ -55,6 +55,10 @@ class YazioConnectionNotConfigured(YazioSyncError):
     pass
 
 
+class YazioConnectionDisabled(YazioSyncError):
+    pass
+
+
 class YazioDisabled(YazioSyncError):
     pass
 
@@ -118,6 +122,68 @@ def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
 
 def yazio_source_identifier(user_id: UUID) -> str:
     return f"yazio:{user_id}"
+
+YAZIO_HISTORY_DISCOVERY_START = date(2000, 1, 1)
+MAX_YAZIO_RANGE_DAYS = 366
+MAX_YAZIO_HISTORY_RANGE_DAYS = 366
+
+
+
+def effective_sync_interval_minutes(connection: YazioConnection) -> int:
+    return connection.sync_interval_minutes or settings.yazio_sync_interval_hours * 60
+
+
+def effective_sync_days(connection: YazioConnection) -> int:
+    return connection.sync_days or settings.yazio_sync_days
+
+
+def enqueue_historical_yazio_sync(
+    user_id: UUID,
+    *,
+    kind: Literal["full", "range"],
+    start_day: date | None = None,
+    end_day: date | None = None,
+    now: datetime | None = None,
+) -> YazioConnection:
+    _require_yazio_enabled()
+    if kind == "range" and (
+        start_day is None
+        or end_day is None
+        or start_day > end_day
+        or (end_day - start_day).days >= MAX_YAZIO_HISTORY_RANGE_DAYS
+    ):
+        raise ValueError(
+            "Der historische Zeitraum ist ungültig oder länger als 366 Tage."
+        )
+    requested_at = now or datetime.now(UTC)
+    with SessionLocal() as db, _active_yazio_user_operation(db, user_id):
+        connection = db.scalar(
+            select(YazioConnection).where(YazioConnection.user_id == user_id)
+        )
+        if connection is None:
+            raise YazioConnectionNotConfigured(
+                "Für dieses Konto ist keine YAZIO-Verbindung eingerichtet."
+            )
+        if not connection.sync_enabled:
+            raise YazioConnectionDisabled(
+                "Die automatische YAZIO-Synchronisierung ist deaktiviert."
+            )
+        if connection.historical_sync_state in {"pending", "running"}:
+            raise YazioOperationCapacityExceeded(
+                "Für dieses Konto läuft bereits ein YAZIO-Vorgang."
+            )
+        connection.historical_sync_kind = kind
+        connection.historical_sync_state = "pending"
+        connection.historical_sync_start_date = start_day
+        connection.historical_sync_end_date = end_day
+        connection.historical_sync_cursor_date = end_day if kind == "range" else None
+        connection.historical_sync_started_at = None
+        connection.historical_sync_completed_at = None
+        connection.historical_sync_last_error = None
+        connection.next_sync_at = requested_at
+        db.commit()
+        db.refresh(connection)
+        return connection
 
 
 def _yazio_operation_key(email: str) -> str:
@@ -345,22 +411,20 @@ def configure_yazio_connection(
     email: str,
     password: str,
     *,
-    sync_interval_minutes: int = 360,
-    sync_days: int = 7,
+    sync_interval_minutes: int | None = None,
+    sync_days: int | None = None,
 ) -> YazioConnection:
     _require_yazio_enabled()
-    if not 60 <= sync_interval_minutes <= 10080:
+    if sync_interval_minutes is not None and not 60 <= sync_interval_minutes <= 10080:
         raise ValueError("Das Sync-Intervall muss zwischen 60 und 10080 Minuten liegen.")
-    if not 1 <= sync_days <= 366:
+    if sync_days is not None and not 1 <= sync_days <= 366:
         raise ValueError("Die Anzahl der Sync-Tage muss zwischen 1 und 366 liegen.")
 
-    with (
-        SessionLocal() as db,
-        _active_yazio_user_operation(db, user.id) as attached_user,
-    ):
+    with SessionLocal() as db, _active_yazio_user_operation(db, user.id) as attached_user:
         connection = db.scalar(
             select(YazioConnection).where(YazioConnection.user_id == attached_user.id)
         )
+        is_new = connection is None
         if connection is None:
             connection = YazioConnection(user_id=attached_user.id)
             db.add(connection)
@@ -368,9 +432,25 @@ def configure_yazio_connection(
         connection.encrypted_password = encrypt_credential(password)
         connection.source_identifier = yazio_source_identifier(attached_user.id)
         connection.sync_enabled = True
-        connection.sync_interval_minutes = sync_interval_minutes
-        connection.sync_days = sync_days
-        connection.next_sync_at = datetime.now(UTC)
+        if sync_interval_minutes is not None:
+            connection.sync_interval_minutes = sync_interval_minutes
+        if sync_days is not None:
+            connection.sync_days = sync_days
+        if is_new:
+            connection.initial_sync_state = "pending"
+            connection.historical_sync_kind = "initial"
+            connection.historical_sync_state = "pending"
+            connection.historical_sync_start_date = None
+            connection.historical_sync_end_date = None
+            connection.historical_sync_cursor_date = None
+            connection.historical_sync_started_at = None
+            connection.historical_sync_completed_at = None
+            connection.historical_sync_last_error = None
+            connection.next_sync_at = datetime.now(UTC)
+        elif connection.initial_sync_state in {"pending", "running", "failed"}:
+            connection.historical_sync_state = "pending"
+            connection.historical_sync_last_error = None
+            connection.next_sync_at = datetime.now(UTC)
         connection.last_error = None
         db.commit()
         db.refresh(connection)
@@ -506,6 +586,123 @@ def _run_yazio_connection_sync(
         return None
 
 
+def _run_historical_yazio_sync_locked(
+    connection_id: UUID,
+    *,
+    fetcher: YazioFetcher | None,
+    attempted_at: datetime,
+) -> ImportSummary | None:
+    with SessionLocal() as db:
+        connection = db.get(YazioConnection, connection_id)
+        if (
+            connection is None
+            or connection.historical_sync_state not in {"pending", "running", "failed"}
+        ):
+            return None
+        user = db.get(User, connection.user_id)
+        if user is None or not user.is_active:
+            return None
+        kind = connection.historical_sync_kind
+        if kind not in {"initial", "full", "range"}:
+            return None
+        local_today = attempted_at.astimezone(ZoneInfo(user.timezone)).date()
+        history_start: date | None
+        history_end: date | None
+        if kind in {"initial", "full"}:
+            history_start = YAZIO_HISTORY_DISCOVERY_START
+            history_end = connection.historical_sync_end_date or local_today
+        else:
+            history_start = connection.historical_sync_start_date
+            history_end = connection.historical_sync_end_date
+        if history_start is None or history_end is None:
+            raise YazioSyncError("Der historische YAZIO-Auftrag ist ungültig.")
+        end_day = connection.historical_sync_cursor_date or history_end
+        if (end_day - history_start).days < MAX_YAZIO_RANGE_DAYS:
+            start_day = history_start
+        else:
+            start_day = end_day - timedelta(days=MAX_YAZIO_RANGE_DAYS - 1)
+        completed = start_day == history_start
+        next_cursor = None if completed else start_day - timedelta(days=1)
+        connection.historical_sync_start_date = history_start
+        connection.historical_sync_end_date = history_end
+        connection.historical_sync_state = "running"
+        connection.historical_sync_started_at = (
+            connection.historical_sync_started_at or attempted_at
+        )
+        if kind == "initial":
+            connection.initial_sync_state = "running"
+        connection.last_attempt_at = attempted_at
+        connection.historical_sync_last_error = None
+        db.commit()
+        db.refresh(user)
+        encrypted_email = connection.encrypted_email
+        encrypted_password = connection.encrypted_password
+        source_identifier = connection.source_identifier
+        user_id = user.id
+    try:
+        email = decrypt_credential(encrypted_email)
+        password = decrypt_credential(encrypted_password)
+        with SessionLocal() as db:
+            active_user = db.get(User, user_id)
+            if active_user is None or not active_user.is_active:
+                raise YazioSyncError("CaloGraph-Benutzer ist nicht aktiv.")
+            summary = _sync_yazio_user_unlocked(
+                active_user,
+                email,
+                password,
+                start_day,
+                end_day,
+                source_identifier,
+                fetcher,
+                include_micronutrients=True,
+            )
+    except Exception as exc:
+        _record_failure(connection_id, attempted_at, exc, historical=True)
+        log_security_event(
+            "integration.yazio.sync_failed",
+            actor_ref=security_reference("user", user_id),
+            target_ref=security_reference("yazio_connection", connection_id),
+            reason=yazio_failure_reason(exc),
+            details={"mode": kind},
+        )
+        return None
+    completed_at = datetime.now(UTC)
+    with SessionLocal() as db:
+        connection = db.get(YazioConnection, connection_id)
+        if connection is not None:
+            connection.last_success_at = completed_at
+            connection.last_micronutrient_sync_at = completed_at
+            connection.last_error = None
+            connection.historical_sync_cursor_date = next_cursor
+            if completed:
+                connection.historical_sync_state = "completed"
+                connection.historical_sync_completed_at = completed_at
+                if kind == "initial":
+                    connection.initial_sync_state = "completed"
+                connection.next_sync_at = _next_sync_at(
+                    completed_at,
+                    effective_sync_interval_minutes(connection),
+                )
+            else:
+                connection.historical_sync_state = "pending"
+                connection.next_sync_at = completed_at
+            db.commit()
+    log_security_event(
+        "integration.yazio.sync_completed",
+        actor_ref=security_reference("user", user_id),
+        target_ref=security_reference("yazio_connection", connection_id),
+        details={
+            "mode": kind,
+            "received": summary.received,
+            "inserted": summary.inserted,
+            "updated": summary.updated,
+            "skipped": summary.skipped,
+            "failed": summary.failed,
+        },
+    )
+    return summary
+
+
 def _run_yazio_connection_sync_locked(
     connection_id: UUID,
     *,
@@ -523,35 +720,47 @@ def _run_yazio_connection_sync_locked(
         user = db.get(User, connection.user_id)
         if user is None or not user.is_active:
             return None
-        connection.last_attempt_at = attempted_at
-        connection.next_sync_at = _next_sync_at(
-            attempted_at,
-            connection.sync_interval_minutes,
+        historical_pending = (
+            mode == "scheduled"
+            and connection.historical_sync_state in {"pending", "running", "failed"}
         )
-        db.commit()
-        try:
-            email = decrypt_credential(connection.encrypted_email)
-            password = decrypt_credential(connection.encrypted_password)
-        except CredentialEncryptionError as exc:
-            _record_failure(connection_id, attempted_at, exc)
-            log_security_event(
-                "integration.yazio.sync_failed",
-                actor_ref=security_reference("user", user.id),
-                target_ref=security_reference("yazio_connection", connection_id),
-                reason="credential_decryption_error",
-                details={"mode": mode},
+        if not historical_pending:
+            connection.last_attempt_at = attempted_at
+            connection.next_sync_at = _next_sync_at(
+                attempted_at,
+                effective_sync_interval_minutes(connection),
             )
-            if raise_errors:
-                raise YazioSyncError(
-                    "Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden."
-                ) from exc
-            return None
-        timezone = user.timezone
-        sync_days = sync_days_override or connection.sync_days
-        source_identifier = connection.source_identifier
-        user_id = user.id
-        last_micronutrient_sync_at = connection.last_micronutrient_sync_at
-
+            db.commit()
+            encrypted_email = connection.encrypted_email
+            encrypted_password = connection.encrypted_password
+            source_identifier = connection.source_identifier
+            timezone = user.timezone
+            sync_days = sync_days_override or effective_sync_days(connection)
+            user_id = user.id
+            last_micronutrient_sync_at = connection.last_micronutrient_sync_at
+    if historical_pending:
+        return _run_historical_yazio_sync_locked(
+            connection_id,
+            fetcher=fetcher,
+            attempted_at=attempted_at,
+        )
+    try:
+        email = decrypt_credential(encrypted_email)
+        password = decrypt_credential(encrypted_password)
+    except CredentialEncryptionError as exc:
+        _record_failure(connection_id, attempted_at, exc)
+        log_security_event(
+            "integration.yazio.sync_failed",
+            actor_ref=security_reference("user", user_id),
+            target_ref=security_reference("yazio_connection", connection_id),
+            reason="credential_decryption_error",
+            details={"mode": mode},
+        )
+        if raise_errors:
+            raise YazioSyncError(
+                "Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden."
+            ) from exc
+        return None
     if (
         last_micronutrient_sync_at is not None
         and last_micronutrient_sync_at.tzinfo is None
@@ -563,7 +772,6 @@ def _run_yazio_connection_sync_locked(
         or attempted_at - last_micronutrient_sync_at
         >= MICRONUTRIENT_SYNC_INTERVAL
     )
-
     end_day = attempted_at.astimezone(ZoneInfo(timezone)).date()
     start_day = end_day - timedelta(days=sync_days - 1)
     try:
@@ -593,7 +801,6 @@ def _run_yazio_connection_sync_locked(
                 "Die YAZIO-Synchronisierung ist unerwartet fehlgeschlagen."
             ) from exc
         return None
-
     completed_at = datetime.now(UTC)
     with SessionLocal() as db:
         connection = db.get(YazioConnection, connection_id)
@@ -604,7 +811,7 @@ def _run_yazio_connection_sync_locked(
             connection.last_error = None
             connection.next_sync_at = _next_sync_at(
                 completed_at,
-                connection.sync_interval_minutes,
+                effective_sync_interval_minutes(connection),
             )
             db.commit()
     log_security_event(
@@ -627,14 +834,19 @@ def run_due_yazio_syncs(
     *,
     fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
+    after_connection: Callable[[], None] | None = None,
 ) -> tuple[int, int]:
     if not settings.yazio_enabled:
         return 0, 0
     connection_ids = due_yazio_connection_ids(now)
     succeeded = 0
     for connection_id in connection_ids:
-        if run_scheduled_yazio_sync(connection_id, fetcher=fetcher, now=now) is not None:
-            succeeded += 1
+        try:
+            if run_scheduled_yazio_sync(connection_id, fetcher=fetcher, now=now) is not None:
+                succeeded += 1
+        finally:
+            if after_connection is not None:
+                after_connection()
     return len(connection_ids), succeeded
 
 
@@ -642,22 +854,30 @@ def _record_failure(
     connection_id: UUID,
     attempted_at: datetime,
     error: Exception,
+    *,
+    historical: bool = False,
 ) -> None:
     with SessionLocal() as db:
         connection = db.get(YazioConnection, connection_id)
         if connection is None:
             return
-        retry_minutes = min(connection.sync_interval_minutes, 60)
+        retry_minutes = min(effective_sync_interval_minutes(connection), 60)
+        if isinstance(error, CredentialEncryptionError):
+            safe_error = "Gespeicherte YAZIO-Zugangsdaten konnten nicht entschlüsselt werden."
+        elif isinstance(error, YazioSyncError):
+            safe_error = str(error)[:500]
+        else:
+            safe_error = "Unerwarteter Fehler bei der Synchronisierung."
+        if historical:
+            connection.historical_sync_state = "failed"
+            connection.historical_sync_last_error = safe_error
+            if connection.historical_sync_kind == "initial":
+                connection.initial_sync_state = "failed"
         if isinstance(error, YazioAuthenticationError):
             connection.sync_enabled = False
-            connection.last_error = str(error)[:500]
+            connection.last_error = safe_error
             connection.next_sync_at = None
-        elif isinstance(error, (CredentialEncryptionError, YazioSyncError)):
-            connection.last_error = str(error)[:500]
-            connection.next_sync_at = _next_sync_at(attempted_at, retry_minutes)
         else:
-            connection.last_error = (
-                f"Unerwarteter Fehler bei der Synchronisierung ({type(error).__name__})."
-            )
+            connection.last_error = safe_error
             connection.next_sync_at = _next_sync_at(attempted_at, retry_minutes)
         db.commit()

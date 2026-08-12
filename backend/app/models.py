@@ -66,10 +66,25 @@ class YazioConnection(Base):
     __table_args__ = (
         UniqueConstraint("user_id"),
         CheckConstraint(
-            "sync_interval_minutes BETWEEN 60 AND 10080",
+            "sync_interval_minutes IS NULL OR sync_interval_minutes BETWEEN 60 AND 10080",
             name="ck_yazio_sync_interval",
         ),
-        CheckConstraint("sync_days BETWEEN 1 AND 366", name="ck_yazio_sync_days"),
+        CheckConstraint(
+            "sync_days IS NULL OR sync_days BETWEEN 1 AND 366",
+            name="ck_yazio_sync_days",
+        ),
+        CheckConstraint(
+            "initial_sync_state IN ('not_confirmed', 'pending', 'running', 'completed', 'failed')",
+            name="ck_yazio_initial_sync_state",
+        ),
+        CheckConstraint(
+            "historical_sync_state IN ('idle', 'pending', 'running', 'completed', 'failed')",
+            name="ck_yazio_historical_sync_state",
+        ),
+        CheckConstraint(
+            "historical_sync_kind IS NULL OR historical_sync_kind IN ('initial', 'full', 'range')",
+            name="ck_yazio_historical_sync_kind",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -80,8 +95,18 @@ class YazioConnection(Base):
     encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
     source_identifier: Mapped[str] = mapped_column(String(255))
     sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
-    sync_days: Mapped[int] = mapped_column(Integer, default=7)
+    # Null means inherit the deployment-wide settings values.
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    sync_days: Mapped[int | None] = mapped_column(Integer)
+    initial_sync_state: Mapped[str] = mapped_column(String(32), default="not_confirmed")
+    historical_sync_kind: Mapped[str | None] = mapped_column(String(16))
+    historical_sync_state: Mapped[str] = mapped_column(String(16), default="idle")
+    historical_sync_start_date: Mapped[date | None] = mapped_column(Date)
+    historical_sync_end_date: Mapped[date | None] = mapped_column(Date)
+    historical_sync_cursor_date: Mapped[date | None] = mapped_column(Date)
+    historical_sync_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    historical_sync_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    historical_sync_last_error: Mapped[str | None] = mapped_column(String(500))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_micronutrient_sync_at: Mapped[datetime | None] = mapped_column(

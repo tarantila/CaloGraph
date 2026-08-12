@@ -77,6 +77,9 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "integration.yazio.connection_configured": EventSpec("success", logging.INFO),
     "integration.yazio.connection_disabled": EventSpec("success", logging.WARNING),
     "integration.yazio.connection_failed": EventSpec("failure", logging.WARNING),
+    "integration.yazio.history_queued": EventSpec(
+        "pending", logging.INFO, frozenset({"mode"})
+    ),
     "integration.yazio.sync_completed": EventSpec(
         "success", logging.INFO, _COUNT_FIELDS | {"mode"}
     ),

@@ -281,12 +281,26 @@ class ImportBatchDetailResponse(ImportBatchResponse):
     errors: list[ImportErrorResponse] = Field(default_factory=list)
 
 
+class YazioHistoricalSyncResponse(BaseModel):
+    kind: Literal["initial", "full", "range"] | None = None
+    state: Literal["idle", "pending", "running", "completed", "failed"]
+    start_date: date | None = None
+    end_date: date | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_error: str | None = None
+
+
 class YazioStatusResponse(BaseModel):
     available: bool = True
     configured: bool
     sync_enabled: bool
     sync_interval_minutes: int | None = None
     sync_days: int | None = None
+    sync_interval_override_minutes: int | None = None
+    sync_days_override: int | None = None
+    initial_sync_state: Literal["not_confirmed", "pending", "running", "completed", "failed"] | None = None
+    historical_sync: YazioHistoricalSyncResponse | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
     next_sync_at: datetime | None = None
@@ -296,8 +310,13 @@ class YazioStatusResponse(BaseModel):
 class YazioConnectionInput(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=1024)
-    interval_hours: int = Field(default=6, ge=1, le=168)
-    sync_days: int = Field(default=7, ge=1, le=30)
+    interval_hours: int | None = Field(default=None, ge=1, le=168)
+    sync_days: int | None = Field(default=None, ge=1, le=366)
+
+
+class YazioHistoricalRangeInput(BaseModel):
+    from_date: date
+    end_date: date
 
 
 class TokenCreateRequest(BaseModel):

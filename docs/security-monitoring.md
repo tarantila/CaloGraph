@@ -38,7 +38,8 @@ The event stream covers:
 - successful and rejected password recovery completion;
 - rate-limit decisions for every HTTP endpoint using the shared limiter;
 - CLI user creation, recovery issuance, and authenticator reset;
-- YAZIO connection changes and manual or scheduled synchronization outcomes;
+- YAZIO connection changes, historical synchronization scheduling, and manual
+  or scheduled synchronization outcomes;
 - import starts, completions, partial failures, validation outcomes, and HTTP rejection;
 - otherwise unhandled application request failures.
 

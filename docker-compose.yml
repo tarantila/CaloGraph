@@ -101,6 +101,8 @@ services:
       FILE_IMPORT_IP_RATE_LIMIT: ${FILE_IMPORT_IP_RATE_LIMIT:-6}
       FILE_IMPORT_RATE_LIMIT_WINDOW_SECONDS: ${FILE_IMPORT_RATE_LIMIT_WINDOW_SECONDS:-3600}
       YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
+      YAZIO_SYNC_INTERVAL_HOURS: ${YAZIO_SYNC_INTERVAL_HOURS:-6}
+      YAZIO_SYNC_DAYS: ${YAZIO_SYNC_DAYS:-7}
       YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
       YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
       YAZIO_LOGIN_DEADLINE_SECONDS: ${YAZIO_LOGIN_DEADLINE_SECONDS:-25}
@@ -164,6 +166,8 @@ services:
       RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
       CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
       YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
+      YAZIO_SYNC_INTERVAL_HOURS: ${YAZIO_SYNC_INTERVAL_HOURS:-6}
+      YAZIO_SYNC_DAYS: ${YAZIO_SYNC_DAYS:-7}
       YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
       YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
       YAZIO_LOGIN_DEADLINE_SECONDS: ${YAZIO_LOGIN_DEADLINE_SECONDS:-25}
@@ -189,7 +193,7 @@ services:
         - CMD
         - python
         - -c
-        - "import os,time; from pathlib import Path; p=Path('/tmp/yazio-scheduler-heartbeat'); raise SystemExit(0 if p.exists() and time.time()-p.stat().st_mtime < int(os.environ.get('YAZIO_SCHEDULER_POLL_SECONDS','60'))+120 else 1)"
+        - "import os,time; from pathlib import Path; p=Path('/tmp/yazio-scheduler-heartbeat'); poll=int(os.environ.get('YAZIO_SCHEDULER_POLL_SECONDS','60')); deadline=int(os.environ.get('YAZIO_OPERATION_DEADLINE_SECONDS','300')); raise SystemExit(0 if p.exists() and time.time()-p.stat().st_mtime < max(poll+120,deadline+poll+60) else 1)"
       interval: 1m
       timeout: 5s
       retries: 3

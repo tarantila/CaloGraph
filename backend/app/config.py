@@ -194,6 +194,8 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_enabled: bool = True
+    yazio_sync_interval_hours: int = Field(default=6, ge=1, le=168)
+    yazio_sync_days: int = Field(default=7, ge=1, le=366)
     yazio_connect_timeout_seconds: float = Field(default=3.05, ge=0.1, le=30)
     yazio_read_timeout_seconds: float = Field(default=15, ge=1, le=120)
     yazio_login_deadline_seconds: int = Field(default=25, ge=5, le=120)

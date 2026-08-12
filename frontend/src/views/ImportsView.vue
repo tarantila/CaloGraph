@@ -10,7 +10,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api, ApiError, ensureCsrfToken } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDateTime } from '../date-format'
-import type { ImportBatch } from '../types'
+import type { ImportBatch, YazioStatus } from '../types'
 
 interface ImportErrorDetail {
   item_index: number | null
@@ -24,6 +24,10 @@ interface ImportDetail extends ImportBatch {
 }
 
 const imports = ref<ImportBatch[]>([])
+const yazioStatus = ref<YazioStatus | null>(null)
+const historyFrom = ref('')
+const historyTo = ref('')
+const historicalSyncing = ref(false)
 const details = ref<Record<string, ImportDetail>>({})
 const expandedId = ref<string | null>(null)
 const selected = ref<File | null>(null)
@@ -40,7 +44,12 @@ const maxAppleHealthBytes = 500 * 1024 * 1024
 async function load() {
   error.value = ''
   try {
-    imports.value = await api<ImportBatch[]>('/imports')
+    const [importResult, yazioResult] = await Promise.all([
+      api<ImportBatch[]>('/imports'),
+      api<YazioStatus>('/yazio/status'),
+    ])
+    imports.value = importResult
+    yazioStatus.value = yazioResult
   } catch (cause) {
     error.value =
       cause instanceof ApiError ? cause.message : 'Importläufe konnten nicht geladen werden.'
@@ -132,6 +141,59 @@ async function upload() {
     messageIsError.value = true
     message.value =
       cause instanceof ApiError ? cause.message : 'Import konnte nicht gestartet werden.'
+  }
+}
+
+
+const historicalSyncLabel = computed(() => {
+  const sync = yazioStatus.value?.historical_sync
+  if (!yazioStatus.value?.configured) return 'YAZIO-Verbindung noch nicht eingerichtet'
+  if (!sync || sync.state === 'idle') return 'kein historischer Abruf vorgemerkt'
+  if (sync.state === 'failed') {
+    return yazioStatus.value.sync_enabled
+      ? 'fehlgeschlagen; wird erneut versucht'
+      : 'fehlgeschlagen; Zugangsdaten aktualisieren'
+  }
+  const labels: Record<typeof sync.state, string> = {
+    pending: 'wartet auf den Scheduler',
+    running: 'wird synchronisiert',
+    completed: 'abgeschlossen',
+  }
+  return labels[sync.state]
+})
+
+async function queueHistoricalSync(kind: 'full' | 'range') {
+  if (kind === 'range' && (!historyFrom.value || !historyTo.value)) {
+    messageIsError.value = true
+    message.value = 'Bitte Beginn und Ende des Zeitraums auswählen.'
+    return
+  }
+  historicalSyncing.value = true
+  message.value = ''
+  messageIsError.value = false
+  try {
+    yazioStatus.value = await api<YazioStatus>(
+      kind === 'full' ? '/yazio/sync/history' : '/yazio/sync/history/range',
+      {
+        method: 'POST',
+        body:
+          kind === 'full'
+            ? undefined
+            : JSON.stringify({ from_date: historyFrom.value, end_date: historyTo.value }),
+      },
+    )
+    message.value =
+      kind === 'full'
+        ? 'Gesamte verfügbare YAZIO-Historie wurde für den Scheduler vorgemerkt.'
+        : 'YAZIO-Zeitraum wurde für den Scheduler vorgemerkt.'
+  } catch (cause) {
+    messageIsError.value = true
+    message.value =
+      cause instanceof ApiError
+        ? cause.message
+        : 'Historischer YAZIO-Abruf konnte nicht vorgemerkt werden.'
+  } finally {
+    historicalSyncing.value = false
   }
 }
 
@@ -231,6 +293,56 @@ const importsWithIssues = computed(() =>
           <span class="insight-icon blue"><PhWarningCircle :size="20" weight="duotone" /></span>
           <span><small>Läufe mit Hinweisen</small><strong>{{ importsWithIssues.length }}</strong></span>
         </article>
+      </div>
+    </section>
+
+    <section class="card form-card" aria-labelledby="yazio-history-heading" style="margin-top: 1rem">
+      <h2 id="yazio-history-heading">YAZIO-Historie nachladen</h2>
+      <p>
+        Läuft im Hintergrund über den Scheduler und übernimmt vorhandene Werte
+        idempotent. Der reguläre Abruf bleibt davon unabhängig.
+      </p>
+      <p><strong>Status:</strong> {{ historicalSyncLabel }}</p>
+      <p
+        v-if="yazioStatus?.historical_sync?.started_at"
+        class="table-secondary"
+      >
+        Gestartet: {{ formatGermanDateTime(yazioStatus.historical_sync.started_at) }}
+      </p>
+      <p
+        v-if="yazioStatus?.historical_sync?.last_error"
+        class="import-message error"
+        role="alert"
+      >
+        {{ yazioStatus.historical_sync.last_error }}
+      </p>
+      <div class="filters">
+        <button
+          class="button"
+          type="button"
+          :disabled="!yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled || historicalSyncing || yazioStatus?.historical_sync?.state === 'pending' || yazioStatus?.historical_sync?.state === 'running'"
+          @click="queueHistoricalSync('full')"
+        >
+          {{ historicalSyncing ? 'Wird vorgemerkt …' : 'Gesamte Historie synchronisieren' }}
+        </button>
+      </div>
+      <div class="form-grid" style="margin-top: 1rem">
+        <label class="field">
+          Von
+          <input v-model="historyFrom" type="date" :disabled="historicalSyncing" />
+        </label>
+        <label class="field">
+          Bis
+          <input v-model="historyTo" type="date" :disabled="historicalSyncing" />
+        </label>
+        <button
+          class="button secondary"
+          type="button"
+          :disabled="!yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled || historicalSyncing || yazioStatus?.historical_sync?.state === 'pending' || yazioStatus?.historical_sync?.state === 'running'"
+          @click="queueHistoricalSync('range')"
+        >
+          Zeitraum synchronisieren
+        </button>
       </div>
     </section>
 

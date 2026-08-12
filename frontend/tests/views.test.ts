@@ -536,6 +536,106 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Messwert ist keine gültige Zahl')
   })
 
+  it('queues a complete YAZIO history import from the imports view', async () => {
+    const status = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      sync_interval_override_minutes: null,
+      sync_days_override: null,
+      initial_sync_state: 'completed',
+      historical_sync: {
+        kind: null,
+        state: 'idle',
+        start_date: null,
+        end_date: null,
+        started_at: null,
+        completed_at: null,
+        last_error: null,
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve(status)
+      if (path === '/yazio/sync/history' && options?.method === 'POST') {
+        return Promise.resolve({
+          ...status,
+          historical_sync: { ...status.historical_sync, kind: 'full', state: 'pending' },
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(ImportsView)
+    await flushPromises()
+    const button = wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('Gesamte Historie synchronisieren'))
+    expect(button).toBeDefined()
+    expect((button!.element as HTMLButtonElement).disabled).toBe(false)
+    await button!.trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('/yazio/sync/history', {
+      method: 'POST',
+      body: undefined,
+    })
+    expect(wrapper.text()).toContain('wartet auf den Scheduler')
+  })
+
+  it('explains that failed history imports need credential renewal when sync is paused', async () => {
+    const status = {
+      available: true,
+      configured: true,
+      sync_enabled: false,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      sync_interval_override_minutes: null,
+      sync_days_override: null,
+      initial_sync_state: 'failed',
+      historical_sync: {
+        kind: 'initial',
+        state: 'failed',
+        start_date: null,
+        end_date: null,
+        started_at: null,
+        completed_at: null,
+        last_error: 'YAZIO-Anmeldung fehlgeschlagen.',
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: 'YAZIO-Anmeldung fehlgeschlagen.',
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/imports') return Promise.resolve([])
+      return Promise.resolve(status)
+    })
+
+    const wrapper = mount(ImportsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('fehlgeschlagen; Zugangsdaten aktualisieren')
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes('Gesamte Historie synchronisieren'))
+        ?.attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes('Zeitraum synchronisieren'))
+        ?.attributes('disabled'),
+    ).toBeDefined()
+  })
+
   it('explains data availability in plain language', async () => {
     apiMock.mockResolvedValue({
       start_date: '2026-07-20',

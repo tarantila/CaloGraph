@@ -141,16 +141,20 @@ general upload limit, and the expanded ZIP ceiling not to be smaller than the
 upload ceiling. The expanded XML is streamed and does not need to fit into
 tmpfs.
 
-Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Before public
-operation, keep the default explicit 3.05-second connect timeout, 15-second
-read timeout, 25-second login deadline, and five-minute full-operation
-deadline unless measured provider behavior requires a change. Saving
-credentials and starting a manual sync share independent per-user and per-IP
-limits of two attempts per ten minutes. PostgreSQL advisory locks cap active
-YAZIO operations at two across all backend workers and the scheduler, while a
-database-backed circuit breaker pauses provider calls after five provider or
-deadline failures in ten minutes. No Redis service or general-purpose job
-queue is required.
+Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Set
+`YAZIO_SYNC_INTERVAL_HOURS` and `YAZIO_SYNC_DAYS` to the deployment-wide
+rolling-sync defaults; connections without individual overrides inherit them.
+Before public operation, keep the default explicit 3.05-second connect timeout,
+15-second read timeout, 25-second login deadline, and five-minute
+full-operation deadline unless measured provider behavior requires a change.
+Saving credentials and starting a manual sync share independent per-user and
+per-IP limits of two attempts per ten minutes. PostgreSQL advisory locks cap
+active YAZIO operations at two across all backend workers and the scheduler,
+while a database-backed circuit breaker pauses provider calls after five
+provider or deadline failures in ten minutes. No Redis service or
+general-purpose job queue is required. Complete historical YAZIO imports are
+persisted scheduler jobs and execute in sequential requests of at most 366
+days, so their runtime must not be assumed to fit in an HTTP request.
 
 Authentication failures are not retried and do not affect the shared circuit
 breaker. They disable scheduled sync only for the affected account; saving and

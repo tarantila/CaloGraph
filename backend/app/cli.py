@@ -47,8 +47,12 @@ from app.services.user_operation_lock import (
     shared_user_operation,
 )
 from app.services.yazio_sync import (
+    YazioConnectionNotConfigured,
     YazioSyncError,
     configure_yazio_connection,
+    effective_sync_days,
+    effective_sync_interval_minutes,
+    enqueue_historical_yazio_sync,
     run_due_yazio_syncs,
     sync_yazio_user,
     validate_yazio_credentials,
@@ -389,7 +393,11 @@ def configure_yazio(args: argparse.Namespace) -> None:
                     user,
                     email,
                     password,
-                    sync_interval_minutes=args.interval_hours * 60,
+                    sync_interval_minutes=(
+                        args.interval_hours * 60
+                        if args.interval_hours is not None
+                        else None
+                    ),
                     sync_days=args.days,
                 )
     except CredentialEncryptionError as exc:
@@ -405,8 +413,8 @@ def configure_yazio(args: argparse.Namespace) -> None:
     )
     print(
         f"Automatischer YAZIO-Sync für '{username}' aktiviert: "
-        f"alle {connection.sync_interval_minutes // 60} Stunden, "
-        f"jeweils {connection.sync_days} Tage."
+        f"alle {effective_sync_interval_minutes(connection) // 60} Stunden, "
+        f"jeweils {effective_sync_days(connection)} Tage."
     )
 
 
@@ -448,12 +456,54 @@ def yazio_status(args: argparse.Namespace) -> None:
             print("Keine YAZIO-Verbindung eingerichtet.")
             return
         print(f"Aktiv: {'ja' if connection.sync_enabled else 'nein'}")
-        print(f"Intervall: {connection.sync_interval_minutes // 60} Stunden")
-        print(f"Abrufzeitraum: {connection.sync_days} Tage")
+        print(f"Intervall: {effective_sync_interval_minutes(connection) // 60} Stunden")
+        print(f"Abrufzeitraum: {effective_sync_days(connection)} Tage")
+        print(f"Initialer Abruf: {connection.initial_sync_state}")
+        print(
+            "Historischer Abruf: "
+            f"{connection.historical_sync_kind or 'keiner'} · "
+            f"{connection.historical_sync_state}"
+        )
         print(f"Letzter Versuch: {connection.last_attempt_at or 'noch keiner'}")
         print(f"Letzter Erfolg: {connection.last_success_at or 'noch keiner'}")
         print(f"Nächster Lauf: {connection.next_sync_at or 'sofort'}")
         print(f"Letzter Fehler: {connection.last_error or 'keiner'}")
+
+
+def queue_yazio_history(args: argparse.Namespace) -> None:
+    username = args.username or input("CaloGraph-Benutzername: ").strip()
+    if bool(args.from_date) != bool(args.end_date):
+        raise SystemExit("--from-date und --end-date müssen zusammen angegeben werden.")
+    try:
+        start_day = date.fromisoformat(args.from_date) if args.from_date else None
+        end_day = date.fromisoformat(args.end_date) if args.end_date else None
+    except ValueError as exc:
+        raise SystemExit("Datumsangaben müssen das Format YYYY-MM-DD verwenden.") from exc
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        if user is None:
+            raise SystemExit("CaloGraph-Benutzer nicht gefunden.")
+        user_id = user.id
+    try:
+        connection = enqueue_historical_yazio_sync(
+            user_id,
+            kind="range" if start_day else "full",
+            start_day=start_day,
+            end_day=end_day,
+        )
+    except (ValueError, YazioConnectionNotConfigured, YazioSyncError) as exc:
+        raise SystemExit(str(exc)) from exc
+    log_security_event(
+        "integration.yazio.history_queued",
+        actor_ref=security_reference("user", user_id),
+        target_ref=security_reference("yazio_connection", connection.id),
+        details={"mode": connection.historical_sync_kind},
+    )
+    print("Historischer YAZIO-Abruf wurde für den Scheduler vorgemerkt.")
+
+
+def _touch_yazio_scheduler_heartbeat() -> None:
+    Path("/tmp/yazio-scheduler-heartbeat").touch()
 
 
 def run_yazio_scheduler(args: argparse.Namespace) -> None:
@@ -473,7 +523,10 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
     last_security_cleanup = 0.0
     while True:
         try:
-            attempted, succeeded = run_due_yazio_syncs()
+            _touch_yazio_scheduler_heartbeat()
+            attempted, succeeded = run_due_yazio_syncs(
+                after_connection=_touch_yazio_scheduler_heartbeat
+            )
             monotonic_now = time.monotonic()
             if monotonic_now - last_security_cleanup >= 3600:
                 with SessionLocal() as db:
@@ -513,7 +566,7 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                 attempted,
                 succeeded,
             )
-        Path("/tmp/yazio-scheduler-heartbeat").touch()
+        _touch_yazio_scheduler_heartbeat()
         if args.once:
             print(f"{attempted} fällige Verbindung(en), {succeeded} erfolgreich.")
             return
@@ -582,22 +635,30 @@ def parser() -> argparse.ArgumentParser:
     configure.add_argument(
         "--interval-hours",
         type=int,
-        default=6,
         choices=range(1, 169),
         metavar="1-168",
+        help="Individuelles Intervall; ohne Angabe gilt YAZIO_SYNC_INTERVAL_HOURS.",
     )
     configure.add_argument(
         "--days",
         type=int,
-        default=7,
         choices=range(1, 367),
         metavar="1-366",
+        help="Individueller Zeitraum; ohne Angabe gilt YAZIO_SYNC_DAYS.",
     )
     configure.set_defaults(handler=configure_yazio)
     disable = commands.add_parser(
         "disable-yazio",
         help="Automatische YAZIO-Synchronisierung deaktivieren",
     )
+    history = commands.add_parser(
+        "sync-yazio-history",
+        help="Historischen YAZIO-Abruf für den Scheduler vormerken",
+    )
+    history.add_argument("--username", default="admin")
+    history.add_argument("--from-date", help="Startdatum YYYY-MM-DD")
+    history.add_argument("--end-date", help="Enddatum YYYY-MM-DD")
+    history.set_defaults(handler=queue_yazio_history)
     disable.add_argument("--username", default="admin")
     disable.set_defaults(handler=disable_yazio)
     status = commands.add_parser(

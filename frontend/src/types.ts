@@ -62,12 +62,26 @@ export interface ImportSummary {
   unknown_types: string[]
 }
 
+export interface YazioHistoricalSync {
+  kind: 'initial' | 'full' | 'range' | null
+  state: 'idle' | 'pending' | 'running' | 'completed' | 'failed'
+  start_date: string | null
+  end_date: string | null
+  started_at: string | null
+  completed_at: string | null
+  last_error: string | null
+}
+
 export interface YazioStatus {
   available: boolean
   configured: boolean
   sync_enabled: boolean
   sync_interval_minutes: number | null
   sync_days: number | null
+  sync_interval_override_minutes: number | null
+  sync_days_override: number | null
+  initial_sync_state: 'not_confirmed' | 'pending' | 'running' | 'completed' | 'failed' | null
+  historical_sync: YazioHistoricalSync | null
   last_attempt_at: string | null
   last_success_at: string | null
   next_sync_at: string | null

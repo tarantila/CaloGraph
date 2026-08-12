@@ -343,6 +343,25 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
         # Runtime models follow Alembic head even though this test isolates the
         # 0009 data rewrite above.
         command.upgrade(alembic_config, "head")
+        with engine.connect() as connection:
+            upgraded_connection = connection.execute(
+                text(
+                    """
+                    SELECT sync_interval_minutes, sync_days, initial_sync_state,
+                           historical_sync_state
+                    FROM yazio_connections
+                    WHERE id = :id
+                    """
+                ),
+                {"id": connection_id},
+            ).mappings().one()
+        assert upgraded_connection == {
+            "sync_interval_minutes": None,
+            "sync_days": None,
+            "initial_sync_state": "not_confirmed",
+            "historical_sync_state": "idle",
+        }
+
 
         def fetch_existing_sample(
             email: str,

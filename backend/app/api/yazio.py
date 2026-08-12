@@ -8,7 +8,13 @@ from app.auth.dependencies import current_user, require_csrf
 from app.config import settings
 from app.database import get_db
 from app.models import User, YazioConnection
-from app.schemas import ImportSummary, YazioConnectionInput, YazioStatusResponse
+from app.schemas import (
+    ImportSummary,
+    YazioConnectionInput,
+    YazioHistoricalRangeInput,
+    YazioHistoricalSyncResponse,
+    YazioStatusResponse,
+)
 from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import CredentialEncryptionError
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
@@ -16,12 +22,16 @@ from app.services.user_operation_lock import shared_user_operation
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioCircuitOpen,
+    YazioConnectionDisabled,
     YazioConnectionNotConfigured,
     YazioDisabled,
     YazioOperationCapacityExceeded,
     YazioOperationDeadlineExceeded,
     YazioSyncError,
     configure_yazio_connection,
+    effective_sync_days,
+    effective_sync_interval_minutes,
+    enqueue_historical_yazio_sync,
     run_manual_yazio_sync,
     validate_yazio_credentials,
     yazio_failure_reason,
@@ -56,6 +66,8 @@ def _rate_limit_yazio_action(
 def _raise_yazio_http_error(exc: YazioSyncError) -> NoReturn:
     if isinstance(exc, YazioAuthenticationError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, YazioConnectionDisabled):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, YazioOperationDeadlineExceeded):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     if isinstance(exc, YazioOperationCapacityExceeded):
@@ -97,7 +109,7 @@ def save_yazio_connection(
             user,
             payload.email,
             payload.password,
-            sync_interval_minutes=payload.interval_hours * 60,
+            sync_interval_minutes=payload.interval_hours * 60 if payload.interval_hours is not None else None,
             sync_days=payload.sync_days,
         )
     except CredentialEncryptionError as exc:
@@ -122,13 +134,38 @@ def save_yazio_connection(
         actor_ref=security_reference("user", user.id),
         target_ref=security_reference("yazio_connection", connection.id),
     )
+    return _status_response(connection)
+
+
+def _status_response(connection: YazioConnection | None) -> YazioStatusResponse:
+    if connection is None:
+        return YazioStatusResponse(
+            available=settings.yazio_enabled,
+            configured=False,
+            sync_enabled=False,
+        )
     return YazioStatusResponse(
-        available=True,
+        available=settings.yazio_enabled,
         configured=True,
-        sync_enabled=True,
-        sync_interval_minutes=connection.sync_interval_minutes,
-        sync_days=connection.sync_days,
+        sync_enabled=connection.sync_enabled,
+        sync_interval_minutes=effective_sync_interval_minutes(connection),
+        sync_days=effective_sync_days(connection),
+        sync_interval_override_minutes=connection.sync_interval_minutes,
+        sync_days_override=connection.sync_days,
+        initial_sync_state=connection.initial_sync_state,
+        historical_sync=YazioHistoricalSyncResponse(
+            kind=connection.historical_sync_kind,
+            state=connection.historical_sync_state,
+            start_date=connection.historical_sync_start_date,
+            end_date=connection.historical_sync_end_date,
+            started_at=connection.historical_sync_started_at,
+            completed_at=connection.historical_sync_completed_at,
+            last_error=connection.historical_sync_last_error,
+        ),
+        last_attempt_at=connection.last_attempt_at,
+        last_success_at=connection.last_success_at,
         next_sync_at=connection.next_sync_at,
+        last_error=connection.last_error,
     )
 
 
@@ -140,23 +177,7 @@ def yazio_status(
     connection = db.scalar(
         select(YazioConnection).where(YazioConnection.user_id == user.id)
     )
-    if connection is None:
-        return YazioStatusResponse(
-            available=settings.yazio_enabled,
-            configured=False,
-            sync_enabled=False,
-        )
-    return YazioStatusResponse(
-        available=settings.yazio_enabled,
-        configured=True,
-        sync_enabled=connection.sync_enabled,
-        sync_interval_minutes=connection.sync_interval_minutes,
-        sync_days=connection.sync_days,
-        last_attempt_at=connection.last_attempt_at,
-        last_success_at=connection.last_success_at,
-        next_sync_at=connection.next_sync_at,
-        last_error=connection.last_error,
-    )
+    return _status_response(connection)
 
 
 @router.post("/sync", response_model=ImportSummary)
@@ -183,3 +204,55 @@ def sync_yazio_now(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except YazioSyncError as exc:
         _raise_yazio_http_error(exc)
+
+
+@router.post("/sync/history", response_model=YazioStatusResponse)
+def sync_yazio_history(
+    request: Request,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> YazioStatusResponse:
+    _rate_limit_yazio_action(db, request, user)
+    try:
+        connection = enqueue_historical_yazio_sync(user.id, kind="full")
+    except YazioConnectionNotConfigured as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except YazioSyncError as exc:
+        _raise_yazio_http_error(exc)
+    log_security_event(
+        "integration.yazio.history_queued",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("yazio_connection", connection.id),
+        details={"mode": "full"},
+    )
+    return _status_response(connection)
+
+
+@router.post("/sync/history/range", response_model=YazioStatusResponse)
+def sync_yazio_history_range(
+    payload: YazioHistoricalRangeInput,
+    request: Request,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> YazioStatusResponse:
+    _rate_limit_yazio_action(db, request, user)
+    try:
+        connection = enqueue_historical_yazio_sync(
+            user.id,
+            kind="range",
+            start_day=payload.from_date,
+            end_day=payload.end_date,
+        )
+    except YazioConnectionNotConfigured as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except YazioSyncError as exc:
+        _raise_yazio_http_error(exc)
+    log_security_event(
+        "integration.yazio.history_queued",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("yazio_connection", connection.id),
+        details={"mode": "range"},
+    )
+    return _status_response(connection)

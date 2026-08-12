@@ -125,6 +125,9 @@ const yazioStatusLabel = computed(() => {
   if (!yazioAvailable.value) return 'serverseitig deaktiviert'
   if (!yazio.value?.configured) return 'noch nicht eingerichtet'
   if (!yazio.value.sync_enabled) return 'pausiert · Zugangsdaten aktualisieren'
+  if (['pending', 'running', 'failed'].includes(yazio.value.initial_sync_state ?? '')) {
+    return 'Ersteinrichtung · gesamte Historie wird im Hintergrund nachgeladen'
+  }
   return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
 })
 
@@ -228,7 +231,7 @@ async function saveYazio() {
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {
       method: 'PUT',
-      body: JSON.stringify({ email: yazioEmail.value.trim(), password: yazioPassword.value, interval_hours: 6, sync_days: 7 }),
+      body: JSON.stringify({ email: yazioEmail.value.trim(), password: yazioPassword.value }),
     })
     yazioEmail.value = ''
     yazioPassword.value = ''
