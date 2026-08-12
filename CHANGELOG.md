@@ -5,6 +5,22 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-12
+
+### Changed
+
+- YAZIO setup now requires an explicit historical start and end date.
+- Historical YAZIO backfills are exclusively explicit range jobs; long ranges
+  remain resumable and are split into consecutive requests of at most 366 days.
+- The import interface automatically refreshes running historical jobs.
+
+### Fixed
+
+- Valid YAZIO days without entries are no longer treated as import failures.
+- Migration `20260812_0014` neutralizes legacy full- and initial-history states
+  from v0.3.2.
+- Import-page polling stops correctly when the view is unmounted.
+
 ## [0.3.2] - 2026-08-12
 
 ### Added
@@ -329,7 +345,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tarantila/CaloGraph/compare/661990b...v0.3.0
