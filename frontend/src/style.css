@@ -115,6 +115,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .main-column { min-width: 0; }
 .topbar { display: none; }
+.mobile-brand { display: none; }
 .page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 1.7rem 1.7rem 2rem; }
 
 .dashboard-heading {
@@ -1322,8 +1323,23 @@ td strong { color: #f0f4f9; font-weight: 600; }
     background: transparent;
     color: var(--ink);
   }
-  .privacy-label, .timezone { color: var(--muted); font-size: .7rem; }
-  .timezone { margin-left: auto; }
+  .mobile-brand {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    min-width: 0;
+    margin-left: auto;
+  }
+  .mobile-brand-logo {
+    width: 1.9rem;
+    height: 1.9rem;
+    flex: 0 0 auto;
+    object-fit: contain;
+  }
+  .mobile-brand strong {
+    font-size: .86rem;
+    letter-spacing: -.02em;
+  }
   .page { padding: 1.25rem 1rem 2rem; }
   .dashboard-heading { align-items: flex-start; flex-direction: column; }
   .dashboard-heading-actions { align-items: flex-start; width: 100%; }

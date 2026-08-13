@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api, ApiError } from '../api'
 import DateInput from '../components/DateInput.vue'
@@ -95,6 +95,7 @@ const yazioPassword = ref('')
 const yazioHistoryFrom = ref('')
 const yazioHistoryTo = ref('')
 const savingYazio = ref(false)
+const initialSetupSaved = ref(false)
 const users = ref<User[]>([])
 const invitations = ref<Invitation[]>([])
 const invitationUrl = ref('')
@@ -113,6 +114,11 @@ const passkeyLabel = ref('')
 const passkeyPassword = ref('')
 const passkeyCode = ref('')
 const managingPasskey = ref(false)
+let loadGeneration = 0
+let yazioPollTimer: ReturnType<typeof setTimeout> | null = null
+let yazioPollInFlight = false
+let yazioPollGeneration = 0
+let settingsMounted = true
 const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
 const timezoneOptions = computed(() =>
   [...new Set(['UTC', profile.timezone, ...supportedTimezones()])].sort((left, right) =>
@@ -127,13 +133,20 @@ const yazioAvailable = computed(() => yazio.value?.available !== false)
 const yazioStatusLabel = computed(() => {
   if (!yazioAvailable.value) return 'serverseitig deaktiviert'
   if (!yazio.value?.configured) return 'noch nicht eingerichtet'
+  const historicalState = yazio.value.historical_sync?.state
+  if (historicalState === 'pending') return 'Erster Datenimport wartet auf den Scheduler'
+  if (historicalState === 'running') return 'Erster Datenimport läuft im Hintergrund'
+  if (historicalState === 'failed') return 'Erster Datenimport fehlgeschlagen'
   if (!yazio.value.sync_enabled) return 'pausiert · Zugangsdaten aktualisieren'
-  if (['pending', 'running', 'failed'].includes(yazio.value.historical_sync?.state ?? '')) {
-    return 'Historische Synchronisierung · Details unter Importe'
-  }
   return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
 })
-
+const yazioHistoricalSyncActive = computed(() => {
+  const state = yazio.value?.historical_sync?.state
+  return yazioAvailable.value && (state === 'pending' || state === 'running')
+})
+const yazioHistoricalSyncFailed = computed(
+  () => yazio.value?.historical_sync?.state === 'failed',
+)
 
 async function loadTargets() {
   const targetResult = await api<Target[]>('/settings/targets')
@@ -150,11 +163,14 @@ async function loadTargets() {
   target.valid_from = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 }
 
-async function loadAdmin() {
-  ;[users.value, invitations.value] = await Promise.all([
+async function loadAdmin(generation?: number) {
+  const [usersResult, invitationsResult] = await Promise.all([
     api<User[]>('/users'),
     api<Invitation[]>('/users/invitations'),
   ])
+  if (generation != null && generation !== loadGeneration) return
+  users.value = usersResult
+  invitations.value = invitationsResult
 }
 
 async function refreshAdmin() {
@@ -166,7 +182,7 @@ async function refreshAdmin() {
   }
 }
 
-async function loadAccount() {
+async function loadAccount(generation = loadGeneration) {
   const [user, tokenResult, yazioResult, mfaResult, passkeyResult] = await Promise.all([
     api<User>('/settings/profile'),
     api<Token[]>('/settings/tokens'),
@@ -174,6 +190,7 @@ async function loadAccount() {
     api<MfaStatus>('/settings/mfa'),
     api<Passkey[]>('/settings/passkeys'),
   ])
+  if (generation !== loadGeneration) return
   profile.timezone = user.timezone
   profile.week_starts_on = user.week_starts_on
   profile.raw_payload_retention_days = user.raw_payload_retention_days
@@ -183,24 +200,75 @@ async function loadAccount() {
   if (!yazioResult.configured) yazioHistoryTo.value = isoDateInTimeZone(user.timezone)
   mfa.value = mfaResult
   passkeys.value = passkeyResult
-  if (user.is_admin) await loadAdmin()
+  scheduleYazioPolling()
+  if (user.is_admin) await loadAdmin(generation)
+}
+
+function stopYazioPolling() {
+  if (yazioPollTimer) {
+    clearTimeout(yazioPollTimer)
+    yazioPollTimer = null
+  }
+  yazioPollGeneration += 1
+}
+
+function scheduleYazioPolling() {
+  if (
+    !settingsMounted
+    || props.section !== 'account'
+    || !yazioHistoricalSyncActive.value
+    || yazioPollTimer
+  ) return
+  yazioPollTimer = setTimeout(() => {
+    yazioPollTimer = null
+    void pollYazioStatus()
+  }, 5000)
+}
+
+async function pollYazioStatus() {
+  if (
+    !settingsMounted
+    || props.section !== 'account'
+    || !yazioHistoricalSyncActive.value
+    || yazioPollInFlight
+  ) return
+  yazioPollInFlight = true
+  const generation = yazioPollGeneration
+  try {
+    const result = await api<YazioStatus>('/yazio/status')
+    if (generation !== yazioPollGeneration || props.section !== 'account') return
+    yazio.value = result
+  } catch {
+    // The next scheduled status request retries without replacing the page state.
+  } finally {
+    yazioPollInFlight = false
+    scheduleYazioPolling()
+  }
 }
 
 async function load() {
+  const generation = ++loadGeneration
+  stopYazioPolling()
   loading.value = true
   error.value = ''
   message.value = ''
+  initialSetupSaved.value = false
   try {
     if (props.section === 'targets') await loadTargets()
-    else await loadAccount()
+    else await loadAccount(generation)
   } catch (cause) {
+    if (generation !== loadGeneration) return
     error.value =
       cause instanceof ApiError ? cause.message : 'Einstellungen konnten nicht geladen werden.'
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
-watch(() => props.section, load, { immediate: true })
+watch(() => props.section, () => { void load() }, { immediate: true })
+onBeforeUnmount(() => {
+  settingsMounted = false
+  stopYazioPolling()
+})
 
 async function saveProfile() {
   const user = await api<User>('/settings/profile', { method: 'PUT', body: JSON.stringify(profile) })
@@ -229,27 +297,35 @@ async function createToken() { const result = await api<{ token: string }>('/set
 async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { method: 'DELETE' }); await load() }
 async function saveYazio() {
   if (!yazioCredentialsComplete.value) return
-  if (!yazio.value?.configured && yazioHistoryFrom.value > yazioHistoryTo.value) {
+  const isNewConnection = !yazio.value?.configured
+  if (isNewConnection && yazioHistoryFrom.value > yazioHistoryTo.value) {
     error.value = 'Das Von-Datum darf nicht nach dem Bis-Datum liegen.'
     return
   }
   savingYazio.value = true
   error.value = ''
   message.value = ''
+  initialSetupSaved.value = false
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {
       method: 'PUT',
       body: JSON.stringify({
         email: yazioEmail.value.trim(),
         password: yazioPassword.value,
-        ...(!yazio.value?.configured
+        ...(isNewConnection
           ? { from_date: yazioHistoryFrom.value, end_date: yazioHistoryTo.value }
           : {}),
       }),
     })
     yazioEmail.value = ''
     yazioPassword.value = ''
-    message.value = 'Persönliche YAZIO-Verbindung gespeichert.'
+    if (isNewConnection) {
+      initialSetupSaved.value = true
+      message.value = 'YAZIO-Verbindung gespeichert.'
+    } else {
+      message.value = 'YAZIO-Verbindung aktualisiert.'
+    }
+    scheduleYazioPolling()
   } catch (cause) {
     error.value =
       cause instanceof ApiError ? cause.message : 'YAZIO-Verbindung konnte nicht gespeichert werden.'
@@ -459,7 +535,10 @@ function passkeyDeviceLabel(passkey: Passkey) {
   <template v-else>
     <div v-if="error" class="card error" role="alert">{{ error }}</div>
     <p v-if="message" role="status">{{ message }}</p>
-
+    <div v-if="initialSetupSaved" class="setup-notice" role="status">
+      <p>Der erste Datenimport läuft im Hintergrund. Du kannst diese Seite verlassen.</p>
+      <RouterLink class="text-button" to="/importe">Zu den Importen</RouterLink>
+    </div>
     <template v-if="props.section === 'targets'">
       <div class="content-grid">
         <section class="card form-card">
@@ -677,6 +756,16 @@ function passkeyDeviceLabel(passkey: Passkey) {
         <h2>Persönliche YAZIO-Verbindung</h2>
         <p>Diese Zugangsdaten gehören nur zu deinem CaloGraph-Konto und werden verschlüsselt gespeichert. Ein erneutes Speichern ersetzt ausschließlich deine eigene Verbindung.</p>
         <p><strong>Status:</strong> {{ yazioStatusLabel }}</p>
+        <p v-if="yazioHistoricalSyncFailed" class="import-message error" role="alert">
+          Erster Datenimport fehlgeschlagen · <RouterLink to="/importe">Details unter Importe</RouterLink>
+        </p>
+        <p
+          v-if="yazio?.historical_sync?.state === 'completed' && yazio?.historical_sync.completed_at"
+          class="table-secondary"
+        >
+          Erster Datenimport abgeschlossen:
+          {{ formatGermanDateTime(yazio.historical_sync.completed_at) }}
+        </p>
         <form class="form-grid" @submit.prevent="saveYazio">
           <label class="field">
             YAZIO-E-Mail

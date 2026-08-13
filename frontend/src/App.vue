@@ -84,8 +84,10 @@ async function signOut() {
           <PhX v-if="menuOpen" :size="24" aria-hidden="true" />
           <PhList v-else :size="24" aria-hidden="true" />
         </button>
-        <span class="privacy-label">Privat · lokal betrieben</span>
-        <span class="timezone">{{ auth.user?.timezone }}</span>
+        <div class="mobile-brand" aria-label="CaloGraph">
+          <img class="mobile-brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
+          <strong>CaloGraph</strong>
+        </div>
       </header>
       <main id="main-content" class="page"><RouterView /></main>
     </div>

@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { flushPromises, mount } from '@vue/test-utils'
+import { config, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -40,6 +40,9 @@ describe('main views', () => {
   beforeEach(() => {
     apiMock.mockReset()
     setActivePinia(createPinia())
+    config.global.stubs = {
+      RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+    }
   })
 
   it('loads the dashboard summary and renders empty trend data safely', async () => {
@@ -365,6 +368,55 @@ describe('main views', () => {
     const differenceCell = wrapper.get('tbody tr').findAll('td')[3]
     expect(differenceCell.classes()).not.toContain('under')
     expect(differenceCell.classes()).not.toContain('over')
+  })
+
+  it('hebt Wochen über dem Budget standardmäßig hervor und lässt sich umschalten', async () => {
+    apiMock.mockResolvedValue({
+      weeks: [
+        { week_start: '2026-07-20', consumed_kcal: 2500, budget_kcal: 2200, deviation_kcal: 300, remaining_kcal: -300, mean_kcal: 2500, median_kcal: 2500 },
+        { week_start: '2026-07-27', consumed_kcal: 2200, budget_kcal: 2200, deviation_kcal: 0, remaining_kcal: 0, mean_kcal: 2200, median_kcal: 2200 },
+        { week_start: '2026-08-03', consumed_kcal: 1900, budget_kcal: 2200, deviation_kcal: -300, remaining_kcal: 300, mean_kcal: 1900, median_kcal: 1900 },
+        { week_start: '2026-08-10', consumed_kcal: 2100, budget_kcal: null, deviation_kcal: null, remaining_kcal: null, mean_kcal: 2100, median_kcal: 2100 },
+      ],
+    })
+    const wrapper = mount(WeeklyView, {
+      global: {
+        stubs: {
+          ChartPanel: {
+            props: ['title', 'option', 'empty', 'height'],
+            template: '<section><slot name="header-actions" /></section>',
+          },
+        },
+      },
+    })
+    await flushPromises()
+
+    const panel = wrapper.findComponent(ChartPanel)
+    const getIntakeData = () => {
+      // ChartPanel erhält hier die von WeeklyView erzeugte, bekannte Teststruktur.
+      const option = panel.props('option') as { series: Array<{ name: string; data: unknown[] }> }
+      return option.series.find((series) => series.name === 'Aufnahme')!.data
+    }
+    const highlightSwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
+
+    expect(highlightSwitch.element.checked).toBe(true)
+    expect(getIntakeData()).toEqual([
+      { value: 2500, itemStyle: { color: '#fb7185' } },
+      2200,
+      1900,
+      2100,
+    ])
+
+    await highlightSwitch.setValue(false)
+    await flushPromises()
+    expect(getIntakeData()).toEqual([2500, 2200, 1900, 2100])
+
+    await highlightSwitch.setValue(true)
+    await flushPromises()
+    expect(getIntakeData()[0]).toMatchObject({
+      value: 2500,
+      itemStyle: { color: '#fb7185' },
+    })
   })
 
   it('uses budget thresholds, calculates numeric averages, and navigates by month', async () => {
@@ -930,7 +982,19 @@ describe('main views', () => {
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations') return Promise.resolve([])
       if (path === '/yazio/connection') {
-        return Promise.resolve({ ...status, configured: true, sync_enabled: true })
+        return Promise.resolve({
+          ...status,
+          configured: true,
+          sync_enabled: true,
+          historical_sync: {
+            state: 'pending',
+            start_date: '2026-07-20',
+            end_date: '2026-07-23',
+            started_at: null,
+            completed_at: null,
+            last_error: null,
+          },
+        })
       }
       return Promise.resolve({})
     })
@@ -951,6 +1015,10 @@ describe('main views', () => {
     await dateInputs[1].setValue('23.07.2026')
     await wrapper.get('.yazio-connection-card form').trigger('submit')
     await flushPromises()
+    expect(wrapper.text()).toContain('YAZIO-Verbindung gespeichert.')
+    expect(wrapper.text()).toContain('Der erste Datenimport läuft im Hintergrund.')
+    expect(wrapper.text()).toContain('Du kannst diese Seite verlassen.')
+    expect(wrapper.get('a[href="/importe"]').text()).toBe('Zu den Importen')
 
     expect(apiMock).toHaveBeenLastCalledWith('/yazio/connection', {
       method: 'PUT',
@@ -961,6 +1029,46 @@ describe('main views', () => {
         end_date: '2026-07-23',
       }),
     })
+    wrapper.unmount()
+  })
+
+  it('verweist bei einem fehlgeschlagenen ersten YAZIO-Import auf die Importdetails', async () => {
+    const failedStatus = {
+      available: true,
+      configured: true,
+      sync_enabled: false,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      historical_sync: {
+        state: 'failed',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: '2026-08-13T10:00:00',
+        completed_at: null,
+        last_error: 'YAZIO-Anmeldung fehlgeschlagen.',
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: 'YAZIO-Anmeldung fehlgeschlagen.',
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') return Promise.resolve(failedStatus)
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Erster Datenimport fehlgeschlagen')
+    expect(wrapper.get('a[href="/importe"]').text()).toBe('Details unter Importe')
+    wrapper.unmount()
   })
 
   it('clears a stale YAZIO error before a successful retry', async () => {
@@ -1001,9 +1109,7 @@ describe('main views', () => {
 
     const wrapper = mount(SettingsView, { props: { section: 'account' } })
     await flushPromises()
-    expect(
-      wrapper.find('.yazio-connection-card .date-input').exists(),
-    ).toBe(false)
+    expect(wrapper.find('.yazio-connection-card .date-input').exists()).toBe(false)
     await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
     await wrapper.get('input[name="yazio-password"]').setValue('very-secret')
 
@@ -1022,6 +1128,284 @@ describe('main views', () => {
       }),
     })
     expect(wrapper.text()).not.toContain('YAZIO-Verbindung konnte nicht gespeichert werden.')
-    expect(wrapper.text()).toContain('Persönliche YAZIO-Verbindung gespeichert.')
+    expect(wrapper.text()).toContain('YAZIO-Verbindung aktualisiert.')
+    expect(wrapper.text()).not.toContain('Erster Datenimport läuft im Hintergrund.')
   })
+
+  it('pollt den ersten YAZIO-Import ohne parallele Requests und stoppt nach Abschluss', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const poll = Promise.withResolvers<unknown>()
+    const baseStatus = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+    }
+    const pendingStatus = {
+      ...baseStatus,
+      historical_sync: {
+        state: 'pending',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: null,
+        completed_at: null,
+        last_error: null,
+      },
+    }
+    const runningStatus = {
+      ...pendingStatus,
+      historical_sync: { ...pendingStatus.historical_sync, state: 'running' },
+    }
+    const completedStatus = {
+      ...runningStatus,
+      historical_sync: {
+        ...runningStatus.historical_sync,
+        state: 'completed',
+        completed_at: '2026-08-13T10:42:00',
+      },
+    }
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      if (path === '/yazio/status') {
+        statusCalls += 1
+        return statusCalls === 1 ? Promise.resolve(pendingStatus) : poll.promise
+      }
+      if (path === '/yazio/connection' && options?.method === 'PUT') {
+        return Promise.resolve(runningStatus)
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Erster Datenimport wartet auf den Scheduler')
+
+    await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
+    await wrapper.get('input[name="yazio-password"]').setValue('very-secret')
+    await wrapper.get('.yazio-connection-card form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Erster Datenimport läuft im Hintergrund')
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+
+    poll.resolve(completedStatus)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Erster Datenimport abgeschlossen:')
+    expect(wrapper.text()).toContain('13.08.2026, 10:42')
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('verwirft verspätete YAZIO-Statusantworten nach Unmount', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const poll = Promise.withResolvers<unknown>()
+    const status = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      historical_sync: {
+        state: 'pending',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: null,
+        completed_at: null,
+        last_error: null,
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      if (path === '/yazio/status') {
+        statusCalls += 1
+        return statusCalls === 1 ? Promise.resolve(status) : poll.promise
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    wrapper.unmount()
+    poll.resolve({
+      ...status,
+      historical_sync: { ...status.historical_sync, state: 'completed', completed_at: '2026-08-13T10:42:00' },
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    vi.useRealTimers()
+  })
+
+  it('stoppt den YAZIO-Poll beim Wechsel aus den Kontoeinstellungen', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const poll = Promise.withResolvers<unknown>()
+    const pendingStatus = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      historical_sync: {
+        state: 'pending',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: null,
+        completed_at: null,
+        last_error: null,
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      if (path === '/settings/targets') return Promise.resolve([])
+      if (path === '/yazio/status') {
+        statusCalls += 1
+        return statusCalls === 1 ? Promise.resolve(pendingStatus) : poll.promise
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+
+    await wrapper.setProps({ section: 'targets' })
+    await flushPromises()
+    poll.resolve({
+      ...pendingStatus,
+      historical_sync: { ...pendingStatus.historical_sync, state: 'completed', completed_at: '2026-08-13T10:42:00' },
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+  it('pollt trotz fehlerhafter Benutzerverwaltung den aktiven YAZIO-Import weiter', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const pendingStatus = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      historical_sync: {
+        state: 'pending',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: null,
+        completed_at: null,
+        last_error: null,
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') {
+        statusCalls += 1
+        return Promise.resolve(pendingStatus)
+      }
+      if (path === '/users') return Promise.reject(new Error('Benutzerverwaltung nicht verfügbar'))
+      if (path === '/users/invitations') return Promise.resolve([])
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Einstellungen konnten nicht geladen werden.')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(2)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('stoppt den Poll, wenn YAZIO serverseitig deaktiviert wird', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const unavailableStatus = {
+      available: false,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      historical_sync: {
+        state: 'running',
+        start_date: '2026-07-20',
+        end_date: '2026-07-23',
+        started_at: '2026-08-13T10:00:00',
+        completed_at: null,
+        last_error: null,
+      },
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') {
+        statusCalls += 1
+        return Promise.resolve(unavailableStatus)
+      }
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusCalls).toBe(1)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
 })

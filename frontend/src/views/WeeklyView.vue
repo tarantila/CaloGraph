@@ -23,6 +23,7 @@ interface Week {
 }
 
 const weeks = ref<Week[]>([])
+const highlightOverBudget = ref(true)
 const error = ref('')
 const loading = ref(true)
 const format = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
@@ -89,7 +90,11 @@ const option = computed<EChartsOption>(() => ({
       name: 'Aufnahme',
       type: 'bar',
       barMaxWidth: 34,
-      data: weeks.value.map((week) => week.consumed_kcal),
+      data: weeks.value.map((week) =>
+        highlightOverBudget.value && week.deviation_kcal != null && week.deviation_kcal > 0
+          ? { value: week.consumed_kcal, itemStyle: { color: '#fb7185' } }
+          : week.consumed_kcal,
+      ),
       itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
     },
     {
@@ -148,7 +153,13 @@ function weekLabel(value: string) {
       :height="330"
     >
       <template #header-actions>
-        <span class="chart-range">Montag bis Sonntag</span>
+        <div class="chart-header-actions">
+          <label class="chart-highlight-toggle">
+            <input v-model="highlightOverBudget" type="checkbox" role="switch" />
+            <span>Über Budget hervorheben</span>
+          </label>
+          <span class="chart-range">Montag bis Sonntag</span>
+        </div>
       </template>
     </ChartPanel>
 
