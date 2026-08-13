@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { ApiError } from '../api'
+import { ApiError, localizeApiError } from '../api'
+import { i18n } from '../i18n'
 
 export interface AdminReauthentication {
   current_password: string
@@ -19,11 +20,8 @@ const props = defineProps<{
   confirmUsername?: string
 }>()
 
-const emit = defineEmits<{
-  close: []
-  completed: []
-}>()
-
+const t = i18n.global.t.bind(i18n.global)
+const emit = defineEmits<{ close: []; completed: [] }>()
 const currentPassword = ref('')
 const code = ref('')
 const confirmation = ref('')
@@ -31,12 +29,8 @@ const error = ref('')
 const submitting = ref(false)
 const passwordInput = ref<HTMLInputElement | null>(null)
 const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-const confirmationMatches = computed(
-  () => props.confirmUsername == null || confirmation.value === props.confirmUsername,
-)
-const canSubmit = computed(
-  () => Boolean(currentPassword.value) && confirmationMatches.value && !submitting.value,
-)
+const confirmationMatches = computed(() => props.confirmUsername == null || confirmation.value === props.confirmUsername)
+const canSubmit = computed(() => Boolean(currentPassword.value) && confirmationMatches.value && !submitting.value)
 
 function clearCredentials() {
   currentPassword.value = ''
@@ -44,13 +38,11 @@ function clearCredentials() {
   confirmation.value = ''
   error.value = ''
 }
-
 function close() {
   if (submitting.value) return
   clearCredentials()
   emit('close')
 }
-
 async function submit() {
   if (!canSubmit.value) return
   submitting.value = true
@@ -65,20 +57,16 @@ async function submit() {
     emit('completed')
     emit('close')
   } catch (cause) {
-    error.value = cause instanceof ApiError
-      ? cause.message
-      : 'Die Aktion konnte nicht ausgeführt werden.'
+    error.value = cause instanceof ApiError ? localizeApiError(cause, 'errors.generic') : t('errors.generic')
   } finally {
     submitting.value = false
   }
 }
-
 onMounted(async () => {
   await nextTick()
   passwordInput.value?.focus()
 })
 onBeforeUnmount(() => returnFocus?.focus())
-
 watch(
   () => props.open,
   async (open) => {
@@ -100,45 +88,27 @@ watch(
     @click.self="close"
     @keydown.esc="close"
   >
-    <section
-      class="card action-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="admin-reauth-title"
-    >
+    <section class="card action-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-reauth-title">
       <h2 id="admin-reauth-title">{{ props.title }}</h2>
       <p>{{ props.description }}</p>
       <form @submit.prevent="submit">
         <label class="field">
-          Dein aktuelles Admin-Passwort
-          <input
-            ref="passwordInput"
-            v-model="currentPassword"
-            type="password"
-            autocomplete="current-password"
-            required
-          />
+          {{ t('adminReauth.password') }}
+          <input ref="passwordInput" v-model="currentPassword" type="password" autocomplete="current-password" required />
         </label>
         <label class="field">
-          MFA- oder Recovery-Code <span class="muted">(falls aktiviert)</span>
+          {{ t('adminReauth.code') }} <span class="muted">({{ t('adminReauth.optional') }})</span>
           <input v-model="code" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" />
         </label>
         <label v-if="props.confirmUsername" class="field">
-          Zur Bestätigung „{{ props.confirmUsername }}“ eingeben
+          {{ t('adminReauth.confirm', { username: props.confirmUsername }) }}
           <input v-model="confirmation" autocomplete="off" spellcheck="false" required />
         </label>
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <div class="dialog-actions">
-          <button class="button secondary" type="button" :disabled="submitting" @click="close">
-            Abbrechen
-          </button>
-          <button
-            class="button"
-            :class="{ danger: props.danger }"
-            type="submit"
-            :disabled="!canSubmit"
-          >
-            {{ submitting ? 'Wird ausgeführt …' : props.submitLabel }}
+          <button class="button secondary" type="button" :disabled="submitting" @click="close">{{ t('common.cancel') }}</button>
+          <button class="button" :class="{ danger: props.danger }" type="submit" :disabled="!canSubmit">
+            {{ submitting ? t('adminReauth.running') : props.submitLabel }}
           </button>
         </div>
       </form>

@@ -1,4 +1,5 @@
 import { api } from './api'
+import { i18n } from './i18n'
 import type { Target } from './types'
 
 type TargetNumericValue = number | null | ''
@@ -33,31 +34,35 @@ export function createEmptyTargetDraft(): TargetDraft {
   }
 }
 
-function requireFinite(value: TargetNumericValue, message: string): number {
+function requireFinite(value: TargetNumericValue, messageKey: string): number {
   if (value === null || value === '' || !Number.isFinite(value)) {
-    throw new TargetValidationError(message)
+    throw new TargetValidationError(i18n.global.t(messageKey))
   }
   return value
 }
 
 function normalizeOptionalNutrient(
   value: TargetNumericValue,
-  label: string,
+  labelKey: string,
 ): number | null {
   if (value === null || value === '') return null
   if (!Number.isFinite(value) || value < TARGET_LIMITS.nutrientMin) {
-    throw new TargetValidationError(`${label} darf nicht negativ sein.`)
+    throw new TargetValidationError(
+      i18n.global.t('targetForm.nutrientNegative', { label: i18n.global.t(labelKey) }),
+    )
   }
   return value
 }
 
 function normalizeOptionalPositive(
   value: TargetNumericValue,
-  label: string,
+  labelKey: string,
 ): number | null {
   if (value === null || value === '') return null
   if (!Number.isFinite(value) || value <= 0) {
-    throw new TargetValidationError(`${label} muss größer als 0 sein.`)
+    throw new TargetValidationError(
+      i18n.global.t('targetForm.maintenancePositive', { label: i18n.global.t(labelKey) }),
+    )
   }
   return value
 }
@@ -67,29 +72,29 @@ export async function saveTargetDraft(
   existingTargets: Pick<Target, 'valid_from'>[] = [],
 ): Promise<void> {
   if (!target.valid_from) {
-    throw new TargetValidationError('Das Gültigkeitsdatum konnte nicht bestimmt werden.')
+    throw new TargetValidationError(i18n.global.t('targetForm.dateMissing'))
   }
   const caloriesKcal = requireFinite(
     target.calories_kcal,
-    'Bitte gib dein tägliches Kalorienbudget ein.',
+    'targetForm.caloriesRequired',
   )
   if (caloriesKcal < TARGET_LIMITS.caloriesMin) {
-    throw new TargetValidationError('Das Kalorienbudget muss größer als 0 sein.')
+    throw new TargetValidationError(i18n.global.t('targetForm.caloriesPositive'))
   }
   const proteinG = requireFinite(
     target.protein_g,
-    'Bitte gib dein tägliches Proteinziel ein.',
+    'targetForm.proteinRequired',
   )
   if (proteinG < TARGET_LIMITS.nutrientMin) {
-    throw new TargetValidationError('Das Proteinziel darf nicht negativ sein.')
+    throw new TargetValidationError(i18n.global.t('targetForm.proteinNonNegative'))
   }
   const maintenanceKcal = normalizeOptionalPositive(
     target.maintenance_kcal,
-    'Der Erhaltungsbedarf',
+    'targetForm.maintenanceLabel',
   )
-  const carbsG = normalizeOptionalNutrient(target.carbs_g, 'Das Kohlenhydratziel')
-  const fatG = normalizeOptionalNutrient(target.fat_g, 'Das Fettziel')
-  const fiberG = normalizeOptionalNutrient(target.fiber_g, 'Das Ballaststoffziel')
+  const carbsG = normalizeOptionalNutrient(target.carbs_g, 'targetForm.nutrientLabelCarbs')
+  const fatG = normalizeOptionalNutrient(target.fat_g, 'targetForm.nutrientLabelFat')
+  const fiberG = normalizeOptionalNutrient(target.fiber_g, 'targetForm.nutrientLabelFiber')
 
   const payload = {
     valid_from: target.valid_from,

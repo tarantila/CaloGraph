@@ -5,11 +5,13 @@ import { init, use, type ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { i18n } from '../i18n'
 
 const props = withDefaults(
   defineProps<{ title: string; option: EChartsOption; empty?: boolean; height?: number }>(),
   { empty: false, height: 300 },
 )
+const t = i18n.global.t.bind(i18n.global)
 const element = ref<HTMLDivElement>()
 use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
@@ -42,7 +44,7 @@ onBeforeUnmount(() => {
       <h2>{{ title }}</h2>
       <slot name="header-actions"></slot>
     </div>
-    <div v-if="empty" class="empty">Für diesen Zeitraum liegen keine Werte vor.</div>
+    <div v-if="empty" class="empty">{{ t('charts.empty') }}</div>
     <div v-else ref="element" :style="{ height: `${height}px` }" role="img" :aria-label="title"></div>
   </section>
 </template>

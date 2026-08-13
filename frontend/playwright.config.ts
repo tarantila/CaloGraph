@@ -7,6 +7,7 @@ export default defineConfig({
   reporter: 'html',
   use: {
     baseURL: process.env.BASE_URL ?? 'http://127.0.0.1:8180',
+    locale: 'de-DE',
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],

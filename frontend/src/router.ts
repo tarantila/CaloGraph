@@ -1,8 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { setAuthenticationExpiredHandler } from './api'
+import { PUBLIC_LOCALE, setLocale } from './i18n'
 import { useAuthStore } from './stores/auth'
-
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -44,12 +44,21 @@ const router = createRouter({
   ],
 })
 
+let navigationGeneration = 0
 router.beforeEach(async (to) => {
+  const generation = ++navigationGeneration
   const auth = useAuthStore()
-  if (to.meta.public) return true
-  if (!(await auth.ensureUser())) {
+  if (to.meta.public) {
+    auth.beginProfileUpdate()
+    setLocale(PUBLIC_LOCALE)
+    return true
+  }
+  if (!(await auth.ensureUser(false))) {
+    if (generation !== navigationGeneration) return false
     return { name: 'login', query: { next: to.fullPath } }
   }
+  if (generation !== navigationGeneration) return false
+  auth.applyCurrentUserLocale()
   if (auth.needsTargetSetup && to.name !== 'setup') {
     return { name: 'setup' }
   }
@@ -58,6 +67,7 @@ router.beforeEach(async (to) => {
   }
   return true
 })
+
 
 setAuthenticationExpiredHandler(() => {
   const auth = useAuthStore()

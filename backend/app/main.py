@@ -123,7 +123,7 @@ async def inactive_user_operation(
     return JSONResponse(
         status_code=409,
         content={
-            "type": "about:blank",
+            "type": getattr(_exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",
             "status": 409,
             "detail": "Das Konto ist nicht aktiv.",
@@ -141,7 +141,7 @@ async def busy_user_operation(
     return JSONResponse(
         status_code=409,
         content={
-            "type": "about:blank",
+            "type": getattr(_exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",
             "status": 409,
             "detail": "Für dieses Konto läuft gerade eine administrative Operation.",
@@ -164,7 +164,7 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
         status_code=exc.status_code,
         headers=exc.headers,
         content={
-            "type": "about:blank",
+            "type": getattr(exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",
             "status": exc.status_code,
             "detail": str(exc.detail),
@@ -179,7 +179,7 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     return JSONResponse(
         status_code=422,
         content={
-            "type": "about:blank",
+            "type": "urn:calograph:problem:validation-error",
             "title": "Validierung fehlgeschlagen",
             "status": 422,
             "detail": "Eingabedaten sind ungültig.",

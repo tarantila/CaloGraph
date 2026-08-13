@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 
-import { api, ApiError } from '../api'
+import { ApiError, api, localizeApiError } from '../api'
 import { formatGermanDateTime } from '../date-format'
+import { i18n, intlLocale } from '../i18n'
 import type { User } from '../types'
 import AdminReauthDialog, { type AdminReauthentication } from './AdminReauthDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+
+const t = i18n.global.t.bind(i18n.global)
+function localizeActionError(cause: unknown): string {
+  return cause instanceof ApiError
+    ? localizeApiError(cause, 'managementUi.actionFailed')
+    : t('managementUi.actionFailed')
+}
 
 type SimpleAction = 'deactivate' | 'reactivate'
 type PrivilegedAction = 'recovery' | 'reset' | 'delete'
@@ -38,7 +46,7 @@ const actionReturnFocus = ref<HTMLElement | null>(null)
 const orderedUsers = computed(() => [...props.users].sort((left, right) => {
   if (left.id === props.currentUserId) return -1
   if (right.id === props.currentUserId) return 1
-  return left.username.localeCompare(right.username, 'de')
+  return left.username.localeCompare(right.username, intlLocale())
 }))
 
 const simpleDialog = computed(() => {
@@ -46,16 +54,16 @@ const simpleDialog = computed(() => {
   if (!target || !simpleAction.value) return null
   if (simpleAction.value === 'deactivate') {
     return {
-      title: `${target.username} deaktivieren?`,
-      description: 'Der Benutzer kann sich danach nicht mehr anmelden. Sitzungen und API-Tokens werden ungültig, offene Einladungen widerrufen und die YAZIO-Synchronisierung pausiert. Ernährungs- und Importdaten bleiben erhalten.',
-      confirmLabel: 'Benutzer deaktivieren',
+      title: t('managementUi.deactivateTitle', { username: target.username }),
+      description: t('managementUi.deactivateDescription'),
+      confirmLabel: t('managementUi.deactivateConfirm'),
       danger: true,
     }
   }
   return {
-    title: `${target.username} reaktivieren?`,
-    description: 'Der Benutzer kann sich danach wieder mit seinem aktuellen Passwort anmelden. Alte Sitzungen, API-Tokens und Einladungen bleiben ungültig; die YAZIO-Synchronisierung bleibt pausiert.',
-    confirmLabel: 'Benutzer reaktivieren',
+    title: t('managementUi.reactivateTitle', { username: target.username }),
+    description: t('managementUi.reactivateDescription'),
+    confirmLabel: t('managementUi.reactivateConfirm'),
     danger: false,
   }
 })
@@ -65,26 +73,26 @@ const privilegedDialog = computed(() => {
   if (!target || !privilegedAction.value) return null
   if (privilegedAction.value === 'recovery') {
     return {
-      title: `Recovery für ${target.username} ausstellen`,
-      description: 'Das Konto wird deaktiviert. Sitzungen und API-Tokens werden ungültig und die YAZIO-Synchronisierung wird pausiert. Der einmal sichtbare Recovery-Link ist 30 Minuten gültig und reaktiviert das Konto nicht.',
-      submitLabel: 'Recovery-Link ausstellen',
+      title: t('managementUi.recoveryTitle', { username: target.username }),
+      description: t('managementUi.recoveryDescription'),
+      submitLabel: t('managementUi.recoveryConfirm'),
       danger: false,
       confirmUsername: undefined,
     }
   }
   if (privilegedAction.value === 'reset') {
     return {
-      title: `Authentikatoren von ${target.username} zurücksetzen`,
-      description: 'TOTP, Recovery-Codes, Passkeys und WebAuthn-Anmeldedaten werden entfernt. Sitzungen und API-Tokens werden ungültig. Passwort, Profil und Ernährungsdaten bleiben erhalten.',
-      submitLabel: 'Authentikatoren zurücksetzen',
+      title: t('managementUi.resetTitle', { username: target.username }),
+      description: t('managementUi.resetDescription'),
+      submitLabel: t('management.resetAuthenticators'),
       danger: true,
       confirmUsername: undefined,
     }
   }
   return {
-    title: `${target.username} endgültig löschen`,
-    description: 'Diese Aktion ist endgültig und löscht das deaktivierte Konto einschließlich seiner personenbezogenen Daten, Importe, Ziele und YAZIO-Verbindung. Sie kann nicht rückgängig gemacht werden.',
-    submitLabel: 'Konto endgültig löschen',
+    title: t('managementUi.deleteTitle', { username: target.username }),
+    description: t('managementUi.deleteDescription'),
+    submitLabel: t('managementUi.deleteConfirm'),
     danger: true,
     confirmUsername: target.username,
   }
@@ -137,14 +145,13 @@ async function runSimpleAction() {
   try {
     await api(`/users/${target.id}/${action}`, { method: 'POST' })
     emit('message', action === 'deactivate'
-      ? `${target.username} wurde deaktiviert.`
-      : `${target.username} wurde reaktiviert.`)
+      ? t('managementUi.deactivated', { username: target.username })
+      : t('managementUi.reactivated', { username: target.username }))
     emit('refresh')
     simpleAction.value = null
     selectedUser.value = null
   } catch (cause) {
-    simpleError.value =
-      cause instanceof ApiError ? cause.message : 'Die Benutzeraktion konnte nicht ausgeführt werden.'
+    simpleError.value = localizeActionError(cause)
     emit('error', simpleError.value)
   } finally {
     actionPending.value = false
@@ -161,19 +168,19 @@ async function runPrivilegedAction(credentials: AdminReauthentication) {
       { method: 'POST', body: JSON.stringify(credentials) },
     )
     recoveryResult.value = { token: result.recovery_token, expiresAt: result.expires_at }
-    emit('message', `Recovery für ${target.username} wurde ausgestellt; das Konto ist deaktiviert.`)
+    emit('message', t('managementUi.recoveryIssued', { username: target.username }))
   } else if (action === 'reset') {
     await api(`/users/${target.id}/authenticators/reset`, {
       method: 'POST',
       body: JSON.stringify(credentials),
     })
-    emit('message', `Authentikatoren von ${target.username} wurden zurückgesetzt.`)
+    emit('message', t('managementUi.authenticatorsReset', { username: target.username }))
   } else {
     await api(`/users/${target.id}`, {
       method: 'DELETE',
       body: JSON.stringify(credentials),
     })
-    emit('message', `${target.username} wurde endgültig gelöscht.`)
+    emit('message', t('managementUi.deleted', { username: target.username }))
   }
   emit('refresh')
 }
@@ -182,9 +189,9 @@ async function copyRecoveryLink() {
   if (!recoveryResult.value) return
   try {
     await navigator.clipboard.writeText(recoveryLink.value)
-    emit('message', 'Recovery-Link wurde in die Zwischenablage kopiert.')
+    emit('message', t('managementUi.recoveryCopied'))
   } catch {
-    emit('error', 'Recovery-Link konnte nicht kopiert werden.')
+    emit('error', t('managementUi.recoveryCopyFailed'))
   }
 }
 
@@ -214,37 +221,37 @@ function formatTimestamp(value: string) {
     >
       <table>
         <thead>
-          <tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Aktionen</th></tr>
+          <tr><th>{{ t('management.users') }}</th><th>{{ t('management.role') }}</th><th>{{ t('common.status') }}</th><th>{{ t('common.actions') }}</th></tr>
         </thead>
         <tbody>
           <tr v-for="item in orderedUsers" :key="item.id">
             <td>
               <strong>{{ item.username }}</strong>
-              <span v-if="item.id === props.currentUserId" class="current-user-label">Du</span>
+              <span v-if="item.id === props.currentUserId" class="current-user-label">{{ t('management.current') }}</span>
             </td>
-            <td>{{ item.is_admin ? 'Administrator' : 'Benutzer' }}</td>
+            <td>{{ item.is_admin ? t('management.administrator') : t('management.user') }}</td>
             <td>
               <span class="status-badge" :class="item.is_active ? 'success' : 'inactive'">
-                {{ item.is_active ? 'Aktiv' : 'Deaktiviert' }}
+                {{ item.is_active ? t('management.active') : t('management.inactive') }}
               </span>
               <small v-if="!item.is_active && item.deactivated_at" class="status-detail">
-                seit {{ formatTimestamp(item.deactivated_at) }}
+                {{ t('managementUi.since', { date: formatTimestamp(item.deactivated_at) }) }}
               </small>
             </td>
             <td>
-              <span v-if="item.id === props.currentUserId" class="muted">Eigenes Konto</span>
+              <span v-if="item.id === props.currentUserId" class="muted">{{ t('management.ownAccount') }}</span>
               <div v-else class="user-actions">
                 <button
                   v-if="item.is_active"
                   class="text-button danger-text"
                   type="button"
                   @click="openSimple('deactivate', item)"
-                >Deaktivieren</button>
+                >{{ t('management.deactivate') }}</button>
                 <template v-else>
-                  <button class="text-button" type="button" @click="openSimple('reactivate', item)">Reaktivieren</button>
-                  <button class="text-button" type="button" @click="openPrivileged('recovery', item)">Recovery ausstellen</button>
-                  <button class="text-button" type="button" @click="openPrivileged('reset', item)">Authentikatoren zurücksetzen</button>
-                  <button class="text-button danger-text" type="button" @click="openPrivileged('delete', item)">Endgültig löschen</button>
+                  <button class="text-button" type="button" @click="openSimple('reactivate', item)">{{ t('management.reactivate') }}</button>
+                  <button class="text-button" type="button" @click="openPrivileged('recovery', item)">{{ t('management.issueRecovery') }}</button>
+                  <button class="text-button" type="button" @click="openPrivileged('reset', item)">{{ t('management.resetAuthenticators') }}</button>
+                  <button class="text-button danger-text" type="button" @click="openPrivileged('delete', item)">{{ t('management.delete') }}</button>
                 </template>
               </div>
             </td>
@@ -258,7 +265,7 @@ function formatTimestamp(value: string) {
       :open="true"
       :title="simpleDialog.title"
       :description="simpleDialog.description"
-      :confirm-label="actionPending ? 'Wird ausgeführt …' : simpleDialog.confirmLabel"
+      :confirm-label="actionPending ? t('managementUi.running') : simpleDialog.confirmLabel"
       :danger="simpleDialog.danger"
       :pending="actionPending"
       :error="simpleError"
@@ -293,12 +300,12 @@ function formatTimestamp(value: string) {
         aria-labelledby="recovery-result-title"
         tabindex="-1"
       >
-        <h2 id="recovery-result-title">Recovery-Link jetzt sicher weitergeben</h2>
-        <p>Dieser Link wird nur einmal angezeigt und ist bis {{ formatTimestamp(recoveryResult.expiresAt) }} gültig. Er wird nicht gespeichert.</p>
+        <h2 id="recovery-result-title">{{ t('managementUi.recoveryHeading') }}</h2>
+        <p>{{ t('managementUi.recoveryDescriptionResult', { date: formatTimestamp(recoveryResult.expiresAt) }) }}</p>
         <code>{{ recoveryLink }}</code>
         <div class="dialog-actions">
-          <button class="button secondary" type="button" @click="closeRecoveryResult">Schließen</button>
-          <button class="button" type="button" @click="copyRecoveryLink">Link kopieren</button>
+          <button class="button secondary" type="button" @click="closeRecoveryResult">{{ t('common.close') }}</button>
+          <button class="button" type="button" @click="copyRecoveryLink">{{ t('management.copyLink') }}</button>
         </div>
       </section>
     </div>

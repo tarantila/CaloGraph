@@ -726,6 +726,7 @@ def test_admin_invitation_creates_isolated_personal_account(
     assert reused.status_code == 400
     registered_user = db.scalar(select(User).where(User.username == "friend"))
     assert registered_user is not None
+    assert registered_user.language == "de"
     assert (
         db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == registered_user.id))
         is None
@@ -789,3 +790,66 @@ def test_invitation_expiration_is_capped_at_seven_days(
     )
 
     assert response.status_code == 422
+
+def test_profile_language_is_validated_and_persisted(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    updated = client.put(
+        "/api/v1/settings/profile",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "language": "en",
+            "timezone": "Europe/Berlin",
+            "week_starts_on": 0,
+            "raw_payload_retention_days": 0,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["language"] == "en"
+    assert client.get("/api/v1/settings/profile").json()["language"] == "en"
+    partial = client.put(
+        "/api/v1/settings/profile",
+        headers={"X-CSRF-Token": csrf},
+        json={"language": "de"},
+    )
+    assert partial.status_code == 200
+    assert partial.json()["language"] == "de"
+    assert partial.json()["timezone"] == "Europe/Berlin"
+    assert partial.json()["week_starts_on"] == 0
+    assert partial.json()["raw_payload_retention_days"] == 0
+
+
+    invalid = client.put(
+        "/api/v1/settings/profile",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "language": "fr",
+            "timezone": "Europe/Berlin",
+            "week_starts_on": 0,
+            "raw_payload_retention_days": 0,
+        },
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["type"] == "urn:calograph:problem:validation-error"
+
+
+def test_invalid_login_exposes_a_stable_problem_type(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "wrong-password"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["type"] == "urn:calograph:problem:invalid-credentials"

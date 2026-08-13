@@ -99,6 +99,9 @@ export interface Target {
 }
 
 export interface ApiProblem {
-  detail: string
+  type?: string
+  title?: string
+  status?: number
+  detail?: string
   request_id?: string
 }

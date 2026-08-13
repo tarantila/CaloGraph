@@ -1,13 +1,14 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { config, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({
   api: apiMock,
   ensureCsrfToken: vi.fn().mockResolvedValue('csrf'),
   ApiError: class ApiError extends Error {},
+  localizeApiError: () => 'The request could not be processed.',
 }))
 
 import CalendarView from '../src/views/CalendarView.vue'
@@ -22,6 +23,7 @@ import SettingsView from '../src/views/SettingsView.vue'
 import TrendsView from '../src/views/TrendsView.vue'
 import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 
 const user = {
@@ -40,9 +42,13 @@ describe('main views', () => {
   beforeEach(() => {
     apiMock.mockReset()
     setActivePinia(createPinia())
+    setLocale(DEFAULT_LOCALE)
     config.global.stubs = {
       RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
     }
+  })
+  afterEach(() => {
+    setLocale(DEFAULT_LOCALE)
   })
 
   it('loads the dashboard summary and renders empty trend data safely', async () => {
@@ -95,6 +101,33 @@ describe('main views', () => {
     expect(apiMock).toHaveBeenCalledWith(
       '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true',
     )
+  })
+
+  it('renders the central overview in English after a locale switch', async () => {
+    setLocale('en')
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/dashboard/summary') {
+        return Promise.resolve({
+          today: { date: '2026-07-19', calories_kcal: null, target_kcal: null, protein_g: null, tracking_status: 'no_data', tracking_reasons: [] },
+          week: { consumed_kcal: 0, budget_kcal: null, deviation_kcal: null, remaining_kcal: null },
+          protein_7d_average_g: null,
+          last_import_at: null,
+          data_start_date: null,
+          data_end_date: null,
+          data_day_count: 0,
+        })
+      }
+      if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false })
+      return Promise.resolve({ points: [] })
+    })
+
+    const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Nutrition overview')
+    expect(wrapper.text()).toContain('Remaining')
+    expect(wrapper.text()).not.toContain('Ernährungsüberblick')
   })
 
   it('starts the personal YAZIO sync from the data status card', async () => {
@@ -345,6 +378,28 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Wochenbudget')
     expect(wrapper.text()).toContain('Noch keine Wochenwerte vorhanden.')
     expect(wrapper.text()).not.toContain('0 kcal')
+  })
+  it('uses the configured Sunday week start in weekly range labels', async () => {
+    apiMock.mockResolvedValue({
+      weeks: [{
+        week_start: '2026-08-09',
+        consumed_kcal: 1900,
+        budget_kcal: 2200,
+        deviation_kcal: -300,
+        remaining_kcal: 300,
+        mean_kcal: 1900,
+        median_kcal: 1900,
+      }],
+    })
+    const auth = useAuthStore()
+    auth.user = { ...user, week_starts_on: 6 }
+
+    const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Sonntag bis Samstag')
+    expect(wrapper.get('tbody tr td').text()).toContain('09.08. – 15.08.2026')
+    expect(wrapper.text()).not.toContain('Montag bis Sonntag')
   })
 
   it('shows missing weekly targets as empty instead of a zero budget', async () => {

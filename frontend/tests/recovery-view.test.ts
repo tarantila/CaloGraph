@@ -11,14 +11,22 @@ vi.mock('../src/api', () => ({
       public status: number,
       public requestId?: string,
       public retryAfter?: string,
+      public problemType?: string,
     ) {
       super(message)
     }
   },
+  localizeApiError: (error: { message: string; status: number; problemType?: string }) =>
+    error.problemType === 'urn:calograph:problem:rate-limited'
+      ? 'Too many requests. Please try again later.'
+      : error.problemType === 'urn:calograph:problem:invalid-invitation'
+        ? 'The recovery token is invalid or expired.'
+        : error.message,
 }))
 
 import RecoveryView from '../src/views/RecoveryView.vue'
 import { ApiError } from '../src/api'
+import { PUBLIC_LOCALE, setLocale } from '../src/i18n'
 
 interface MountedRecovery {
   wrapper: VueWrapper
@@ -43,6 +51,7 @@ async function mountRecovery(): Promise<MountedRecovery> {
 describe('RecoveryView', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    setLocale(PUBLIC_LOCALE)
     window.history.replaceState({}, '', '/recovery')
   })
 
@@ -72,29 +81,31 @@ describe('RecoveryView', () => {
         new_password: 'replacement-password-is-long',
       }),
     })
-    expect(wrapper.text()).toContain('Passwort wurde geändert.')
-    expect(wrapper.text()).toContain('Das Konto bleibt deaktiviert.')
+    expect(document.documentElement.lang).toBe('en')
+    expect(wrapper.find('.language-switcher').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Password changed.')
+    expect(wrapper.text()).toContain('The account remains disabled.')
     expect(wrapper.find('form').exists()).toBe(false)
     expect(sessionStorage.length).toBe(0)
   })
 
   it('supports manual token entry and shows password-policy details without consuming local state', async () => {
-    apiMock.mockRejectedValue(new ApiError('Passwort ist zu häufig verwendet.', 422))
+    apiMock.mockRejectedValue(new ApiError('The password is used too often.', 422))
     const { wrapper } = await mountRecovery()
 
-    expect(wrapper.text()).toContain('lange, schwer erratbare Passphrase')
+    expect(wrapper.text()).toContain('Use a long, hard-to-guess passphrase')
     await wrapper.get('input[autocomplete="off"]').setValue('manually-pasted-token')
     await wrapper.get('input[autocomplete="new-password"]').setValue('too-short-but-matching')
     await wrapper.findAll('input[autocomplete="new-password"]')[1].setValue('too-short-but-matching')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Passwort ist zu häufig verwendet.')
+    expect(wrapper.text()).toContain('The password is used too often.')
     expect(wrapper.get<HTMLInputElement>('input[autocomplete="off"]').element.value).toBe('manually-pasted-token')
   })
 
   it('shows the uniform public error for invalid recovery tokens', async () => {
-    apiMock.mockRejectedValue(new ApiError('Recovery-Token ist ungültig oder abgelaufen', 400))
+    apiMock.mockRejectedValue(new ApiError('The recovery token is invalid or expired.', 400))
     window.history.replaceState({}, '', '/recovery#token=expired-token')
     const { wrapper } = await mountRecovery()
 
@@ -103,13 +114,13 @@ describe('RecoveryView', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Recovery-Token ist ungültig oder abgelaufen')
+    expect(wrapper.text()).toContain('The recovery token is invalid or expired.')
     expect(wrapper.text()).not.toContain('expired-token')
   })
 
   it('honors recovery rate-limit guidance and releases the submit state', async () => {
     apiMock.mockRejectedValue(
-      new ApiError('Zu viele Anfragen. Bitte später erneut versuchen.', 429, undefined, '45'),
+      new ApiError('Too many requests. Please try again later.', 429, undefined, '45'),
     )
     window.history.replaceState({}, '', '/recovery#token=rate-limited-token')
     const { wrapper } = await mountRecovery()
@@ -119,8 +130,8 @@ describe('RecoveryView', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Zu viele Anfragen. Bitte später erneut versuchen.')
-    expect(wrapper.text()).toContain('Erneut versuchen in 45 Sekunden.')
+    expect(wrapper.text()).toContain('Too many requests. Please try again later.')
+    expect(wrapper.text()).toContain('Try again in 45 seconds.')
     expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
     expect(wrapper.get<HTMLInputElement>('input[autocomplete="off"]').element.value).toBe('rate-limited-token')
   })
@@ -133,7 +144,7 @@ describe('RecoveryView', () => {
     await wrapper.findAll('input[autocomplete="new-password"]')[1].setValue('different-password-is-long')
     await wrapper.get('form').trigger('submit')
 
-    expect(wrapper.text()).toContain('Die Passwörter stimmen nicht überein.')
+    expect(wrapper.text()).toContain('The passwords do not match.')
     expect(apiMock).not.toHaveBeenCalled()
   })
 })

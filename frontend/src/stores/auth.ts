@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 import { api, setCsrfToken } from '../api'
+import { applyUserLocale, PUBLIC_LOCALE, setLocale } from '../i18n'
 import type { User } from '../types'
 import {
   authenticateWithPasskey,
@@ -13,23 +14,95 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   const mfaRequired = ref(false)
   const needsTargetSetup = ref<boolean | null>(null)
+  let profileUpdateGeneration = 0
+  let profileUpdatePending = false
+  let profileUpdateQueue: Promise<void> = Promise.resolve()
+
+  function setAuthenticatedUser(value: User, applyLocale = true): void {
+    profileUpdateGeneration += 1
+    user.value = value
+    if (applyLocale) applyUserLocale(value.language)
+  }
+
+  function applyCurrentUserLocale(): void {
+    if (user.value) applyUserLocale(user.value.language)
+  }
+
+  function beginProfileUpdate(language?: string): number {
+    profileUpdateGeneration += 1
+    profileUpdatePending = false
+    if (user.value && (language === 'de' || language === 'en')) {
+      user.value = { ...user.value, language }
+    }
+    return profileUpdateGeneration
+  }
+
+  function currentProfileUpdateGeneration(): number {
+    return profileUpdateGeneration
+  }
+  function enqueueProfileUpdate<T>(generation: number, operation: () => Promise<T>): Promise<T | null> {
+    const run = async (): Promise<T | null> => {
+      if (!isCurrentProfileUpdate(generation)) return null
+      profileUpdatePending = true
+      try {
+        return await operation()
+      } catch (error) {
+        if (isCurrentProfileUpdate(generation)) profileUpdatePending = false
+        throw error
+      }
+    }
+    const queued = profileUpdateQueue.then(run, run)
+    profileUpdateQueue = queued.then(() => undefined, () => undefined)
+    return queued
+  }
+
+  function isCurrentProfileUpdate(generation: number): boolean {
+    return generation === profileUpdateGeneration
+  }
+
+  function syncLoadedUser(generation: number, value: User): boolean {
+    if (!isCurrentProfileUpdate(generation) || profileUpdatePending) return false
+    user.value = value
+    applyUserLocale(value.language)
+    return true
+  }
+
+  function commitProfileUpdate(generation: number, value: User): boolean {
+    if (!isCurrentProfileUpdate(generation)) return false
+    profileUpdatePending = false
+    profileUpdateGeneration += 1
+    user.value = value
+    applyUserLocale(value.language)
+    return true
+  }
 
   function clearSession(): void {
+    profileUpdateGeneration += 1
+    profileUpdatePending = false
     user.value = null
     mfaRequired.value = false
     needsTargetSetup.value = null
     setCsrfToken(null)
+    setLocale(PUBLIC_LOCALE)
   }
 
-  async function ensureUser(): Promise<boolean> {
+  async function ensureUser(applyLocale = true): Promise<boolean> {
+    const generation = currentProfileUpdateGeneration()
     try {
-      user.value = await api<User>('/auth/me')
+      const loadedUser = await api<User>('/auth/me')
+      if (!isCurrentProfileUpdate(generation) || profileUpdatePending) return Boolean(user.value)
+      setAuthenticatedUser(loadedUser, applyLocale)
     } catch {
+      if (!isCurrentProfileUpdate(generation) || profileUpdatePending) return Boolean(user.value)
       clearSession()
       return false
     }
+    const restoreGeneration = currentProfileUpdateGeneration()
     if (needsTargetSetup.value === null) {
       const targets = await api<unknown[]>('/settings/targets')
+      if (currentProfileUpdateGeneration() !== restoreGeneration || profileUpdatePending) {
+        return Boolean(user.value)
+      }
       needsTargetSetup.value = targets.length === 0
     }
     return true
@@ -46,12 +119,11 @@ export const useAuthStore = defineStore('auth', () => {
         body: JSON.stringify({ username, password }),
       })
       if (result.mfa_required) {
-        user.value = null
-        setCsrfToken(null)
+        clearSession()
         mfaRequired.value = true
         return false
       }
-      user.value = result.user
+      setAuthenticatedUser(result.user)
       needsTargetSetup.value = null
       setCsrfToken(result.csrf_token)
       mfaRequired.value = false
@@ -72,7 +144,7 @@ export const useAuthStore = defineStore('auth', () => {
         method: 'POST',
         body: JSON.stringify({ code }),
       })
-      user.value = result.user
+      setAuthenticatedUser(result.user)
       needsTargetSetup.value = null
       setCsrfToken(result.csrf_token)
       mfaRequired.value = false
@@ -99,7 +171,7 @@ export const useAuthStore = defineStore('auth', () => {
           credential,
         }),
       })
-      user.value = result.user
+      setAuthenticatedUser(result.user)
       setCsrfToken(result.csrf_token)
       needsTargetSetup.value = null
       mfaRequired.value = false
@@ -107,7 +179,6 @@ export const useAuthStore = defineStore('auth', () => {
       loading.value = false
     }
   }
-
   function cancelMfa(): void {
     mfaRequired.value = false
   }
@@ -127,11 +198,18 @@ export const useAuthStore = defineStore('auth', () => {
     mfaRequired,
     needsTargetSetup,
     ensureUser,
+    applyCurrentUserLocale,
     login,
     loginWithPasskey,
     verifyMfa,
     cancelMfa,
     completeTargetSetup,
+    beginProfileUpdate,
+    currentProfileUpdateGeneration,
+    enqueueProfileUpdate,
+    isCurrentProfileUpdate,
+    syncLoadedUser,
+    commitProfileUpdate,
     clearSession,
     logout,
   }

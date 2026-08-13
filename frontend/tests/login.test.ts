@@ -6,6 +6,7 @@ import {
   setAuthenticationExpiredHandler,
   setCsrfToken,
 } from '../src/api'
+import { i18n, PUBLIC_LOCALE, setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 
 describe('authentication store', () => {
@@ -15,6 +16,7 @@ describe('authentication store', () => {
     setActivePinia(createPinia())
     setCsrfToken(null)
     setAuthenticationExpiredHandler(null)
+    setLocale(PUBLIC_LOCALE)
   })
 
   it('stores the user returned by login', async () => {
@@ -31,7 +33,130 @@ describe('authentication store', () => {
     const auth = useAuthStore()
     await auth.login('admin', 'password-password')
     expect(auth.user?.username).toBe('admin')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
+  })
+  it('invalidates profile updates when login enters MFA', async () => {
+    const auth = useAuthStore()
+    const user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: true,
+      is_active: true,
+      deactivated_at: null,
+    }
+    auth.user = user
+    const generation = auth.beginProfileUpdate()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ mfa_required: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    await expect(auth.login('admin', 'password-password')).resolves.toBe(false)
+    expect(auth.currentProfileUpdateGeneration()).toBe(generation + 1)
+    expect(auth.user).toBeNull()
+    expect(auth.mfaRequired).toBe(true)
+  })
+  it('ignores stale profile-update responses', () => {
+    const auth = useAuthStore()
+    const user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: true,
+      is_active: true,
+      deactivated_at: null,
+    }
+    auth.user = user
+
+    const first = auth.beginProfileUpdate('en')
+    const second = auth.beginProfileUpdate('de')
+
+    expect(auth.commitProfileUpdate(first, { ...user, language: 'en' })).toBe(false)
+    expect(auth.user?.language).toBe('de')
+    expect(auth.commitProfileUpdate(second, user)).toBe(true)
+  })
+
+  it('keeps the public locale when a profile update resolves after public navigation', () => {
+    const auth = useAuthStore()
+    const user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: true,
+      is_active: true,
+      deactivated_at: null,
+    }
+    auth.user = user
+    const update = auth.beginProfileUpdate()
+    setLocale(PUBLIC_LOCALE)
+    auth.beginProfileUpdate()
+
+    expect(auth.commitProfileUpdate(update, user)).toBe(false)
+    expect(i18n.global.locale.value).toBe(PUBLIC_LOCALE)
+    expect(document.documentElement.lang).toBe(PUBLIC_LOCALE)
+  })
+
+
+  it('does not dispatch queued profile updates after session reset', async () => {
+    const auth = useAuthStore()
+    const user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: true,
+      is_active: true,
+      deactivated_at: null,
+    }
+    auth.user = user
+    const firstGeneration = auth.beginProfileUpdate()
+    let release!: () => void
+    const blocker = new Promise<void>((resolve) => { release = resolve })
+    const first = auth.enqueueProfileUpdate(firstGeneration, async () => {
+      await blocker
+      return user
+    })
+    await Promise.resolve()
+
+    const secondGeneration = auth.beginProfileUpdate('en')
+    let secondCalled = false
+    const second = auth.enqueueProfileUpdate(secondGeneration, async () => {
+      secondCalled = true
+      return user
+    })
+    auth.clearSession()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        mfa_required: false,
+        user,
+        csrf_token: 'next-csrf',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    await expect(auth.login('admin', 'password-password')).resolves.toBe(true)
+    release()
+
+    await expect(first).resolves.toEqual(user)
+    await expect(second).resolves.toBeNull()
+    expect(secondCalled).toBe(false)
   })
 
   it('detects targetless users without inventing goal values', async () => {
@@ -58,6 +183,8 @@ describe('authentication store', () => {
 
     expect(await auth.ensureUser()).toBe(true)
     expect(auth.needsTargetSetup).toBe(true)
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/v1/auth/me',
       '/api/v1/settings/targets',
@@ -171,6 +298,71 @@ describe('authentication store', () => {
     ).rejects.toMatchObject({ status: 401 })
     expect(expired).toHaveBeenCalledOnce()
   })
+  it('does not expire a newer session because of an older protected response', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    setCsrfToken('csrf-a')
+    let resolveResponse!: (response: Response) => void
+    const pendingResponse = new Promise<Response>((resolve) => { resolveResponse = resolve })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => pendingResponse)
+
+    const request = api('/dashboard/summary')
+    await Promise.resolve()
+    setCsrfToken(null)
+    setCsrfToken('csrf-b')
+    resolveResponse(new Response(JSON.stringify({ detail: 'Nicht authentifiziert' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(request).rejects.toMatchObject({ status: 401 })
+    expect(expired).not.toHaveBeenCalled()
+  })
+  it('does not install a stale CSRF token after a session change', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    setCsrfToken(null)
+    let resolveResponse!: (response: Response) => void
+    const pendingResponse = new Promise<Response>((resolve) => { resolveResponse = resolve })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => pendingResponse)
+
+    const request = api('/settings/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ language: 'de' }),
+    })
+    await Promise.resolve()
+    setCsrfToken('csrf-b')
+    resolveResponse(new Response(JSON.stringify({ csrf_token: 'csrf-a' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(request).rejects.toMatchObject({ status: 401 })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(expired).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf-b')
+  })
+  it('signals expiry after a CSRF refresh when the following mutation is rejected', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    setCsrfToken(null)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'csrf-a' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Nicht authentifiziert' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    await expect(api('/settings/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ language: 'de' }),
+    })).rejects.toMatchObject({ status: 401 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(expired).toHaveBeenCalledOnce()
+  })
 
   it('requires the second factor before storing a user', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
@@ -204,6 +396,8 @@ describe('authentication store', () => {
     expect(await auth.login('admin', 'password-password')).toBe(false)
     expect(auth.mfaRequired).toBe(true)
     expect(auth.user).toBeNull()
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
     expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
 
     await auth.verifyMfa('123456')
@@ -217,6 +411,8 @@ describe('authentication store', () => {
     )
     expect(auth.user?.username).toBe('admin')
     expect(auth.mfaRequired).toBe(false)
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf-after-mfa')
   })
 
@@ -290,6 +486,8 @@ describe('authentication store', () => {
       }),
     )
     expect(auth.user?.username).toBe('admin')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf-passkey')
   })
 
@@ -328,7 +526,7 @@ describe('authentication store', () => {
   it('preserves Retry-After for the public recovery endpoint without requesting CSRF', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
-        JSON.stringify({ detail: 'Zu viele Anfragen. Bitte später erneut versuchen.' }),
+        JSON.stringify({ detail: 'Too many requests. Please try again later.' }),
         {
           status: 429,
           headers: { 'Content-Type': 'application/json', 'Retry-After': '45' },
@@ -347,10 +545,34 @@ describe('authentication store', () => {
     ).rejects.toMatchObject({
       status: 429,
       retryAfter: '45',
-      message: 'Zu viele Anfragen. Bitte später erneut versuchen.',
+      message: 'Too many requests. Please try again later.',
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has('X-CSRF-Token')).toBe(false)
+  })
+
+  it('returns to the public English locale on logout', async () => {
+    const auth = useAuthStore()
+    auth.user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: true,
+      is_active: true,
+      deactivated_at: null,
+    }
+    setLocale('de')
+    setCsrfToken('csrf')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+
+    await auth.logout()
+
+    expect(auth.user).toBeNull()
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
   })
 
 })

@@ -1,8 +1,12 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import StatusBadge from '../src/components/StatusBadge.vue'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 
+beforeEach(() => {
+  setLocale(DEFAULT_LOCALE)
+})
 describe('StatusBadge', () => {
   it('renders a textual status in addition to color', () => {
     const wrapper = mount(StatusBadge, { props: { status: 'probably_incomplete' } })

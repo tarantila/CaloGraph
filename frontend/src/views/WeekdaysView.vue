@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import {
-  PhBarbell,
-  PhCalendarBlank,
-  PhChartBar,
-  PhWarningCircle,
-} from '@phosphor-icons/vue'
+import { PhBarbell, PhCalendarBlank, PhChartBar, PhWarningCircle } from '@phosphor-icons/vue'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import DateFilter from '../components/DateFilter.vue'
+import { createNumberFormatter, i18n } from '../i18n'
 
 interface Weekday {
   weekday: number
@@ -25,6 +21,8 @@ interface Weekday {
   mean_protein_g: number | null
 }
 
+const t = i18n.global.t.bind(i18n.global)
+const locale = i18n.global.locale
 const route = useRoute()
 const router = useRouter()
 const currentDate = new Date()
@@ -41,7 +39,12 @@ const end = ref(String(route.query.end ?? iso(currentDate)))
 const weekdays = ref<Weekday[]>([])
 const error = ref('')
 const loading = ref(true)
-const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
+const number = createNumberFormatter({ maximumFractionDigits: 0 })
+
+function weekdayLabel(day: number) {
+  const keys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+  return t(`weekdays.${keys[day]}`, { locale: locale.value })
+}
 
 function numericValue(value: number | null) {
   if (value == null) return null
@@ -54,9 +57,7 @@ async function load() {
   loading.value = true
   await router.replace({ query: { start: start.value, end: end.value } })
   try {
-    const result = await api<{ weekdays: Weekday[] }>(
-      `/analytics/weekdays?start=${start.value}&end=${end.value}`,
-    )
+    const result = await api<{ weekdays: Weekday[] }>(`/analytics/weekdays?start=${start.value}&end=${end.value}`)
     weekdays.value = result.weekdays.map((item) => ({
       ...item,
       count: Number(item.count),
@@ -68,10 +69,7 @@ async function load() {
       mean_protein_g: numericValue(item.mean_protein_g),
     }))
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause.message
-        : 'Wochentagsanalyse konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -86,8 +84,7 @@ const lowestDay = computed(() =>
   [...recorded.value].sort((a, b) => (a.mean_kcal ?? 0) - (b.mean_kcal ?? 0)).at(0) ?? null,
 )
 const proteinDay = computed(() =>
-  [...recorded.value].sort((a, b) => (b.mean_protein_g ?? 0) - (a.mean_protein_g ?? 0)).at(0) ??
-  null,
+  [...recorded.value].sort((a, b) => (b.mean_protein_g ?? 0) - (a.mean_protein_g ?? 0)).at(0) ?? null,
 )
 const totalDays = computed(() => recorded.value.reduce((sum, item) => sum + item.count, 0))
 
@@ -98,39 +95,39 @@ const option = computed<EChartsOption>(() => ({
     backgroundColor: '#111d30',
     borderColor: '#324157',
     textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${number.format(Number(value))} kcal`,
+    valueFormatter: (value) => `${number.format(Number(value))} ${t('common.kcal')}`,
   },
   legend: {
     top: 0,
     right: 0,
-    data: ['Mittelwert', 'Median'],
+    data: [t('weekdays.mean'), t('weekdays.median')],
     textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
   },
   grid: { left: 58, right: 18, top: 48, bottom: 38 },
   xAxis: {
     type: 'category',
-    data: weekdays.value.map((item) => item.label.slice(0, 2)),
+    data: weekdays.value.map((item) => weekdayLabel(item.weekday).slice(0, 2)),
     axisLine: { lineStyle: { color: '#263449' } },
     axisTick: { show: false },
     axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
   },
   yAxis: {
     type: 'value',
-    name: 'kcal',
+    name: t('common.kcal'),
     nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
     axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
     splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
   },
   series: [
     {
-      name: 'Mittelwert',
+      name: t('weekdays.mean'),
       type: 'bar',
       barMaxWidth: 42,
       data: weekdays.value.map((item) => item.mean_kcal),
       itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
     },
     {
-      name: 'Median',
+      name: t('weekdays.median'),
       type: 'line',
       showSymbol: true,
       symbolSize: 7,
@@ -140,55 +137,53 @@ const option = computed<EChartsOption>(() => ({
     },
   ],
 }))
+
 </script>
 
 <template>
   <div class="page-heading">
-    <div><h1>Wochentagsanalyse</h1><p>Wiederkehrende Muster von Montag bis Sonntag auf Basis erfasster Tage.</p></div>
+    <div><h1>{{ t('weekdays.title') }}</h1><p>{{ t('weekdays.description') }}</p></div>
     <DateFilter v-model:start="start" v-model:end="end" @apply="load" />
   </div>
-
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Wochentage werden ausgewertet …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('weekdays.loading') }}</div>
   <template v-else>
-    <section class="insight-strip" aria-label="Wochentagskennzahlen">
+    <section class="insight-strip" :aria-label="t('weekdays.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>Höchster Schnitt</small><strong>{{ highestDay ? `${highestDay.label} · ${number.format(highestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekdays.highest') }}</small><strong>{{ highestDay ? `${weekdayLabel(highestDay.weekday)} · ${number.format(highestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>Niedrigster Schnitt</small><strong>{{ lowestDay ? `${lowestDay.label} · ${number.format(lowestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekdays.lowest') }}</small><strong>{{ lowestDay ? `${weekdayLabel(lowestDay.weekday)} · ${number.format(lowestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhBarbell :size="20" weight="duotone" /></span>
-        <span><small>Meistes Protein</small><strong>{{ proteinDay?.mean_protein_g == null ? '–' : `${proteinDay.label} · ${number.format(proteinDay.mean_protein_g)} g` }}</strong></span>
+        <span><small>{{ t('weekdays.mostProtein') }}</small><strong>{{ proteinDay?.mean_protein_g == null ? '–' : `${weekdayLabel(proteinDay.weekday)} · ${number.format(proteinDay.mean_protein_g)} g` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhWarningCircle :size="20" weight="duotone" /></span>
-        <span><small>Datenbasis</small><strong>{{ totalDays }} Tage</strong></span>
+        <span><small>{{ t('weekdays.dataBasis') }}</small><strong>{{ totalDays }} {{ t('common.days') }}</strong></span>
       </article>
     </section>
-
     <ChartPanel
-      title="Kalorien nach Wochentag"
+      :title="t('weekdays.chartTitle')"
       :option="option"
       :empty="!recorded.length"
       :height="330"
     >
-      <template #header-actions><span class="chart-range">Mittelwert und Median</span></template>
+      <template #header-actions><span class="chart-range">{{ t('weekdays.chartRange') }}</span></template>
     </ChartPanel>
-
     <section class="card table-card">
       <div class="section-card-header">
-        <div><h2>Verteilung je Wochentag</h2><p>Das Intervall zeigt den Bereich zwischen dem 25. und 75. Perzentil.</p></div>
+        <div><h2>{{ t('weekdays.tableTitle') }}</h2><p>{{ t('weekdays.tableDescription') }}</p></div>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Tag</th><th class="number">Tage</th><th class="number">Mittel</th><th class="number">Median</th><th class="number">Mittlere 50 %</th><th class="number">Ø Budgetdifferenz</th><th class="number">Ø Protein</th></tr></thead>
+          <thead><tr><th>{{ t('common.day') }}</th><th class="number">{{ t('common.days') }}</th><th class="number">{{ t('weekdays.mean') }}</th><th class="number">{{ t('weekdays.median') }}</th><th class="number">{{ t('weekdays.middle50') }}</th><th class="number">{{ t('weekdays.averageDeviation') }}</th><th class="number">{{ t('charts.protein') }}</th></tr></thead>
           <tbody>
             <tr v-for="item in weekdays" :key="item.weekday">
-              <td><strong>{{ item.label }}</strong></td>
+              <td><strong>{{ weekdayLabel(item.weekday) }}</strong></td>
               <td class="number">{{ item.count }}</td>
               <td class="number">{{ item.mean_kcal == null ? '–' : `${number.format(item.mean_kcal)} kcal` }}</td>
               <td class="number">{{ item.median_kcal == null ? '–' : `${number.format(item.median_kcal)} kcal` }}</td>

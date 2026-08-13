@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({ api: apiMock }))
 
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 import { saveTargetDraft, type TargetDraft } from '../src/target-form'
+
+beforeEach(() => {
+  setLocale(DEFAULT_LOCALE)
+})
 
 function targetDraft(caloriesKcal: number, maintenanceKcal: number | null): TargetDraft {
   return {

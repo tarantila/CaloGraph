@@ -8,12 +8,13 @@ import {
 } from '@phosphor-icons/vue'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import DateFilter from '../components/DateFilter.vue'
 import { formatGermanDateTime, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 
+const t = i18n.global.t.bind(i18n.global)
 type NutrientStatus =
   | 'no_data'
   | 'insufficient_data'
@@ -63,20 +64,20 @@ const syncingHistory = ref(false)
 const syncMessage = ref('')
 const syncError = ref('')
 
-const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 2 })
-const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
-const percent = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 })
-const referencePercent = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
+const number = createNumberFormatter({ maximumFractionDigits: 2 })
+const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const percent = createNumberFormatter({ style: 'percent', maximumFractionDigits: 0 })
+const referencePercent = createNumberFormatter({ maximumFractionDigits: 1 })
 
 const sourceLabels: Record<string, string> = {
-  yazio_export_v1: 'YAZIO',
-  health_auto_export_v2: 'Health Auto Export',
-  calograph_sync_v1: 'CaloGraph Sync',
-  apple_health_xml: 'Apple Health',
+  yazio_export_v1: 'micronutrientsUi.sourceYazio',
+  health_auto_export_v2: 'micronutrientsUi.sourceHealthAutoExport',
+  calograph_sync_v1: 'micronutrientsUi.sourceCaloGraph',
+  apple_health_xml: 'micronutrientsUi.sourceAppleHealth',
 }
 
 function sourceLabel(value: string) {
-  return sourceLabels[value] ?? value
+  return sourceLabels[value] ? t(sourceLabels[value]) : value
 }
 
 async function load(allowSourceFallback = true) {
@@ -103,10 +104,7 @@ async function load(allowSourceFallback = true) {
     }
     result.value = response
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause.message
-        : 'Mikronährstoffanalyse konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -130,8 +128,8 @@ const minerals = computed(
   () => result.value?.nutrients.filter((item) => item.category === 'mineral') ?? [],
 )
 const freshness = computed(() => {
-  if (!result.value?.last_updated_at) return 'Noch keine Daten'
-  return `Aktualisiert ${formatGermanDateTime(result.value.last_updated_at)}`
+  if (!result.value?.last_updated_at) return t('micronutrientsUi.noDataYet')
+  return t('micronutrientsUi.updated', { date: formatGermanDateTime(result.value.last_updated_at) })
 })
 
 function unitLabel(unit: Nutrient['unit']) {
@@ -146,21 +144,21 @@ function amountLabel(item: Nutrient) {
 
 function referenceAmountLabel(item: Nutrient) {
   return item.eu_nrv == null
-    ? 'Kein EU-Referenzwert festgelegt'
-    : `EU-Referenzwert ${number.format(item.eu_nrv)} ${unitLabel(item.unit)}`
+    ? t('micronutrientsUi.noReference')
+    : `${t('micronutrientsUi.referenceValue')}: ${number.format(item.eu_nrv)} ${unitLabel(item.unit)}`
 }
 
 function statusLabel(item: Nutrient) {
-  if (item.status === 'no_data') return 'Keine Daten'
-  if (item.status === 'insufficient_data') return 'Noch zu wenige Angaben'
-  if (item.status === 'below_orientation') return 'Unter Orientierung'
-  return 'Orientierung erreicht'
+  if (item.status === 'no_data') return t('micronutrientsUi.noData')
+  if (item.status === 'insufficient_data') return t('micronutrientsUi.insufficient')
+  if (item.status === 'below_orientation') return t('micronutrients.below')
+  return t('micronutrientsUi.orientationReached')
 }
 
 function nrvLabel(item: Nutrient) {
-  if (item.eu_nrv == null) return 'Kein EU-NRV'
+  if (item.eu_nrv == null) return t('micronutrientsUi.noNrv')
   if (item.percent_of_nrv == null) return '–'
-  if (item.percent_of_nrv > 0 && item.percent_of_nrv < 0.1) return '< 0,1 %'
+  if (item.percent_of_nrv > 0 && item.percent_of_nrv < 0.1) return t('micronutrientsUi.belowSmall')
   return `${referencePercent.format(item.percent_of_nrv)} %`
 }
 
@@ -172,12 +170,12 @@ function requiredCoverageDays() {
 
 function coverageLabel(item: Nutrient) {
   const recordedDays = result.value?.recorded_days ?? 0
-  if (!recordedDays) return 'Noch keine Ernährungstage im Zeitraum'
+  if (!recordedDays) return t('micronutrientsUi.noNutrientsDays')
   const coverage = percent.format(item.coverage_ratio)
-  const base = `${item.days_with_value} von ${recordedDays} Tagen mit Angaben (${coverage})`
+  const base = t('micronutrientsUi.coverage', { count: item.days_with_value, total: recordedDays, percent: coverage })
   const requiredDays = requiredCoverageDays()
   return item.days_with_value < requiredDays
-    ? `${base} · mindestens ${requiredDays} nötig`
+    ? t('micronutrientsUi.coverageRequired', { base, required: requiredDays })
     : base
 }
 
@@ -190,31 +188,27 @@ async function syncYazioHistory() {
       '/yazio/sync?days=60',
       { method: 'POST' },
     )
-    syncMessage.value = `${integer.format(summary.inserted + summary.updated)} Werte wurden neu übernommen oder aktualisiert.`
+    syncMessage.value = t('micronutrientsUi.syncSuccess', { count: integer.format(summary.inserted + summary.updated) })
     await load()
   } catch (cause) {
-    syncError.value =
-      cause instanceof ApiError
-        ? cause.message
-        : 'Die YAZIO-Historie konnte nicht nachgeladen werden.'
+    syncError.value = localizeApiError(cause, 'micronutrientsUi.syncFailed')
   } finally {
     syncingHistory.value = false
   }
 }
 </script>
-
 <template>
   <div class="page-heading micronutrient-heading">
     <div>
-      <h1>Mikronährstoffanalyse</h1>
-      <p>Vitamine und Mineralstoffe aus deinen Ernährungseinträgen – ohne Aktivitäts- oder Flüssigkeitsdaten.</p>
+      <h1>{{ t('micronutrients.title') }}</h1>
+      <p>{{ t('micronutrients.description') }}</p>
     </div>
     <DateFilter v-model:start="start" v-model:end="end" @apply="load()" />
   </div>
 
-  <section class="card filter-panel micronutrient-source-filter" aria-label="Datenquelle wählen">
+  <section class="card filter-panel micronutrient-source-filter" :aria-label="t('micronutrients.chooseSource')">
     <label class="field">
-      Datenquelle
+      {{ t('micronutrients.chooseSource') }}
       <select v-model="source" @change="load()">
         <option
           v-for="item in result?.available_sources ?? []"
@@ -235,40 +229,40 @@ async function syncYazioHistory() {
   </section>
 
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Mikronährstoffe werden ausgewertet …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('micronutrientsUi.loading') }}</div>
   <template v-else-if="result">
-    <section class="insight-strip" aria-label="Mikronährstoffkennzahlen">
+    <section class="insight-strip" :aria-label="t('micronutrients.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhDatabase :size="20" weight="duotone" /></span>
-        <span><small>Erfasste Nährstoffe</small><strong>{{ available.length }} von {{ result.nutrients.length }}</strong></span>
+        <span><small>{{ t('micronutrients.recorded') }}</small><strong>{{ available.length }} / {{ result.nutrients.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhCheckCircle :size="20" weight="duotone" /></span>
-        <span><small>Ausreichende Datenbasis</small><strong>{{ reliable.length }}</strong></span>
+        <span><small>{{ t('micronutrients.sufficient') }}</small><strong>{{ reliable.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhWarningCircle :size="20" weight="duotone" /></span>
-        <span><small>Unter Orientierung</small><strong>{{ belowOrientation.length }}</strong></span>
+        <span><small>{{ t('micronutrients.below') }}</small><strong>{{ belowOrientation.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhDatabase :size="20" weight="duotone" /></span>
-        <span><small>Ernährungstage</small><strong>{{ result.recorded_days }}</strong></span>
+        <span><small>{{ t('micronutrients.nutritionDays') }}</small><strong>{{ result.recorded_days }}</strong></span>
       </article>
     </section>
 
     <div class="micronutrient-columns">
       <section class="card micronutrient-card">
         <div class="section-card-header">
-          <div><h2>Vitamine</h2><p>Durchschnitt pro Ernährungstag im gewählten Zeitraum.</p></div>
+          <div><h2>{{ t('micronutrients.vitamins') }}</h2><p>{{ t('micronutrients.averagePerDay') }}</p></div>
         </div>
         <div class="nutrient-list">
           <article v-for="item in vitamins" :key="item.id" class="nutrient-row">
             <div class="nutrient-row-top">
               <div><strong>{{ item.label }}</strong><small>{{ referenceAmountLabel(item) }}</small></div>
-              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>Ø pro Ernährungstag</small></div>
+              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>{{ t('micronutrientsUi.averagePerDay') }}</small></div>
             </div>
             <div v-if="item.percent_of_nrv != null" class="nutrient-progress-heading">
-              <span>Anteil am EU-Referenzwert</span>
+              <span>{{ t('micronutrientsUi.referenceShare') }}</span>
               <strong>{{ nrvLabel(item) }}</strong>
             </div>
             <progress
@@ -276,7 +270,7 @@ async function syncYazioHistory() {
               :class="['nutrient-progress', item.status]"
               :value="Math.min(item.percent_of_nrv ?? 0, 150)"
               max="150"
-              :aria-label="`${item.label}: ${nrvLabel(item)} des EU-Referenzwerts`"
+              :aria-label="t('micronutrientsUi.referenceAria', { label: item.label, value: nrvLabel(item) })"
             >
               {{ nrvLabel(item) }}
             </progress>
@@ -290,16 +284,16 @@ async function syncYazioHistory() {
 
       <section class="card micronutrient-card">
         <div class="section-card-header">
-          <div><h2>Mineralstoffe</h2><p>Durchschnitt pro Ernährungstag im gewählten Zeitraum.</p></div>
+          <div><h2>{{ t('micronutrients.minerals') }}</h2><p>{{ t('micronutrients.averagePerDay') }}</p></div>
         </div>
         <div class="nutrient-list">
           <article v-for="item in minerals" :key="item.id" class="nutrient-row">
             <div class="nutrient-row-top">
               <div><strong>{{ item.label }}</strong><small>{{ referenceAmountLabel(item) }}</small></div>
-              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>Ø pro Ernährungstag</small></div>
+              <div class="nutrient-value"><strong>{{ amountLabel(item) }}</strong><small>{{ t('micronutrientsUi.averagePerDay') }}</small></div>
             </div>
             <div v-if="item.percent_of_nrv != null" class="nutrient-progress-heading">
-              <span>Anteil am EU-Referenzwert</span>
+              <span>{{ t('micronutrientsUi.referenceShare') }}</span>
               <strong>{{ nrvLabel(item) }}</strong>
             </div>
             <progress
@@ -307,7 +301,7 @@ async function syncYazioHistory() {
               :class="['nutrient-progress', item.status]"
               :value="Math.min(item.percent_of_nrv ?? 0, 150)"
               max="150"
-              :aria-label="`${item.label}: ${nrvLabel(item)} des EU-Referenzwerts`"
+              :aria-label="t('micronutrientsUi.referenceAria', { label: item.label, value: nrvLabel(item) })"
             >
               {{ nrvLabel(item) }}
             </progress>
@@ -323,16 +317,16 @@ async function syncYazioHistory() {
     <section class="card quality-explainer micronutrient-explainer">
       <span class="quality-explainer-icon"><PhInfo :size="22" weight="fill" /></span>
       <div>
-        <h2>So ist die Auswertung zu lesen</h2>
-        <p>Der Balken zeigt den berechneten Anteil am EU-Nährstoffbezugswert für Erwachsene. 100 % entsprechen dem Referenzwert; die Balkenskala reicht bis 150 %. Das Tagesmittel teilt die gemeldete Summe durch alle Ernährungstage im Zeitraum.</p>
-        <p>„Noch zu wenige Angaben“ bedeutet: YAZIO hat diesen Nährstoff an weniger als 70 % der Ernährungstage geliefert. Bei {{ result.recorded_days }} Ernährungstagen sind Angaben an mindestens {{ requiredCoverageDays() }} Tagen nötig. Das sagt nichts darüber aus, ob du zu wenig davon gegessen hast.</p>
-        <p>„Unter Orientierung“ bedeutet weniger als 80 % des Referenzwerts bei ausreichender Datenabdeckung. Das ist keine Diagnose eines Mangels: Produktdaten können unvollständig sein, individuelle Bedarfe unterscheiden sich und Blutwerte werden hier nicht bewertet.</p>
-        <a href="https://eur-lex.europa.eu/legal-content/DE-EN/ALL/?uri=CELEX:32011R1169" target="_blank" rel="noreferrer">Referenz: Verordnung (EU) Nr. 1169/2011, Anhang XIII</a>
+        <h2>{{ t('micronutrientsUi.explainerTitle') }}</h2>
+        <p>{{ t('micronutrientsUi.explainerP1') }}</p>
+        <p>{{ t('micronutrientsUi.explainerP2', { days: result.recorded_days, required: requiredCoverageDays() }) }}</p>
+        <p>{{ t('micronutrientsUi.explainerP3') }}</p>
+        <a href="https://eur-lex.europa.eu/legal-content/DE-EN/ALL/?uri=CELEX:32011R1169" target="_blank" rel="noreferrer">{{ t('micronutrientsUi.referenceLink') }}</a>
         <div v-if="source === 'yazio_export_v1'" class="micronutrient-backfill">
-          <p>Fehlen ältere Mikronährstoffwerte, kannst du einmalig die letzten 60 Tage nachladen. Die automatische Synchronisierung bleibt weiterhin auf den kurzen Zeitraum aus deinen Kontoeinstellungen begrenzt.</p>
+          <p>{{ t('micronutrientsUi.backfillHelp') }}</p>
           <button class="button secondary" type="button" :disabled="syncingHistory" @click="syncYazioHistory">
             <PhArrowsClockwise :size="16" weight="bold" aria-hidden="true" />
-            {{ syncingHistory ? 'YAZIO-Historie wird geladen …' : '60 Tage aus YAZIO nachladen' }}
+            {{ syncingHistory ? t('micronutrientsUi.syncLoading') : t('micronutrientsUi.syncButton') }}
           </button>
           <small v-if="syncMessage" class="micronutrient-sync-message">{{ syncMessage }}</small>
           <small v-if="syncError" class="micronutrient-sync-message error">{{ syncError }}</small>
@@ -341,7 +335,7 @@ async function syncYazioHistory() {
     </section>
 
     <p class="micronutrient-source-note">
-      Quelle: {{ sourceLabel(result.source ?? source) }} · Fehlende Mikronährstoffangaben werden im Tagesmittel als 0 berücksichtigt und über die Datenabdeckung sichtbar gemacht.
+      {{ t('micronutrientsUi.sourceNote', { source: sourceLabel(result.source ?? source) }) }}
     </p>
   </template>
 </template>

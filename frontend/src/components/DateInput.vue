@@ -2,7 +2,9 @@
 import { ref, watch } from 'vue'
 
 import { formatGermanDate, parseGermanDate } from '../date-format'
+import { i18n } from '../i18n'
 
+const t = i18n.global.t.bind(i18n.global)
 const props = withDefaults(defineProps<{
   modelValue: string
   required?: boolean
@@ -24,6 +26,12 @@ watch(
     textInput.value?.setCustomValidity('')
   },
 )
+watch(
+  () => i18n.global.locale.value,
+  () => {
+    displayValue.value = formatGermanDate(props.modelValue)
+  },
+)
 
 function updateText(event: Event) {
   const input = event.target as HTMLInputElement
@@ -34,7 +42,7 @@ function updateText(event: Event) {
     return
   }
   const parsed = parseGermanDate(input.value)
-  input.setCustomValidity(parsed ? '' : 'Gib ein gültiges Datum im Format TT.MM.JJJJ ein.')
+  input.setCustomValidity(parsed ? '' : t('dateInput.invalid'))
   if (parsed) emit('update:modelValue', parsed)
 }
 
@@ -72,7 +80,7 @@ defineExpose({ reportValidity })
       :value="displayValue"
       type="text"
       inputmode="numeric"
-      placeholder="TT.MM.JJJJ"
+      :placeholder="t('dateInput.placeholder')"
       autocomplete="off"
       :required="required"
       :disabled="disabled"
@@ -83,9 +91,9 @@ defineExpose({ reportValidity })
       class="date-input-picker-button"
       type="button"
       :disabled="disabled"
-      aria-label="Datum im Kalender auswählen"
+      :aria-label="t('dateInput.choose')"
       @click="openPicker"
-    >Kalender</button>
+    >{{ t('dateInput.calendar') }}</button>
     <input
       ref="nativePicker"
       class="date-input-native-picker"

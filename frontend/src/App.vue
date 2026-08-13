@@ -15,9 +15,10 @@ import {
 } from '@phosphor-icons/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-
+import { i18n } from './i18n'
 import { useAuthStore } from './stores/auth'
 
+const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -27,17 +28,17 @@ const usesFocusedLayout = computed(
 )
 
 const navigation = [
-  { to: { name: 'overview' }, label: 'Übersicht', icon: PhSquaresFour },
-  { to: { name: 'daily' }, label: 'Tagesverlauf', icon: PhListBullets },
-  { to: { name: 'weekly' }, label: 'Wochen', icon: PhChartBar },
-  { to: { name: 'weekdays' }, label: 'Wochentage', icon: PhCalendarBlank },
-  { to: { name: 'calendar' }, label: 'Kalender', icon: PhCalendarBlank },
-  { to: { name: 'trends' }, label: 'Trends', icon: PhChartLineUp },
-  { to: { name: 'micronutrients' }, label: 'Mikronährstoffe', icon: PhChartBar },
-  { to: { name: 'quality' }, label: 'Datenstatus', icon: PhDatabase },
-  { to: { name: 'imports' }, label: 'Datenimport', icon: PhDownloadSimple },
-  { to: { name: 'targets' }, label: 'Budgets & Ziele', icon: PhTarget },
-  { to: { name: 'account' }, label: 'Konto', icon: PhUserCircle },
+  { to: { name: 'overview' }, label: 'navigation.overview', icon: PhSquaresFour },
+  { to: { name: 'daily' }, label: 'navigation.daily', icon: PhListBullets },
+  { to: { name: 'weekly' }, label: 'navigation.weekly', icon: PhChartBar },
+  { to: { name: 'weekdays' }, label: 'navigation.weekdays', icon: PhCalendarBlank },
+  { to: { name: 'calendar' }, label: 'navigation.calendar', icon: PhCalendarBlank },
+  { to: { name: 'trends' }, label: 'navigation.trends', icon: PhChartLineUp },
+  { to: { name: 'micronutrients' }, label: 'navigation.micronutrients', icon: PhChartBar },
+  { to: { name: 'quality' }, label: 'navigation.quality', icon: PhDatabase },
+  { to: { name: 'imports' }, label: 'navigation.imports', icon: PhDownloadSimple },
+  { to: { name: 'targets' }, label: 'navigation.targets', icon: PhTarget },
+  { to: { name: 'account' }, label: 'navigation.account', icon: PhUserCircle },
 ]
 
 function isNavActive(item: (typeof navigation)[number]) {
@@ -53,7 +54,7 @@ async function signOut() {
 <template>
   <RouterView v-if="usesFocusedLayout" />
   <div v-else class="app-shell">
-    <aside :class="['sidebar', { open: menuOpen }]" aria-label="Hauptnavigation">
+    <aside :class="['sidebar', { open: menuOpen }]" :aria-label="t('navigation.aria')">
       <div class="brand">
         <img class="brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
         <strong>CaloGraph</strong>
@@ -67,20 +68,20 @@ async function signOut() {
           @click="menuOpen = false"
         >
           <component :is="item.icon" :size="20" weight="regular" aria-hidden="true" />
-          {{ item.label }}
+          {{ t(item.label) }}
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
         <small>CaloGraph v0.3.3</small>
         <button class="sidebar-signout" type="button" @click="signOut">
           <PhSignOut :size="18" aria-hidden="true" />
-          Abmelden
+          {{ t('navigation.logout') }}
         </button>
       </div>
     </aside>
     <div class="main-column">
       <header class="topbar">
-        <button class="menu-button" type="button" :aria-label="menuOpen ? 'Navigation schließen' : 'Navigation öffnen'" @click="menuOpen = !menuOpen">
+        <button class="menu-button" type="button" :aria-label="menuOpen ? t('navigation.close') : t('navigation.open')" @click="menuOpen = !menuOpen">
           <PhX v-if="menuOpen" :size="24" aria-hidden="true" />
           <PhList v-else :size="24" aria-hidden="true" />
         </button>

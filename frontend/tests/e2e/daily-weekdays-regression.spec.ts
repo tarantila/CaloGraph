@@ -21,6 +21,7 @@ const weekdays = [
 }))
 
 test('daily averages, weekday ranges, and sidebar order stay consistent', async ({ page }) => {
+  let profileLanguage: 'de' | 'en' = 'de'
   const browserErrors: string[] = []
   page.on('console', (message) => {
     if (message.type() === 'error') browserErrors.push(message.text())
@@ -30,12 +31,15 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   await page.route('**/api/v1/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     const path = requestUrl.pathname
+    if (path.endsWith('/auth/csrf')) {
+      return route.fulfill({ json: { csrf_token: 'synthetic-csrf-token' } })
+    }
     if (path.endsWith('/auth/me')) {
       return route.fulfill({
         json: {
           id: 'regression-review',
           username: 'design-review',
-          language: 'de',
+          language: profileLanguage,
           timezone: 'Europe/Berlin',
           week_starts_on: 0,
           raw_payload_retention_days: 0,
@@ -56,6 +60,46 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
           fat_g: null,
           fiber_g: null,
         }],
+      })
+    }
+    if (path.endsWith('/settings/profile')) {
+      const body = route.request().method() === 'PUT'
+        ? route.request().postDataJSON() as { language?: string } | null
+        : null
+      if (body?.language === 'de' || body?.language === 'en') profileLanguage = body.language
+      return route.fulfill({
+        json: {
+          id: 'regression-review',
+          username: 'design-review',
+          language: profileLanguage,
+          timezone: 'Europe/Berlin',
+          week_starts_on: 0,
+          raw_payload_retention_days: 0,
+          is_admin: false,
+        },
+      })
+    }
+    if (path.endsWith('/settings/tokens') || path.endsWith('/settings/passkeys')) {
+      return route.fulfill({ json: [] })
+    }
+    if (path.endsWith('/settings/mfa')) {
+      return route.fulfill({
+        json: { totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 },
+      })
+    }
+    if (path.endsWith('/yazio/status')) {
+      return route.fulfill({
+        json: {
+          available: true,
+          configured: false,
+          sync_enabled: false,
+          sync_interval_minutes: null,
+          sync_days: null,
+          last_attempt_at: null,
+          last_success_at: null,
+          next_sync_at: null,
+          last_error: null,
+        },
       })
     }
     if (path.endsWith('/analytics/daily')) {
@@ -112,7 +156,6 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
     }
     return route.fulfill({ status: 404, json: { detail: `Unhandled review route: ${path}` } })
   })
-
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto('/tage')
 
@@ -127,12 +170,31 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
 
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()
+  const weekdayRows = page.locator('table tbody tr')
+  await expect(weekdayRows).toHaveCount(7)
+  await expect(weekdayRows.locator('td:first-child')).toHaveText(weekdays.map((item) => item.label))
   const rangeSelect = page.getByLabel('Zeitraum')
   await expect(rangeSelect).toContainText('Aktuelle Woche')
   await expect(rangeSelect).toContainText('Letzte Woche')
   await expect(rangeSelect).toContainText('Letzte 180 Tage')
   await rangeSelect.selectOption('last-week')
   await expect(page).toHaveURL(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/)
+  await page.getByRole('link', { name: 'Konto' }).click()
+  await expect(page.getByRole('heading', { name: 'Konto' })).toBeVisible()
+  await page.locator('select[name="language"]').selectOption('en')
+  await expect(page.locator('select[name="language"]')).toHaveValue('en')
+  await page.getByRole('button', { name: 'Profil speichern' }).click()
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible()
+  await page.getByRole('link', { name: 'Weekdays' }).click()
+  await expect(weekdayRows.locator('td:first-child')).toHaveText([
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ])
 
   await page.screenshot({
     path: 'test-results/weekday-date-filter.png',

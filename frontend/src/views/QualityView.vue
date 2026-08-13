@@ -8,10 +8,13 @@ import {
 } from '@phosphor-icons/vue'
 import { computed, onMounted, ref } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDateTime, shiftIsoDate } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint } from '../types'
+
+const t = i18n.global.t.bind(i18n.global)
 
 interface QualityImport {
   id: string
@@ -45,15 +48,14 @@ interface Quality {
 const quality = ref<Quality | null>(null)
 const error = ref('')
 const loading = ref(true)
-const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
-const percent = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 })
+const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const percent = createNumberFormatter({ style: 'percent', maximumFractionDigits: 0 })
 
 onMounted(async () => {
   try {
     quality.value = await api<Quality>('/analytics/data-quality')
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? cause.message : 'Datenstatus konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -64,14 +66,14 @@ function dateLabel(value: string) {
 }
 
 function sourceLabel(source: string) {
-  const labels: Record<string, string> = {
-    yazio_export_v1: 'YAZIO',
-    health_auto_export_v2: 'Health Auto Export',
-    calograph_sync_v1: 'CaloGraph Sync',
-    apple_health_xml: 'Apple Health',
-    synthetic_demo: 'Demodaten',
+  const keys: Record<string, string> = {
+    yazio_export_v1: 'qualityUi.sourceYazio',
+    health_auto_export_v2: 'qualityUi.sourceHealthAutoExport',
+    calograph_sync_v1: 'qualityUi.sourceCaloGraph',
+    apple_health_xml: 'qualityUi.sourceAppleHealth',
+    synthetic_demo: 'qualityUi.sourceDemo',
   }
-  return labels[source] ?? source
+  return keys[source] ? t(keys[source]) : source
 }
 
 const missingRanges = computed(() => {
@@ -114,81 +116,81 @@ const issueImports = computed(() =>
 
 <template>
   <div class="page-heading">
-    <div><h1>Datenstatus</h1><p>Sieh, für welche Tage Ernährungs- und Kaloriendaten angekommen sind.</p></div>
+    <div><h1>{{ t('qualityUi.pageTitle') }}</h1><p>{{ t('qualityUi.pageDescription') }}</p></div>
     <span class="page-context">{{ rangeLabel }}</span>
   </div>
 
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Datenstatus wird geprüft …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('qualityUi.loading') }}</div>
   <template v-else-if="quality">
-    <section class="insight-strip" aria-label="Datenqualitätskennzahlen">
+    <section class="insight-strip" :aria-label="t('qualityUi.statsAria')">
       <article class="card insight-card">
         <span class="insight-icon teal"><PhCheckCircle :size="20" weight="duotone" /></span>
-        <span><small>Datenabdeckung</small><strong>{{ percent.format(quality.coverage_ratio) }}</strong></span>
+        <span><small>{{ t('qualityUi.coverage') }}</small><strong>{{ percent.format(quality.coverage_ratio) }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhCalendarX :size="20" weight="duotone" /></span>
-        <span><small>Tage ohne Ernährung</small><strong>{{ quality.missing_days.length }}</strong></span>
+        <span><small>{{ t('qualityUi.missingNutrition') }}</small><strong>{{ quality.missing_days.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhWarningCircle :size="20" weight="duotone" /></span>
-        <span><small>Ohne Kalorienwert</small><strong>{{ quality.incomplete_days.length }}</strong></span>
+        <span><small>{{ t('qualityUi.missingCalories') }}</small><strong>{{ quality.incomplete_days.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon purple"><PhDatabase :size="20" weight="duotone" /></span>
-        <span><small>Importe mit Hinweisen</small><strong>{{ issueImports.length }}</strong></span>
+        <span><small>{{ t('qualityUi.issueImports') }}</small><strong>{{ issueImports.length }}</strong></span>
       </article>
     </section>
 
     <section class="card quality-explainer">
       <span class="quality-explainer-icon"><PhInfo :size="22" weight="fill" /></span>
       <div>
-        <h2>Wann gilt ein Tag als erfasst?</h2>
-        <p>Sobald CaloGraph einen Kalorienwert erhält, wird der Tag als erfasst ausgewertet – unabhängig von der Höhe, deinem Budget, der Zahl der Mahlzeiten oder vorhandenen Makronährstoffen. Niedrige Werte werden nicht als unvollständig interpretiert. Nur Tage ganz ohne Ernährungsdaten oder mit Nährstoffdaten ohne Kalorienwert werden gesondert ausgewiesen.</p>
+        <h2>{{ t('qualityUi.explainerTitle') }}</h2>
+        <p>{{ t('qualityUi.explainerText') }}</p>
       </div>
     </section>
 
     <div class="quality-detail-grid">
       <section class="card quality-detail-card">
         <div class="section-card-header">
-          <div><h2>Datenabdeckung</h2><p>{{ quality.recorded_days }} von {{ quality.total_days }} Kalendertagen enthalten Ernährungsdaten.</p></div>
+          <div><h2>{{ t('qualityUi.coverage') }}</h2><p>{{ t('qualityUi.coverageDescription', { recorded: quality.recorded_days, total: quality.total_days }) }}</p></div>
         </div>
         <div class="quality-detail-content">
           <progress class="metric-progress quality-coverage-progress" :value="quality.coverage_ratio" max="1">
             {{ percent.format(quality.coverage_ratio) }}
           </progress>
           <template v-if="missingRanges.length">
-            <h3>Zeiträume ohne Daten</h3>
+            <h3>{{ t('qualityUi.missingRanges') }}</h3>
             <ul class="quality-date-list">
               <li v-for="range in missingRanges" :key="range">{{ range }}</li>
             </ul>
-            <p class="quality-help">Fehlt hier tatsächlich ein Eintrag, kannst du YAZIO auf der Übersicht manuell synchronisieren. Bewusste Fastentage werden derzeit ebenfalls als „ohne Daten“ angezeigt.</p>
+            <p class="quality-help">{{ t('qualityUi.missingHelp') }}</p>
           </template>
-          <div v-else class="quality-ok"><PhCheckCircle :size="19" weight="fill" /> Keine Datenlücken im ausgewerteten Zeitraum.</div>
+          <div v-else class="quality-ok"><PhCheckCircle :size="19" weight="fill" /> {{ t('qualityUi.noGaps') }}</div>
         </div>
       </section>
 
       <section class="card quality-detail-card">
         <div class="section-card-header">
-          <div><h2>Tage ohne Kalorienwert</h2><p>Hier kamen zwar Ernährungswerte an, aber kein Kalorienwert für die Auswertung.</p></div>
+          <div><h2>{{ t('qualityUi.incompleteTitle') }}</h2><p>{{ t('qualityUi.incompleteDescription') }}</p></div>
         </div>
         <div class="quality-day-list">
           <article v-for="day in quality.incomplete_days" :key="day.date">
             <div><strong>{{ dateLabel(day.date) }}</strong><StatusBadge :status="day.tracking_status" /></div>
             <p>{{ day.tracking_reasons.join(' · ') }}</p>
           </article>
-          <div v-if="!quality.incomplete_days.length" class="quality-ok"><PhCheckCircle :size="19" weight="fill" /> Alle erfassten Ernährungstage enthalten einen Kalorienwert.</div>
+          <div v-if="!quality.incomplete_days.length" class="quality-ok"><PhCheckCircle :size="19" weight="fill" /> {{ t('qualityUi.allComplete') }}</div>
         </div>
       </section>
     </div>
 
     <section class="card table-card">
       <div class="section-card-header">
-        <div><h2>Letzte Importläufe</h2><p>Fehler und unbekannte Typen sind Hinweise auf nicht übernommene Datensätze.</p></div>
+        <div><h2>{{ t('qualityUi.importsTitle') }}</h2><p>{{ t('qualityUi.importsDescription') }}</p></div>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Zeitpunkt</th><th>Quelle</th><th>Status</th><th class="number">Empfangen</th><th class="number">Übernommen</th><th class="number">Fehler</th><th>Hinweis</th></tr></thead>
+          <thead><tr><th>{{ t('qualityUi.timestamp') }}</th><th>{{ t('qualityUi.source') }}</th><th>{{ t('qualityUi.status') }}</th><th class="number">{{ t('qualityUi.received') }}</th><th class="number">{{ t('qualityUi.imported') }}</th><th class="number">{{ t('qualityUi.errors') }}</th><th>{{ t('qualityUi.note') }}</th></tr></thead>
           <tbody>
             <tr v-for="item in quality.imports" :key="item.id">
               <td>{{ formatGermanDateTime(item.started_at) }}</td>
@@ -198,10 +200,10 @@ const issueImports = computed(() =>
               <td class="number">{{ integer.format(item.inserted + item.updated) }}</td>
               <td class="number">{{ integer.format(item.failed) }}</td>
               <td class="quality-import-note">
-                {{ item.error_message || (item.unknown_types.length ? `${item.unknown_types.length} unbekannte Typen` : 'Keine Hinweise') }}
+                {{ item.error_message || (item.unknown_types.length ? t('qualityUi.unknownTypes', { count: item.unknown_types.length }) : t('qualityUi.noNotes')) }}
               </td>
             </tr>
-            <tr v-if="!quality.imports.length"><td colspan="7" class="empty">Noch keine Importläufe vorhanden.</td></tr>
+            <tr v-if="!quality.imports.length"><td colspan="7" class="empty">{{ t('qualityUi.noImports') }}</td></tr>
           </tbody>
         </table>
       </div>

@@ -240,6 +240,7 @@ def test_recovery_issue_requires_admin_reauthentication_and_blocks_self_target(
     )
     assert wrong_password.status_code == 400
     assert wrong_password.json()["detail"] == "Reauthentifizierung fehlgeschlagen"
+    assert wrong_password.json()["type"] == "urn:calograph:problem:admin-reauthentication-failed"
     self_target = client.post(
         f"/api/v1/users/{user.id}/recovery-links",
         headers={"X-CSRF-Token": csrf},
@@ -497,25 +498,30 @@ def test_recovery_completion_is_rate_limited_by_ip_and_hashed_token_key(
     db: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "recovery_ip_rate_limit", 1)
-    first_token = "first-invalid-recovery-token-00000000001"
+    monkeypatch.setattr(settings, "recovery_ip_rate_limit", 100)
+    monkeypatch.setattr(settings, "recovery_rate_limit", 1)
+    token = "same-invalid-recovery-token-00000000001"
+
     first = client.post(
         "/api/v1/auth/recovery/complete",
-        json={"recovery_token": first_token, "new_password": NEW_PASSWORD},
+        json={"recovery_token": token, "new_password": NEW_PASSWORD},
     )
     limited = client.post(
         "/api/v1/auth/recovery/complete",
-        json={
-            "recovery_token": "second-invalid-recovery-token-0000000001",
-            "new_password": NEW_PASSWORD,
-        },
+        json={"recovery_token": token, "new_password": NEW_PASSWORD},
     )
+
     assert first.status_code == 400
     assert limited.status_code == 429
     buckets = list(db.scalars(select(RateLimitBucket)))
     assert buckets
+    assert {bucket.action for bucket in buckets} == {
+        "recovery-complete-ip",
+        "recovery-complete-token",
+    }
     assert all(len(bucket.key_hash) == 64 for bucket in buckets)
-    assert first_token not in repr(buckets)
+    assert token not in repr(buckets)
+
 
 
 def test_authenticator_reset_removes_only_authenticators_and_revokes_credentials(

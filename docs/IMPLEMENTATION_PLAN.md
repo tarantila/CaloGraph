@@ -7,9 +7,9 @@ Activity, hydration, and weight data are deliberately excluded. Apple Health
 is never queried server-side or through iCloud; authorized iPhone exporters
 send data through the import API.
 
-The dashboard currently uses German as its primary interface language. English
-localization and a per-account language preference are planned for a later
-development phase.
+The dashboard supports German and English. Public authentication pages are
+always English; authenticated users can store their dashboard language in the
+**Konto** profile.
 
 ## Architecture
 
@@ -47,8 +47,8 @@ development phase.
 
 ## Scope boundaries
 
-A native iOS app, CSV import, notifications, data export, and interface
-localization are prepared or planned but are not part of the current MVP.
+Full localization beyond the German and English dashboard and English public
+authentication pages is planned but is not part of the current MVP.
 Activity and hydration analytics are intentionally not product goals. Weight
 data is neither imported nor analyzed. Manual and scheduled direct YAZIO
 retrieval are explicitly experimental because they rely on an undocumented
@@ -71,4 +71,4 @@ counts are intentionally not duplicated here. The example installation uses
 `127.0.0.1:8180`.
 
 The project remains work in progress while its public API, migrations,
-localization, and deployment workflow mature toward a stable `1.0` release.
+locale coverage, and deployment workflow mature toward a stable `1.0` release.

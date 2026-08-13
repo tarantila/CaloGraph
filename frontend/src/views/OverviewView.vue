@@ -15,7 +15,7 @@ import {
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import {
   formatGermanDate,
@@ -24,7 +24,10 @@ import {
   isoWeekday,
   shiftIsoDate,
 } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint, ImportBatch, ImportSummary, Target, YazioStatus } from '../types'
+
+const t = i18n.global.t.bind(i18n.global)
 
 interface Summary {
   today: DailyPoint
@@ -43,12 +46,12 @@ interface Summary {
 
 type PeriodValue = 7 | 30 | 60 | 'all'
 
-const periods: ReadonlyArray<{ value: PeriodValue; label: string }> = [
-  { value: 7, label: '7 Tage' },
-  { value: 30, label: '30 Tage' },
-  { value: 60, label: '60 Tage' },
-  { value: 'all', label: 'Alle' },
-]
+const periods = computed((): ReadonlyArray<{ value: PeriodValue; label: string }> => [
+  { value: 7, label: t('overviewUi.period7') },
+  { value: 30, label: t('overviewUi.period30') },
+  { value: 60, label: t('overviewUi.period60') },
+  { value: 'all', label: t('overviewUi.periodAll') },
+])
 const summary = ref<Summary | null>(null)
 const trends = ref<DailyPoint[]>([])
 const targets = ref<Target[]>([])
@@ -62,9 +65,9 @@ const syncFeedback = ref('')
 const syncFailed = ref(false)
 const highlightOverBudget = ref(false)
 
-const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
-const decimal = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
-const percentage = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 })
+const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
+const percentage = createNumberFormatter({ style: 'percent', maximumFractionDigits: 0 })
 
 function addDays(value: string, amount: number) {
   return shiftIsoDate(value, amount)
@@ -95,7 +98,7 @@ async function selectPeriod(value: PeriodValue) {
   try {
     await loadTrends()
   } catch (cause) {
-    error.value = cause instanceof ApiError ? cause.message : 'Zeitraum konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'overviewUi.periodLoadFailed')
   }
 }
 
@@ -117,7 +120,7 @@ onMounted(async () => {
   try {
     await loadDashboard()
   } catch (cause) {
-    error.value = cause instanceof ApiError ? cause.message : 'Dashboard konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'overviewUi.dashboardLoadFailed')
   } finally {
     loading.value = false
   }
@@ -135,7 +138,7 @@ async function syncYazioNow() {
   syncFailed.value = false
   try {
     const result = await api<ImportSummary>('/yazio/sync', { method: 'POST' })
-    syncFeedback.value = `${integer.format(result.inserted)} neu · ${integer.format(result.updated)} aktualisiert · ${integer.format(result.skipped)} unverändert`
+    syncFeedback.value = t('overviewUi.syncCounts', { new: integer.format(result.inserted), updated: integer.format(result.updated), unchanged: integer.format(result.skipped) })
     const [summaryResult, importResult, yazioResult] = await Promise.all([
       api<Summary>('/dashboard/summary'),
       api<ImportBatch[]>('/imports'),
@@ -147,8 +150,7 @@ async function syncYazioNow() {
     await loadTrends()
   } catch (cause) {
     syncFailed.value = true
-    syncFeedback.value =
-      cause instanceof ApiError ? cause.message : 'YAZIO konnte nicht synchronisiert werden.'
+    syncFeedback.value = localizeApiError(cause, 'overviewUi.syncFailed')
   } finally {
     syncingYazio.value = false
   }
@@ -201,10 +203,10 @@ const sevenDayCarbs = computed(() => average(sevenRecordedDays.value.map((point)
 const sevenDayFat = computed(() => average(sevenRecordedDays.value.map((point) => point.fat_g)))
 
 const todayComparison = computed(() => {
-  if (todayCalories.value == null || sevenDayCalories.value == null) return 'Noch kein 7-Tage-Schnitt'
+  if (todayCalories.value == null || sevenDayCalories.value == null) return t('overview.noSevenDayAverage')
   const difference = Math.round(todayCalories.value - sevenDayCalories.value)
-  if (difference === 0) return 'Genau im 7-Tage-Schnitt'
-  return `${integer.format(Math.abs(difference))} kcal ${difference > 0 ? 'über' : 'unter'} 7-Tage-Schnitt`
+  if (difference === 0) return t('overview.exactSevenDayAverage')
+  return `${integer.format(Math.abs(difference))} kcal ${difference > 0 ? t('common.above') : t('common.below')} ${t('overview.sevenDayAverage')}`
 })
 
 const dateHeading = computed(() =>
@@ -212,11 +214,11 @@ const dateHeading = computed(() =>
 )
 
 const rangeLabel = computed(() => {
-  if (!trends.value.length) return 'Keine erfassten Tage'
+  if (!trends.value.length) return t('overviewUi.rangeNoDays')
   const first = formatGermanDayMonth(trends.value[0].date)
   const last = formatGermanDate(trends.value.at(-1)!.date)
   const recordedDays = trends.value.filter(hasNutritionData).length
-  return `${first} – ${last} · ${recordedDays}/${trends.value.length} mit Daten`
+  return t('overviewUi.rangeWithData', { first, last, recorded: recordedDays, total: trends.value.length })
 })
 
 const chartLabelInterval = computed(() =>
@@ -226,39 +228,39 @@ const chartLabelInterval = computed(() =>
 const latestImport = computed(() => imports.value[0] ?? null)
 const sourceLabel = computed(() => {
   if (yazioStatus.value?.configured) return 'YAZIO'
-  if (!latestImport.value) return 'Keine Datenquelle'
-  return latestImport.value.source_type.startsWith('yazio') ? 'YAZIO' : 'Import'
+  if (!latestImport.value) return t('overview.noSource')
+  return latestImport.value.source_type.startsWith('yazio') ? 'YAZIO' : t('overview.imported')
 })
 const lastImportLabel = computed(() => {
   const value =
     yazioStatus.value?.last_success_at ??
     summary.value?.last_import_at ??
     latestImport.value?.finished_at
-  return value ? formatGermanDateTime(value) : 'noch nicht synchronisiert'
+  return value ? formatGermanDateTime(value) : t('overviewUi.notSynced')
 })
 const sourceDescription = computed(() =>
   yazioStatus.value?.last_success_at ||
   summary.value?.last_import_at ||
   latestImport.value?.finished_at
-    ? `Zuletzt synchronisiert: ${lastImportLabel.value}`
-    : 'Noch kein Import vorhanden',
+    ? t('overview.lastSync', { value: lastImportLabel.value })
+    : t('overviewUi.noImport'),
 )
 const syncScheduleLabel = computed(() => {
-  if (yazioStatus.value?.available === false) return 'YAZIO ist auf diesem Server deaktiviert'
-  if (!yazioStatus.value?.configured) return 'Keine persönliche YAZIO-Verbindung eingerichtet'
-  if (!yazioStatus.value.sync_enabled) return 'Automatik pausiert · Zugangsdaten aktualisieren'
+  if (yazioStatus.value?.available === false) return t('overviewUi.serverDisabled')
+  if (!yazioStatus.value?.configured) return t('overviewUi.noConnection')
+  if (!yazioStatus.value.sync_enabled) return t('overviewUi.paused')
   if (['pending', 'running', 'failed'].includes(yazioStatus.value.historical_sync?.state ?? '')) {
-    return 'Historische Synchronisierung läuft im Hintergrund · Details unter Importe'
+    return t('overviewUi.historicalRunning')
   }
   const minutes = yazioStatus.value.sync_interval_minutes
   const interval =
     minutes == null
-      ? 'Automatik eingerichtet'
+      ? t('overviewUi.automatic')
       : minutes % 60 === 0
-        ? `Automatisch alle ${integer.format(minutes / 60)} Std.`
-        : `Automatisch alle ${integer.format(minutes)} Min.`
+        ? t('overviewUi.automaticHours', { value: integer.format(minutes / 60) })
+        : t('overviewUi.automaticMinutes', { value: integer.format(minutes) })
   const days = yazioStatus.value.sync_days
-  return days == null ? interval : `${interval} · letzte ${integer.format(days)} Tage`
+  return days == null ? interval : t('overviewUi.lastDays', { interval, days: integer.format(days) })
 })
 
 const currentWeekPoints = computed(() => {
@@ -304,7 +306,11 @@ const weekWithinBudgetCount = computed(
 const weekBudgetResultLabel = computed(() => {
   const comparedDays = weekBudgetComparisons.value.length
   if (!comparedDays) return '–'
-  return `${integer.format(weekWithinBudgetCount.value)} von ${integer.format(comparedDays)} ${comparedDays === 1 ? 'Tag' : 'Tagen'}`
+  return t('overviewUi.weekResult', {
+    count: integer.format(weekWithinBudgetCount.value),
+    days: integer.format(comparedDays),
+    unit: comparedDays === 1 ? t('overviewUi.day') : t('overviewUi.days'),
+  })
 })
 const elapsedWeekDays = computed(() => {
   if (!summary.value) return 0
@@ -326,20 +332,23 @@ const coverageIsComplete = computed(
 )
 const coverageLabel = computed(() =>
   trends.value.length
-    ? `${integer.format(recordedVisibleDays.value)} von ${integer.format(trends.value.length)} Tagen · ${percentage.format(coverageRatio.value)}`
-    : 'Noch keine Tage im Zeitraum verfügbar',
+    ? `${integer.format(recordedVisibleDays.value)} ${t('common.of')} ${integer.format(trends.value.length)} ${t('common.daysDative')} · ${percentage.format(coverageRatio.value)}`
+    : t('overviewUi.noPeriod'),
 )
 const gapLabel = computed(() => {
-  if (!trends.value.length) return 'Noch kein Zeitraum geladen'
-  if (!missingVisibleDays.value) return 'Keine Datenlücken'
-  return `${integer.format(missingVisibleDays.value)} ${missingVisibleDays.value === 1 ? 'Tag' : 'Tage'} ohne Daten`
+  if (!trends.value.length) return t('overviewUi.noRange')
+  if (!missingVisibleDays.value) return t('overviewUi.noGaps')
+  return t('overviewUi.gapDays', {
+    count: integer.format(missingVisibleDays.value),
+    unit: missingVisibleDays.value === 1 ? t('overviewUi.day') : t('common.days'),
+  })
 })
 const gapDescription = computed(() =>
   !trends.value.length
-    ? 'Nach dem ersten Import werden Datenlücken hier sichtbar'
+    ? t('overviewUi.importFirst')
     : missingVisibleDays.value
-      ? 'Für diese Kalendertage fehlen Ernährungseinträge'
-      : 'Alle Kalendertage im Zeitraum sind erfasst',
+      ? t('overviewUi.gapsDescription')
+      : t('overviewUi.allRecorded'),
 )
 
 const chartText = '#98a5b9'
@@ -376,7 +385,7 @@ const calorieChart = computed<EChartsOption>(() => ({
   legend: {
     top: 0,
     right: 0,
-    data: ['Aufnahme', 'Tagesbudget'],
+    data: [t('overviewUi.intake'), t('overviewUi.budget')],
     textStyle: { color: chartText, fontFamily: 'Inter' },
     itemWidth: 14,
     itemHeight: 8,
@@ -404,7 +413,7 @@ const calorieChart = computed<EChartsOption>(() => ({
   },
   series: [
     {
-      name: 'Aufnahme',
+      name: t('overviewUi.intake'),
       type: 'bar',
       barMaxWidth: 26,
       data: calorieBarData.value,
@@ -412,7 +421,7 @@ const calorieChart = computed<EChartsOption>(() => ({
       emphasis: { itemStyle: { color: '#a78bfa' } },
     },
     {
-      name: 'Tagesbudget',
+      name: t('overviewUi.budget'),
       type: 'line',
       data: trends.value.map((item) => item.target_kcal),
       step: 'middle',
@@ -434,7 +443,7 @@ const macroChart = computed<EChartsOption>(() => ({
   },
   legend: {
     bottom: 0,
-    data: ['Protein', 'Kohlenhydrate', 'Fett'],
+    data: [t('overviewUi.protein'), t('overviewUi.carbs'), t('overviewUi.fat')],
     textStyle: { color: chartText, fontFamily: 'Inter' },
     itemWidth: 12,
     itemHeight: 8,
@@ -462,7 +471,7 @@ const macroChart = computed<EChartsOption>(() => ({
   },
   series: [
     {
-      name: 'Protein',
+      name: t('overviewUi.protein'),
       type: 'bar',
       stack: 'macros',
       barMaxWidth: 26,
@@ -470,7 +479,7 @@ const macroChart = computed<EChartsOption>(() => ({
       itemStyle: { color: '#2dd4bf' },
     },
     {
-      name: 'Kohlenhydrate',
+      name: t('overviewUi.carbs'),
       type: 'bar',
       stack: 'macros',
       barMaxWidth: 26,
@@ -478,7 +487,7 @@ const macroChart = computed<EChartsOption>(() => ({
       itemStyle: { color: '#4f8cff' },
     },
     {
-      name: 'Fett',
+      name: t('overviewUi.fat'),
       type: 'bar',
       stack: 'macros',
       barMaxWidth: 26,
@@ -492,11 +501,11 @@ const macroChart = computed<EChartsOption>(() => ({
 <template>
   <div class="dashboard-heading">
     <div>
-      <h1>Ernährungsüberblick</h1>
+      <h1>{{ t('overview.title') }}</h1>
       <p>{{ dateHeading }}</p>
     </div>
     <div class="dashboard-heading-actions">
-      <div class="period-control" aria-label="Zeitraum auswählen">
+      <div class="period-control" :aria-label="t('overview.selectPeriod')">
         <button
           v-for="period in periods"
           :key="period.value"
@@ -515,37 +524,37 @@ const macroChart = computed<EChartsOption>(() => ({
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
   <div v-else-if="loading" class="dashboard-loading" aria-live="polite">
     <PhArrowsClockwise :size="22" class="spin" aria-hidden="true" />
-    Dashboard wird geladen …
+    {{ t('overviewUi.dashboardLoading') }}
   </div>
   <template v-else-if="summary">
-    <section class="dashboard-stats" aria-label="Kennzahlen">
+    <section class="dashboard-stats" :aria-label="t('overview.stats')">
       <article class="card metric-card">
-        <div class="metric-card-label"><PhFire :size="22" weight="duotone" aria-hidden="true" /><span>Heute</span></div>
+        <div class="metric-card-label"><PhFire :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.today') }}</span></div>
         <div class="metric-card-value">
           {{ todayCalories == null ? '–' : integer.format(todayCalories) }}
-          <small>kcal</small>
+          <small>{{ t('common.kcal') }}</small>
         </div>
         <p :class="{ warning: todayCalories != null }">{{ todayComparison }}</p>
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>Verbleibend</span></div>
+        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.remaining') }}</span></div>
         <div class="metric-card-value">
           {{ caloriesRemaining == null ? '–' : integer.format(Math.max(caloriesRemaining, 0)) }}
-          <small>kcal</small>
+          <small>{{ t('common.kcal') }}</small>
         </div>
-        <p>{{ caloriesRemaining != null && caloriesRemaining < 0 ? `${integer.format(Math.abs(caloriesRemaining))} kcal über Tagesbudget` : 'Für heute verfügbar' }}</p>
+        <p>{{ caloriesRemaining != null && caloriesRemaining < 0 ? t('overviewUi.dailyOverBudget', { value: integer.format(Math.abs(caloriesRemaining)) }) : t('overviewUi.availableToday') }}</p>
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label teal"><PhBarbell :size="22" weight="duotone" aria-hidden="true" /><span>Protein</span></div>
+        <div class="metric-card-label teal"><PhBarbell :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.protein') }}</span></div>
         <div class="metric-card-value compact">
           {{ todayProtein == null ? '–' : decimal.format(todayProtein) }}
-          <small v-if="proteinTarget">/ {{ integer.format(proteinTarget) }} g</small>
-          <small v-else>g</small>
+          <small v-if="proteinTarget">/ {{ integer.format(proteinTarget) }} {{ t('common.grams') }}</small>
+          <small v-else>{{ t('common.grams') }}</small>
         </div>
         <div class="metric-card-progress-label">
-          <span>{{ proteinTarget && todayProtein != null ? `${integer.format(Math.max(proteinTarget - todayProtein, 0))} g bis zum Ziel` : 'Kein Proteinziel' }}</span>
+          <span>{{ proteinTarget && todayProtein != null ? t('overviewUi.proteinToTarget', { value: integer.format(Math.max(proteinTarget - todayProtein, 0)) }) : t('overviewUi.noProteinTarget') }}</span>
           <strong v-if="proteinTarget">{{ percentage.format(proteinProgress) }}</strong>
         </div>
         <progress class="metric-progress protein" :value="proteinProgress" max="1">
@@ -554,25 +563,24 @@ const macroChart = computed<EChartsOption>(() => ({
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>Wochenrest</span></div>
+        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.weekRemaining') }}</span></div>
         <div class="metric-card-value">
           {{ summary.week.remaining_kcal == null ? '–' : integer.format(Math.max(summary.week.remaining_kcal, 0)) }}
-          <small v-if="summary.week.remaining_kcal != null">kcal</small>
+          <small v-if="summary.week.remaining_kcal != null">{{ t('common.kcal') }}</small>
         </div>
-        <p v-if="summary.week.remaining_kcal == null">Noch kein vollständiges Wochenbudget</p>
+        <p v-if="summary.week.remaining_kcal == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
         <p v-else-if="summary.week.remaining_kcal < 0">
-          {{ integer.format(Math.abs(summary.week.remaining_kcal)) }} kcal über Wochenbudget
+          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(summary.week.remaining_kcal)) }) }}
         </p>
         <p v-else>
-          Mo–So · {{ integer.format(summary.week.consumed_kcal) }} von
-          {{ integer.format(summary.week.budget_kcal!) }} kcal
+          {{ t('overviewUi.weekBudget', { consumed: integer.format(summary.week.consumed_kcal), budget: integer.format(summary.week.budget_kcal!) }) }}
         </p>
       </article>
     </section>
 
-    <section class="dashboard-charts" aria-label="Ernährungsverlauf">
+    <section class="dashboard-charts" :aria-label="t('overviewUi.nutritionTrend')">
       <ChartPanel
-        title="Kalorienaufnahme"
+        :title="t('overviewUi.chartCalories')"
         :option="calorieChart"
         :empty="!trends.some((item) => item.calories_kcal != null)"
         :height="318"
@@ -585,38 +593,36 @@ const macroChart = computed<EChartsOption>(() => ({
                 type="checkbox"
                 role="switch"
               />
-              <span>Über Budget hervorheben</span>
+              <span>{{ t('overviewUi.highlightBudget') }}</span>
             </label>
           </div>
         </template>
       </ChartPanel>
       <ChartPanel
-        title="Makronährstoff-Verteilung"
+        :title="t('overviewUi.chartMacros')"
         :option="macroChart"
         :empty="!trends.some((item) => item.protein_g != null || item.carbs_g != null || item.fat_g != null)"
         :height="318"
       >
-        <template #header-actions><span class="chart-range">Gramm pro Tag</span></template>
+        <template #header-actions><span class="chart-range">{{ t('overviewUi.macroRange') }}</span></template>
       </ChartPanel>
     </section>
-
-    <section class="dashboard-bottom-grid" aria-label="Zusammenfassungen">
+    <section class="dashboard-bottom-grid" :aria-label="t('overviewUi.summaries')">
       <article class="card summary-card">
         <div class="summary-card-title">
-          <div><h2>7-Tage-Schnitt</h2><p>{{ sevenRecordedDays.length }} erfasste Tage</p></div>
+          <div><h2>{{ t('overviewUi.sevenDayAverage') }}</h2><p>{{ t('overviewUi.sevenRecorded', { count: sevenRecordedDays.length }) }}</p></div>
           <PhTrendUp :size="22" weight="duotone" aria-hidden="true" />
         </div>
         <div class="average-grid">
-          <div><span>Kalorien</span><strong>{{ sevenDayCalories == null ? '–' : `${integer.format(sevenDayCalories)} kcal` }}</strong></div>
-          <div><span>Protein</span><strong>{{ sevenDayProtein == null ? '–' : `${integer.format(sevenDayProtein)} g` }}</strong></div>
-          <div><span>Kohlenhydrate</span><strong>{{ sevenDayCarbs == null ? '–' : `${integer.format(sevenDayCarbs)} g` }}</strong></div>
-          <div><span>Fett</span><strong>{{ sevenDayFat == null ? '–' : `${integer.format(sevenDayFat)} g` }}</strong></div>
+          <div><span>{{ t('overviewUi.calories') }}</span><strong>{{ sevenDayCalories == null ? '–' : `${integer.format(sevenDayCalories)} ${t('common.kcal')}` }}</strong></div>
+          <div><span>{{ t('overviewUi.protein') }}</span><strong>{{ sevenDayProtein == null ? '–' : `${integer.format(sevenDayProtein)} ${t('common.grams')}` }}</strong></div>
+          <div><span>{{ t('overviewUi.carbs') }}</span><strong>{{ sevenDayCarbs == null ? '–' : `${integer.format(sevenDayCarbs)} ${t('common.grams')}` }}</strong></div>
+          <div><span>{{ t('overviewUi.fat') }}</span><strong>{{ sevenDayFat == null ? '–' : `${integer.format(sevenDayFat)} ${t('common.grams')}` }}</strong></div>
         </div>
       </article>
-
       <article class="card summary-card weekly-summary-card">
         <div class="summary-card-title">
-          <div><h2>Wochenzusammenfassung</h2><p>Laufende Woche</p></div>
+          <div><h2>{{ t('overviewUi.weeklySummary') }}</h2><p>{{ t('overviewUi.runningWeek') }}</p></div>
           <PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" />
         </div>
         <div class="weekly-summary-list">
@@ -624,36 +630,35 @@ const macroChart = computed<EChartsOption>(() => ({
             <span class="weekly-summary-icon calories">
               <PhChartBar :size="18" weight="fill" aria-hidden="true" />
             </span>
-            <span class="weekly-summary-label">Wochenschnitt</span>
-            <strong>{{ weekAverageCalories == null ? '–' : `${integer.format(weekAverageCalories)} kcal` }}</strong>
+            <span class="weekly-summary-label">{{ t('overviewUi.weekAverage') }}</span>
+            <strong>{{ weekAverageCalories == null ? '–' : `${integer.format(weekAverageCalories)} ${t('common.kcal')}` }}</strong>
           </div>
           <div>
             <span class="weekly-summary-icon protein">
               <PhBarbell :size="18" weight="fill" aria-hidden="true" />
             </span>
-            <span class="weekly-summary-label">Protein im Schnitt</span>
-            <strong>{{ weekAverageProtein == null ? '–' : `${integer.format(weekAverageProtein)} g` }}</strong>
+            <span class="weekly-summary-label">{{ t('overviewUi.proteinAverage') }}</span>
+            <strong>{{ weekAverageProtein == null ? '–' : `${integer.format(weekAverageProtein)} ${t('common.grams')}` }}</strong>
           </div>
           <div>
             <span class="weekly-summary-icon target">
               <PhTarget :size="18" weight="duotone" aria-hidden="true" />
             </span>
-            <span class="weekly-summary-label">Kalorienbudget eingehalten</span>
+            <span class="weekly-summary-label">{{ t('overviewUi.budgetKept') }}</span>
             <strong>{{ weekBudgetResultLabel }}</strong>
           </div>
           <div>
             <span class="weekly-summary-icon recorded">
               <PhCheck :size="19" weight="bold" aria-hidden="true" />
             </span>
-            <span class="weekly-summary-label">Daten erfasst</span>
-            <strong>{{ recordedWeekPoints.length }} von {{ elapsedWeekDays }} Tagen</strong>
+            <span class="weekly-summary-label">{{ t('overviewUi.recorded') }}</span>
+            <strong>{{ recordedWeekPoints.length }} {{ t('common.of') }} {{ elapsedWeekDays }} {{ t('common.daysDative') }}</strong>
           </div>
         </div>
       </article>
-
       <article class="card summary-card quality-card">
         <div class="summary-card-title">
-          <div><h2>Datenstatus</h2><p>Gewählter Zeitraum</p></div>
+          <div><h2>{{ t('overviewUi.dataStatus') }}</h2><p>{{ t('overviewUi.selectedPeriod') }}</p></div>
           <PhDatabase :size="22" weight="duotone" aria-hidden="true" />
         </div>
         <div class="quality-list">
@@ -663,7 +668,7 @@ const macroChart = computed<EChartsOption>(() => ({
               <PhWarningCircle v-else :size="19" weight="fill" aria-hidden="true" />
             </span>
             <span>
-              <strong>Datenabdeckung</strong>
+              <strong>{{ t('overviewUi.coverage') }}</strong>
               <small>{{ coverageLabel }}</small>
               <progress class="metric-progress data-coverage" :value="coverageRatio" max="1">
                 {{ percentage.format(coverageRatio) }}
@@ -696,7 +701,7 @@ const macroChart = computed<EChartsOption>(() => ({
               :class="{ spin: syncingYazio }"
               aria-hidden="true"
             />
-            {{ syncingYazio ? 'Synchronisiere …' : 'Jetzt synchronisieren' }}
+            {{ syncingYazio ? t('overviewUi.syncing') : t('overviewUi.syncNow') }}
           </button>
           <small>{{ syncScheduleLabel }}</small>
           <p

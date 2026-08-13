@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Never
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,14 @@ from app.models import (
     UserInvitation,
     UserSession,
     UserTotpCredential,
+)
+from app.problem_types import (
+    INVALID_CREDENTIALS,
+    INVALID_INVITATION,
+    INVALID_MFA,
+    USERNAME_TAKEN,
+    VALIDATION_ERROR,
+    ProblemHTTPException,
 )
 from app.schemas import (
     AccountRecoveryCompleteRequest,
@@ -211,10 +219,12 @@ def exchange_invitation(
         .with_for_update()
     )
     if invitation is None:
-        from fastapi import HTTPException
-
         log_security_event("auth.invitation.rejected", reason="invalid_or_expired")
-        raise HTTPException(status_code=400, detail="Einladung ist ungültig oder abgelaufen")
+        raise ProblemHTTPException(
+            status_code=400,
+            detail="Einladung ist ungültig oder abgelaufen",
+            problem_type=INVALID_INVITATION,
+        )
     invitation.token_hash = hash_invitation_token(f"exchanged_{secrets.token_urlsafe(40)}")
     db.commit()
     _set_registration_cookie(response, invitation)
@@ -281,12 +291,17 @@ def complete_recovery(
             settings.recovery_rate_limit,
             settings.recovery_rate_limit_window_seconds,
         )
-        raise HTTPException(
+        raise ProblemHTTPException(
             status_code=400,
             detail="Recovery-Token ist ungültig oder abgelaufen",
+            problem_type=INVALID_INVITATION,
         ) from None
     except PasswordPolicyError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise ProblemHTTPException(
+            status_code=422,
+            detail=str(exc),
+            problem_type=VALIDATION_ERROR,
+        ) from None
     clear_rate_limit(db, "recovery-complete-ip", ip_key)
     clear_rate_limit(db, "recovery-complete-token", token_key)
 
@@ -303,19 +318,25 @@ def register(
     now = datetime.now(UTC)
     invitation = _active_invitation_from_state(request, db, now, for_update=True)
     if invitation is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=400, detail="Einladung ist ungültig oder abgelaufen")
+        raise ProblemHTTPException(
+            status_code=400,
+            detail="Einladung ist ungültig oder abgelaufen",
+            problem_type=INVALID_INVITATION,
+        )
     if db.scalar(select(User.id).where(User.username == payload.username)):
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=409, detail="Benutzername ist bereits vergeben")
+        raise ProblemHTTPException(
+            status_code=409,
+            detail="Benutzername ist bereits vergeben",
+            problem_type=USERNAME_TAKEN,
+        )
     try:
         validate_new_password(payload.password, payload.username)
     except PasswordPolicyError as exc:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise ProblemHTTPException(
+            status_code=422,
+            detail=str(exc),
+            problem_type=VALIDATION_ERROR,
+        ) from None
     user = User(
         username=payload.username,
         password_hash=hash_password(payload.password),
@@ -389,11 +410,12 @@ def login(
         "csrf_token": csrf_token,
     }
 
-
 def raise_invalid_login() -> Never:
-    from fastapi import HTTPException
-
-    raise HTTPException(status_code=401, detail="Benutzername oder Passwort ist falsch")
+    raise ProblemHTTPException(
+        status_code=401,
+        detail="Benutzername oder Passwort ist falsch",
+        problem_type=INVALID_CREDENTIALS,
+    )
 
 
 def _reject_mfa_login(
@@ -421,7 +443,11 @@ def _reject_mfa_login(
     if rate_limit_error:
         raise rate_limit_error
     _log_login(request, "mfa_failed", client_key, account_key)
-    raise_invalid_login()
+    raise ProblemHTTPException(
+        status_code=401,
+        detail="Benutzername oder Passwort ist falsch",
+        problem_type=INVALID_MFA,
+    )
 
 
 @router.post("/passkey/options", response_model=WebAuthnOptionsResponse)
@@ -474,7 +500,7 @@ def verify_passkey_login(
             )
             clear_rate_limit(db, "passkey-verify-ip", client_key)
             session, raw_token, csrf_token = create_session(db, user)
-    except PasskeyAuthenticationError, InactiveUserOperation:
+    except (PasskeyAuthenticationError, InactiveUserOperation):
         check_rate_limit(
             db,
             "passkey-verify-ip",

@@ -8,12 +8,15 @@ import {
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import DateFilter from '../components/DateFilter.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { DailyPoint } from '../types'
+
+const t = i18n.global.t.bind(i18n.global)
 
 const route = useRoute()
 const router = useRouter()
@@ -27,7 +30,7 @@ const weekday = ref(String(route.query.weekday ?? ''))
 const points = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
-const number = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
+const number = createNumberFormatter({ maximumFractionDigits: 1 })
 
 function numericValue(value: number | null | undefined) {
   if (value == null) return null
@@ -46,7 +49,7 @@ async function load() {
     if (weekday.value) params.set('weekday', weekday.value)
     points.value = await api<DailyPoint[]>(`/analytics/daily?${params}`)
   } catch (cause) {
-    error.value = cause instanceof ApiError ? cause.message : 'Tageswerte konnten nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -68,49 +71,54 @@ const averageCalories = computed(() => {
 const missingPoints = computed(() =>
   points.value.filter((point) => point.tracking_status === 'no_data'),
 )
+const weekdays = computed(() =>
+  ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((key) =>
+    t(`weekdays.${key}`),
+  ),
+)
 </script>
 
 <template>
   <div class="page-heading">
-    <div><h1>Tagesverlauf</h1><p>Aufnahme und Makronährstoffe für jeden Kalendertag.</p></div>
+    <div><h1>{{ t('daily.title') }}</h1><p>{{ t('daily.description') }}</p></div>
     <DateFilter v-model:start="start" v-model:end="end" @apply="load" />
   </div>
-  <section class="card filter-panel" aria-label="Tageswerte filtern">
+  <section class="card filter-panel" :aria-label="t('daily.filterAria')">
     <div class="filters">
-      <label class="field">Datenquelle<input v-model="source" placeholder="Alle Quellen" /></label>
-      <label class="field">Datenstatus<select v-model="tracking"><option value="">Alle</option><option value="complete,probably_complete">Mit Kalorienwert</option><option value="probably_incomplete,incomplete">Ohne Kalorienwert</option><option value="no_data">Keine Ernährungsdaten</option></select></label>
-      <label class="field">Wochentag<select v-model="weekday"><option value="">Alle</option><option v-for="(label, index) in ['Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag','Sonntag']" :key="label" :value="String(index)">{{ label }}</option></select></label>
-      <button class="button secondary" type="button" @click="load">Filter anwenden</button>
+      <label class="field">{{ t('daily.dataSource') }}<input v-model="source" :placeholder="t('daily.allSources')" /></label>
+      <label class="field">{{ t('daily.dataStatus') }}<select v-model="tracking"><option value="">{{ t('common.all') }}</option><option value="complete,probably_complete">{{ t('daily.withCalories') }}</option><option value="probably_incomplete,incomplete">{{ t('daily.withoutCalories') }}</option><option value="no_data">{{ t('daily.noNutrition') }}</option></select></label>
+      <label class="field">{{ t('daily.weekday') }}<select v-model="weekday"><option value="">{{ t('common.all') }}</option><option v-for="(label, index) in weekdays" :key="label" :value="String(index)">{{ label }}</option></select></label>
+      <button class="button secondary" type="button" @click="load">{{ t('common.apply') }}</button>
     </div>
   </section>
   <div v-if="error" class="card error">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Tageswerte werden geladen …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('daily.loading') }}</div>
   <template v-else>
-    <section class="insight-strip" aria-label="Tageskennzahlen">
+    <section class="insight-strip" :aria-label="t('daily.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>Tage im Zeitraum</small><strong>{{ points.length }}</strong></span>
+        <span><small>{{ t('daily.daysInPeriod') }}</small><strong>{{ points.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhFire :size="20" weight="duotone" /></span>
-        <span><small>Ø Kalorien</small><strong>{{ averageCalories == null ? '–' : `${number.format(averageCalories)} kcal` }}</strong></span>
+        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : `${number.format(averageCalories)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhCheckCircle :size="20" weight="duotone" /></span>
-        <span><small>Mit Kalorienwert</small><strong>{{ recordedPoints.length }}</strong></span>
+        <span><small>{{ t('daily.withCalories') }}</small><strong>{{ recordedPoints.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhWarningCircle :size="20" weight="duotone" /></span>
-        <span><small>Ohne Daten</small><strong>{{ missingPoints.length }}</strong></span>
+        <span><small>{{ t('daily.noNutrition') }}</small><strong>{{ missingPoints.length }}</strong></span>
       </article>
     </section>
     <section class="card table-card daily-table">
       <div class="section-card-header">
-        <div><h2>Einzelne Tage</h2><p>Fehlende Werte bleiben bewusst leer und werden nicht als null gerechnet.</p></div>
+        <div><h2>{{ t('daily.individualDays') }}</h2><p>{{ t('daily.missingEmpty') }}</p></div>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Datum</th><th>Status</th><th class="number">Kalorien</th><th class="number">Abweichung</th><th class="number">Protein</th><th class="number">Kohlenhydrate</th><th class="number">Fett</th></tr></thead>
+          <thead><tr><th>{{ t('common.date') }}</th><th>{{ t('common.status') }}</th><th class="number">{{ t('charts.calories') }}</th><th class="number">{{ t('common.deviation') }}</th><th class="number">{{ t('charts.protein') }}</th><th class="number">{{ t('charts.carbs') }}</th><th class="number">{{ t('charts.fat') }}</th></tr></thead>
           <tbody>
             <tr v-for="point in points" :key="point.date">
               <td>{{ formatGermanDate(point.date) }}</td>
@@ -121,7 +129,7 @@ const missingPoints = computed(() =>
               <td class="number">{{ display(point.carbs_g, ' g') }}</td>
               <td class="number">{{ display(point.fat_g, ' g') }}</td>
             </tr>
-            <tr v-if="!points.length"><td colspan="7" class="empty">Keine Tage im gewählten Zeitraum.</td></tr>
+            <tr v-if="!points.length"><td colspan="7" class="empty">{{ t('daily.noDays') }}</td></tr>
           </tbody>
         </table>
       </div>

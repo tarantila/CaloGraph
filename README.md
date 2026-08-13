@@ -417,8 +417,9 @@ README banner derived from these originals.
 
 ## Current limitations and roadmap
 
-- The dashboard UI is currently German. English localization and a per-account
-  language preference are planned, but not implemented yet.
+- The dashboard supports German and English. Public authentication pages are
+  always English; authenticated users can store their dashboard language in
+  the **Konto** profile.
 - No native iOS app and no access to a supposed Apple Health cloud API.
 - Scheduled YAZIO sync uses an undocumented interface and may break after
   changes made by YAZIO.

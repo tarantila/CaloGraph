@@ -9,9 +9,11 @@ vi.mock('../src/api', () => ({
       super(message)
     }
   },
+  localizeApiError: () => 'Benutzeraktion konnte nicht abgeschlossen werden.',
 }))
 
 import UserManagement from '../src/components/UserManagement.vue'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 import { ApiError } from '../src/api'
 import type { User } from '../src/types'
 
@@ -70,12 +72,12 @@ function buttonNamed(wrapper: VueWrapper, name: string) {
 describe('UserManagement', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    setLocale(DEFAULT_LOCALE)
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     })
   })
-
   it('shows lifecycle state and never offers actions for the current administrator', () => {
     const wrapper = mountManagement()
 
@@ -117,7 +119,7 @@ describe('UserManagement', () => {
     await flushPromises()
 
     expect(wrapper.get('.action-dialog').text()).toContain(
-      'Für dieses Konto läuft bereits eine Benutzeroperation.',
+      'Benutzeraktion konnte nicht abgeschlossen werden.',
     )
     expect(wrapper.get('.action-dialog').attributes('role')).toBe('dialog')
     expect(wrapper.emitted('refresh')).toBeUndefined()

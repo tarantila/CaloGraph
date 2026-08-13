@@ -8,16 +8,18 @@ import {
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import { formatGermanDate, formatGermanDayMonth } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint } from '../types'
 
+const t = i18n.global.t.bind(i18n.global)
 const points = ref<DailyPoint[]>([])
 const loading = ref(true)
 const error = ref('')
-const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
-const decimal = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 1 })
+const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
 
 async function load() {
   loading.value = true
@@ -25,8 +27,7 @@ async function load() {
   try {
     points.value = (await api<{ points: DailyPoint[] }>('/analytics/trends')).points
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? cause.message : 'Trenddaten konnten nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -41,7 +42,7 @@ const latestSevenDayAverage = computed(() =>
   [...points.value].reverse().find((item) => item.average_7d != null)?.average_7d ?? null,
 )
 const rangeLabel = computed(() => {
-  if (!points.value.length) return 'Keine Daten'
+  if (!points.value.length) return t('common.noData')
   const first = formatGermanDayMonth(points.value[0].date)
   const last = formatGermanDate(points.value.at(-1)!.date)
   return `${first} – ${last}`
@@ -60,11 +61,11 @@ const splitLine = { lineStyle: { color: '#263449', type: 'dashed' as const } }
 
 const calorieOption = computed<EChartsOption>(() => ({
   animationDuration: 500,
-  tooltip: { ...tooltip, valueFormatter: (value) => `${integer.format(Number(value))} kcal` },
+  tooltip: { ...tooltip, valueFormatter: (value) => `${integer.format(Number(value))} ${t('common.kcal')}` },
   legend: {
     top: 0,
     right: 0,
-    data: ['Kalorien', '7 Tage', '14 Tage', '28 Tage', 'Tagesbudget'],
+    data: [t('charts.calories'), t('trends.average7'), t('trends.average14'), t('trends.average28'), t('charts.dailyBudget')],
     textStyle: legendText,
     itemWidth: 14,
     itemHeight: 8,
@@ -77,44 +78,38 @@ const calorieOption = computed<EChartsOption>(() => ({
     axisTick: { show: false },
     axisLabel: { ...axisLabel, hideOverlap: true },
   },
-  yAxis: {
-    type: 'value',
-    name: 'kcal',
-    nameTextStyle: axisLabel,
-    axisLabel,
-    splitLine,
-  },
+  yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel, splitLine },
   series: [
     {
-      name: 'Kalorien',
+      name: t('charts.calories'),
       type: 'bar',
       barMaxWidth: 24,
       data: points.value.map((item) => item.calories_kcal),
       itemStyle: { color: '#8b5cf6', borderRadius: [4, 4, 0, 0] },
     },
     {
-      name: '7 Tage',
+      name: t('trends.average7'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.average_7d),
       lineStyle: { color: '#2dd4bf', width: 3 },
     },
     {
-      name: '14 Tage',
+      name: t('trends.average14'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.average_14d),
       lineStyle: { color: '#5b8ff9', width: 2 },
     },
     {
-      name: '28 Tage',
+      name: t('trends.average28'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.average_28d),
       lineStyle: { color: '#d19bff', width: 2 },
     },
     {
-      name: 'Tagesbudget',
+      name: t('charts.dailyBudget'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.target_kcal),
@@ -126,11 +121,11 @@ const calorieOption = computed<EChartsOption>(() => ({
 
 const nutritionOption = computed<EChartsOption>(() => ({
   animationDuration: 500,
-  tooltip: { ...tooltip, valueFormatter: (value) => `${decimal.format(Number(value))} g` },
+  tooltip: { ...tooltip, valueFormatter: (value) => `${decimal.format(Number(value))} ${t('common.grams')}` },
   legend: {
     top: 0,
     right: 0,
-    data: ['Protein', 'Kohlenhydrate', 'Fett'],
+    data: [t('charts.protein'), t('charts.carbs'), t('charts.fat')],
     textStyle: legendText,
   },
   grid: { left: 58, right: 18, top: 48, bottom: 38 },
@@ -141,24 +136,24 @@ const nutritionOption = computed<EChartsOption>(() => ({
     axisTick: { show: false },
     axisLabel: { ...axisLabel, hideOverlap: true },
   },
-  yAxis: { type: 'value', name: 'g', nameTextStyle: axisLabel, axisLabel, splitLine },
+  yAxis: { type: 'value', name: t('common.grams'), nameTextStyle: axisLabel, axisLabel, splitLine },
   series: [
     {
-      name: 'Protein',
+      name: t('charts.protein'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.protein_g),
       lineStyle: { color: '#2dd4bf', width: 2 },
     },
     {
-      name: 'Kohlenhydrate',
+      name: t('charts.carbs'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.carbs_g),
       lineStyle: { color: '#f6ad35', width: 2 },
     },
     {
-      name: 'Fett',
+      name: t('charts.fat'),
       type: 'line',
       showSymbol: false,
       data: points.value.map((item) => item.fat_g),
@@ -170,35 +165,33 @@ const nutritionOption = computed<EChartsOption>(() => ({
 
 <template>
   <div class="page-heading">
-    <div><h1>Trends</h1><p>Gleitende Mittelwerte zeigen die Entwicklung, ohne Datenlücken als null zu behandeln.</p></div>
+    <div><h1>{{ t('trends.title') }}</h1><p>{{ t('trends.description') }}</p></div>
   </div>
-
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Trends werden berechnet …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('trends.loading') }}</div>
   <template v-else>
-    <section class="insight-strip" aria-label="Trendkennzahlen">
+    <section class="insight-strip" :aria-label="t('trends.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhTrendUp :size="20" weight="duotone" /></span>
-        <span><small>7-Tage-Schnitt</small><strong>{{ latestSevenDayAverage == null ? '–' : `${integer.format(latestSevenDayAverage)} kcal` }}</strong></span>
+        <span><small>{{ t('trends.average7') }}</small><strong>{{ latestSevenDayAverage == null ? '–' : `${integer.format(latestSevenDayAverage)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>Letzter erfasster Tag</small><strong>{{ latestNutrition?.calories_kcal == null ? '–' : `${integer.format(latestNutrition.calories_kcal)} kcal` }}</strong></span>
+        <span><small>{{ t('trends.latestDay') }}</small><strong>{{ latestNutrition?.calories_kcal == null ? '–' : `${integer.format(latestNutrition.calories_kcal)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhBarbell :size="20" weight="duotone" /></span>
-        <span><small>Protein am letzten Tag</small><strong>{{ latestNutrition?.protein_g == null ? '–' : `${decimal.format(latestNutrition.protein_g)} g` }}</strong></span>
+        <span><small>{{ t('trends.latestProtein') }}</small><strong>{{ latestNutrition?.protein_g == null ? '–' : `${decimal.format(latestNutrition.protein_g)} g` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>Datenbasis</small><strong>{{ recordedDays }} von {{ points.length }} Tagen</strong></span>
+        <span><small>{{ t('trends.dataBasis') }}</small><strong>{{ t('trends.recordedDays', { recorded: recordedDays, total: points.length }) }}</strong></span>
       </article>
     </section>
-
     <div class="trend-chart-grid">
       <ChartPanel
         class="trend-chart-wide"
-        title="Kalorien und gleitende Mittelwerte"
+        :title="t('trends.caloriesChart')"
         :option="calorieOption"
         :empty="!points.some((item) => item.calories_kcal != null)"
         :height="350"
@@ -207,7 +200,7 @@ const nutritionOption = computed<EChartsOption>(() => ({
       </ChartPanel>
       <ChartPanel
         class="trend-chart-wide"
-        title="Makronährstoffe"
+        :title="t('trends.macroChart')"
         :option="nutritionOption"
         :empty="!points.some((item) => item.protein_g != null || item.carbs_g != null || item.fat_g != null)"
         :height="310"

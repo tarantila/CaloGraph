@@ -1,20 +1,27 @@
 import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({
   api: apiMock,
   ApiError: class ApiError extends Error {},
+  localizeApiError: () => 'The request could not be processed.',
 }))
 
 import RegisterView from '../src/views/RegisterView.vue'
+import { DEFAULT_LOCALE, PUBLIC_LOCALE, setLocale } from '../src/i18n'
 
 describe('RegisterView', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    setLocale(PUBLIC_LOCALE)
     window.history.replaceState({}, '', '/')
+  })
+
+  afterEach(() => {
+    setLocale(DEFAULT_LOCALE)
   })
 
   it('scrubs the raw token, exchanges it, and registers with the cookie state', async () => {
@@ -36,11 +43,13 @@ describe('RegisterView', () => {
     await flushPromises()
 
     expect(window.location.hash).toBe('')
+    expect(document.documentElement.lang).toBe('en')
+    expect(wrapper.text()).toContain('Use a long, hard-to-guess passphrase')
+    expect(wrapper.find('.language-switcher').exists()).toBe(false)
     expect(apiMock).toHaveBeenCalledWith('/auth/invitation/exchange', {
       method: 'POST',
       body: JSON.stringify({ token: 'invite_secret' }),
     })
-    expect(wrapper.text()).toContain('lange, schwer erratbare Passphrase')
     await wrapper.get('input[autocomplete="username"]').setValue('friend')
     await wrapper.get('input[autocomplete="new-password"]').setValue('friend-password-is-long')
     await wrapper
@@ -62,6 +71,7 @@ describe('RegisterView', () => {
     })
     wrapper.unmount()
   })
+
 
   it('resumes registration from a valid short-lived cookie state', async () => {
     apiMock.mockResolvedValue({ valid: true })

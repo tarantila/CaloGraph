@@ -22,10 +22,12 @@
     "echarts": "6.1.0",
     "pinia": "4.0.2",
     "vue": "3.5.41",
+    "vue-i18n": "10.0.8",
     "vue-router": "5.2.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
+    "@intlify/devtools-types": "^10.0.8",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.13.3",
     "@vitejs/plugin-vue": "6.0.8",

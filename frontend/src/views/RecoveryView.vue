@@ -2,8 +2,10 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { api, ApiError } from '../api'
+import { api, ApiError, localizeApiError } from '../api'
+import { i18n } from '../i18n'
 const router = useRouter()
+const t = i18n.global.t.bind(i18n.global)
 
 
 const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
@@ -36,7 +38,7 @@ async function submit() {
   retryAfterSeconds.value = null
   error.value = ''
   if (newPassword.value !== passwordRepeat.value) {
-    error.value = 'Die Passwörter stimmen nicht überein.'
+    error.value = t('auth.passwordMismatch')
     return
   }
   submitting.value = true
@@ -54,14 +56,19 @@ async function submit() {
     success.value = true
   } catch (cause) {
     if (cause instanceof ApiError) {
-      error.value = cause.message
+      error.value = localizeApiError(cause, 'errors.generic', {
+        problemTypeFallbacks: {
+          'urn:calograph:problem:invalid-invitation': 'auth.recoveryTokenInvalid',
+          'urn:calograph:problem:validation-error': 'auth.passwordPolicy',
+        },
+      })
       const retryAfter = Number(cause.retryAfter)
       retryAfterSeconds.value =
         cause.status === 429 && Number.isFinite(retryAfter) && retryAfter > 0
           ? Math.ceil(retryAfter)
           : null
     } else {
-      error.value = 'Das Passwort konnte nicht zurückgesetzt werden.'
+      error.value = t('errors.generic')
     }
   } finally {
     submitting.value = false
@@ -73,17 +80,17 @@ async function submit() {
   <main class="login-page">
     <section class="card login-card" aria-labelledby="recovery-title">
       <img class="login-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
-      <h1 id="recovery-title">Kontozugang wiederherstellen</h1>
+      <h1 id="recovery-title">{{ t('auth.recoveryTitle') }}</h1>
 
       <div v-if="success" class="login-success" role="status">
-        <strong>Passwort wurde geändert.</strong>
-        <p>Das Konto bleibt deaktiviert. Ein Administrator muss es reaktivieren, bevor du dich anmelden kannst.</p>
-        <RouterLink class="button" :to="{ name: 'login' }">Zur Anmeldung</RouterLink>
+        <strong>{{ t('auth.passwordChanged') }}</strong>
+        <p>{{ t('auth.recoveryDisabled') }}</p>
+        <RouterLink class="button" :to="{ name: 'login' }">{{ t('auth.toLogin') }}</RouterLink>
       </div>
 
       <form v-else @submit.prevent="submit">
         <label class="field">
-          Recovery-Token
+          {{ t('auth.recoveryToken') }}
           <input
             v-model="recoveryToken"
             type="password"
@@ -91,22 +98,22 @@ async function submit() {
             required
           />
         </label>
-        <p v-if="receivedFromFragment" class="muted">Der Token wurde sicher aus dem Link übernommen und aus der Browseradresse entfernt.</p>
+        <p v-if="receivedFromFragment" class="muted">{{ t('auth.tokenRemoved') }}</p>
         <label class="field">
-          Neues Passwort
+          {{ t('auth.newPassword') }}
           <input v-model="newPassword" type="password" minlength="15" autocomplete="new-password" required />
         </label>
         <label class="field">
-          Neues Passwort wiederholen
+          {{ t('auth.repeatNewPassword') }}
           <input v-model="passwordRepeat" type="password" minlength="15" autocomplete="new-password" required />
         </label>
-        <p class="muted">Mindestens 15 Zeichen. Verwende eine lange, schwer erratbare Passphrase oder einen Passwortmanager.</p>
+        <p class="muted">{{ t('auth.passwordHint') }}</p>
         <div v-if="error" class="error" role="alert">{{ error }}</div>
         <p v-if="retryAfterSeconds" class="muted" role="status">
-          Erneut versuchen in {{ retryAfterSeconds }} Sekunden.
+          {{ t('auth.retryIn', { seconds: retryAfterSeconds }) }}
         </p>
         <button class="button login-submit" type="submit" :disabled="submitting">
-          {{ submitting ? 'Passwort wird geändert …' : 'Passwort ändern' }}
+          {{ submitting ? t('auth.passwordChanging') : t('auth.changePassword') }}
         </button>
       </form>
     </section>

@@ -2,11 +2,21 @@ export interface WebAuthnOptionsResponse {
   challenge_id: string
   public_key: Record<string, unknown>
 }
-
 export type WebAuthnCredentialJSON =
   | AuthenticationResponseJSON
   | RegistrationResponseJSON
 
+export type WebAuthnErrorCode =
+  | 'creation-cancelled'
+  | 'authentication-cancelled'
+  | 'unsupported'
+  | 'unknown-response'
+
+export class WebAuthnError extends Error {
+  constructor(public code: WebAuthnErrorCode) {
+    super(code)
+  }
+}
 interface PublicKeyCredentialConstructorWithParsers {
   parseCreationOptionsFromJSON?: (
     options: Record<string, unknown>,
@@ -33,7 +43,7 @@ export async function createPasskey(
     publicKey: parseCreationOptions(options),
   })
   if (!(credential instanceof PublicKeyCredential)) {
-    throw new Error('Passkey-Erstellung wurde abgebrochen.')
+    throw new WebAuthnError('creation-cancelled')
   }
   return credentialToJSON(credential)
 }
@@ -46,14 +56,14 @@ export async function authenticateWithPasskey(
     publicKey: parseRequestOptions(options),
   })
   if (!(credential instanceof PublicKeyCredential)) {
-    throw new Error('Passkey-Anmeldung wurde abgebrochen.')
+    throw new WebAuthnError('authentication-cancelled')
   }
   return credentialToJSON(credential)
 }
 
 function requirePasskeySupport(): void {
   if (!isPasskeySupported()) {
-    throw new Error('Passkeys werden von diesem Browser oder dieser Verbindung nicht unterstützt.')
+    throw new WebAuthnError('unsupported')
   }
 }
 
@@ -144,7 +154,7 @@ function credentialToJSON(
       },
     } as AuthenticationResponseJSON
   }
-  throw new Error('Der Browser hat eine unbekannte Passkey-Antwort geliefert.')
+  throw new WebAuthnError('unknown-response')
 }
 
 function decodeBase64url(value: string): ArrayBuffer {

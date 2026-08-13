@@ -209,8 +209,21 @@ remains the independent fallback path.
 
 ## Interface language
 
-The dashboard currently uses German for every account. The data model already
-stores a language preference, but the application must not expose an English
-option until all navigation, forms, validation messages, charts, and
-accessibility labels are translated consistently. A per-account German/English
-selector is planned as a later internationalization phase.
+The public authentication pages are always English. This includes sign-in,
+MFA, passkey sign-in, invitation registration, and account recovery. The
+authenticated dashboard supports German and English; newly registered
+accounts use German until an account language is selected.
+
+After login, MFA completion, passkey sign-in, or session restoration, the
+authenticated account preference becomes active. The language selector in the
+**Konto** profile form persists a changed preference to the account and updates
+the current page immediately. There is no public-page language selector and no
+language selector in the global navigation. Logout and expired sessions return
+to the English public authentication locale.
+
+The frontend uses the selected authenticated locale for interface text, dates,
+numbers, validation messages, chart labels, and accessibility labels. API
+responses use stable problem-type identifiers; known authorization, lifecycle,
+rate-limit, passkey, and password-policy failures are mapped to localized
+messages. Context-specific legacy responses retain only their safe
+server-provided detail when no stable problem type exists.

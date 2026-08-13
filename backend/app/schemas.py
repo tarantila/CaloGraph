@@ -212,7 +212,6 @@ class RegistrationRequest(BaseModel):
     )
     password: str = Field(min_length=1, max_length=1024)
 
-
 class InvitationExchangeRequest(BaseModel):
     token: str = Field(min_length=20, max_length=512)
 
@@ -383,9 +382,10 @@ class TargetResponse(TargetInput):
 
 
 class ProfileUpdate(BaseModel):
-    timezone: str = Field(min_length=1, max_length=64)
-    week_starts_on: int = Field(ge=0, le=6)
-    raw_payload_retention_days: int = Field(default=0, ge=0, le=3650)
+    language: Literal["de", "en"] | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+    week_starts_on: int | None = Field(default=None, ge=0, le=6)
+    raw_payload_retention_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class TrackingQualityInput(BaseModel):

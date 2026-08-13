@@ -1,8 +1,17 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { nextTick } from 'vue'
 
 import DateInput from '../src/components/DateInput.vue'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 
+beforeEach(() => {
+  setLocale(DEFAULT_LOCALE)
+})
+
+afterEach(() => {
+  setLocale(DEFAULT_LOCALE)
+})
 describe('DateInput', () => {
   it('shows German dates and emits ISO values for valid manual input', async () => {
     const wrapper = mount(DateInput, { props: { modelValue: '2026-08-11' } })
@@ -13,6 +22,14 @@ describe('DateInput', () => {
 
     expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['2026-07-03'])
     expect(textInput.element.validationMessage).toBe('')
+  })
+  it('reformats the current value when the locale changes', async () => {
+    const wrapper = mount(DateInput, { props: { modelValue: '2026-08-11' } })
+
+    setLocale('en')
+    await nextTick()
+
+    expect(wrapper.get<HTMLInputElement>('input[type="text"]').element.value).toBe('11/08/2026')
   })
 
   it('rejects impossible manual dates without emitting a changed value', async () => {

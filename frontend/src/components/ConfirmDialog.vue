@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { i18n } from '../i18n'
+
 const props = defineProps<{
   open: boolean
   title: string
@@ -11,11 +13,8 @@ const props = defineProps<{
   error?: string
 }>()
 
-const emit = defineEmits<{
-  confirm: []
-  close: []
-}>()
-
+const t = i18n.global.t.bind(i18n.global)
+const emit = defineEmits<{ confirm: []; close: [] }>()
 const dialog = ref<HTMLElement | null>(null)
 const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
 
@@ -46,7 +45,7 @@ onBeforeUnmount(() => returnFocus?.focus())
       <p>{{ props.description }}</p>
       <div v-if="props.error" class="error" role="alert">{{ props.error }}</div>
       <div class="dialog-actions">
-        <button class="button secondary" type="button" :disabled="props.pending" @click="emit('close')">Abbrechen</button>
+        <button class="button secondary" type="button" :disabled="props.pending" @click="emit('close')">{{ t('common.cancel') }}</button>
         <button
           class="button"
           :class="{ danger: props.danger }"

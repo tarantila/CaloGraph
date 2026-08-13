@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import engine
 from app.models import RateLimitBucket
+from app.problem_types import RATE_LIMITED
 
 
 class RateLimitExceeded(HTTPException):
@@ -23,6 +24,7 @@ class RateLimitExceeded(HTTPException):
         self.retry_after = max(1, retry_after)
         self.action = action
         self.key_ref = key_ref
+        self.problem_type = RATE_LIMITED
         super().__init__(
             status_code=429,
             detail="Zu viele Anfragen. Bitte später erneut versuchen.",

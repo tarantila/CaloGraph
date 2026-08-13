@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   formatGermanDate,
@@ -9,6 +9,11 @@ import {
   parseGermanDate,
   shiftIsoDate,
 } from '../src/date-format'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
+
+beforeEach(() => {
+  setLocale(DEFAULT_LOCALE)
+})
 
 describe('German calendar date contract', () => {
   it('formats ISO calendar dates independently of browser locale', () => {

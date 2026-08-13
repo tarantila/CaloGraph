@@ -11,7 +11,7 @@ test('login starts with a method selection and reveals credentials on demand', a
   await page.goto('/login')
 
   await expect(page.getByRole('heading', { name: 'CaloGraph' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Mit Passwort anmelden' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Sign in with password' })).toBeVisible()
   await expect(page.locator('input')).toHaveCount(0)
   await expect(page.getByText(/Gesundheitsdaten/)).toHaveCount(0)
   await expect(page.getByText(/Registrieren/)).toHaveCount(0)
@@ -21,11 +21,11 @@ test('login starts with a method selection and reveals credentials on demand', a
     fullPage: true,
   })
 
-  await page.getByRole('button', { name: 'Mit Passwort anmelden' }).click()
-  await expect(page.getByRole('heading', { name: 'Anmelden' })).toBeVisible()
-  await expect(page.getByLabel('Benutzername')).toBeFocused()
-  await expect(page.getByLabel('Passwort')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Zurück zur Anmeldeauswahl' })).toBeVisible()
+  await page.getByRole('button', { name: 'Sign in with password' }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+  await expect(page.getByLabel('Username')).toBeFocused()
+  await expect(page.getByLabel('Password')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Back to sign-in options' })).toBeVisible()
   await expect(page.getByText(/Registrieren/)).toHaveCount(0)
 
   await page.setViewportSize({ width: 743, height: 683 })

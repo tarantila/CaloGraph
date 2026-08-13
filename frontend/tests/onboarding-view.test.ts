@@ -8,10 +8,12 @@ vi.mock('../src/api', () => ({
   api: apiMock,
   ApiError: class ApiError extends Error {},
   setCsrfToken: vi.fn(),
+  localizeApiError: () => 'The request could not be processed.',
 }))
 
 import { useAuthStore } from '../src/stores/auth'
 import SetupView from '../src/views/SetupView.vue'
+import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 
 const user = {
   id: 'user-1',
@@ -48,6 +50,7 @@ async function mountSetup() {
 describe('SetupView', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    setLocale(DEFAULT_LOCALE)
   })
 
   afterEach(() => {

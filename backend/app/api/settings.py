@@ -26,6 +26,7 @@ from app.models import (
     UserSession,
     UserTotpCredential,
 )
+from app.problem_types import INVALID_MFA, INVALID_TIMEZONE, ProblemHTTPException
 from app.schemas import (
     MfaCodeRequest,
     MfaManagementRequest,
@@ -174,9 +175,13 @@ def _verify_management_second_factor_if_enabled(
         return
     _ensure_mfa_management_factor_available(db, user)
     if not code or not consume_mfa_factor(db, credential, code):
-        db.rollback()
         _record_mfa_management_failure(db, user)
-        raise HTTPException(status_code=400, detail="MFA-Code ist ungültig")
+        db.rollback()
+        raise ProblemHTTPException(
+            status_code=400,
+            detail="MFA-Code ist ungültig",
+            problem_type=INVALID_MFA,
+        )
     db.commit()
     _clear_mfa_management_factor_limit(db, user)
 
@@ -192,13 +197,22 @@ def update_profile(
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> User:
-    try:
-        ZoneInfo(payload.timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise HTTPException(status_code=422, detail="Unbekannte IANA-Zeitzone") from exc
-    user.timezone = payload.timezone
-    user.week_starts_on = payload.week_starts_on
-    user.raw_payload_retention_days = payload.raw_payload_retention_days
+    if payload.timezone is not None:
+        try:
+            ZoneInfo(payload.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ProblemHTTPException(
+                status_code=422,
+                detail="Unbekannte IANA-Zeitzone",
+                problem_type=INVALID_TIMEZONE,
+            ) from exc
+        user.timezone = payload.timezone
+    if payload.language is not None:
+        user.language = payload.language
+    if payload.week_starts_on is not None:
+        user.week_starts_on = payload.week_starts_on
+    if payload.raw_payload_retention_days is not None:
+        user.raw_payload_retention_days = payload.raw_payload_retention_days
     db.commit()
     db.refresh(user)
     return user

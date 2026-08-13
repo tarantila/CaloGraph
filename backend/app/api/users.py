@@ -12,6 +12,17 @@ from app.auth.security import hash_invitation_token
 from app.config import settings
 from app.database import get_db
 from app.models import User, UserInvitation
+from app.problem_types import (
+    ADMIN_REAUTH_FAILED,
+    ADMIN_REQUIRED,
+    LAST_ADMIN,
+    TARGET_ACTIVE,
+    TARGET_CONFIRMATION,
+    USER_NOT_FOUND,
+    USER_OPERATION_BUSY,
+    USER_SELF_ACTION,
+    ProblemHTTPException,
+)
 from app.schemas import (
     AccountRecoveryIssuedResponse,
     AdminReauthenticationRequest,
@@ -40,8 +51,11 @@ router = APIRouter(prefix="/users", tags=["Benutzer"])
 
 def _admin(user: User) -> None:
     if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Administratorrechte erforderlich")
-
+        raise ProblemHTTPException(
+            status_code=403,
+            detail="Administratorrechte erforderlich",
+            problem_type=ADMIN_REQUIRED,
+        )
 
 
 def _reauthenticate_admin(
@@ -58,31 +72,40 @@ def _reauthenticate_admin(
         )
     except AdminReauthenticationRejected as exc:
         if exc.reason == "not_admin":
-            raise HTTPException(
+            raise ProblemHTTPException(
                 status_code=403,
                 detail="Aktive Administratorrechte erforderlich",
+                problem_type=ADMIN_REQUIRED,
             ) from exc
-        raise HTTPException(
+        raise ProblemHTTPException(
             status_code=400,
             detail="Reauthentifizierung fehlgeschlagen",
+            problem_type=ADMIN_REAUTH_FAILED,
         ) from exc
+
 
 def _raise_lifecycle_rejection(exc: UserLifecycleRejected) -> Never:
     if exc.reason == "not_admin":
-        raise HTTPException(
+        raise ProblemHTTPException(
             status_code=403,
             detail="Aktive Administratorrechte erforderlich",
+            problem_type=ADMIN_REQUIRED,
         ) from exc
     if exc.reason == "target_missing":
-        raise HTTPException(status_code=404, detail="Benutzer nicht gefunden") from exc
+        raise ProblemHTTPException(
+            status_code=404,
+            detail="Benutzer nicht gefunden",
+            problem_type=USER_NOT_FOUND,
+        ) from exc
     details = {
-        "self_action": "Die Aktion auf dem eigenen Konto ist nicht erlaubt.",
-        "last_admin": "Der letzte aktive Administrator muss erhalten bleiben.",
-        "target_active": "Der Benutzer muss vor dem Löschen deaktiviert werden.",
-        "operation_busy": "Für dieses Konto läuft bereits eine Benutzeroperation.",
-        "target_confirmation": "Die Bestätigung des Benutzernamens ist ungültig.",
+        "self_action": ("Die Aktion auf dem eigenen Konto ist nicht erlaubt.", USER_SELF_ACTION),
+        "last_admin": ("Der letzte aktive Administrator muss erhalten bleiben.", LAST_ADMIN),
+        "target_active": ("Der Benutzer muss vor dem Löschen deaktiviert werden.", TARGET_ACTIVE),
+        "operation_busy": ("Für dieses Konto läuft bereits eine Benutzeroperation.", USER_OPERATION_BUSY),
+        "target_confirmation": ("Die Bestätigung des Benutzernamens ist ungültig.", TARGET_CONFIRMATION),
     }
-    raise HTTPException(status_code=409, detail=details[exc.reason]) from exc
+    detail, problem_type = details[exc.reason]
+    raise ProblemHTTPException(status_code=409, detail=detail, problem_type=problem_type) from exc
 
 
 @router.get("", response_model=list[UserResponse])

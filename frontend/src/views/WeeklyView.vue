@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import {
-  PhCalendarBlank,
-  PhChartBar,
-  PhClockCounterClockwise,
-  PhGauge,
-} from '@phosphor-icons/vue'
+import { PhCalendarBlank, PhChartBar, PhClockCounterClockwise, PhGauge } from '@phosphor-icons/vue'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
-import { formatGermanDate, formatGermanDayMonth, shiftIsoDate } from '../date-format'
+import { formatDate, formatDayMonth, shiftIsoDate } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
+import { useAuthStore } from '../stores/auth'
 
 interface Week {
   week_start: string
@@ -22,37 +19,42 @@ interface Week {
   median_kcal: number | null
 }
 
+const t = i18n.global.t.bind(i18n.global)
+const auth = useAuthStore()
+const locale = i18n.global.locale
 const weeks = ref<Week[]>([])
 const highlightOverBudget = ref(true)
 const error = ref('')
 const loading = ref(true)
-const format = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
+const format = createNumberFormatter({ maximumFractionDigits: 0 })
+const weekdayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const
+const weekStart = computed(() => auth.user?.week_starts_on ?? 0)
+const weeklyRange = computed(() => {
+  const start = weekStart.value
+  const end = (start + 6) % 7
+  const label = (day: number) => t(`weekdays.${weekdayKeys[day]}`, { locale: locale.value })
+  return t('weekly.range', { start: label(start), end: label(end), locale: locale.value })
+})
 
 onMounted(async () => {
   try {
     weeks.value = (await api<{ weeks: Week[] }>('/analytics/weekly')).weeks
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? cause.message : 'Wochenbudgets konnten nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
 })
 
 const latestWeek = computed(() => weeks.value.at(-1) ?? null)
-const recordedWeeks = computed(() =>
-  weeks.value.filter((week) => week.mean_kcal != null),
-)
+const recordedWeeks = computed(() => weeks.value.filter((week) => week.mean_kcal != null))
 const averageWeek = computed(() =>
   recordedWeeks.value.length
-    ? recordedWeeks.value.reduce((sum, week) => sum + week.consumed_kcal, 0) /
-      recordedWeeks.value.length
+    ? recordedWeeks.value.reduce((sum, week) => sum + week.consumed_kcal, 0) / recordedWeeks.value.length
     : null,
 )
 const weeksWithinBudget = computed(() =>
-  recordedWeeks.value.filter(
-    (week) => week.deviation_kcal != null && week.deviation_kcal <= 0,
-  ).length,
+  recordedWeeks.value.filter((week) => week.deviation_kcal != null && week.deviation_kcal <= 0).length,
 )
 
 const option = computed<EChartsOption>(() => ({
@@ -62,32 +64,32 @@ const option = computed<EChartsOption>(() => ({
     backgroundColor: '#111d30',
     borderColor: '#324157',
     textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${format.format(Number(value))} kcal`,
+    valueFormatter: (value) => `${format.format(Number(value))} ${t('common.kcal')}`,
   },
   legend: {
     top: 0,
     right: 0,
-    data: ['Aufnahme', 'Wochenbudget'],
+    data: [t('charts.intake'), t('weekly.budgetTable')],
     textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
   },
   grid: { left: 58, right: 18, top: 48, bottom: 40 },
   xAxis: {
     type: 'category',
-    data: weeks.value.map((week) => formatGermanDayMonth(week.week_start)),
+    data: weeks.value.map((week) => formatDayMonth(week.week_start)),
     axisLine: { lineStyle: { color: '#263449' } },
     axisTick: { show: false },
     axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
   },
   yAxis: {
     type: 'value',
-    name: 'kcal',
+    name: t('common.kcal'),
     nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
     axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
     splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
   },
   series: [
     {
-      name: 'Aufnahme',
+      name: t('charts.intake'),
       type: 'bar',
       barMaxWidth: 34,
       data: weeks.value.map((week) =>
@@ -98,7 +100,7 @@ const option = computed<EChartsOption>(() => ({
       itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
     },
     {
-      name: 'Wochenbudget',
+      name: t('weekly.budgetTable'),
       type: 'line',
       showSymbol: false,
       data: weeks.value.map((week) => week.budget_kcal),
@@ -109,45 +111,40 @@ const option = computed<EChartsOption>(() => ({
 }))
 
 function weekLabel(value: string) {
-  return `${formatGermanDayMonth(value)} – ${formatGermanDate(shiftIsoDate(value, 6))}`
+  return `${formatDayMonth(value)} – ${formatDate(shiftIsoDate(value, 6))}`
 }
 </script>
-
 <template>
   <div class="page-heading">
     <div>
-      <h1>Wochenbudget</h1>
-      <p>Kalorienaufnahme im Zusammenhang einer vollständigen Woche von Montag bis Sonntag.</p>
+      <h1>{{ t('weekly.title') }}</h1>
+      <p>{{ t('weekly.description', { range: weeklyRange }) }}</p>
     </div>
-    <span class="page-context">Letzte {{ weeks.length }} Wochen</span>
+    <span class="page-context">{{ t('weekly.latestWeeks', { count: weeks.length }) }}</span>
   </div>
-
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading" aria-live="polite">
-    Wochen werden geladen …
-  </div>
+  <div v-else-if="loading" class="dashboard-loading" aria-live="polite">{{ t('common.loading') }}</div>
   <template v-else>
-    <section class="insight-strip" aria-label="Wochenkennzahlen">
+    <section class="insight-strip" :aria-label="t('weekly.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>Aktuelle Woche</small><strong>{{ latestWeek ? `${format.format(latestWeek.consumed_kcal)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekly.currentWeek') }}</small><strong>{{ latestWeek ? `${format.format(latestWeek.consumed_kcal)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhGauge :size="20" weight="duotone" /></span>
-        <span><small>Noch verfügbar</small><strong>{{ latestWeek?.remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.remaining_kcal, 0))} kcal` }}</strong></span>
+        <span><small>{{ t('weekly.available') }}</small><strong>{{ latestWeek?.remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.remaining_kcal, 0))} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhClockCounterClockwise :size="20" weight="duotone" /></span>
-        <span><small>Ø pro Woche</small><strong>{{ averageWeek == null ? '–' : `${format.format(averageWeek)} kcal` }}</strong></span>
+        <span><small>{{ t('weekly.averagePerWeek') }}</small><strong>{{ averageWeek == null ? '–' : `${format.format(averageWeek)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>Im Budget</small><strong>{{ weeksWithinBudget }} von {{ recordedWeeks.length }}</strong></span>
+        <span><small>{{ t('weekly.withinBudget') }}</small><strong>{{ weeksWithinBudget }} {{ t('common.of') }} {{ recordedWeeks.length }}</strong></span>
       </article>
     </section>
-
     <ChartPanel
-      title="Aufnahme und Wochenbudget"
+      :title="t('charts.intake') + ' & ' + t('weekly.budgetTable')"
       :option="option"
       :empty="!recordedWeeks.length"
       :height="330"
@@ -156,22 +153,19 @@ function weekLabel(value: string) {
         <div class="chart-header-actions">
           <label class="chart-highlight-toggle">
             <input v-model="highlightOverBudget" type="checkbox" role="switch" />
-            <span>Über Budget hervorheben</span>
+            <span>{{ t('charts.highlightOverBudget') }}</span>
           </label>
-          <span class="chart-range">Montag bis Sonntag</span>
+          <span class="chart-range">{{ weeklyRange }}</span>
         </div>
       </template>
     </ChartPanel>
-
     <section class="card table-card">
       <div class="section-card-header">
-        <div><h2>Wochen im Detail</h2><p>Budgetwerte berücksichtigen die jeweils gültige Zielhistorie.</p></div>
+        <div><h2>{{ t('weekly.detail') }}</h2><p>{{ t('weekly.detailDescription') }}</p></div>
       </div>
       <div class="table-scroll">
         <table>
-          <thead>
-            <tr><th>Woche</th><th class="number">Aufnahme</th><th class="number">Budget</th><th class="number">Differenz</th><th class="number">Tagesmittel</th><th class="number">Median</th></tr>
-          </thead>
+          <thead><tr><th>{{ weeklyRange }}</th><th class="number">{{ t('charts.intake') }}</th><th class="number">{{ t('weekly.budgetTable') }}</th><th class="number">{{ t('weekly.deviation') }}</th><th class="number">{{ t('daily.average') }}</th><th class="number">{{ t('weekly.median') }}</th></tr></thead>
           <tbody>
             <tr v-for="week in [...weeks].reverse()" :key="week.week_start">
               <td><strong>{{ weekLabel(week.week_start) }}</strong></td>
@@ -184,7 +178,7 @@ function weekLabel(value: string) {
               <td class="number">{{ week.mean_kcal == null ? '–' : `${format.format(week.mean_kcal)} kcal` }}</td>
               <td class="number">{{ week.median_kcal == null ? '–' : `${format.format(week.median_kcal)} kcal` }}</td>
             </tr>
-            <tr v-if="!weeks.length"><td colspan="6" class="empty">Noch keine Wochenwerte vorhanden.</td></tr>
+            <tr v-if="!weeks.length"><td colspan="6" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
           </tbody>
         </table>
       </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, ApiError, localizeApiError } from '../api'
 import DateInput from '../components/DateInput.vue'
 import UserManagement from '../components/UserManagement.vue'
 import {
@@ -11,6 +11,7 @@ import {
   isoDateInTimeZone,
 } from '../date-format'
 import { useAuthStore } from '../stores/auth'
+import { createNumberFormatter, i18n } from '../i18n'
 import {
   createEmptyTargetDraft,
   saveTargetDraft,
@@ -81,7 +82,8 @@ function supportedTimezones() {
 }
 
 const props = defineProps<{ section: 'targets' | 'account' }>()
-const profile = reactive({ timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
+const profile = reactive({ language: 'de' as 'de' | 'en', timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
+const t = i18n.global.t.bind(i18n.global)
 const target = reactive(createEmptyTargetDraft())
 const targets = ref<Target[]>([])
 const tokens = ref<Token[]>([])
@@ -89,6 +91,12 @@ const tokenLabel = ref('iPhone')
 const newToken = ref('')
 const message = ref('')
 const auth = useAuthStore()
+watch(
+  () => auth.user?.language,
+  (language) => {
+    if (language === 'de' || language === 'en') profile.language = language
+  },
+)
 const yazio = ref<YazioStatus | null>(null)
 const yazioEmail = ref('')
 const yazioPassword = ref('')
@@ -119,7 +127,7 @@ let yazioPollTimer: ReturnType<typeof setTimeout> | null = null
 let yazioPollInFlight = false
 let yazioPollGeneration = 0
 let settingsMounted = true
-const integer = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
+const integer = createNumberFormatter({ maximumFractionDigits: 0 })
 const timezoneOptions = computed(() =>
   [...new Set(['UTC', profile.timezone, ...supportedTimezones()])].sort((left, right) =>
     left.localeCompare(right, 'de'),
@@ -131,14 +139,14 @@ const yazioCredentialsComplete = computed(
 )
 const yazioAvailable = computed(() => yazio.value?.available !== false)
 const yazioStatusLabel = computed(() => {
-  if (!yazioAvailable.value) return 'serverseitig deaktiviert'
-  if (!yazio.value?.configured) return 'noch nicht eingerichtet'
+  if (!yazioAvailable.value) return t('settings.serverDisabled')
+  if (!yazio.value?.configured) return t('settings.notConfigured')
   const historicalState = yazio.value.historical_sync?.state
-  if (historicalState === 'pending') return 'Erster Datenimport wartet auf den Scheduler'
-  if (historicalState === 'running') return 'Erster Datenimport läuft im Hintergrund'
-  if (historicalState === 'failed') return 'Erster Datenimport fehlgeschlagen'
-  if (!yazio.value.sync_enabled) return 'pausiert · Zugangsdaten aktualisieren'
-  return `aktiv · alle ${(yazio.value.sync_interval_minutes ?? 360) / 60} Stunden · letzte ${yazio.value.sync_days ?? 7} Tage`
+  if (historicalState === 'pending') return t('settings.firstImportWaiting')
+  if (historicalState === 'running') return t('settings.firstImportRunning')
+  if (historicalState === 'failed') return t('settings.firstImportFailed')
+  if (!yazio.value.sync_enabled) return t('settings.paused')
+  return t('settings.active', { hours: (yazio.value.sync_interval_minutes ?? 360) / 60, days: yazio.value.sync_days ?? 7 })
 })
 const yazioHistoricalSyncActive = computed(() => {
   const state = yazio.value?.historical_sync?.state
@@ -178,24 +186,27 @@ async function refreshAdmin() {
     await loadAdmin()
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'Benutzerliste konnte nicht aktualisiert werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.adminLoadFailed') : t('settingsUi.adminLoadFailed')
   }
 }
 
 async function loadAccount(generation = loadGeneration) {
-  const [user, tokenResult, yazioResult, mfaResult, passkeyResult] = await Promise.all([
+  const profileGeneration = auth.currentProfileUpdateGeneration()
+  const [user, tokensResult, yazioResult, mfaResult, passkeyResult] = await Promise.all([
     api<User>('/settings/profile'),
     api<Token[]>('/settings/tokens'),
     api<YazioStatus>('/yazio/status'),
     api<MfaStatus>('/settings/mfa'),
     api<Passkey[]>('/settings/passkeys'),
   ])
-  if (generation !== loadGeneration) return
+  if (generation !== loadGeneration || !auth.isCurrentProfileUpdate(profileGeneration)) return
+  const currentLanguage = auth.user?.id === user.id ? auth.user.language : user.language
+  tokens.value = tokensResult
+  profile.language = currentLanguage === 'en' ? 'en' : 'de'
   profile.timezone = user.timezone
   profile.week_starts_on = user.week_starts_on
   profile.raw_payload_retention_days = user.raw_payload_retention_days
-  auth.user = user
-  tokens.value = tokenResult
+  auth.syncLoadedUser(profileGeneration, { ...user, language: currentLanguage })
   yazio.value = yazioResult
   if (!yazioResult.configured) yazioHistoryTo.value = isoDateInTimeZone(user.timezone)
   mfa.value = mfaResult
@@ -259,7 +270,7 @@ async function load() {
   } catch (cause) {
     if (generation !== loadGeneration) return
     error.value =
-      cause instanceof ApiError ? cause.message : 'Einstellungen konnten nicht geladen werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.loadFailed') : t('settingsUi.loadFailed')
   } finally {
     if (generation === loadGeneration) loading.value = false
   }
@@ -267,28 +278,35 @@ async function load() {
 watch(() => props.section, () => { void load() }, { immediate: true })
 onBeforeUnmount(() => {
   settingsMounted = false
+  ++loadGeneration
+  auth.beginProfileUpdate()
   stopYazioPolling()
 })
 
 async function saveProfile() {
-  const user = await api<User>('/settings/profile', { method: 'PUT', body: JSON.stringify(profile) })
-  auth.user = user
-  message.value = 'Profil gespeichert.'
+  const generation = auth.beginProfileUpdate()
+  const user = await auth.enqueueProfileUpdate(generation, () =>
+    api<User>('/settings/profile', { method: 'PUT', body: JSON.stringify(profile) }),
+  )
+  if (!user || !auth.commitProfileUpdate(generation, user)) return
+  message.value = t('settings.saved')
 }
+
 async function saveTarget() {
-  savingTarget.value = true
   error.value = ''
   message.value = ''
   try {
     await saveTargetDraft(target, targets.value)
-    message.value = `Budget und Ziele ab ${formatGermanDate(target.valid_from)} gespeichert.`
+    message.value = t('settingsUi.targetSaved', { date: formatGermanDate(target.valid_from) })
     auth.completeTargetSetup()
     await loadTargets()
   } catch (cause) {
     error.value =
-      cause instanceof ApiError || cause instanceof TargetValidationError
-        ? cause.message
-        : 'Budget und Ziele konnten nicht gespeichert werden.'
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'settingsUi.targetSaveFailed')
+        : cause instanceof TargetValidationError
+          ? cause.message
+          : t('settingsUi.targetSaveFailed')
   } finally {
     savingTarget.value = false
   }
@@ -299,7 +317,7 @@ async function saveYazio() {
   if (!yazioCredentialsComplete.value) return
   const isNewConnection = !yazio.value?.configured
   if (isNewConnection && yazioHistoryFrom.value > yazioHistoryTo.value) {
-    error.value = 'Das Von-Datum darf nicht nach dem Bis-Datum liegen.'
+    error.value = t('settingsUi.invalidRange')
     return
   }
   savingYazio.value = true
@@ -321,14 +339,14 @@ async function saveYazio() {
     yazioPassword.value = ''
     if (isNewConnection) {
       initialSetupSaved.value = true
-      message.value = 'YAZIO-Verbindung gespeichert.'
+      message.value = t('settings.connectionSaved')
     } else {
-      message.value = 'YAZIO-Verbindung aktualisiert.'
+      message.value = t('settings.connectionUpdated')
     }
     scheduleYazioPolling()
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'YAZIO-Verbindung konnte nicht gespeichert werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.yazioSaveFailed') : t('settingsUi.yazioSaveFailed')
   } finally {
     savingYazio.value = false
   }
@@ -343,7 +361,7 @@ async function createInvitation() {
 }
 async function copyInvitation() {
   await navigator.clipboard.writeText(invitationUrl.value)
-  message.value = 'Einladungslink kopiert.'
+  message.value = t('settingsUi.invitationCopied')
 }
 async function revokeInvitation(id: string) {
   await api(`/users/invitations/${id}`, { method: 'DELETE' })
@@ -361,10 +379,10 @@ async function beginTotpSetup() {
     })
     mfaCurrentPassword.value = ''
     recoveryCodes.value = []
-    message.value = 'Scanne jetzt den QR-Code und bestätige die Einrichtung.'
+    message.value = t('settingsUi.mfaScan')
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'TOTP-Einrichtung konnte nicht gestartet werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.mfaSetupFailed') : t('settingsUi.mfaSetupFailed')
   } finally {
     managingMfa.value = false
   }
@@ -382,10 +400,10 @@ async function confirmTotpSetup() {
     mfaCode.value = ''
     totpSetup.value = null
     await loadAccount()
-    message.value = 'Zwei-Faktor-Authentifizierung ist aktiviert. Sichere die Wiederherstellungscodes jetzt.'
+    message.value = t('settingsUi.mfaEnabled')
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'TOTP-Code konnte nicht bestätigt werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.mfaConfirmFailed') : t('settingsUi.mfaConfirmFailed')
   } finally {
     managingMfa.value = false
   }
@@ -409,10 +427,10 @@ async function regenerateRecoveryCodes() {
     mfaCurrentPassword.value = ''
     mfaCode.value = ''
     await loadAccount()
-    message.value = 'Neue Wiederherstellungscodes wurden erzeugt. Die alten sind ungültig.'
+    message.value = t('settingsUi.codesRegenerated')
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'Wiederherstellungscodes konnten nicht erneuert werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.codesRegenerateFailed') : t('settingsUi.codesRegenerateFailed')
   } finally {
     managingMfa.value = false
   }
@@ -433,10 +451,10 @@ async function disableTotp() {
     mfaCurrentPassword.value = ''
     mfaCode.value = ''
     await loadAccount()
-    message.value = 'Zwei-Faktor-Authentifizierung wurde deaktiviert.'
+    message.value = t('settingsUi.mfaDisabled')
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'Zwei-Faktor-Authentifizierung konnte nicht deaktiviert werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.mfaDisableFailed') : t('settingsUi.mfaDisableFailed')
   } finally {
     managingMfa.value = false
   }
@@ -444,7 +462,7 @@ async function disableTotp() {
 
 async function copyRecoveryCodes() {
   await navigator.clipboard.writeText(recoveryCodes.value.join('\n'))
-  message.value = 'Wiederherstellungscodes kopiert.'
+  message.value = t('settingsUi.codesCopied')
 }
 
 async function registerPasskey() {
@@ -472,15 +490,15 @@ async function registerPasskey() {
     passkeyPassword.value = ''
     passkeyCode.value = ''
     await loadAccount()
-    message.value = 'Passkey wurde eingerichtet. Du kannst dich jetzt ohne Passwort anmelden.'
+    message.value = t('settingsUi.passkeyCreated')
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'NotAllowedError') {
-      error.value = 'Passkey-Einrichtung wurde abgebrochen oder ist abgelaufen.'
+      error.value = t('settingsUi.passkeyCancelled')
     } else {
       error.value =
-        cause instanceof ApiError || cause instanceof Error
-          ? cause.message
-          : 'Passkey konnte nicht eingerichtet werden.'
+        cause instanceof ApiError
+          ? localizeApiError(cause, 'settingsUi.passkeyCreateFailed', { preserveDetail: true })
+          : t('settingsUi.passkeyCreateFailed')
     }
   } finally {
     managingPasskey.value = false
@@ -502,10 +520,10 @@ async function removePasskey(id: string) {
     passkeyPassword.value = ''
     passkeyCode.value = ''
     await loadAccount()
-    message.value = 'Passkey wurde entfernt.'
+    message.value = t('settingsUi.passkeyRemoved')
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? cause.message : 'Passkey konnte nicht entfernt werden.'
+      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.passkeyRemoveFailed', { preserveDetail: true }) : t('settingsUi.passkeyRemoveFailed')
   } finally {
     managingPasskey.value = false
   }
@@ -513,79 +531,77 @@ async function removePasskey(id: string) {
 
 function passkeyDeviceLabel(passkey: Passkey) {
   if (passkey.backed_up || passkey.device_type === 'multi_device') {
-    return 'synchronisiert'
+    return t('settingsUi.passkeySynced')
   }
-  return 'dieses Gerät'
+  return t('settingsUi.passkeyThisDevice')
 }
 </script>
-
 <template>
   <div class="page-heading">
     <div v-if="props.section === 'targets'">
-      <h1>Budgets & Ziele</h1>
-      <p>Lege dein Kalorienbudget und deine Makronährstoffziele mit einem Gültigkeitsdatum fest.</p>
+      <h1>{{ t('settings.targets') }}</h1>
+      <p>{{ t('settings.targetsDescription') }}</p>
     </div>
     <div v-else>
-      <h1>Konto</h1>
-      <p>Verwalte dein Profil, deine persönliche YAZIO-Verbindung und deine Zugänge.</p>
+      <h1>{{ t('settings.account') }}</h1>
+      <p>{{ t('settings.accountDescription') }}</p>
     </div>
   </div>
 
-  <div v-if="loading" class="dashboard-loading">Einstellungen werden geladen …</div>
+  <div v-if="loading" class="dashboard-loading">{{ t('settingsUi.loading') }}</div>
   <template v-else>
     <div v-if="error" class="card error" role="alert">{{ error }}</div>
     <p v-if="message" role="status">{{ message }}</p>
     <div v-if="initialSetupSaved" class="setup-notice" role="status">
-      <p>Der erste Datenimport läuft im Hintergrund. Du kannst diese Seite verlassen.</p>
-      <RouterLink class="text-button" to="/importe">Zu den Importen</RouterLink>
+      <p>{{ t('settingsUi.initialImport') }}</p>
+      <RouterLink class="text-button" to="/importe">{{ t('settingsUi.toImports') }}</RouterLink>
     </div>
     <template v-if="props.section === 'targets'">
       <div class="content-grid">
         <section class="card form-card">
-          <h2>Budget und Ziele festlegen</h2>
+          <h2>{{ t('settingsUi.targetsTitle') }}</h2>
           <p v-if="!targets.length" class="setup-notice">
-            Lege zuerst deine persönlichen Ziele fest. Kalorienbudget und Proteinziel werden für Budget- und
-            Analytics-Auswertungen verwendet; optionale Makroziele kannst du später ergänzen.
+            {{ t('settingsUi.initialTargetsDescription') }}
           </p>
           <form class="form-grid" @submit.prevent="saveTarget">
-            <label class="field">Gültig ab<DateInput v-model="target.valid_from" required /></label>
-            <label class="field">Kalorienbudget<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
-            <label class="field">Erhaltungsbedarf (kcal)<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>Optional: geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt.</small></label>
-            <label class="field">Proteinziel (g)<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
-            <label class="field">Kohlenhydrate (g)<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
-            <label class="field">Fett (g)<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
-            <label class="field">Ballaststoffe (g)<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            <label class="field">{{ t('settingsUi.validFrom') }}<DateInput v-model="target.valid_from" required /></label>
+            <label class="field">{{ t('settingsUi.calorieBudget') }}<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
+            <label class="field">{{ t('settingsUi.maintenance') }}<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>{{ t('settingsUi.maintenanceHelp') }}</small></label>
+            <label class="field">{{ t('settingsUi.proteinTarget') }}<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
+            <label class="field">{{ t('settingsUi.carbsTarget') }}<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            <label class="field">{{ t('settingsUi.fatTarget') }}<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            <label class="field">{{ t('settingsUi.fiberTarget') }}<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <button class="button" type="submit" :disabled="savingTarget">
-              {{ savingTarget ? 'Wird gespeichert …' : 'Budget und Ziele speichern' }}
+              {{ savingTarget ? t('settingsUi.saving') : t('settingsUi.saveTargets') }}
             </button>
           </form>
         </section>
 
         <section class="card form-card budget-help">
-          <h2>So wird die Änderung verwendet</h2>
-          <p>Das Kalorienbudget ist deine tägliche Obergrenze. Das Proteinziel wird als Wert behandelt, den du möglichst erreichen möchtest.</p>
-          <p>Der optionale Erhaltungsbedarf ist deine geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt. Dein Kalorienbudget kann darunter, darauf oder darüber liegen.</p>
-          <p>Im Kalender bleibt das Budget maßgeblich: Werte bis zum Budget sind grün, Werte über dem Budget orange und Werte über Budget und Erhaltungsbedarf rot.</p>
-          <p>Mit „Gültig ab“ bestimmst du den ersten Tag der neuen Werte. Gibt es für dieses Datum bereits eine Version, wird sie aktualisiert. Frühere Auswertungen behalten die damals gültigen Werte.</p>
+          <h2>{{ t('settingsUi.budgetHelpTitle') }}</h2>
+          <p>{{ t('settingsUi.budgetHelpBudget') }}</p>
+          <p>{{ t('settingsUi.budgetHelpMaintenance') }}</p>
+          <p>{{ t('settingsUi.budgetHelpCalendar') }}</p>
+          <p>{{ t('settingsUi.budgetHelpValidFrom') }}</p>
         </section>
       </div>
 
       <section class="card table-card">
         <div class="section-card-header">
-          <div><h2>Budget- und Zielhistorie</h2><p>Die neueste gültige Version steht oben.</p></div>
+          <div><h2>{{ t('settingsUi.historyTitle') }}</h2><p>{{ t('settingsUi.historyDescription') }}</p></div>
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Gültig ab</th><th>Gültig bis</th><th class="number">Kalorienbudget</th><th class="number">Erhaltungsbedarf</th><th class="number">Proteinziel</th></tr></thead>
+            <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th></tr></thead>
             <tbody>
               <tr v-for="item in targets" :key="item.id">
                 <td>{{ formatGermanDate(item.valid_from) }}</td>
-                <td>{{ item.valid_to ? formatGermanDate(item.valid_to) : 'aktuell' }}</td>
-                <td class="number">{{ integer.format(Number(item.calories_kcal)) }} kcal</td>
-                <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} kcal` }}</td>
-                <td class="number">{{ integer.format(Number(item.protein_g)) }} g</td>
+                <td>{{ item.valid_to ? formatGermanDate(item.valid_to) : t('settingsUi.current') }}</td>
+                <td class="number">{{ integer.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
+                <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
+                <td class="number">{{ integer.format(Number(item.protein_g)) }} {{ t('common.grams') }}</td>
               </tr>
-              <tr v-if="!targets.length"><td colspan="5" class="empty">Noch keine Budgets oder Ziele vorhanden.</td></tr>
+              <tr v-if="!targets.length"><td colspan="5" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
             </tbody>
           </table>
         </div>
@@ -594,109 +610,122 @@ function passkeyDeviceLabel(passkey: Passkey) {
 
     <template v-else>
       <section class="card form-card">
-        <h2>Profil</h2>
+        <h2>{{ t('settings.profile') }}</h2>
         <form class="form-grid" @submit.prevent="saveProfile">
           <label class="field">
-            Zeitzone
+            {{ t('settings.language') }}
+            <select v-model="profile.language" name="language" required>
+              <option value="de">{{ t('language.german') }}</option>
+              <option value="en">{{ t('language.english') }}</option>
+            </select>
+          </label>
+          <label class="field">
+            {{ t('settings.timezone') }}
             <select v-model="profile.timezone" name="timezone" required>
               <option v-for="timezone in timezoneOptions" :key="timezone" :value="timezone">
                 {{ timezone.replaceAll('_', ' ') }}
               </option>
             </select>
-            <small>Bestimmt Tagesgrenzen und Uhrzeiten in deinen Auswertungen.</small>
+            <small>{{ t('settings.timezoneHelp') }}</small>
           </label>
-          <label class="field">Wochenbeginn<select v-model.number="profile.week_starts_on"><option :value="0">Montag</option><option :value="6">Sonntag</option></select></label>
-          <label class="field">JSON-Rohimporte aufbewahren (Tage)<input v-model.number="profile.raw_payload_retention_days" type="number" min="0" max="3650" /><small>0 deaktiviert die Speicherung vollständig. Große XML-/ZIP-Dateien werden nicht zusätzlich dupliziert.</small></label>
-          <button class="button" type="submit">Profil speichern</button>
+          <label class="field">
+            {{ t('settings.weekStart') }}
+            <select v-model.number="profile.week_starts_on">
+              <option :value="0">{{ t('settings.monday') }}</option>
+              <option :value="6">{{ t('settings.sunday') }}</option>
+            </select>
+          </label>
+          <label class="field">
+            {{ t('settings.retention') }}
+            <input v-model.number="profile.raw_payload_retention_days" type="number" min="0" max="3650" />
+            <small>{{ t('settings.retentionHelp') }}</small>
+          </label>
+          <button class="button" type="submit">{{ t('settings.saveProfile') }}</button>
         </form>
       </section>
 
       <section class="card form-card mfa-card" style="margin-top: 1rem">
-        <h2>Zwei-Faktor-Authentifizierung</h2>
-        <p>Eine Authenticator-App schützt dein Konto zusätzlich zum Passwort. TOTP-Codes funktionieren offline.</p>
+        <h2>{{ t('settingsUi.mfaTitle') }}</h2>
+        <p>{{ t('settingsUi.mfaDescription') }}</p>
 
         <template v-if="!mfa?.totp_enabled">
-          <p v-if="mfa?.totp_setup_pending && !totpSetup">
-            Eine Einrichtung wurde begonnen, aber noch nicht bestätigt. Starte sie mit deinem Passwort erneut, um einen neuen QR-Code zu erhalten.
-          </p>
+          <p v-if="mfa?.totp_setup_pending && !totpSetup">{{ t('settingsUi.mfaPending') }}</p>
           <form v-if="!totpSetup" class="form-grid" @submit.prevent="beginTotpSetup">
             <label class="field">
-              Aktuelles CaloGraph-Passwort
+              {{ t('settingsUi.password') }}
               <input v-model="mfaCurrentPassword" type="password" autocomplete="current-password" required />
             </label>
             <button class="button" type="submit" :disabled="managingMfa">
-              {{ managingMfa ? 'Einrichtung wird vorbereitet …' : 'Authenticator einrichten' }}
+              {{ managingMfa ? t('settingsUi.prepareSetup') : t('settingsUi.setupAuthenticator') }}
             </button>
           </form>
 
           <div v-else class="mfa-setup">
             <ol>
-              <li>Scanne den QR-Code mit deiner Authenticator-App.</li>
-              <li>Gib den dort angezeigten sechsstelligen Code ein.</li>
+              <li>{{ t('settingsUi.scanQr') }}</li>
+              <li>{{ t('settingsUi.enterCode') }}</li>
             </ol>
-            <img class="mfa-qr" :src="totpSetup.qr_svg_data_url" alt="QR-Code für die Authenticator-Einrichtung" />
+            <img class="mfa-qr" :src="totpSetup.qr_svg_data_url" :alt="t('settingsUi.qrAlt')" />
             <details>
-              <summary>Schlüssel manuell eingeben</summary>
+              <summary>{{ t('settingsUi.manualKey') }}</summary>
               <code class="mfa-secret">{{ totpSetup.secret }}</code>
             </details>
             <form class="form-grid" @submit.prevent="confirmTotpSetup">
               <label class="field">
-                Sechsstelliger Code
+                {{ t('settingsUi.code') }}
                 <input v-model="mfaCode" inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="6" required />
               </label>
               <button class="button" type="submit" :disabled="managingMfa">
-                {{ managingMfa ? 'Code wird geprüft …' : 'TOTP aktivieren' }}
+                {{ managingMfa ? t('settingsUi.codeChecking') : t('settingsUi.enableTotp') }}
               </button>
             </form>
           </div>
         </template>
 
         <template v-else>
-          <p><strong>Status:</strong> aktiv · {{ mfa.recovery_codes_remaining }} Wiederherstellungscodes verfügbar</p>
-          <p>Für Änderungen brauchst du dein aktuelles Passwort und einen TOTP- oder Wiederherstellungscode.</p>
+          <p><strong>{{ t('settingsUi.status') }}</strong> {{ t('settingsUi.active') }} · {{ t('settingsUi.recoveryCodesAvailable', { count: mfa.recovery_codes_remaining }) }}</p>
+          <p>{{ t('settingsUi.changesNeedFactor') }}</p>
           <form class="form-grid" @submit.prevent>
             <label class="field">
-              Aktuelles CaloGraph-Passwort
+              {{ t('settingsUi.password') }}
               <input v-model="mfaCurrentPassword" type="password" autocomplete="current-password" required />
             </label>
             <label class="field">
-              TOTP- oder Wiederherstellungscode
+              {{ t('auth.securityCode') }}
               <input v-model="mfaCode" autocomplete="one-time-code" maxlength="64" required />
             </label>
             <div class="filters">
               <button class="button secondary" type="button" :disabled="managingMfa" @click="regenerateRecoveryCodes">
-                Codes erneuern
+                {{ t('settingsUi.regenerate') }}
               </button>
               <button class="text-button danger" type="button" :disabled="managingMfa" @click="disableTotp">
-                TOTP deaktivieren
+                {{ t('settingsUi.disable') }}
               </button>
             </div>
           </form>
         </template>
 
         <div v-if="recoveryCodes.length" class="recovery-codes" role="status">
-          <strong>Jetzt offline und sicher speichern – jeder Code funktioniert nur einmal:</strong>
+          <strong>{{ t('settingsUi.storeCodes') }}</strong>
           <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
-          <button class="button secondary" type="button" @click="copyRecoveryCodes">Alle kopieren</button>
+          <button class="button secondary" type="button" @click="copyRecoveryCodes">{{ t('settingsUi.copyAll') }}</button>
         </div>
       </section>
 
       <section class="card form-card passkey-card" style="margin-top: 1rem">
-        <h2>Passkeys</h2>
-        <p>Mit einem Passkey meldest du dich per Fingerabdruck, Gesichtserkennung oder Geräte-PIN an – ohne dein CaloGraph-Passwort einzugeben.</p>
-        <p v-if="!passkeySupported" class="passkey-unavailable">
-          Dieser Browser oder diese Verbindung unterstützt Passkeys hier nicht. Außer auf localhost ist dafür HTTPS erforderlich.
-        </p>
+        <h2>{{ t('settingsUi.passkeysTitle') }}</h2>
+        <p>{{ t('settingsUi.passkeysDescription') }}</p>
+        <p v-if="!passkeySupported" class="passkey-unavailable">{{ t('settingsUi.passkeysUnavailable') }}</p>
 
         <div v-if="passkeys.length" class="passkey-list">
           <article v-for="passkey in passkeys" :key="passkey.id" class="passkey-item">
             <div>
               <strong>{{ passkey.label }}</strong>
               <small>
-                {{ passkeyDeviceLabel(passkey) }} · erstellt
+                {{ passkeyDeviceLabel(passkey) }} · {{ t('settingsUi.created') }}
                 {{ formatGermanInstantDate(passkey.created_at) }}
                 <template v-if="passkey.last_used_at">
-                  · zuletzt {{ formatGermanDateTime(passkey.last_used_at) }}
+                  · {{ t('settingsUi.lastUsed') }} {{ formatGermanDateTime(passkey.last_used_at) }}
                 </template>
               </small>
             </div>
@@ -706,35 +735,35 @@ function passkeyDeviceLabel(passkey: Passkey) {
               :disabled="managingPasskey"
               @click="removePasskey(passkey.id)"
             >
-              Entfernen
+              {{ t('settingsUi.remove') }}
             </button>
           </article>
         </div>
-        <p v-else>Noch kein Passkey eingerichtet.</p>
+        <p v-else>{{ t('settingsUi.noPasskeys') }}</p>
 
         <form class="form-grid" @submit.prevent="registerPasskey">
           <label class="field">
-            Bezeichnung
+            {{ t('settingsUi.label') }}
             <input
               v-model="passkeyLabel"
               maxlength="100"
-              placeholder="z. B. Windows Hello"
+              :placeholder="t('settingsUi.placeholder')"
               :disabled="!passkeySupported"
               required
             />
           </label>
           <label class="field">
-            Aktuelles CaloGraph-Passwort
+            {{ t('settingsUi.password') }}
             <input
               v-model="passkeyPassword"
               type="password"
               autocomplete="current-password"
               required
             />
-            <small>Wird auch benötigt, wenn du einen vorhandenen Passkey entfernst.</small>
+            <small>{{ t('settingsUi.passwordRemoveHelp') }}</small>
           </label>
           <label v-if="mfa?.totp_enabled" class="field">
-            TOTP- oder Wiederherstellungscode
+            {{ t('auth.securityCode') }}
             <input
               v-model="passkeyCode"
               autocomplete="one-time-code"
@@ -747,89 +776,90 @@ function passkeyDeviceLabel(passkey: Passkey) {
             type="submit"
             :disabled="!passkeySupported || managingPasskey"
           >
-            {{ managingPasskey ? 'Passkey wird verarbeitet …' : 'Passkey einrichten' }}
+            {{ managingPasskey ? t('settingsUi.processing') : t('settingsUi.setupPasskey') }}
           </button>
         </form>
       </section>
 
       <section class="card form-card yazio-connection-card" style="margin-top: 1rem">
-        <h2>Persönliche YAZIO-Verbindung</h2>
-        <p>Diese Zugangsdaten gehören nur zu deinem CaloGraph-Konto und werden verschlüsselt gespeichert. Ein erneutes Speichern ersetzt ausschließlich deine eigene Verbindung.</p>
-        <p><strong>Status:</strong> {{ yazioStatusLabel }}</p>
+        <h2>{{ t('settingsUi.yazioTitle') }}</h2>
+        <p>{{ t('settingsUi.yazioDescription') }}</p>
+        <p><strong>{{ t('settingsUi.statusLabel') }}</strong> {{ yazioStatusLabel }}</p>
         <p v-if="yazioHistoricalSyncFailed" class="import-message error" role="alert">
-          Erster Datenimport fehlgeschlagen · <RouterLink to="/importe">Details unter Importe</RouterLink>
+          {{ t('settingsUi.firstImportFailedMessage') }}
+          <RouterLink to="/importe">{{ t('settingsUi.detailsUnderImports') }}</RouterLink>
         </p>
         <p
           v-if="yazio?.historical_sync?.state === 'completed' && yazio?.historical_sync.completed_at"
           class="table-secondary"
         >
-          Erster Datenimport abgeschlossen:
+          {{ t('settingsUi.firstImportCompleted') }}
           {{ formatGermanDateTime(yazio.historical_sync.completed_at) }}
         </p>
         <form class="form-grid" @submit.prevent="saveYazio">
           <label class="field">
-            YAZIO-E-Mail
+            {{ t('settingsUi.email') }}
             <input
               v-model="yazioEmail"
               name="yazio-email"
               type="email"
               autocomplete="email"
               :disabled="!yazioAvailable"
-              :placeholder="yazio?.configured ? 'E-Mail-Adresse ist gespeichert' : 'name@example.com'"
+              :placeholder="yazio?.configured ? t('settingsUi.emailStored') : t('settingsUi.emailPlaceholder')"
               required
             />
-            <small v-if="yazio?.configured">Gespeichert · zum Ändern erneut eingeben</small>
+            <small v-if="yazio?.configured">{{ t('settingsUi.storedEdit') }}</small>
           </label>
           <label class="field">
-            YAZIO-Passwort
+            {{ t('settingsUi.passwordLabel') }}
             <input
               v-model="yazioPassword"
               name="yazio-password"
               type="password"
               autocomplete="current-password"
               :disabled="!yazioAvailable"
-              :placeholder="yazio?.configured ? 'Passwort ist gespeichert' : 'YAZIO-Passwort'"
+              :placeholder="yazio?.configured ? t('settingsUi.passwordStored') : t('settingsUi.passwordLabel')"
               required
             />
-            <small v-if="yazio?.configured">Gespeichert · wird niemals angezeigt</small>
+            <small v-if="yazio?.configured">{{ t('settingsUi.storedNever') }}</small>
           </label>
           <template v-if="!yazio?.configured">
             <label class="field">
-              Erster Datenimport von
+              {{ t('settingsUi.firstImportFrom') }}
               <DateInput v-model="yazioHistoryFrom" required :disabled="!yazioAvailable" />
             </label>
             <label class="field">
-              Bis
+              {{ t('settingsUi.to') }}
               <DateInput v-model="yazioHistoryTo" required :disabled="!yazioAvailable" />
             </label>
-            <p class="table-secondary">Wähle den Zeitraum aus, aus dem deine bisherigen YAZIO-Daten übernommen werden sollen. Tage ohne Einträge werden übersprungen.</p>
+            <p class="table-secondary">{{ t('settingsUi.historyHelp') }}</p>
           </template>
           <button
             class="button"
             type="submit"
             :disabled="savingYazio || !yazioCredentialsComplete || !yazioAvailable"
           >
-            {{ savingYazio ? 'Verbindung wird geprüft …' : yazio?.configured ? 'Verbindung aktualisieren' : 'Verbindung einrichten' }}
+            {{ savingYazio ? t('settingsUi.checkConnection') : yazio?.configured ? t('settingsUi.updateConnection') : t('settingsUi.setupConnection') }}
           </button>
         </form>
       </section>
 
       <section class="card form-card" style="margin-top: 1rem">
-        <h2>Import-Tokens</h2>
-        <p>Tokens werden nur einmal angezeigt und danach ausschließlich gehasht gespeichert.</p>
-        <div class="filters"><label class="field">Bezeichnung<input v-model="tokenLabel" /></label><button class="button" type="button" @click="createToken">Token erzeugen</button></div>
-        <div v-if="newToken" class="card" style="padding: 1rem; margin-top: 1rem"><strong>Jetzt sicher kopieren:</strong><code style="display: block; overflow-wrap: anywhere; margin-top: .5rem">{{ newToken }}</code></div>
-        <div class="table-scroll"><table><thead><tr><th>Bezeichnung</th><th>Präfix</th><th>Letzte Verwendung</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? formatGermanDateTime(token.last_used_at) : 'nie' }}</td><td><button v-if="!token.revoked_at" class="text-button" type="button" @click="revokeToken(token.id)">Widerrufen</button><span v-else>Widerrufen</span></td></tr></tbody></table></div>
+        <h2>{{ t('settingsUi.tokensTitle') }}</h2>
+        <p>{{ t('settingsUi.tokensDescription') }}</p>
+        <div class="filters"><label class="field">{{ t('settingsUi.tokenLabel') }}<input v-model="tokenLabel" /></label><button class="button" type="button" @click="createToken">{{ t('settingsUi.createToken') }}</button></div>
+        <div v-if="newToken" class="card" style="padding: 1rem; margin-top: 1rem"><strong>{{ t('settingsUi.copyNow') }}</strong><code style="display: block; overflow-wrap: anywhere; margin-top: .5rem">{{ newToken }}</code></div>
+        <div class="table-scroll"><table><thead><tr><th>{{ t('settingsUi.tokenLabel') }}</th><th>{{ t('settingsUi.prefix') }}</th><th>{{ t('settingsUi.lastUsedLabel') }}</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? formatGermanDateTime(token.last_used_at) : t('settingsUi.never') }}</td><td><button v-if="!token.revoked_at" class="text-button" type="button" @click="revokeToken(token.id)">{{ t('settingsUi.revoke') }}</button><span v-else>{{ t('settingsUi.revoked') }}</span></td></tr></tbody></table></div>
       </section>
 
       <section v-if="auth.user?.is_admin" class="card form-card" style="margin-top: 1rem">
-        <h2>Benutzerverwaltung</h2>
-        <p>Einladungslinks sind sieben Tage gültig und können genau einmal verwendet werden. Der eingeladene Benutzer wählt sein Passwort selbst.</p>
-        <button class="button" type="button" @click="createInvitation">Einladungslink erzeugen</button>
+        <h2>{{ t('settingsUi.adminTitle') }}</h2>
+        <p>{{ t('settingsUi.adminDescription') }}</p>
+        <button class="button" type="button" @click="createInvitation">{{ t('settingsUi.createInvitation') }}</button>
         <div v-if="invitationUrl" class="invitation-result">
-          <strong>Link jetzt sicher weitergeben:</strong>
+          <strong>{{ t('settingsUi.shareLink') }}</strong>
           <code>{{ invitationUrl }}</code>
-          <button class="button secondary" type="button" @click="copyInvitation">Kopieren</button>
+          <button class="button secondary" type="button" @click="copyInvitation">{{ t('common.copy') }}</button>
         </div>
         <UserManagement
           :users="users"
@@ -840,8 +870,8 @@ function passkeyDeviceLabel(passkey: Passkey) {
         />
         <div v-if="invitations.length" class="table-scroll" style="margin-top: 1rem">
           <table>
-            <thead><tr><th>Erstellt</th><th>Gültig bis</th><th>Status</th><th></th></tr></thead>
-            <tbody><tr v-for="item in invitations" :key="item.id"><td>{{ formatGermanDateTime(item.created_at) }}</td><td>{{ formatGermanDateTime(item.expires_at) }}</td><td>{{ item.used_at ? 'Verwendet' : item.revoked_at ? 'Widerrufen' : 'Offen' }}</td><td><button v-if="!item.used_at && !item.revoked_at" class="text-button" type="button" @click="revokeInvitation(item.id)">Widerrufen</button></td></tr></tbody>
+            <thead><tr><th>{{ t('settingsUi.adminCreated') }}</th><th>{{ t('settingsUi.validUntil') }}</th><th>{{ t('settingsUi.invitationStatus') }}</th><th></th></tr></thead>
+            <tbody><tr v-for="item in invitations" :key="item.id"><td>{{ formatGermanDateTime(item.created_at) }}</td><td>{{ formatGermanDateTime(item.expires_at) }}</td><td>{{ item.used_at ? t('settingsUi.used') : item.revoked_at ? t('settingsUi.revoked') : t('settingsUi.open') }}</td><td><button v-if="!item.used_at && !item.revoked_at" class="text-button" type="button" @click="revokeInvitation(item.id)">{{ t('settingsUi.revoke') }}</button></td></tr></tbody>
           </table>
         </div>
       </section>

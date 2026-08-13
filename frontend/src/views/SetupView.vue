@@ -2,8 +2,9 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { ApiError } from '../api'
+import { ApiError, localizeApiError } from '../api'
 import { isoDateInTimeZone } from '../date-format'
+import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import {
   createEmptyTargetDraft,
@@ -11,6 +12,8 @@ import {
   TARGET_LIMITS,
   TargetValidationError,
 } from '../target-form'
+
+const t = i18n.global.t.bind(i18n.global)
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -29,9 +32,11 @@ async function submit() {
     await router.replace({ name: 'overview' })
   } catch (cause) {
     error.value =
-      cause instanceof ApiError || cause instanceof TargetValidationError
-        ? cause.message
-        : 'Die Einrichtung konnte nicht abgeschlossen werden.'
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'setup.setupFailed')
+        : cause instanceof TargetValidationError
+          ? cause.message
+          : t('setup.setupFailed')
   } finally {
     saving.value = false
   }
@@ -44,8 +49,7 @@ async function signOut() {
     await auth.logout()
     await router.replace({ name: 'login' })
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? cause.message : 'Abmelden ist fehlgeschlagen.'
+    error.value = cause instanceof ApiError ? localizeApiError(cause, 'setup.logoutFailed') : t('setup.logoutFailed')
   } finally {
     signingOut.value = false
   }
@@ -58,21 +62,18 @@ async function signOut() {
       <header class="setup-heading">
         <img class="setup-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
         <div>
-          <small>CaloGraph einrichten</small>
-          <h1 id="setup-title">Willkommen bei CaloGraph</h1>
+          <small>{{ t('setup.smallTitle') }}</small>
+          <h1 id="setup-title">{{ t('setup.title') }}</h1>
         </div>
       </header>
 
-      <p class="setup-introduction">
-        Bevor es losgeht, benötigen wir zwei Werte von dir. Sie werden verwendet, um deine
-        Kalorien- und Proteinauswertungen zu berechnen.
-      </p>
+      <p class="setup-introduction">{{ t('setup.introduction') }}</p>
 
       <form class="setup-form" @submit.prevent="submit">
         <div v-if="error" class="setup-error" role="alert">{{ error }}</div>
 
         <label class="field">
-          Kalorienbudget pro Tag
+          {{ t('setup.caloriesPerDay') }}
           <span class="unit-input">
             <input
               v-model.number="target.calories_kcal"
@@ -87,7 +88,7 @@ async function signOut() {
         </label>
 
         <label class="field">
-          Proteinziel pro Tag
+          {{ t('setup.proteinPerDay') }}
           <span class="unit-input">
             <input
               v-model.number="target.protein_g"
@@ -102,10 +103,10 @@ async function signOut() {
         </label>
 
         <details class="setup-optional">
-          <summary>Weitere Ziele festlegen</summary>
+          <summary>{{ t('setup.moreGoals') }}</summary>
           <div class="setup-optional-grid">
             <label class="field">
-              Erhaltungsbedarf
+              {{ t('setup.maintenance') }}
               <span class="unit-input">
                 <input
                   v-model.number="target.maintenance_kcal"
@@ -114,15 +115,12 @@ async function signOut() {
                   :min="TARGET_LIMITS.maintenanceMin"
                   step="0.001"
                 />
-                <span>kcal</span>
+                <span>{{ t('common.kcal') }}</span>
               </span>
-              <small>
-                Geschätzte Kalorienmenge für ein ungefähr stabiles Gewicht; dein Budget kann
-                darunter, darauf oder darüber liegen.
-              </small>
+              <small>{{ t('setup.optional') }}</small>
             </label>
             <label class="field">
-              Kohlenhydrate
+              {{ t('setup.carbs') }}
               <span class="unit-input">
                 <input
                   v-model.number="target.carbs_g"
@@ -131,11 +129,11 @@ async function signOut() {
                   :min="TARGET_LIMITS.nutrientMin"
                   step="1"
                 />
-                <span>g</span>
+                <span>{{ t('common.grams') }}</span>
               </span>
             </label>
             <label class="field">
-              Fett
+              {{ t('setup.fat') }}
               <span class="unit-input">
                 <input
                   v-model.number="target.fat_g"
@@ -144,11 +142,11 @@ async function signOut() {
                   :min="TARGET_LIMITS.nutrientMin"
                   step="1"
                 />
-                <span>g</span>
+                <span>{{ t('common.grams') }}</span>
               </span>
             </label>
             <label class="field">
-              Ballaststoffe
+              {{ t('setup.fiber') }}
               <span class="unit-input">
                 <input
                   v-model.number="target.fiber_g"
@@ -157,18 +155,16 @@ async function signOut() {
                   :min="TARGET_LIMITS.nutrientMin"
                   step="1"
                 />
-                <span>g</span>
+                <span>{{ t('common.grams') }}</span>
               </span>
             </label>
           </div>
         </details>
 
-        <p class="setup-note">
-          Du kannst diese Werte später jederzeit unter „Budgets & Ziele“ ändern.
-        </p>
+        <p class="setup-note">{{ t('setup.note') }}</p>
 
         <button class="button setup-submit" type="submit" :disabled="saving || signingOut">
-          {{ saving ? 'Einrichtung wird gespeichert …' : 'Einrichtung abschließen' }}
+          {{ saving ? t('setup.saving') : t('setup.finish') }}
         </button>
         <button
           class="setup-signout"
@@ -176,7 +172,7 @@ async function signOut() {
           :disabled="saving || signingOut"
           @click="signOut"
         >
-          {{ signingOut ? 'Abmeldung läuft …' : 'Abmelden' }}
+          {{ signingOut ? t('setup.loggingOut') : t('navigation.logout') }}
         </button>
       </form>
     </section>

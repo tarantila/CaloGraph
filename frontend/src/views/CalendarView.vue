@@ -9,10 +9,13 @@ import {
 } from '@phosphor-icons/vue'
 import { computed, onMounted, ref } from 'vue'
 
-import { api, ApiError } from '../api'
+import { api, localizeApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDayMonth, formatGermanWeekday } from '../date-format'
+import { createDateFormatter, createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint } from '../types'
+
+const t = i18n.global.t.bind(i18n.global)
 
 const now = new Date()
 const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1)
@@ -20,16 +23,23 @@ const selectedMonth = ref(new Date(currentMonth))
 const days = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
-const labels: Record<string, string> = {
-  under_budget: 'Im Budget',
-  over_budget: 'Über Budget',
-  above_maintenance: 'Über Budget und Erhaltungsbedarf',
-  probably_incomplete: 'Kalorienwert fehlt',
-  no_target: 'Kein Ziel festgelegt',
-  no_data: 'Keine Daten',
+const classificationKeys: Record<string, string> = {
+  under_budget: 'calendar.withinBudget',
+  over_budget: 'calendar.overBudget',
+  above_maintenance: 'calendar.overMaintenance',
+  probably_incomplete: 'daily.withoutCalories',
+  no_target: 'calendar.noTarget',
+  no_data: 'calendar.noData',
 }
-const format = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 })
-const monthFormat = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' })
+function classificationLabel(value: string | undefined) {
+  return t(classificationKeys[value ?? 'no_data'] ?? 'calendar.noData')
+}
+
+function dayUnit(count: number) {
+  return count === 1 ? t('common.day') : t('common.days')
+}
+const format = createNumberFormatter({ maximumFractionDigits: 0 })
+const monthFormat = createDateFormatter({ month: 'long', year: 'numeric' })
 
 function dateString(value: Date) {
   const year = value.getFullYear()
@@ -61,7 +71,7 @@ function calorieProgressLabel(day: DailyPoint) {
   const calories = calorieValue(day)
   const budget = budgetValue(day)
   if (calories == null || budget == null) return ''
-  return `${format.format(calories)} von ${format.format(budget)} kcal Tagesbudget`
+  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${t('charts.dailyBudget')}`
 }
 
 function monthRange() {
@@ -86,8 +96,7 @@ async function loadCalendar() {
       )
     ).days
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? cause.message : 'Kalender konnte nicht geladen werden.'
+    error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
     loading.value = false
   }
@@ -132,15 +141,15 @@ const averageCalories = computed(() => {
 
 <template>
   <div class="page-heading">
-    <div><h1>Kalender</h1><p>Kalorienbudget und Datenabdeckung Tag für Tag – ohne moralische Bewertung.</p></div>
-    <div class="month-navigation" aria-label="Kalendermonat auswählen">
-      <button type="button" aria-label="Vorheriger Monat" @click="changeMonth(-1)">
+    <div><h1>{{ t('calendar.title') }}</h1><p>{{ t('calendar.description') }}</p></div>
+    <div class="month-navigation" :aria-label="t('calendar.chooseMonth')">
+      <button type="button" :aria-label="t('calendar.previous')" @click="changeMonth(-1)">
         <PhCaretLeft :size="17" weight="bold" />
       </button>
       <strong>{{ monthLabel }}</strong>
       <button
         type="button"
-        aria-label="Nächster Monat"
+        :aria-label="t('calendar.next')"
         :disabled="isCurrentMonth"
         @click="changeMonth(1)"
       >
@@ -150,26 +159,26 @@ const averageCalories = computed(() => {
   </div>
 
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
-  <div v-else-if="loading" class="dashboard-loading">Kalender wird geladen …</div>
+  <div v-else-if="loading" class="dashboard-loading">{{ t('calendar.loading') }}</div>
   <template v-else>
-    <section class="insight-strip" aria-label="Kalenderkennzahlen">
+    <section class="insight-strip" :aria-label="t('calendar.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>Erfasste Tage</small><strong>{{ recordedDays.length }} von {{ days.length }}</strong></span>
+        <span><small>{{ t('calendar.recorded') }}</small><strong>{{ recordedDays.length }} {{ t('common.of') }} {{ days.length }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhFire :size="20" weight="duotone" /></span>
-        <span><small>Über Budget</small><strong>{{ overBudgetDays.length }} {{ overBudgetDays.length === 1 ? 'Tag' : 'Tage' }}</strong></span>
+        <span><small>{{ t('calendar.overBudget') }}</small><strong>{{ overBudgetDays.length }} {{ dayUnit(overBudgetDays.length) }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>Ø Kalorien</small><strong>{{ averageCalories == null ? '–' : `${format.format(averageCalories)} kcal` }}</strong></span>
+        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : format.format(averageCalories) + ' kcal' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon red"><PhWarningCircle :size="20" weight="duotone" /></span>
         <span>
-          <small>Über Budget und Erhaltungsbedarf</small>
-          <strong>{{ maintenanceConfigured ? `${aboveMaintenanceDays.length} ${aboveMaintenanceDays.length === 1 ? 'Tag' : 'Tage'}` : '–' }}</strong>
+          <small>{{ t('calendar.overMaintenance') }}</small>
+          <strong>{{ maintenanceConfigured ? `${aboveMaintenanceDays.length} ${dayUnit(aboveMaintenanceDays.length)}` : '–' }}</strong>
         </span>
       </article>
     </section>
@@ -177,14 +186,14 @@ const averageCalories = computed(() => {
     <section class="card calendar-card">
       <div class="section-card-header calendar-card-header">
         <div>
-          <h2>Tagesübersicht</h2>
-          <p>Grün liegt im Budget, Orange darüber und Rot über Budget und optionalem Erhaltungsbedarf.</p>
+          <h2>{{ t('calendar.overview') }}</h2>
+          <p>{{ t('calendar.legend') }}</p>
         </div>
-        <div class="calendar-legend" aria-label="Kalenderlegende">
-          <span><i class="under"></i>Im Budget</span>
-          <span><i class="over"></i>Über Budget</span>
-          <span><i class="maintenance"></i>Über Budget und Erhaltungsbedarf</span>
-          <span><i class="missing"></i>Keine Daten</span>
+        <div class="calendar-legend" :aria-label="t('calendar.legend')">
+          <span><i class="under"></i>{{ t('calendar.withinBudget') }}</span>
+          <span><i class="over"></i>{{ t('calendar.overBudget') }}</span>
+          <span><i class="maintenance"></i>{{ t('calendar.overMaintenance') }}</span>
+          <span><i class="missing"></i>{{ t('calendar.noData') }}</span>
         </div>
       </div>
       <div class="calendar-grid">
@@ -192,18 +201,18 @@ const averageCalories = computed(() => {
           v-for="day in days"
           :key="day.date"
           :class="['calendar-day', day.classification]"
-          :aria-label="`${formatGermanDate(day.date)}: ${labels[day.classification ?? 'no_data']}`"
+          :aria-label="`${formatGermanDate(day.date)}: ${classificationLabel(day.classification)}`"
         >
           <div class="calendar-day-heading">
             <strong>{{ formatGermanWeekday(day.date) }}</strong>
             <time :datetime="day.date">{{ formatGermanDayMonth(day.date) }}</time>
           </div>
           <b>{{ calorieValue(day) == null ? '–' : format.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
-          <span>{{ labels[day.classification ?? 'no_data'] }}</span>
+          <span>{{ classificationLabel(day.classification) }}</span>
           <small v-if="day.target_kcal != null" class="calendar-day-reference">
-            Budget {{ format.format(Number(day.target_kcal)) }}
+            {{ t('calendar.budget', { value: format.format(Number(day.target_kcal)) }) }}
             <template v-if="day.maintenance_kcal != null">
-              · Erhaltung {{ format.format(Number(day.maintenance_kcal)) }}
+              · {{ t('setup.maintenance') }} {{ format.format(Number(day.maintenance_kcal)) }}
             </template>
             kcal
           </small>
@@ -219,7 +228,7 @@ const averageCalories = computed(() => {
             {{ format.format(calorieProgress(day)! * 100) }} %
           </progress>
         </article>
-        <div v-if="!days.length" class="empty">Für diesen Monat liegen keine Kalendertage vor.</div>
+        <div v-if="!days.length" class="empty">{{ t('calendar.noDays') }}</div>
       </div>
     </section>
   </template>

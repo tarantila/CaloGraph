@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import router from '../src/router'
+import { i18n, setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 
 const user = {
@@ -73,15 +74,80 @@ describe('first-run target routing', () => {
     expect(useAuthStore().needsTargetSetup).toBe(false)
   })
 
-  it('leaves public login and recovery routes available during setup', async () => {
+  it('leaves public login and recovery routes in the public English locale during setup', async () => {
     const auth = useAuthStore()
     auth.user = user
     auth.needsTargetSetup = true
+    const pendingProfileGeneration = auth.beginProfileUpdate()
+    setLocale('de')
     const fetchMock = vi.spyOn(globalThis, 'fetch')
 
     await router.push('/recovery')
 
+    expect(auth.commitProfileUpdate(pendingProfileGeneration, user)).toBe(false)
     expect(router.currentRoute.value.name).toBe('recovery')
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
+  })
+
+  it('does not let a cancelled protected restore overwrite the public locale', async () => {
+    let resolveAuth!: (response: Response) => void
+    const pendingAuth = new Promise<Response>((resolve) => { resolveAuth = resolve })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) return pendingAuth
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const protectedNavigation = router.push('/tage')
+    await Promise.resolve()
+    await router.push('/recovery')
+    expect(i18n.global.locale.value).toBe('en')
+
+    resolveAuth(new Response(JSON.stringify(user), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await protectedNavigation
+
+    expect(router.currentRoute.value.name).toBe('recovery')
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
+  })
+
+  it('preserves a pending profile update during protected navigation restore', async () => {
+    const auth = useAuthStore()
+    auth.user = user
+    auth.needsTargetSetup = false
+    const pendingGeneration = auth.beginProfileUpdate('en')
+    let release!: () => void
+    const blocker = new Promise<void>((resolve) => { release = resolve })
+    const pendingSave = auth.enqueueProfileUpdate(pendingGeneration, async () => {
+      await blocker
+      return { ...user, language: 'en' }
+    })
+    await Promise.resolve()
+    setLocale('de')
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await router.push('/tage')
+
+    release()
+    const savedUser = await pendingSave
+    expect(auth.commitProfileUpdate(pendingGeneration, savedUser!)).toBe(true)
+    expect(auth.user?.language).toBe('en')
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
   })
 })

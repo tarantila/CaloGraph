@@ -1,15 +1,19 @@
 import { createPinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import LoginView from '../src/views/LoginView.vue'
+import { PUBLIC_LOCALE, setLocale } from '../src/i18n'
 
 describe('LoginView', () => {
+  beforeEach(() => {
+    setLocale(PUBLIC_LOCALE)
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
   })
-
   it('shows the password form only after selecting the sign-in method', async () => {
     vi.stubGlobal('isSecureContext', false)
     const router = createRouter({
@@ -25,13 +29,16 @@ describe('LoginView', () => {
     })
 
     expect(wrapper.get('h1').text()).toBe('CaloGraph')
+    expect(document.documentElement.lang).toBe('en')
+    expect(wrapper.text()).toContain('Sign in with password')
     expect(wrapper.findAll('input')).toHaveLength(0)
     expect(wrapper.text()).not.toContain('Gesundheitsdaten')
     expect(wrapper.text()).not.toContain('Registrieren')
+    expect(wrapper.find('.language-switcher').exists()).toBe(false)
 
     await wrapper.get('button.login-method-button').trigger('click')
 
-    expect(wrapper.get('h1').text()).toBe('Anmelden')
+    expect(wrapper.get('h1').text()).toBe('Sign in')
     expect(wrapper.findAll('input')).toHaveLength(2)
     expect(wrapper.get('input[autocomplete="username"]').element).toBe(document.activeElement)
 
@@ -56,6 +63,9 @@ describe('LoginView', () => {
       global: { plugins: [createPinia(), router] },
     })
 
-    expect(wrapper.text()).toContain('Mit Passkey anmelden')
+    expect(wrapper.text()).toContain('Sign in with passkey')
+    expect(document.documentElement.lang).toBe('en')
+    expect(wrapper.find('.language-switcher').exists()).toBe(false)
+    wrapper.unmount()
   })
 })
