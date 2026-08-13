@@ -5,6 +5,30 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-13
+
+### Added
+
+- German and English localization with persistent per-user language preferences.
+
+### Changed
+
+- Public authentication flows now use a consistent English interface; language
+  selection is managed from the authenticated account settings.
+- Weekly budget charts can highlight over-budget weeks and respect the
+  configured week start.
+- Mobile navigation and header branding were simplified.
+- Initial YAZIO history synchronization now provides clearer background progress
+  feedback.
+- CI pins the Playwright package and browser image to the same version.
+
+### Fixed
+
+- Authentication, session, CSRF, and profile/locale race conditions can no
+  longer let stale responses overwrite newer session state.
+- API errors now use stable problem types for localized frontend messages.
+- Localized setup E2E selectors correctly handle unit-bearing labels.
+
 ## [0.3.3] - 2026-08-12
 
 ### Changed
@@ -345,7 +369,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tarantila/CaloGraph/compare/v0.3.0...v0.3.1
