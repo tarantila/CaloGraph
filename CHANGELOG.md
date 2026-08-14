@@ -5,6 +5,24 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-14
+
+### Changed
+
+- CI now builds runtime images once and publishes the exact tested and scanned
+  artifacts instead of rebuilding them during publication.
+- Releases now use a gated manual promotion workflow that validates the exact
+  successful main build, immutable image digests, provenance, and SPDX
+  attestations before promoting version and latest tags.
+
+### Fixed
+
+- CSRF tokens now remain stable across browser tabs within the same session,
+  preventing one tab from invalidating another tab's authenticated mutations.
+- Stale CSRF state can recover once after an explicitly confirmed CSRF
+  validation failure without retrying mutations after transport, origin,
+  authentication, or server failures.
+
 ## [0.3.5] - 2026-08-14
 
 ### Added
@@ -395,7 +413,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...v0.3.3
