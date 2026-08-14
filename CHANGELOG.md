@@ -5,6 +5,32 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-14
+
+### Added
+
+- Account settings now allow users to change their password securely.
+- Budget and target history entries can now be removed with protected history
+  relinking and confirmation.
+
+### Changed
+
+- YAZIO initial-import progress and connection feedback are now shown directly
+  in the YAZIO account section.
+- Mobile form controls use touch-friendly input sizing to avoid unintended
+  browser focus zoom.
+
+### Fixed
+
+- Transient network, proxy, and server errors no longer incorrectly invalidate
+  authenticated sessions.
+- Short transport interruptions on idempotent reads are retried once while
+  mutating requests are never automatically repeated.
+- Session restore and CSRF refresh handling is more resilient to concurrent and
+  stale requests.
+- Target history deletion now preserves consistent validity ranges and user
+  isolation.
+
 ## [0.3.4] - 2026-08-13
 
 ### Added
@@ -369,7 +395,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tarantila/CaloGraph/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tarantila/CaloGraph/compare/v0.3.1...v0.3.2
