@@ -36,16 +36,18 @@ backend, migration, browser, backup, and restore checks.
 
 ## Image validation and publication
 
-Pull requests and ordinary branch pushes receive only read access. GitHub
-builds both runtime targets locally, scans the OS and application packages with
-Trivy, emits SPDX JSON SBOMs, and then runs browser and production-smoke tests
-against those exact prebuilt images.
+Pull requests and pushes to `main` receive only read access in the quality
+jobs. GitHub builds both runtime targets locally, scans the OS and application
+packages with Trivy, emits SPDX JSON SBOMs, and then runs browser and
+production-smoke tests against those exact prebuilt images.
 
-Only a successful push to `main` or a SemVer-style `vX.Y.Z` tag starts the
-separate publication job with package and attestation permissions. Release
-tags must exactly match the backend and frontend application versions. The job
-rebuilds candidates from the trusted commit, then applies the same exact-image
-tests and high/critical Trivy gate before it signs in to GHCR.
+Only a successful push to `main` starts the separate publication job with
+package and attestation permissions. Releases are started manually through the
+trusted `workflow_dispatch` workflow from `main`. Release versions must exactly
+match the backend, frontend, and changelog versions. Main CI builds and tests
+the candidate once; the release workflow only accepts that successful Main-CI
+run and its attested immutable digests before promoting them. It does not
+rebuild or retest release images.
 
 Published names and tags are:
 
@@ -54,21 +56,32 @@ Published names and tags are:
 - `edge` for the current successful `main` image
 - the exact `vX.Y.Z` tag plus `latest` for a successful release tag
 
-The workflow first publishes only the immutable `sha-COMMIT` tags. GitHub's
-Sigstore-backed artifact attestation service then signs build provenance and
-the SPDX SBOM for those image digests. Only after every required attestation
-succeeds does the workflow promote the exact same local image to `edge`, or to
-the release tag and `latest`. A failed attestation therefore cannot move a
-mutable deployment tag. The SBOM files are also retained as workflow
-artifacts.
-
+The workflow first publishes a run-scoped staging tag and then creates or
+reuses the immutable `sha-COMMIT` tag only when the digests match exactly.
+GitHub's Sigstore-backed artifact attestation service then signs build
+provenance and the SPDX SBOM for those image digests. Only after every required
+attestation succeeds does the workflow promote the exact same local image to
+`edge`, or to the release tag and `latest`. A failed attestation therefore
+cannot move a mutable deployment tag. The SBOM files are also retained as
+workflow artifacts.
 GitHub does not offer artifact attestations to private repositories owned by a
 personal account. The workflow therefore keeps private pre-publication `main`
 pushes green, retains their SBOM artifacts, and skips only the attestation
 steps. It refuses to publish a release tag while the repository is private.
-Once the repository is public, the same attestation steps activate
-automatically. Create the release tag only after that visibility change so the
-release and `latest` digest receives provenance and SBOM attestations.
+After the repository becomes public, the same attestation steps activate
+automatically. A release commit published while private must pass a new `main`
+CI run after visibility change before the release workflow is dispatched;
+earlier private images have no qualifying attestations. Start the manual
+release only after that successful rerun so release and `latest` receive
+provenance and SBOM attestations.
+Repository hardening should additionally protect `v*` tags with a ruleset that
+restricts updates and deletions. This is not a release-workflow trust-boundary
+requirement after the release flow was changed to `workflow_dispatch`, because
+the workflow is accepted only from `refs/heads/main`. Protecting `main` with
+required checks is also recommended so the trusted release scripts remain
+reviewed and stable. GitHub Repository/Organization Immutable Releases must
+remain enabled; the release workflow verifies `.immutable == true` for existing
+and newly created releases. Neither repository rule is changed automatically.
 
 Verify a published image with the GitHub CLI:
 

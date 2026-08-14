@@ -46,6 +46,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload
 FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4 AS backend-runtime
 
 ARG APP_VERSION=development
+ARG APP_REVISION=unknown
 ARG APP_UID=10001
 ARG APP_GID=10001
 
@@ -53,7 +54,8 @@ LABEL org.opencontainers.image.title="CaloGraph Backend" \
       org.opencontainers.image.description="CaloGraph nutrition analytics API" \
       org.opencontainers.image.source="https://github.com/tarantila/CaloGraph" \
       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
-      org.opencontainers.image.version="${APP_VERSION}"
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -137,12 +139,14 @@ CMD ["npx", "playwright", "test"]
 FROM nginxinc/nginx-unprivileged:1.30.4-alpine@sha256:44e36330f74d4f3a1d4e222acca9e23b401fb87811a7597024502bb759c4dd49 AS frontend-runtime
 
 ARG APP_VERSION=development
+ARG APP_REVISION=unknown
 
 LABEL org.opencontainers.image.title="CaloGraph Frontend" \
       org.opencontainers.image.description="CaloGraph nutrition analytics web interface" \
       org.opencontainers.image.source="https://github.com/tarantila/CaloGraph" \
       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
-      org.opencontainers.image.version="${APP_VERSION}"
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
 
 USER root
 

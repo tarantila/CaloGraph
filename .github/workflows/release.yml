@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer release version, for example v0.3.6
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-promotions
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+    steps:
+      - name: Validate release invocation
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$EVENT_NAME" == workflow_dispatch ]] || {
+            printf 'Release darf nur per workflow_dispatch gestartet werden.\n' >&2
+            exit 1
+          }
+          [[ "$EVENT_REF" == refs/heads/main ]] || {
+            printf 'Release darf nur aus refs/heads/main gestartet werden.\n' >&2
+            exit 1
+          }
+          expected_workflow_ref="$REPOSITORY/.github/workflows/release.yml@refs/heads/main"
+          [[ "$WORKFLOW_REF" == "$expected_workflow_ref" ]] || {
+            printf 'Release-Workflow stammt nicht aus main: %s\n' "$WORKFLOW_REF" >&2
+            exit 1
+          }
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            printf 'Ungültige Release-Version: %s\n' "$RELEASE_VERSION" >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+
+      - name: Freeze current main commit
+        id: freeze
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          release_commit=$(git rev-parse 'refs/remotes/origin/main^{commit}')
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'RELEASE_COMMIT=%s\n' "$release_commit"
+          printf 'release_commit=%s\n' "$release_commit" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.freeze.outputs.release_commit }}
+          fetch-depth: 0
+
+      - name: Validate release commit and supply chain
+        id: validate
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+        run: scripts/release/validate-release.sh "$RELEASE_VERSION" "$RELEASE_COMMIT"
+
+      - name: Validate release metadata before tag creation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+        run: |
+          set -Eeuo pipefail
+          release_title="CaloGraph $RELEASE_VERSION"
+          git show "$RELEASE_COMMIT:CHANGELOG.md" >"$RUNNER_TEMP/CHANGELOG.md"
+          release_notes=$(CHANGELOG_FILE="$RUNNER_TEMP/CHANGELOG.md" scripts/release-notes.sh "${RELEASE_VERSION#v}")
+          release_error_file="$RUNNER_TEMP/release-metadata-error.txt"
+          if release_json=$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" \
+            2>"$release_error_file"); then
+            jq -e \
+              --arg title "$release_title" \
+              --arg tag "$RELEASE_VERSION" \
+              --arg notes "$release_notes" \
+              '(.name == $title)
+               and (.tag_name == $tag)
+               and (.draft == false)
+               and (.prerelease == false)
+               and (.immutable == true)
+               and ((.body == $notes) or (.body | rtrimstr("\n") == $notes))' \
+              <<<"$release_json" >/dev/null || {
+                printf 'Bestehender GitHub Release ist inkonsistent.\n' >&2
+                exit 1
+              }
+          else
+            status=$?
+            error=$(cat "$release_error_file")
+            case "$error" in
+              *"HTTP 404"*|*"Not Found"*) ;;
+              *) printf '%s\n' "$error" >&2; exit "$status" ;;
+            esac
+          fi
+
+      - name: Create or verify release tag
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+        run: |
+          set -Eeuo pipefail
+          tag_ref="refs/tags/$RELEASE_VERSION"
+          remote_tag_commit=$(git ls-remote origin "$tag_ref" "$tag_ref^{}" \
+            | awk -v tag="$tag_ref" '
+                $2 == tag {plain = $1}
+                $2 == tag "^{}" {peeled = $1}
+                END {print peeled ? peeled : plain}')
+          if [[ -n "$remote_tag_commit" ]]; then
+            [[ "$remote_tag_commit" == "$RELEASE_COMMIT" ]] || {
+              printf 'Release-Tag zeigt auf einen anderen Commit: %s\n' "$RELEASE_VERSION" >&2
+              exit 1
+            }
+          else
+            git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "CaloGraph $RELEASE_VERSION"
+            git push origin "refs/tags/$RELEASE_VERSION"
+          fi
+
+      - name: Sign in to GitHub Container Registry
+        run: |
+          printf '%s' "$GH_TOKEN" \
+            | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Promote verified immutable images
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          BACKEND_DIGEST: ${{ steps.validate.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ steps.validate.outputs.frontend_digest }}
+        run: |
+          scripts/release/promote-images.sh \
+            "$RELEASE_COMMIT" \
+            "$RELEASE_VERSION" \
+            "$BACKEND_DIGEST" \
+            "$FRONTEND_DIGEST"
+
+      - name: Create or verify GitHub Release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+        run: |
+          set -Eeuo pipefail
+          release_title="CaloGraph $RELEASE_VERSION"
+          git show "$RELEASE_COMMIT:CHANGELOG.md" >"$RUNNER_TEMP/CHANGELOG.md"
+          release_notes=$(CHANGELOG_FILE="$RUNNER_TEMP/CHANGELOG.md" scripts/release-notes.sh "${RELEASE_VERSION#v}")
+          release_error_file="$RUNNER_TEMP/release-create-error.txt"
+          if release_json=$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" \
+            2>"$release_error_file"); then
+            jq -e \
+              --arg title "$release_title" \
+              --arg tag "$RELEASE_VERSION" \
+              --arg notes "$release_notes" \
+              '(.name == $title)
+               and (.tag_name == $tag)
+               and (.draft == false)
+               and (.prerelease == false)
+               and (.immutable == true)
+               and ((.body == $notes) or (.body | rtrimstr("\n") == $notes))' \
+              <<<"$release_json" >/dev/null || {
+                printf 'Bestehender GitHub Release ist inkonsistent.\n' >&2
+                exit 1
+              }
+            printf 'Bestehenden GitHub Release %s verifiziert.\n' "$RELEASE_VERSION"
+          else
+            status=$?
+            error=$(cat "$release_error_file")
+            case "$error" in
+              *"HTTP 404"*|*"Not Found"*)
+                gh release create "$RELEASE_VERSION" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --verify-tag \
+                  --title "$release_title" \
+                  --notes "$release_notes"
+                ;;
+              *) printf '%s\n' "$error" >&2; exit "$status" ;;
+            esac
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" \
+            | jq -e \
+              --arg title "$release_title" \
+              --arg tag "$RELEASE_VERSION" \
+              '(.name == $title)
+               and (.tag_name == $tag)
+               and (.draft == false)
+               and (.prerelease == false)
+               and (.immutable == true)' >/dev/null

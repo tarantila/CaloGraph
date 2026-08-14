@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -197,16 +199,40 @@ jobs:
       CALOGRAPH_FRONTEND_IMAGE: calograph-frontend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build runtime images
+      - name: Verify project versions
+        shell: bash
         run: |
+          backend_version=$(awk -F'"' \
+            '$1 ~ /^version = / {print $2; exit}' backend/pyproject.toml)
+          frontend_version=$(awk -F'"' \
+            '$2 == "version" {print $4; exit}' frontend/package.json)
+          if [[ -z "$backend_version" || -z "$frontend_version" ]] \
+            || [[ "$backend_version" != "$frontend_version" ]]; then
+            printf \
+              'Backend-/Frontend-Version stimmen nicht überein: backend=%s frontend=%s\n' \
+              "$backend_version" "$frontend_version" >&2
+            exit 1
+          fi
+          if [[ ! "$backend_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'Ungültige Projektversion: %s\n' "$backend_version" >&2
+            exit 1
+          fi
+          printf 'Projektversion: %s\n' "$backend_version"
+      - name: Build runtime images
+        shell: bash
+        run: |
+          project_version=$(awk -F'"' \
+            '$1 ~ /^version = / {print $2; exit}' backend/pyproject.toml)
           docker build \
             --target backend-runtime \
-            --build-arg "APP_VERSION=ci-${GITHUB_SHA}" \
+            --build-arg "APP_VERSION=$project_version" \
+            --build-arg "APP_REVISION=$GITHUB_SHA" \
             --tag calograph-backend:ci \
             .
           docker build \
             --target frontend-runtime \
-            --build-arg "APP_VERSION=ci-${GITHUB_SHA}" \
+            --build-arg "APP_VERSION=$project_version" \
+            --build-arg "APP_REVISION=$GITHUB_SHA" \
             --tag calograph-frontend:ci \
             .
       - name: Scan backend runtime image
@@ -246,9 +272,10 @@ jobs:
           scanners: vuln
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-sboms-${{ github.sha }}
+          name: runtime-sboms-${{ github.run_id }}
           path: sbom/*.spdx.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
       - run: sudo apt-get update && sudo apt-get install --yes age
       - run: cp .env.example .env
@@ -263,17 +290,35 @@ jobs:
           CALOGRAPH_VERSION: ci
           PRODUCTION_SMOKE_USE_PREBUILT_IMAGES: "true"
         run: ./scripts/production-smoke.sh
+      - name: Export verified runtime images for main publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          mkdir -p image-bundle
+          docker save calograph-backend:ci calograph-frontend:ci \
+            | gzip > image-bundle/runtime-images.tar.gz
+      - name: Upload verified runtime images for main publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-images-${{ github.run_id }}
+          path: image-bundle/runtime-images.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
       - if: always()
         run: docker compose logs --no-color --tail=300
       - if: always()
         run: docker compose down --volumes --remove-orphans
 
   publish-images:
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: [containers-and-e2e]
+    concurrency:
+      # edge is shared across all successful main publications.
+      group: ci-publish-edge
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -284,103 +329,27 @@ jobs:
       CALOGRAPH_BACKEND_IMAGE: calograph-backend
       CALOGRAPH_FRONTEND_IMAGE: calograph-frontend
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Prepare image names and validate release tag
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: runtime-images-${{ github.run_id }}
+          path: image-bundle
+      - name: Load verified runtime images
+        shell: bash
+        run: |
+          gzip -dc image-bundle/runtime-images.tar.gz | docker load
+          docker image inspect \
+            calograph-backend:ci calograph-frontend:ci >/dev/null
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: runtime-sboms-${{ github.run_id }}
+          path: sbom
+      - name: Prepare image names
         id: images
         shell: bash
-        env:
-          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         run: |
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]] \
-            && [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            printf 'Refusing non-SemVer release tag: %s\n' "$GITHUB_REF_NAME" >&2
-            exit 1
-          fi
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]] \
-            && [[ "$REPOSITORY_PRIVATE" == "true" ]]; then
-            printf '%s\n' \
-              'Refusing release publication while the repository is private.' \
-              'Make the repository public before pushing the release tag.' >&2
-            exit 1
-          fi
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            expected_version=${GITHUB_REF_NAME#v}
-            backend_version=$(sed -nE \
-              's/^version = "([^"]+)"$/\1/p' backend/pyproject.toml | head -n 1)
-            frontend_version=$(sed -nE \
-              's/^  "version": "([^"]+)",$/\1/p' frontend/package.json | head -n 1)
-            if [[ -z "$backend_version" || -z "$frontend_version" ]] \
-              || [[ "$backend_version" != "$expected_version" ]] \
-              || [[ "$frontend_version" != "$expected_version" ]]; then
-              printf \
-                'Release tag/app version mismatch: tag=%s backend=%s frontend=%s\n' \
-                "$expected_version" "$backend_version" "$frontend_version" >&2
-              exit 1
-            fi
-          fi
           printf 'backend=ghcr.io/%s/calograph-backend\n' "$owner" >>"$GITHUB_OUTPUT"
           printf 'frontend=ghcr.io/%s/calograph-frontend\n' "$owner" >>"$GITHUB_OUTPUT"
-      - name: Build candidate images
-        run: |
-          docker build \
-            --target backend-runtime \
-            --build-arg "APP_VERSION=${GITHUB_REF_NAME}" \
-            --tag calograph-backend:publish \
-            .
-          docker build \
-            --target frontend-runtime \
-            --build-arg "APP_VERSION=${GITHUB_REF_NAME}" \
-            --tag calograph-frontend:publish \
-            .
-      - run: sudo apt-get update && sudo apt-get install --yes age
-      - run: cp .env.example .env
-      - run: ./scripts/init-secrets.sh
-      - name: Test the exact candidate images
-        env:
-          CALOGRAPH_VERSION: publish
-          E2E_USE_PREBUILT_IMAGES: "true"
-        run: ./scripts/e2e.sh
-      - name: Production-smoke the exact candidate images
-        env:
-          CALOGRAPH_VERSION: publish
-          PRODUCTION_SMOKE_USE_PREBUILT_IMAGES: "true"
-        run: ./scripts/production-smoke.sh
-      - name: Scan backend candidate
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: calograph-backend:publish
-          format: table
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-          scanners: vuln
-      - name: Scan frontend candidate
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: calograph-frontend:publish
-          format: table
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-          scanners: vuln
-      - run: mkdir -p sbom
-      - name: Create backend release SPDX SBOM
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: calograph-backend:publish
-          format: spdx-json
-          output: sbom/calograph-backend.spdx.json
-          vuln-type: os,library
-          scanners: vuln
-      - name: Create frontend release SPDX SBOM
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: calograph-frontend:publish
-          format: spdx-json
-          output: sbom/calograph-frontend.spdx.json
-          vuln-type: os,library
-          scanners: vuln
       - name: Sign in to GitHub Container Registry
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -392,34 +361,53 @@ jobs:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.images.outputs.frontend }}
         run: |
+          set -Eeuo pipefail
           immutable_tag="sha-${GITHUB_SHA}"
-          docker tag calograph-backend:publish "${BACKEND_IMAGE}:${immutable_tag}"
-          docker tag calograph-frontend:publish "${FRONTEND_IMAGE}:${immutable_tag}"
-          docker push "${BACKEND_IMAGE}:${immutable_tag}"
-          docker push "${FRONTEND_IMAGE}:${immutable_tag}"
+          run_tag="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          backend_digest=$(docker buildx imagetools inspect \
-            "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" |
-            awk '$1 == "Digest:" {print $2; exit}')
-          frontend_digest=$(docker buildx imagetools inspect \
-            "${FRONTEND_IMAGE}:sha-${GITHUB_SHA}" |
-            awk '$1 == "Digest:" {print $2; exit}')
-          [[ "$backend_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$frontend_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          inspect_digest() {
+            local image_ref=$1
+            local output
+            if output=$(docker buildx imagetools inspect "$image_ref" 2>&1); then
+              printf '%s\n' "$output" | awk '$1 == "Digest:" {print $2; exit}'
+            else
+              case "$output" in
+                *"not found"*|*"Not Found"*|*"no such manifest"*|*"No such manifest"*|*"MANIFEST_UNKNOWN"*|*"manifest unknown"*) return 2 ;;
+                *) printf '%s\n' "$output" >&2; return 1 ;;
+              esac
+            fi
+          }
+
+          publish_or_reuse() {
+            local image=$1
+            local run_ref="${image}:${run_tag}"
+            local immutable_ref="${image}:${immutable_tag}"
+            local local_digest
+            local existing_digest
+            docker push "$run_ref" >/dev/null
+            local_digest=$(inspect_digest "$run_ref")
+            [[ "$local_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if existing_digest=$(inspect_digest "$immutable_ref"); then
+              :
+            else
+              inspect_status=$?
+              [[ "$inspect_status" -eq 2 ]]
+              docker push "$immutable_ref" >/dev/null
+              existing_digest=$(inspect_digest "$immutable_ref")
+            fi
+            [[ "$existing_digest" == "$local_digest" ]]
+            printf '%s\n' "$existing_digest"
+          }
+
+          docker tag calograph-backend:ci "${BACKEND_IMAGE}:${run_tag}"
+          docker tag calograph-backend:ci "${BACKEND_IMAGE}:${immutable_tag}"
+          docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:${run_tag}"
+          docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:${immutable_tag}"
+          backend_digest=$(publish_or_reuse "$BACKEND_IMAGE")
+          frontend_digest=$(publish_or_reuse "$FRONTEND_IMAGE")
           printf 'backend_digest=%s\n' "$backend_digest" >>"$GITHUB_OUTPUT"
           printf 'frontend_digest=%s\n' "$frontend_digest" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: published-runtime-sboms-${{ github.sha }}
-          path: sbom/*.spdx.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Explain unavailable private-repository attestations
-        if: github.event.repository.private
-        run: |
-          printf '%s\n' \
-            'Skipping GitHub artifact attestations: personal private repositories are unsupported.' \
-            'The release tag must be published after the repository becomes public.'
+
       - name: Attest backend build provenance
         if: github.event.repository.private == false
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -450,7 +438,7 @@ jobs:
           subject-digest: ${{ steps.publish.outputs.frontend_digest }}
           sbom-path: sbom/calograph-frontend.spdx.json
           push-to-registry: true
-      - name: Promote verified image digests
+      - name: Promote verified digest to edge
         shell: bash
         env:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
@@ -458,28 +446,21 @@ jobs:
           BACKEND_DIGEST: ${{ steps.publish.outputs.backend_digest }}
           FRONTEND_DIGEST: ${{ steps.publish.outputs.frontend_digest }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tags=("$GITHUB_REF_NAME" "latest")
-          else
-            tags=("edge")
-          fi
+          set -Eeuo pipefail
+          docker tag calograph-backend:ci "${BACKEND_IMAGE}:edge"
+          docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:edge"
+          docker push "${BACKEND_IMAGE}:edge"
+          docker push "${FRONTEND_IMAGE}:edge"
 
-          for tag in "${tags[@]}"; do
-            docker tag calograph-backend:publish "${BACKEND_IMAGE}:${tag}"
-            docker tag calograph-frontend:publish "${FRONTEND_IMAGE}:${tag}"
-            docker push "${BACKEND_IMAGE}:${tag}"
-            docker push "${FRONTEND_IMAGE}:${tag}"
-
-            backend_promoted_digest=$(docker buildx imagetools inspect \
-              "${BACKEND_IMAGE}:${tag}" | awk '$1 == "Digest:" {print $2; exit}')
-            frontend_promoted_digest=$(docker buildx imagetools inspect \
-              "${FRONTEND_IMAGE}:${tag}" | awk '$1 == "Digest:" {print $2; exit}')
-            [[ "$backend_promoted_digest" == "$BACKEND_DIGEST" ]]
-            [[ "$frontend_promoted_digest" == "$FRONTEND_DIGEST" ]]
-          done
-      - if: always()
-        run: docker compose logs --no-color --tail=300
-      - if: always()
-        run: docker compose down --volumes --remove-orphans
+          backend_edge_digest=$(docker buildx imagetools inspect \
+            "${BACKEND_IMAGE}:edge" |
+            awk '$1 == "Digest:" {print $2; exit}')
+          frontend_edge_digest=$(docker buildx imagetools inspect \
+            "${FRONTEND_IMAGE}:edge" |
+            awk '$1 == "Digest:" {print $2; exit}')
+          [[ "$backend_edge_digest" == "$BACKEND_DIGEST" ]]
+          [[ "$frontend_edge_digest" == "$FRONTEND_DIGEST" ]]
+          printf 'backend_edge_digest=%s\n' "$backend_edge_digest" >>"$GITHUB_OUTPUT"
+          printf 'frontend_edge_digest=%s\n' "$frontend_edge_digest" >>"$GITHUB_OUTPUT"
       - if: always()
         run: docker logout ghcr.io
