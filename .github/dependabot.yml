@@ -46,6 +46,7 @@ updates:
     groups:
       container-bases:
         patterns: ["*"]
+        exclude-patterns: ["node"]
 
   - package-ecosystem: npm
     directory: /frontend
