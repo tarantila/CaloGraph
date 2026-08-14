@@ -1,7 +1,7 @@
 const de = {
   common: {
     save: 'Speichern', cancel: 'Abbrechen', close: 'Schließen', apply: 'Anwenden', back: 'Zurück',
-    loading: 'Wird geladen …', noData: 'Keine Daten', all: 'Alle', yes: 'Ja', no: 'Nein',
+    loading: 'Wird geladen …', tryAgain: 'Erneut versuchen', noData: 'Keine Daten', all: 'Alle', yes: 'Ja', no: 'Nein',
     days: 'Tage', daysDative: 'Tagen', day: 'Tag', of: 'von', kcal: 'kcal', grams: 'g', minutes: 'Min.', hours: 'Std.', deviation: 'Abweichung', above: 'über', below: 'unter',
     delete: 'Endgültig löschen', copy: 'Kopieren', copied: 'Kopiert', status: 'Status', actions: 'Aktionen',
     date: 'Datum', source: 'Quelle', period: 'Zeitraum', from: 'Von', to: 'Bis',
@@ -39,7 +39,7 @@ const de = {
     passkeyUnsupported: 'Passkeys werden von diesem Browser oder dieser Verbindung nicht unterstützt.', passkeyUnknown: 'Der Browser hat eine unbekannte Passkey-Antwort geliefert.', passwordMismatch: 'Die Passwörter stimmen nicht überein.',
   },
   errors: {
-    generic: 'Die Anfrage konnte nicht verarbeitet werden.', sessionExpired: 'Sitzung ist abgelaufen.',
+    generic: 'Die Anfrage konnte nicht verarbeitet werden.', connectionTitle: 'Verbindung nicht verfügbar', connectionFailed: 'Die Verbindung zu CaloGraph ist fehlgeschlagen. Bitte versuche es erneut.', sessionExpired: 'Sitzung ist abgelaufen.',
     invalidCredentials: 'Benutzername oder Passwort ist falsch.', invalidMfa: 'MFA-Code ist ungültig.', invalidInvitation: 'Einladung ist ungültig oder abgelaufen.',
     usernameTaken: 'Benutzername ist bereits vergeben.', validation: 'Eingabedaten sind ungültig.', invalidTimezone: 'Unbekannte IANA-Zeitzone.',
     rateLimited: 'Zu viele Anfragen. Bitte später erneut versuchen.', authRequired: 'Anmeldung erforderlich.',

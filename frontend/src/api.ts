@@ -5,6 +5,7 @@ let csrfToken: string | null =
   typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem('calograph_csrf')
 let authenticationSessionGeneration = 0
 let authenticationExpiredHandler: (() => void) | null = null
+let csrfRefreshEntry: { generation: number; promise: Promise<string> } | null = null
 const publicAuthenticationPaths: Record<string, true> = {
   '/auth/login': true,
   '/auth/mfa/totp/verify': true,
@@ -45,8 +46,43 @@ export class ApiError extends Error {
     public problemTitle?: string,
   ) {
     super(message)
+    this.name = 'ApiError'
   }
 }
+
+export class ApiTransportError extends Error {
+  constructor(message = 'Could not connect to CaloGraph') {
+    super(message)
+    this.name = 'ApiTransportError'
+  }
+}
+
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const GET_RETRY_DELAY_MS = 250
+function waitForGetRetry(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, GET_RETRY_DELAY_MS))
+}
+
+async function fetchWithTransportRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  method: string,
+): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch {
+    if (!IDEMPOTENT_METHODS.has(method)) {
+      throw new ApiTransportError('Could not connect to CaloGraph')
+    }
+    await waitForGetRetry()
+    try {
+      return await fetch(input, init)
+    } catch {
+      throw new ApiTransportError('Could not connect to CaloGraph')
+    }
+  }
+}
+
 
 export interface ApiErrorLocalizationOptions {
   problemTypeFallbacks?: Record<string, string>
@@ -59,6 +95,7 @@ export function localizeApiError(
   fallbackKey = 'errors.generic',
   options: ApiErrorLocalizationOptions = {},
 ): string {
+  if (error instanceof ApiTransportError) return i18n.global.t('errors.connectionFailed')
   if (!(error instanceof ApiError)) return i18n.global.t(fallbackKey)
   const key = error.problemType
     ? options.problemTypeFallbacks?.[error.problemType] ?? apiProblemMessages[error.problemType]
@@ -88,14 +125,25 @@ function notifyAuthenticationExpired(): void {
   authenticationExpiredHandler?.()
 }
 
-async function refreshCsrf(): Promise<string> {
-  const requestSessionGeneration = authenticationSessionGeneration
-  const response = await fetch('/api/v1/auth/csrf', { credentials: 'include' })
+async function requestCsrf(requestSessionGeneration: number): Promise<string> {
+  const response = await fetchWithTransportRetry(
+    '/api/v1/auth/csrf',
+    { credentials: 'include' },
+    'GET',
+  )
   if (!response.ok) {
-    if (response.status === 401 && requestSessionGeneration === authenticationSessionGeneration) {
+    const expired = response.status === 401
+    if (expired && requestSessionGeneration === authenticationSessionGeneration) {
       notifyAuthenticationExpired()
     }
-    throw new ApiError('Session expired', response.status, undefined, undefined, SESSION_EXPIRED_PROBLEM, undefined)
+    throw new ApiError(
+      expired ? 'Session expired' : `HTTP ${response.status}`,
+      response.status,
+      undefined,
+      undefined,
+      expired ? SESSION_EXPIRED_PROBLEM : undefined,
+      undefined,
+    )
   }
   const data = (await response.json()) as { csrf_token: string }
   if (requestSessionGeneration !== authenticationSessionGeneration) {
@@ -103,6 +151,22 @@ async function refreshCsrf(): Promise<string> {
   }
   setCsrfToken(data.csrf_token)
   return data.csrf_token
+}
+
+function refreshCsrf(): Promise<string> {
+  const generation = authenticationSessionGeneration
+  if (csrfRefreshEntry?.generation === generation) return csrfRefreshEntry.promise
+  const promise = requestCsrf(generation)
+  csrfRefreshEntry = { generation, promise }
+  void promise.then(
+    () => {
+      if (csrfRefreshEntry?.promise === promise) csrfRefreshEntry = null
+    },
+    () => {
+      if (csrfRefreshEntry?.promise === promise) csrfRefreshEntry = null
+    },
+  )
+  return promise
 }
 
 export async function ensureCsrfToken(): Promise<string> {
@@ -127,7 +191,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     headers.set('X-CSRF-Token', csrfToken ?? (await refreshCsrf()))
     requestSessionGeneration = authenticationSessionGeneration
   }
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' })
+  const response = await fetchWithTransportRetry(
+    `/api/v1${path}`,
+    { ...options, headers, credentials: 'include' },
+    method,
+  )
   if (response.status === 204) return undefined as T
   if (!response.ok) {
     if (

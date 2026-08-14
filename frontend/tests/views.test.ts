@@ -102,6 +102,42 @@ describe('main views', () => {
       '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true',
     )
   })
+  it('zeigt bei dauerhaftem Dashboard-Transportfehler einen lokalisierten Retry-Zustand', async () => {
+    const auth = useAuthStore()
+    auth.user = user
+    let failed = true
+    const summary = {
+      today: { date: '2026-07-19', calories_kcal: null, target_kcal: null, protein_g: null, tracking_status: 'no_data', tracking_reasons: [] },
+      week: { consumed_kcal: 0, budget_kcal: null, deviation_kcal: null, remaining_kcal: null },
+      protein_7d_average_g: null,
+      last_import_at: null,
+      data_start_date: null,
+      data_end_date: null,
+      data_day_count: 0,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/dashboard/summary' && failed) {
+        failed = false
+        return Promise.reject(new Error('temporary transport failure'))
+      }
+      if (path === '/dashboard/summary') return Promise.resolve(summary)
+      if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false })
+      return Promise.resolve({ points: [] })
+    })
+
+    const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('The request could not be processed.')
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Erneut versuchen')).toBe(true)
+    expect(auth.user).toEqual(user)
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Erneut versuchen')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Ernährungsüberblick')
+    expect(wrapper.text()).not.toContain('The request could not be processed.')
+    expect(auth.user).toEqual(user)
+  })
 
   it('renders the central overview in English after a locale switch', async () => {
     setLocale('en')

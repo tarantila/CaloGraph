@@ -55,6 +55,7 @@ router.beforeEach(async (to) => {
   }
   if (!(await auth.ensureUser(false))) {
     if (generation !== navigationGeneration) return false
+    if (auth.sessionRestoreUnavailable) return false
     return { name: 'login', query: { next: to.fullPath } }
   }
   if (generation !== navigationGeneration) return false

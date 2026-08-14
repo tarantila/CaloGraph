@@ -150,4 +150,29 @@ describe('first-run target routing', () => {
     expect(i18n.global.locale.value).toBe('en')
     expect(document.documentElement.lang).toBe('en')
   })
+  it('leitet bei Fresh-Load-Transportfehler nicht zum Login um', async () => {
+    const auth = useAuthStore()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'))
+
+    await router.push('/tage')
+
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(auth.user).toBeNull()
+    expect(auth.sessionRestoreUnavailable).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('hält eine bestehende Session bei Transportfehlern während Navigation', async () => {
+    const auth = useAuthStore()
+    auth.user = user
+    auth.needsTargetSetup = false
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'))
+
+    await router.push('/tage')
+
+    expect(router.currentRoute.value.name).toBe('daily')
+    expect(auth.user).toEqual(user)
+    expect(auth.sessionRestoreUnavailable).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })

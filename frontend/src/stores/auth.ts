@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-import { api, setCsrfToken } from '../api'
+import { ApiError, ApiTransportError, api, setCsrfToken } from '../api'
 import { applyUserLocale, PUBLIC_LOCALE, setLocale } from '../i18n'
 import type { User } from '../types'
 import {
@@ -14,12 +14,13 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   const mfaRequired = ref(false)
   const needsTargetSetup = ref<boolean | null>(null)
+  const sessionRestoreUnavailable = ref(false)
   let profileUpdateGeneration = 0
   let profileUpdatePending = false
   let profileUpdateQueue: Promise<void> = Promise.resolve()
-
   function setAuthenticatedUser(value: User, applyLocale = true): void {
     profileUpdateGeneration += 1
+    sessionRestoreUnavailable.value = false
     user.value = value
     if (applyLocale) applyUserLocale(value.language)
   }
@@ -31,6 +32,7 @@ export const useAuthStore = defineStore('auth', () => {
   function beginProfileUpdate(language?: string): number {
     profileUpdateGeneration += 1
     profileUpdatePending = false
+    sessionRestoreUnavailable.value = false
     if (user.value && (language === 'de' || language === 'en')) {
       user.value = { ...user.value, language }
     }
@@ -75,35 +77,50 @@ export const useAuthStore = defineStore('auth', () => {
     applyUserLocale(value.language)
     return true
   }
-
   function clearSession(): void {
     profileUpdateGeneration += 1
     profileUpdatePending = false
     user.value = null
     mfaRequired.value = false
     needsTargetSetup.value = null
+    sessionRestoreUnavailable.value = false
     setCsrfToken(null)
     setLocale(PUBLIC_LOCALE)
   }
 
+  function clearSessionRestoreError(): void {
+    sessionRestoreUnavailable.value = false
+  }
+
   async function ensureUser(applyLocale = true): Promise<boolean> {
     const generation = currentProfileUpdateGeneration()
+    sessionRestoreUnavailable.value = false
     try {
       const loadedUser = await api<User>('/auth/me')
       if (!isCurrentProfileUpdate(generation) || profileUpdatePending) return Boolean(user.value)
       setAuthenticatedUser(loadedUser, applyLocale)
-    } catch {
+    } catch (error) {
       if (!isCurrentProfileUpdate(generation) || profileUpdatePending) return Boolean(user.value)
-      clearSession()
-      return false
+      if (error instanceof ApiError && error.status === 401) {
+        clearSession()
+        return false
+      }
+      if (!user.value && (error instanceof ApiTransportError || error instanceof ApiError)) {
+        sessionRestoreUnavailable.value = true
+      }
+      return Boolean(user.value)
     }
     const restoreGeneration = currentProfileUpdateGeneration()
     if (needsTargetSetup.value === null) {
-      const targets = await api<unknown[]>('/settings/targets')
-      if (currentProfileUpdateGeneration() !== restoreGeneration || profileUpdatePending) {
+      try {
+        const targets = await api<unknown[]>('/settings/targets')
+        if (currentProfileUpdateGeneration() !== restoreGeneration || profileUpdatePending) {
+          return Boolean(user.value)
+        }
+        needsTargetSetup.value = targets.length === 0
+      } catch {
         return Boolean(user.value)
       }
-      needsTargetSetup.value = targets.length === 0
     }
     return true
   }
@@ -197,6 +214,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     mfaRequired,
     needsTargetSetup,
+    sessionRestoreUnavailable,
     ensureUser,
     applyCurrentUserLocale,
     login,
@@ -211,6 +229,7 @@ export const useAuthStore = defineStore('auth', () => {
     syncLoadedUser,
     commitProfileUpdate,
     clearSession,
+    clearSessionRestoreError,
     logout,
   }
 })

@@ -49,10 +49,26 @@ async function signOut() {
   await auth.logout()
   await router.push({ name: 'login' })
 }
+
+async function retrySessionRestore() {
+  auth.clearSessionRestoreError()
+  const currentPath =
+    typeof window === 'undefined'
+      ? router.currentRoute.value.fullPath
+      : `${window.location.pathname}${window.location.search}${window.location.hash}`
+  await router.replace(currentPath)
+}
 </script>
 
 <template>
-  <RouterView v-if="usesFocusedLayout" />
+  <main v-if="auth.sessionRestoreUnavailable && !auth.user" class="login-page">
+    <section class="card login-card" aria-labelledby="connection-error-title">
+      <h1 id="connection-error-title">{{ t('errors.connectionTitle') }}</h1>
+      <p role="alert">{{ t('errors.connectionFailed') }}</p>
+      <button class="button" type="button" @click="retrySessionRestore">{{ t('common.tryAgain') }}</button>
+    </section>
+  </main>
+  <RouterView v-else-if="usesFocusedLayout" />
   <div v-else class="app-shell">
     <aside :class="['sidebar', { open: menuOpen }]" :aria-label="t('navigation.aria')">
       <div class="brand">

@@ -3,7 +3,7 @@ import { PhArrowLeft, PhFingerprint, PhLockKey } from '@phosphor-icons/vue'
 import { nextTick, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ApiError, localizeApiError } from '../api'
+import { ApiError, ApiTransportError, localizeApiError } from '../api'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { isPasskeySupported, WebAuthnError } from '../webauthn'
@@ -41,7 +41,9 @@ async function submit() {
     if (completed) await router.replace(String(route.query.next ?? '/'))
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? localizeApiError(cause, 'auth.loginFailed') : t('auth.loginFailed')
+      cause instanceof ApiError || cause instanceof ApiTransportError
+        ? localizeApiError(cause, 'auth.loginFailed')
+        : t('auth.loginFailed')
   }
 }
 
@@ -52,7 +54,9 @@ async function submitMfa() {
     await router.replace(String(route.query.next ?? '/'))
   } catch (cause) {
     error.value =
-      cause instanceof ApiError ? localizeApiError(cause, 'auth.mfaFailed') : t('auth.mfaFailed')
+      cause instanceof ApiError || cause instanceof ApiTransportError
+        ? localizeApiError(cause, 'auth.mfaFailed')
+        : t('auth.mfaFailed')
   }
 }
 
@@ -69,7 +73,7 @@ async function submitPasskey() {
           : cause.code === 'unsupported'
             ? t('auth.passkeyUnsupported')
             : t('auth.passkeyFailed')
-    } else if (cause instanceof ApiError) {
+    } else if (cause instanceof ApiError || cause instanceof ApiTransportError) {
       error.value = localizeApiError(cause, 'auth.passkeyFailed', {
         problemTypeFallbacks: {
           'urn:calograph:problem:invalid-credentials': 'auth.passkeyFailed',

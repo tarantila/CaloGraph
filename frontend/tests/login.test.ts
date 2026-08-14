@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  ApiTransportError,
   api,
   setAuthenticationExpiredHandler,
   setCsrfToken,
@@ -17,6 +18,113 @@ describe('authentication store', () => {
     setCsrfToken(null)
     setAuthenticationExpiredHandler(null)
     setLocale(PUBLIC_LOCALE)
+  })
+  it('retryt einen GET-Transportfehler genau einmal', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(api<{ ok: boolean }>('/dashboard/summary')).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('gibt nach zwei GET-Transportfehlern einen ApiTransportError zurück', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'))
+
+    await expect(api('/dashboard/summary')).rejects.toBeInstanceOf(ApiTransportError)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('retryt HTTP-Fehler nicht', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+
+    await expect(api('/dashboard/summary')).rejects.toMatchObject({ status: 500 })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('retryt HTTP 401 nicht', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+
+    await expect(api('/dashboard/summary')).rejects.toMatchObject({ status: 401 })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it.each(['POST', 'PUT'])('retryt %s-Transportfehler niemals', async (method) => {
+    setCsrfToken('csrf')
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'))
+
+    await expect(api('/settings/profile', {
+      method,
+      body: JSON.stringify({ language: 'de' }),
+    })).rejects.toBeInstanceOf(ApiTransportError)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('retryt den CSRF-GET genau einmal, ohne die Mutation zu wiederholen', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'csrf' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(api('/settings/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ language: 'de' }),
+    })).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/auth/csrf')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/auth/csrf')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/settings/profile')
+  })
+  it('bündelt parallele CSRF-Refreshes derselben Session', async () => {
+    let resolveCsrf!: (response: Response) => void
+    const pendingCsrf = new Promise<Response>((resolve) => { resolveCsrf = resolve })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (input === '/api/v1/auth/csrf') return pendingCsrf
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    })
+
+    const first = api('/settings/profile', { method: 'PUT', body: JSON.stringify({ language: 'de' }) })
+    const second = api('/settings/profile', { method: 'PUT', body: JSON.stringify({ language: 'en' }) })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(fetchMock.mock.calls.filter(([input]) => input === '/api/v1/auth/csrf')).toHaveLength(1)
+
+    resolveCsrf(new Response(JSON.stringify({ csrf_token: 'csrf' }), { status: 200 }))
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }])
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('behandelt einen CSRF-Transportfehler ohne Sessionablauf', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'))
+
+    await expect(api('/settings/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ language: 'de' }),
+    })).rejects.toBeInstanceOf(ApiTransportError)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(expired).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
+  })
+
+  it('behandelt einen echten CSRF-401 weiterhin als Sessionablauf', async () => {
+    const expired = vi.fn()
+    setAuthenticationExpiredHandler(expired)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+
+    await expect(api('/settings/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ language: 'de' }),
+    })).rejects.toMatchObject({ status: 401 })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(expired).toHaveBeenCalledOnce()
   })
 
   it('stores the user returned by login', async () => {
@@ -275,6 +383,90 @@ describe('authentication store', () => {
     expect(auth.user).toBeNull()
     expect(auth.mfaRequired).toBe(false)
     expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
+  })
+  it('behält User und CSRF-State bei /auth/me-Transportfehlern', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        mfa_required: false,
+        user: { id: '1', username: 'admin', language: 'de', timezone: 'Europe/Berlin', week_starts_on: 0 },
+        csrf_token: 'csrf',
+      }), { status: 200 }))
+      .mockRejectedValue(new TypeError('fetch failed'))
+    const auth = useAuthStore()
+
+    await auth.login('admin', 'password-password')
+    expect(await auth.ensureUser()).toBe(true)
+    expect(auth.user?.username).toBe('admin')
+    expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('behält User bei einem /auth/me-HTTP-500', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        mfa_required: false,
+        user: { id: '1', username: 'admin', language: 'de', timezone: 'Europe/Berlin', week_starts_on: 0 },
+        csrf_token: 'csrf',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+    const auth = useAuthStore()
+
+    await auth.login('admin', 'password-password')
+    expect(await auth.ensureUser()).toBe(true)
+    expect(auth.user?.username).toBe('admin')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('markiert einen Fresh Load bei Transportfehlern als vorübergehend nicht bestimmbar', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'))
+    const auth = useAuthStore()
+
+    expect(await auth.ensureUser()).toBe(false)
+    expect(auth.user).toBeNull()
+    expect(auth.sessionRestoreUnavailable).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('behandelt einen Fresh Load bei HTTP-500 ebenfalls nicht als Logout', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+    const auth = useAuthStore()
+
+    expect(await auth.ensureUser()).toBe(false)
+    expect(auth.user).toBeNull()
+    expect(auth.sessionRestoreUnavailable).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+  it('überschreibt einen neuen Login nicht mit einem alten /auth/me-Transportfehler', async () => {
+    let rejectAuth!: (reason: unknown) => void
+    const pendingAuth = new Promise<Response>((_, reject) => { rejectAuth = reject })
+    let authCalls = 0
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/auth/me')) {
+        authCalls += 1
+        if (authCalls === 1) return pendingAuth
+        throw new TypeError('fetch failed')
+      }
+      return new Response(JSON.stringify({
+        mfa_required: false,
+        user: { id: '2', username: 'new-user', language: 'en', timezone: 'Europe/Berlin', week_starts_on: 0 },
+        csrf_token: 'new-csrf',
+      }), { status: 200 })
+    })
+    const auth = useAuthStore()
+    const staleRestore = auth.ensureUser()
+    await Promise.resolve()
+    await expect(auth.login('new-user', 'password-password')).resolves.toBe(true)
+    rejectAuth(new TypeError('fetch failed'))
+
+    await expect(staleRestore).resolves.toBe(true)
+    expect(auth.user?.username).toBe('new-user')
+    expect(i18n.global.locale.value).toBe('en')
+    expect(sessionStorage.getItem('calograph_csrf')).toBe('new-csrf')
+    expect(auth.sessionRestoreUnavailable).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('signals an expired session on protected 401 responses only', async () => {

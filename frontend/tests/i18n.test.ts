@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { ApiError, localizeApiError } from '../src/api'
+import { ApiError, ApiTransportError, localizeApiError } from '../src/api'
 
 import { formatGermanDayMonth, formatGermanDate, parseGermanDate } from '../src/date-format'
 import {
@@ -61,6 +61,16 @@ describe('interface language', () => {
     })).toBe('The password does not meet the security requirements. Use an unusual long passphrase or a password manager.')
     expect(localizeApiError(new ApiError('Recovery-token detail', 400), 'errors.generic', { preserveDetail: true })).toBe('Recovery-token detail')
     expect(localizeApiError(new ApiError('Legacy detail', 400))).toBe('Legacy detail')
+  })
+  it('lokalisiert Transportfehler ohne native Browsermeldung', () => {
+    setLocale('de')
+    expect(localizeApiError(new ApiTransportError())).toBe(
+      'Die Verbindung zu CaloGraph ist fehlgeschlagen. Bitte versuche es erneut.',
+    )
+    setLocale('en')
+    expect(localizeApiError(new ApiTransportError())).toBe(
+      'Could not connect to CaloGraph. Please try again.',
+    )
   })
   it('does not derive the locale from browser or public storage state', () => {
     localStorage.setItem('calograph_language', 'de')

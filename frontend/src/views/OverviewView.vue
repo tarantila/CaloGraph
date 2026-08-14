@@ -116,7 +116,9 @@ async function loadDashboard() {
   await loadTrends()
 }
 
-onMounted(async () => {
+async function reloadDashboard() {
+  error.value = ''
+  loading.value = true
   try {
     await loadDashboard()
   } catch (cause) {
@@ -124,6 +126,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+}
+
+onMounted(() => {
+  void reloadDashboard()
 })
 
 async function syncYazioNow() {
@@ -521,7 +527,10 @@ const macroChart = computed<EChartsOption>(() => ({
     </div>
   </div>
 
-  <div v-if="error" class="card error" role="alert">{{ error }}</div>
+  <div v-if="error" class="card error" role="alert">
+    <span>{{ error }}</span>
+    <button class="button" type="button" @click="reloadDashboard">{{ t('common.tryAgain') }}</button>
+  </div>
   <div v-else-if="loading" class="dashboard-loading" aria-live="polite">
     <PhArrowsClockwise :size="22" class="spin" aria-hidden="true" />
     {{ t('overviewUi.dashboardLoading') }}
