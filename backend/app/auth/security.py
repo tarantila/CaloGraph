@@ -61,6 +61,9 @@ def hash_session_token(raw: str) -> str:
     return _hmac_token(raw, settings.session_secret)
 
 
+def csrf_token_for_session(raw_session_token: str) -> str:
+    return _hmac_token(f"csrf:{raw_session_token}", settings.session_secret)
+
 def hash_api_token(raw: str) -> str:
     return _hmac_token(raw, settings.rate_limit_secret)
 
@@ -148,7 +151,7 @@ def create_session(
     with shared_user_operation(db, user.id) as active_user:
         created_at = now or datetime.now(UTC)
         raw_token = secrets.token_urlsafe(48)
-        csrf_token = secrets.token_urlsafe(32)
+        csrf_token = csrf_token_for_session(raw_token)
         session = UserSession(
             user_id=active_user.id,
             token_hash=hash_session_token(raw_token),

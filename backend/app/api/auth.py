@@ -15,6 +15,7 @@ from app.auth.security import (
     create_mfa_login_state,
     create_registration_state,
     create_session,
+    csrf_token_for_session,
     hash_account_recovery_token,
     hash_invitation_token,
     hash_password,
@@ -609,10 +610,7 @@ def csrf_token(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=401, detail="Sitzung ungültig")
-    raw_csrf = secrets.token_urlsafe(32)
-    session.csrf_hash = hash_session_token(raw_csrf)
-    db.commit()
-    return CsrfResponse(csrf_token=raw_csrf)
+    return CsrfResponse(csrf_token=csrf_token_for_session(raw_session))
 
 
 @router.post("/logout", status_code=204)

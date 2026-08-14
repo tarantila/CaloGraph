@@ -17,6 +17,7 @@ const publicAuthenticationPaths: Record<string, true> = {
 }
 
 const SESSION_EXPIRED_PROBLEM = 'urn:calograph:problem:session-expired'
+const CSRF_VALIDATION_FAILED_PROBLEM = 'urn:calograph:problem:csrf-validation-failed'
 const apiProblemMessages: Record<string, string> = {
   'urn:calograph:problem:invalid-credentials': 'errors.invalidCredentials',
   [SESSION_EXPIRED_PROBLEM]: 'errors.sessionExpired',
@@ -176,6 +177,42 @@ function refreshCsrf(): Promise<string> {
 export async function ensureCsrfToken(): Promise<string> {
   return csrfToken ?? refreshCsrf()
 }
+function isReplayableBody(body: BodyInit | null | undefined): boolean {
+  return body == null || typeof body === 'string'
+}
+
+async function readApiProblem(response: Response): Promise<ApiProblem> {
+  try {
+    return (await response.json()) as ApiProblem
+  } catch {
+    return { status: response.status }
+  }
+}
+
+function createApiError(
+  response: Response,
+  problem: ApiProblem,
+  requestSessionGeneration: number,
+  path: string,
+): ApiError {
+  if (
+    response.status === 401
+    && requestSessionGeneration === authenticationSessionGeneration
+    && path !== '/auth/me'
+    && !publicAuthenticationPaths[path]
+  ) {
+    notifyAuthenticationExpired()
+  }
+  return new ApiError(
+    problem.detail ?? `HTTP ${response.status}`,
+    response.status,
+    problem.request_id,
+    response.headers.get('Retry-After') ?? undefined,
+    problem.type,
+    problem.title,
+  )
+}
+
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   let requestSessionGeneration = authenticationSessionGeneration
@@ -195,35 +232,36 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     headers.set('X-CSRF-Token', csrfToken ?? (await refreshCsrf()))
     requestSessionGeneration = authenticationSessionGeneration
   }
-  const response = await fetchWithTransportRetry(
+  let response = await fetchWithTransportRetry(
     `/api/v1${path}`,
     { ...options, headers, credentials: 'include' },
     method,
   )
-  if (response.status === 204) return undefined as T
+
   if (!response.ok) {
-    if (
-      response.status === 401
-      && requestSessionGeneration === authenticationSessionGeneration
-      && path !== '/auth/me'
-      && !publicAuthenticationPaths[path]
-    ) {
-      notifyAuthenticationExpired()
+    let problem = await readApiProblem(response)
+    const canSelfHeal =
+      mutating
+      && !publicMutation
+      && isReplayableBody(options.body)
+      && response.status === 403
+      && problem.type === CSRF_VALIDATION_FAILED_PROBLEM
+    if (canSelfHeal) {
+      setCsrfToken(null)
+      const refreshed = await refreshCsrf()
+      headers.set('X-CSRF-Token', refreshed)
+      requestSessionGeneration = authenticationSessionGeneration
+      response = await fetchWithTransportRetry(
+        `/api/v1${path}`,
+        { ...options, headers, credentials: 'include' },
+        method,
+      )
+      if (!response.ok) problem = await readApiProblem(response)
     }
-    let problem: ApiProblem = { status: response.status }
-    try {
-      problem = (await response.json()) as ApiProblem
-    } catch {
-      // Keep the status-based fallback without leaking response bodies.
+    if (!response.ok) {
+      throw createApiError(response, problem, requestSessionGeneration, path)
     }
-    throw new ApiError(
-      problem.detail ?? `HTTP ${response.status}`,
-      response.status,
-      problem.request_id,
-      response.headers.get('Retry-After') ?? undefined,
-      problem.type,
-      problem.title,
-    )
   }
+  if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }

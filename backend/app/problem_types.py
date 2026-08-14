@@ -6,6 +6,8 @@ from typing import Any
 from fastapi import HTTPException
 
 PROBLEM_BASE = "urn:calograph:problem:"
+CSRF_VALIDATION_FAILED = f"{PROBLEM_BASE}csrf-validation-failed"
+INVALID_REQUEST_ORIGIN = f"{PROBLEM_BASE}invalid-request-origin"
 INVALID_CREDENTIALS = f"{PROBLEM_BASE}invalid-credentials"
 INVALID_INVITATION = f"{PROBLEM_BASE}invalid-invitation"
 USERNAME_TAKEN = f"{PROBLEM_BASE}username-taken"

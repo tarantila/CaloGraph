@@ -6,10 +6,16 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.auth.security import hash_api_token, hash_session_token, session_cookie_name
+from app.auth.security import (
+    csrf_token_for_session,
+    hash_api_token,
+    hash_session_token,
+    session_cookie_name,
+)
 from app.config import settings
 from app.database import get_db
 from app.models import ApiToken, User, UserSession
+from app.problem_types import CSRF_VALIDATION_FAILED, INVALID_REQUEST_ORIGIN, ProblemHTTPException
 from app.services.user_operation_lock import (
     InactiveUserOperation,
     UserOperationBusy,
@@ -67,17 +73,25 @@ def require_csrf(
 ) -> Iterator[User]:
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") not in settings.trusted_origin_list:
-        raise HTTPException(status_code=403, detail="Unzulässiger Request-Ursprung")
+        raise ProblemHTTPException(
+            status_code=403,
+            detail="Unzulässiger Request-Ursprung",
+            problem_type=INVALID_REQUEST_ORIGIN,
+        )
     raw = request.cookies.get(session_cookie_name(), "")
     session = db.scalar(
         select(UserSession).where(UserSession.token_hash == hash_session_token(raw))
     )
-    if (
-        not session
-        or not x_csrf_token
-        or not secrets_compare(session.csrf_hash, hash_session_token(x_csrf_token))
-    ):
-        raise HTTPException(status_code=403, detail="CSRF-Prüfung fehlgeschlagen")
+    supplied_hash = hash_session_token(x_csrf_token) if x_csrf_token else ""
+    stable_hash = hash_session_token(csrf_token_for_session(raw))
+    legacy_match = secrets_compare(session.csrf_hash, supplied_hash) if session else False
+    stable_match = secrets_compare(stable_hash, supplied_hash) if session else False
+    if not session or not x_csrf_token or not (legacy_match or stable_match):
+        raise ProblemHTTPException(
+            status_code=403,
+            detail="CSRF-Prüfung fehlgeschlagen",
+            problem_type=CSRF_VALIDATION_FAILED,
+        )
     with shared_user_operation(db, user.id) as active_user:
         yield active_user
 

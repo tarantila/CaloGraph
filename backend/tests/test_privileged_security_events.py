@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import security_events
 from app.api import settings as settings_api
+from app.auth import security
 from app.auth.security import create_api_token, hash_password, verify_password
 from app.cli import create_token, create_user, reset_authenticators
 from app.models import (
@@ -914,3 +915,42 @@ def test_cli_user_token_and_admin_mfa_reset_emit_only_post_commit_references(
         target_username,
         target.id,
     )
+
+
+def test_invitation_with_legacy_csrf_creates_one_record_and_event(
+    client: TestClient,
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_user_identity(db, user, "PRIVATE.legacy-csrf-admin")
+    user.is_admin = True
+    db.commit()
+    csrf_token, session_cookie = _login(client, "PRIVATE.legacy-csrf-admin")
+    session = db.scalar(
+        select(UserSession).where(
+            UserSession.token_hash == security.hash_session_token(session_cookie)
+        )
+    )
+    assert session is not None
+    session.csrf_hash = security.hash_session_token("legacy-csrf-for-invitation")
+    db.commit()
+    records = _capture_security_events(monkeypatch)
+
+    created = client.post(
+        "/api/v1/users/invitations",
+        headers={"X-CSRF-Token": "legacy-csrf-for-invitation"},
+        json={"expires_in_days": 7},
+    )
+
+    assert created.status_code == 201
+    invitations = list(
+        db.scalars(
+            select(UserInvitation).where(UserInvitation.invited_by_user_id == user.id)
+        )
+    )
+    assert len(invitations) == 1
+    assert [payload["event"] for payload in _event_payloads(records)] == [
+        "auth.invitation.created"
+    ]
+    assert csrf_token != "legacy-csrf-for-invitation"

@@ -915,3 +915,136 @@ def test_invalid_login_exposes_a_stable_problem_type(
 
     assert response.status_code == 401
     assert response.json()["type"] == "urn:calograph:problem:invalid-credentials"
+
+
+def test_csrf_token_is_stable_across_tabs_and_does_not_change_db_state(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    csrf_a = login.json()["csrf_token"]
+    session_cookie = client.cookies.get("calograph_session")
+    assert session_cookie
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    csrf_hash_before = session.csrf_hash
+
+    tab_b = TestClient(app)
+    tab_b.cookies.set("calograph_session", session_cookie)
+    csrf_b_response = tab_b.get("/api/v1/auth/csrf")
+    assert csrf_b_response.status_code == 200
+    csrf_b = csrf_b_response.json()["csrf_token"]
+
+    assert csrf_b == csrf_a
+    assert client.get("/api/v1/auth/csrf").json()["csrf_token"] == csrf_a
+    db.expire_all()
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    assert session.csrf_hash == csrf_hash_before
+
+
+def test_csrf_tokens_differ_between_sessions(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    first = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    second_client = TestClient(app)
+    second = second_client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["csrf_token"] != second.json()["csrf_token"]
+
+
+def test_legacy_csrf_token_remains_valid(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    legacy_token = "legacy-csrf-token-for-transition"
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session.csrf_hash = security.hash_session_token(legacy_token)
+    db.commit()
+
+    response = client.post(
+        "/api/v1/auth/logout",
+        headers={"X-CSRF-Token": legacy_token},
+    )
+    assert response.status_code == 204
+
+
+def test_legacy_session_accepts_new_stable_csrf_token(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    session_cookie = client.cookies.get("calograph_session")
+    assert session_cookie
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session.csrf_hash = security.hash_session_token("legacy-csrf-token")
+    db.commit()
+
+    stable = client.get("/api/v1/auth/csrf")
+    assert stable.status_code == 200
+    stable_token = stable.json()["csrf_token"]
+    assert stable_token == security.csrf_token_for_session(session_cookie)
+
+    response = client.post(
+        "/api/v1/auth/logout",
+        headers={"X-CSRF-Token": stable_token},
+    )
+    assert response.status_code == 204
+
+
+def test_csrf_problem_types_distinguish_origin_and_token_failures(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    csrf = login.json()["csrf_token"]
+
+    invalid_origin = client.post(
+        "/api/v1/auth/logout",
+        headers={"Origin": "https://attacker.example", "X-CSRF-Token": csrf},
+    )
+    assert invalid_origin.status_code == 403
+    assert invalid_origin.json()["type"] == "urn:calograph:problem:invalid-request-origin"
+
+    invalid_token = client.post(
+        "/api/v1/auth/logout",
+        headers={"X-CSRF-Token": "not-the-session-token"},
+    )
+    assert invalid_token.status_code == 403
+    assert invalid_token.json()["type"] == "urn:calograph:problem:csrf-validation-failed"
