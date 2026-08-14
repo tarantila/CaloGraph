@@ -16,6 +16,7 @@ const username = ref('')
 const password = ref('')
 const mfaCode = ref('')
 const error = ref('')
+const status = ref(route.query.passwordChanged ? t('auth.passwordChanged') : '')
 const passwordFormVisible = ref(Boolean(route.query.registered))
 const usernameInput = ref<HTMLInputElement | null>(null)
 const passkeySupported = isPasskeySupported()
@@ -116,6 +117,7 @@ async function submitPasskey() {
           {{ auth.loading ? t('auth.passkeyChecking') : t('auth.passkeyLogin') }}
         </button>
       </div>
+      <div v-if="status" class="login-success" role="status">{{ status }}</div>
       <div v-if="error" class="error" role="alert">{{ error }}</div>
     </section>
 
@@ -134,6 +136,7 @@ async function submitPasskey() {
       <div v-if="route.query.registered" class="login-success" role="status">
         {{ t('auth.accountCreated') }}
       </div>
+      <div v-if="status" class="login-success" role="status">{{ status }}</div>
       <form v-if="!auth.mfaRequired" @submit.prevent="submit">
         <label class="field">
           {{ t('auth.username') }}

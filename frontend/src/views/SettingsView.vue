@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
+import { PhTrash } from '@phosphor-icons/vue'
+import { useRouter } from 'vue-router'
+
 import { api, ApiError, localizeApiError } from '../api'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DateInput from '../components/DateInput.vue'
 import UserManagement from '../components/UserManagement.vue'
 import {
@@ -80,12 +84,15 @@ function supportedTimezones() {
     return fallbackTimezones
   }
 }
-
 const props = defineProps<{ section: 'targets' | 'account' }>()
+const router = useRouter()
 const profile = reactive({ language: 'de' as 'de' | 'en', timezone: 'Europe/Berlin', week_starts_on: 0, raw_payload_retention_days: 0 })
 const t = i18n.global.t.bind(i18n.global)
 const target = reactive(createEmptyTargetDraft())
 const targets = ref<Target[]>([])
+const targetToDelete = ref<Target | null>(null)
+const deletingTarget = ref(false)
+const targetDeleteError = ref('')
 const tokens = ref<Token[]>([])
 const tokenLabel = ref('iPhone')
 const newToken = ref('')
@@ -103,10 +110,18 @@ const yazioPassword = ref('')
 const yazioHistoryFrom = ref('')
 const yazioHistoryTo = ref('')
 const savingYazio = ref(false)
-const initialSetupSaved = ref(false)
+const yazioMessage = ref('')
+const yazioError = ref('')
+const yazioTransientImportCompleted = ref(false)
+const passwordCurrent = ref('')
+const passwordNew = ref('')
+const passwordConfirmation = ref('')
+const passwordChangeError = ref('')
+const changingPassword = ref(false)
 const users = ref<User[]>([])
 const invitations = ref<Invitation[]>([])
 const invitationUrl = ref('')
+const initialSetupSaved = ref(false)
 const error = ref('')
 const loading = ref(true)
 const savingTarget = ref(false)
@@ -152,6 +167,16 @@ const yazioHistoricalSyncActive = computed(() => {
   const state = yazio.value?.historical_sync?.state
   return yazioAvailable.value && (state === 'pending' || state === 'running')
 })
+const passwordConfirmationMatches = computed(() => passwordNew.value === passwordConfirmation.value)
+const targetDeleteDescription = computed(() => {
+  const item = targetToDelete.value
+  if (!item) return ''
+  const status = item.valid_to == null ? t('settingsUi.current') : t('settingsUi.historical')
+  return t('settingsUi.targetDeleteDescription', {
+    date: formatGermanDate(item.valid_from),
+    status,
+  })
+})
 const yazioHistoricalSyncFailed = computed(
   () => yazio.value?.historical_sync?.state === 'failed',
 )
@@ -171,23 +196,26 @@ async function loadTargets() {
   target.valid_from = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 }
 
-async function loadAdmin(generation?: number) {
-  const [usersResult, invitationsResult] = await Promise.all([
-    api<User[]>('/users'),
-    api<Invitation[]>('/users/invitations'),
-  ])
-  if (generation != null && generation !== loadGeneration) return
-  users.value = usersResult
-  invitations.value = invitationsResult
+async function loadAdmin(generation = loadGeneration) {
+  try {
+    const [usersResult, invitationsResult] = await Promise.all([
+      api<User[]>('/users'),
+      api<Invitation[]>('/users/invitations'),
+    ])
+    if (generation !== loadGeneration) return
+    users.value = usersResult
+    invitations.value = invitationsResult
+  } catch (cause) {
+    if (generation !== loadGeneration) return
+    error.value =
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'settingsUi.adminLoadFailed')
+        : t('settingsUi.adminLoadFailed')
+  }
 }
 
 async function refreshAdmin() {
-  try {
-    await loadAdmin()
-  } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.adminLoadFailed') : t('settingsUi.adminLoadFailed')
-  }
+  await loadAdmin(loadGeneration)
 }
 
 async function loadAccount(generation = loadGeneration) {
@@ -208,6 +236,9 @@ async function loadAccount(generation = loadGeneration) {
   profile.raw_payload_retention_days = user.raw_payload_retention_days
   auth.syncLoadedUser(profileGeneration, { ...user, language: currentLanguage })
   yazio.value = yazioResult
+  yazioTransientImportCompleted.value = false
+  yazioMessage.value = ''
+  yazioError.value = ''
   if (!yazioResult.configured) yazioHistoryTo.value = isoDateInTimeZone(user.timezone)
   mfa.value = mfaResult
   passkeys.value = passkeyResult
@@ -246,8 +277,18 @@ async function pollYazioStatus() {
   yazioPollInFlight = true
   const generation = yazioPollGeneration
   try {
+    const previousState = yazio.value?.historical_sync?.state
     const result = await api<YazioStatus>('/yazio/status')
     if (generation !== yazioPollGeneration || props.section !== 'account') return
+    if (
+      (previousState === 'pending' || previousState === 'running')
+      && result.historical_sync?.state === 'completed'
+    ) {
+      yazioTransientImportCompleted.value = true
+    }
+    if (result.historical_sync?.state !== 'completed') {
+      yazioTransientImportCompleted.value = false
+    }
     yazio.value = result
   } catch {
     // The next scheduled status request retries without replacing the page state.
@@ -291,6 +332,74 @@ async function saveProfile() {
   if (!user || !auth.commitProfileUpdate(generation, user)) return
   message.value = t('settings.saved')
 }
+async function changePassword() {
+  passwordChangeError.value = ''
+  if (!passwordConfirmationMatches.value) {
+    passwordChangeError.value = t('auth.passwordMismatch')
+    return
+  }
+  changingPassword.value = true
+  try {
+    await api<void>('/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: passwordCurrent.value,
+        new_password: passwordNew.value,
+      }),
+    })
+    auth.clearSession()
+    await router.replace({ name: 'login', query: { passwordChanged: '1' } })
+  } catch (cause) {
+    passwordChangeError.value =
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'settingsUi.passwordChangeFailed')
+        : t('settingsUi.passwordChangeFailed')
+  } finally {
+    passwordCurrent.value = ''
+    passwordNew.value = ''
+    passwordConfirmation.value = ''
+    changingPassword.value = false
+  }
+}
+
+function openTargetDelete(item: Target) {
+  if (targets.value.length <= 1) return
+  targetDeleteError.value = ''
+  targetToDelete.value = item
+}
+
+function closeTargetDelete() {
+  if (!deletingTarget.value) {
+    targetToDelete.value = null
+    targetDeleteError.value = ''
+  }
+}
+
+async function confirmTargetDelete() {
+  const item = targetToDelete.value
+  if (!item) return
+  deletingTarget.value = true
+  targetDeleteError.value = ''
+  try {
+    await api<void>(`/settings/targets/${item.valid_from}`, { method: 'DELETE' })
+    await loadTargets()
+    targetToDelete.value = null
+    message.value = t('settingsUi.targetDeleted')
+  } catch (cause) {
+    targetDeleteError.value =
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'settingsUi.targetDeleteFailed')
+        : t('settingsUi.targetDeleteFailed')
+  } finally {
+    deletingTarget.value = false
+  }
+}
+
+function targetDeleteLabel(item: Target) {
+  return targets.value.length <= 1
+    ? t('settingsUi.targetDeleteUnavailable', { date: formatGermanDate(item.valid_from) })
+    : t('settingsUi.deleteTarget', { date: formatGermanDate(item.valid_from) })
+}
 
 async function saveTarget() {
   error.value = ''
@@ -314,16 +423,18 @@ async function saveTarget() {
 async function createToken() { const result = await api<{ token: string }>('/settings/tokens', { method: 'POST', body: JSON.stringify({ label: tokenLabel.value }) }); newToken.value = result.token; await load() }
 async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { method: 'DELETE' }); await load() }
 async function saveYazio() {
+  error.value = ''
+  message.value = ''
   if (!yazioCredentialsComplete.value) return
   const isNewConnection = !yazio.value?.configured
   if (isNewConnection && yazioHistoryFrom.value > yazioHistoryTo.value) {
-    error.value = t('settingsUi.invalidRange')
+    yazioError.value = t('settingsUi.invalidRange')
     return
   }
   savingYazio.value = true
-  error.value = ''
-  message.value = ''
-  initialSetupSaved.value = false
+  yazioError.value = ''
+  yazioMessage.value = ''
+  yazioTransientImportCompleted.value = false
   try {
     yazio.value = await api<YazioStatus>('/yazio/connection', {
       method: 'PUT',
@@ -337,16 +448,16 @@ async function saveYazio() {
     })
     yazioEmail.value = ''
     yazioPassword.value = ''
-    if (isNewConnection) {
-      initialSetupSaved.value = true
-      message.value = t('settings.connectionSaved')
-    } else {
-      message.value = t('settings.connectionUpdated')
-    }
+    yazioMessage.value = isNewConnection
+      ? t('settings.connectionSaved')
+      : t('settings.connectionUpdated')
+    initialSetupSaved.value = isNewConnection
     scheduleYazioPolling()
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.yazioSaveFailed') : t('settingsUi.yazioSaveFailed')
+    yazioError.value =
+      cause instanceof ApiError
+        ? localizeApiError(cause, 'settingsUi.yazioSaveFailed', { preserveDetail: false })
+        : t('settingsUi.yazioSaveFailed')
   } finally {
     savingYazio.value = false
   }
@@ -552,10 +663,6 @@ function passkeyDeviceLabel(passkey: Passkey) {
   <template v-else>
     <div v-if="error" class="card error" role="alert">{{ error }}</div>
     <p v-if="message" role="status">{{ message }}</p>
-    <div v-if="initialSetupSaved" class="setup-notice" role="status">
-      <p>{{ t('settingsUi.initialImport') }}</p>
-      <RouterLink class="text-button" to="/importe">{{ t('settingsUi.toImports') }}</RouterLink>
-    </div>
     <template v-if="props.section === 'targets'">
       <div class="content-grid">
         <section class="card form-card">
@@ -592,7 +699,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th></tr></thead>
+            <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th><th class="actions">{{ t('common.actions') }}</th></tr></thead>
             <tbody>
               <tr v-for="item in targets" :key="item.id">
                 <td>{{ formatGermanDate(item.valid_from) }}</td>
@@ -600,12 +707,36 @@ function passkeyDeviceLabel(passkey: Passkey) {
                 <td class="number">{{ integer.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
                 <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
                 <td class="number">{{ integer.format(Number(item.protein_g)) }} {{ t('common.grams') }}</td>
+                <td class="actions">
+                  <button
+                    class="icon-button danger"
+                    type="button"
+                    :aria-label="targetDeleteLabel(item)"
+                    :title="targetDeleteLabel(item)"
+                    :disabled="targets.length <= 1"
+                    @click="openTargetDelete(item)"
+                  >
+                    <PhTrash :size="18" weight="duotone" aria-hidden="true" />
+                  </button>
+                </td>
               </tr>
-              <tr v-if="!targets.length"><td colspan="5" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
+              <tr v-if="!targets.length"><td colspan="6" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
             </tbody>
           </table>
         </div>
       </section>
+      <ConfirmDialog
+        v-if="targetToDelete !== null"
+        :open="true"
+        :title="t('settingsUi.targetDeleteTitle')"
+        :description="targetDeleteDescription"
+        :confirm-label="t('common.delete')"
+        :danger="true"
+        :pending="deletingTarget"
+        :error="targetDeleteError"
+        @confirm="confirmTargetDelete"
+        @close="closeTargetDelete"
+      />
     </template>
 
     <template v-else>
@@ -641,6 +772,29 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <small>{{ t('settings.retentionHelp') }}</small>
           </label>
           <button class="button" type="submit">{{ t('settings.saveProfile') }}</button>
+        </form>
+      </section>
+      <section class="card form-card password-change-card" style="margin-top: 1rem">
+        <h2>{{ t('settingsUi.passwordChangeTitle') }}</h2>
+        <p>{{ t('settingsUi.passwordChangeDescription') }}</p>
+        <p class="table-secondary">{{ t('auth.passwordHint') }}</p>
+        <form class="form-grid" @submit.prevent="changePassword">
+          <label class="field">
+            {{ t('settingsUi.currentPassword') }}
+            <input v-model="passwordCurrent" type="password" autocomplete="current-password" required />
+          </label>
+          <label class="field">
+            {{ t('auth.newPassword') }}
+            <input v-model="passwordNew" type="password" autocomplete="new-password" minlength="15" required />
+          </label>
+          <label class="field">
+            {{ t('auth.repeatNewPassword') }}
+            <input v-model="passwordConfirmation" type="password" autocomplete="new-password" minlength="15" required />
+          </label>
+          <div v-if="passwordChangeError" class="error" role="alert">{{ passwordChangeError }}</div>
+          <button class="button" type="submit" :disabled="changingPassword">
+            {{ changingPassword ? t('auth.passwordChanging') : t('auth.changePassword') }}
+          </button>
         </form>
       </section>
 
@@ -784,6 +938,12 @@ function passkeyDeviceLabel(passkey: Passkey) {
       <section class="card form-card yazio-connection-card" style="margin-top: 1rem">
         <h2>{{ t('settingsUi.yazioTitle') }}</h2>
         <p>{{ t('settingsUi.yazioDescription') }}</p>
+        <div v-if="yazioError" class="card error" role="alert">{{ yazioError }}</div>
+        <p v-if="yazioMessage" class="setup-notice" role="status">{{ yazioMessage }}</p>
+        <div v-if="initialSetupSaved" class="setup-notice" role="status">
+          <p>{{ t('settingsUi.initialImport') }}</p>
+          <RouterLink class="text-button" to="/importe">{{ t('settingsUi.toImports') }}</RouterLink>
+        </div>
         <p><strong>{{ t('settingsUi.statusLabel') }}</strong> {{ yazioStatusLabel }}</p>
         <p v-if="yazioHistoricalSyncFailed" class="import-message error" role="alert">
           {{ t('settingsUi.firstImportFailedMessage') }}

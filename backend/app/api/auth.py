@@ -38,8 +38,10 @@ from app.models import (
 )
 from app.problem_types import (
     INVALID_CREDENTIALS,
+    INVALID_CURRENT_PASSWORD,
     INVALID_INVITATION,
     INVALID_MFA,
+    PASSWORD_POLICY,
     USERNAME_TAKEN,
     VALIDATION_ERROR,
     ProblemHTTPException,
@@ -665,16 +667,20 @@ def change_password(
             settings.password_change_rate_limit_window_seconds,
         )
         _log_password_change(request, "failed", user_key)
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=400, detail="Aktuelles Passwort ist falsch")
+        raise ProblemHTTPException(
+            status_code=400,
+            detail="Aktuelles Passwort ist falsch",
+            problem_type=INVALID_CURRENT_PASSWORD,
+        )
     clear_rate_limit(db, "password-change", user_key)
     try:
         validate_new_password(payload.new_password, user.username)
     except PasswordPolicyError as exc:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise ProblemHTTPException(
+            status_code=422,
+            detail=str(exc),
+            problem_type=PASSWORD_POLICY,
+        ) from None
     user.password_hash = hash_password(payload.new_password)
     revoke_user_sessions(db, user.id)
     _log_password_change(request, "succeeded", user_key)

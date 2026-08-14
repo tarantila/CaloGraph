@@ -460,6 +460,68 @@ def test_target_rejects_non_finite_maintenance(
         )
 
 
+def test_target_delete_preserves_history_and_requires_one_version(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    other_user = User(
+        username="other-target-owner",
+        password_hash=security.hash_password("other-password"),
+    )
+    db.add(other_user)
+    db.flush()
+    other_target = NutritionTarget(
+        user_id=other_user.id,
+        valid_from=date(2024, 3, 1),
+        calories_kcal=Decimal("1900"),
+        carbs_g=Decimal("200"),
+        protein_g=Decimal("100"),
+        fat_g=Decimal("60"),
+    )
+    db.add(other_target)
+    db.commit()
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+    forbidden_delete = client.delete(
+        "/api/v1/settings/targets/2024-03-01",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert forbidden_delete.status_code == 404
+    assert db.scalar(select(NutritionTarget).where(NutritionTarget.id == other_target.id)) is not None
+    created = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2024-02-01",
+            "calories_kcal": 2100,
+            "protein_g": 130,
+        },
+    )
+    assert created.status_code == 201
+
+    deleted = client.delete(
+        "/api/v1/settings/targets/2024-01-01",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert deleted.status_code == 204
+    remaining = client.get("/api/v1/settings/targets")
+    assert remaining.status_code == 200
+    assert [item["valid_from"] for item in remaining.json()] == ["2024-02-01"]
+    assert remaining.json()[0]["valid_to"] is None
+
+    deleted = client.delete(
+        "/api/v1/settings/targets/2024-02-01",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert deleted.status_code == 409
+    assert deleted.json()["type"].endswith("last-target-required")
+
+
 def test_dashboard_week_budget_always_covers_monday_to_sunday(
     client: TestClient, user: User, monkeypatch
 ) -> None:

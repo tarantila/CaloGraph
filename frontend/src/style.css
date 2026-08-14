@@ -596,6 +596,20 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .button.secondary { background: transparent; color: #b69aff; }
 .button:disabled { opacity: .55; cursor: wait; }
 .text-button { border: 0; background: transparent; color: #b69aff; cursor: pointer; padding: 0; }
+.actions { text-align: right; }
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid transparent;
+  border-radius: .5rem;
+  background: transparent;
+  color: #ff9aaa;
+  cursor: pointer;
+}
+.icon-button:hover:not(:disabled) { border-color: #a64458; background: rgba(131, 47, 67, .28); }
+.icon-button:disabled { color: var(--muted); opacity: .55; cursor: not-allowed; }
 .badge {
   display: inline-flex;
   align-items: center;
@@ -1377,4 +1391,5 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .nutrient-row-meta { align-items: flex-start; flex-direction: column; }
   .nutrient-row-meta > span:last-child { text-align: left; }
   .recovery-codes { grid-template-columns: 1fr; }
+  .login-card .field input { font-size: 1rem; }
 }

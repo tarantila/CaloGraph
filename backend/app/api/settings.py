@@ -26,7 +26,13 @@ from app.models import (
     UserSession,
     UserTotpCredential,
 )
-from app.problem_types import INVALID_MFA, INVALID_TIMEZONE, ProblemHTTPException
+from app.problem_types import (
+    INVALID_MFA,
+    INVALID_TIMEZONE,
+    LAST_TARGET_REQUIRED,
+    TARGET_VERSION_NOT_FOUND,
+    ProblemHTTPException,
+)
 from app.schemas import (
     MfaCodeRequest,
     MfaManagementRequest,
@@ -430,12 +436,17 @@ def targets(
     )
 
 
+def _lock_target_owner(db: Session, user_id: UUID) -> None:
+    db.scalar(select(User).where(User.id == user_id).with_for_update())
+
+
 @router.post("/targets", response_model=TargetResponse, status_code=201)
 def create_target(
     payload: TargetInput,
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> NutritionTarget:
+    _lock_target_owner(db, user.id)
     existing = list(
         db.scalars(
             select(NutritionTarget)
@@ -471,6 +482,7 @@ def update_target(
 ) -> NutritionTarget:
     if payload.valid_from != valid_from:
         raise HTTPException(status_code=422, detail="Datum im Pfad und Inhalt stimmt nicht überein")
+    _lock_target_owner(db, user.id)
     target = db.scalar(
         select(NutritionTarget).where(
             NutritionTarget.user_id == user.id,
@@ -484,6 +496,45 @@ def update_target(
     db.commit()
     db.refresh(target)
     return target
+
+
+@router.delete("/targets/{valid_from}", status_code=204)
+def delete_target(
+    valid_from: date,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> None:
+    _lock_target_owner(db, user.id)
+    targets = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.valid_from)
+            .with_for_update()
+        )
+    )
+    target_index = next(
+        (index for index, item in enumerate(targets) if item.valid_from == valid_from),
+        None,
+    )
+    if target_index is None:
+        raise ProblemHTTPException(
+            status_code=404,
+            detail="Budget- und Zielversion nicht gefunden",
+            problem_type=TARGET_VERSION_NOT_FOUND,
+        )
+    if len(targets) == 1:
+        raise ProblemHTTPException(
+            status_code=409,
+            detail="Mindestens eine Budget- und Zielversion muss bestehen bleiben",
+            problem_type=LAST_TARGET_REQUIRED,
+        )
+    previous = targets[target_index - 1] if target_index > 0 else None
+    successor = targets[target_index + 1] if target_index + 1 < len(targets) else None
+    if previous is not None:
+        previous.valid_to = successor.valid_from if successor is not None else None
+    db.delete(targets[target_index])
+    db.commit()
 
 
 @router.get("/tracking-quality", response_model=TrackingQualityResponse)

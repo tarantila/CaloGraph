@@ -1448,7 +1448,7 @@ describe('main views', () => {
 
     const wrapper = mount(SettingsView, { props: { section: 'account' } })
     await flushPromises()
-    expect(wrapper.text()).toContain('Einstellungen konnten nicht geladen werden.')
+    expect(wrapper.text()).toContain('Benutzerliste konnte nicht aktualisiert werden.')
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
     wrapper.unmount()

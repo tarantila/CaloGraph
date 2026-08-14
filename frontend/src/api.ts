@@ -34,6 +34,10 @@ const apiProblemMessages: Record<string, string> = {
   'urn:calograph:problem:target-active': 'errors.targetActive',
   'urn:calograph:problem:user-operation-busy': 'errors.userOperationBusy',
   'urn:calograph:problem:target-confirmation': 'errors.targetConfirmation',
+  'urn:calograph:problem:invalid-current-password': 'errors.invalidCurrentPassword',
+  'urn:calograph:problem:password-policy': 'errors.passwordPolicy',
+  'urn:calograph:problem:last-target-required': 'errors.lastTargetRequired',
+  'urn:calograph:problem:target-version-not-found': 'errors.targetVersionNotFound',
 }
 
 export class ApiError extends Error {

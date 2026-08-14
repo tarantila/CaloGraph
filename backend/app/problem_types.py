@@ -21,6 +21,10 @@ LAST_ADMIN = f"{PROBLEM_BASE}last-admin"
 TARGET_ACTIVE = f"{PROBLEM_BASE}target-active"
 USER_OPERATION_BUSY = f"{PROBLEM_BASE}user-operation-busy"
 TARGET_CONFIRMATION = f"{PROBLEM_BASE}target-confirmation"
+INVALID_CURRENT_PASSWORD = f"{PROBLEM_BASE}invalid-current-password"
+PASSWORD_POLICY = f"{PROBLEM_BASE}password-policy"
+LAST_TARGET_REQUIRED = f"{PROBLEM_BASE}last-target-required"
+TARGET_VERSION_NOT_FOUND = f"{PROBLEM_BASE}target-version-not-found"
 
 
 class ProblemHTTPException(HTTPException):
