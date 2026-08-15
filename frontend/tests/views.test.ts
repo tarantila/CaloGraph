@@ -622,6 +622,122 @@ describe('main views', () => {
       /^\/analytics\/daily\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
     )
   })
+  it('sorts daily values by raw data, keeps missing values last, and preserves the choice after a data reload', async () => {
+    const dailyPoints = [
+      {
+        date: '2026-07-18',
+        calories_kcal: 900,
+        deviation_kcal: -50,
+        protein_g: 40,
+        carbs_g: 100,
+        fat_g: null,
+        tracking_status: 'complete',
+      },
+      {
+        date: '2026-07-20',
+        calories_kcal: 10000,
+        deviation_kcal: 250,
+        protein_g: null,
+        carbs_g: 300,
+        fat_g: 100,
+        tracking_status: 'probably_incomplete',
+      },
+      {
+        date: '2026-07-19',
+        calories_kcal: null,
+        deviation_kcal: 100,
+        protein_g: 120,
+        carbs_g: null,
+        fat_g: 60,
+        tracking_status: 'no_data',
+      },
+      {
+        date: '2026-07-21',
+        calories_kcal: 1200,
+        deviation_kcal: 250,
+        protein_g: 120,
+        carbs_g: 300,
+        fat_g: 60,
+        tracking_status: 'probably_complete',
+      },
+      {
+        date: '2026-07-17',
+        calories_kcal: 900,
+        deviation_kcal: -100,
+        protein_g: 20,
+        carbs_g: 80,
+        fat_g: 0,
+        tracking_status: 'future_status',
+      },
+    ]
+    apiMock.mockResolvedValue(dailyPoints)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: DailyView }],
+    })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(DailyView, { global: { plugins: [router] } })
+    await flushPromises()
+    const rowDates = () => wrapper.findAll('tbody tr').map((row) => row.find('td').text())
+    const rowValues = (column: number) =>
+      wrapper.findAll('tbody tr').map((row) => row.findAll('td')[column].text())
+    const sortButtons = () => wrapper.findAll('thead button')
+
+    expect(rowDates()).toEqual(['21.07.2026', '20.07.2026', '19.07.2026', '18.07.2026', '17.07.2026'])
+    expect(wrapper.findAll('thead th').map((header) => header.attributes('aria-sort'))).toEqual([
+      'descending', 'none', 'none', 'none', 'none', 'none', 'none',
+    ])
+    expect(wrapper.text()).toContain('5')
+    expect(wrapper.text()).toContain('3.250 kcal')
+
+    await sortButtons()[0].trigger('click')
+    expect(rowDates()).toEqual(['17.07.2026', '18.07.2026', '19.07.2026', '20.07.2026', '21.07.2026'])
+    await sortButtons()[0].trigger('click')
+    expect(rowDates()).toEqual(['21.07.2026', '20.07.2026', '19.07.2026', '18.07.2026', '17.07.2026'])
+
+    await sortButtons()[2].trigger('click')
+    expect(rowValues(2)).toEqual(['10.000 kcal', '1.200 kcal', '900 kcal', '900 kcal', '–'])
+    expect(wrapper.findAll('thead th').map((header) => header.attributes('aria-sort'))[2]).toBe('descending')
+    await sortButtons()[2].trigger('click')
+    expect(rowValues(2)).toEqual(['900 kcal', '900 kcal', '1.200 kcal', '10.000 kcal', '–'])
+    expect(wrapper.text()).toContain('3.250 kcal')
+
+    await sortButtons()[3].trigger('click')
+    expect(rowValues(3)).toEqual(['250 kcal', '250 kcal', '100 kcal', '-50 kcal', '-100 kcal'])
+    await sortButtons()[3].trigger('click')
+    expect(rowValues(3)).toEqual(['-100 kcal', '-50 kcal', '100 kcal', '250 kcal', '250 kcal'])
+
+    await sortButtons()[4].trigger('click')
+    expect(rowValues(4)).toEqual(['120 g', '120 g', '40 g', '20 g', '–'])
+    await sortButtons()[4].trigger('click')
+    expect(rowValues(4)).toEqual(['20 g', '40 g', '120 g', '120 g', '–'])
+
+    await sortButtons()[5].trigger('click')
+    expect(rowValues(5)).toEqual(['300 g', '300 g', '100 g', '80 g', '–'])
+    await sortButtons()[5].trigger('click')
+    expect(rowValues(5)).toEqual(['80 g', '100 g', '300 g', '300 g', '–'])
+
+    await sortButtons()[6].trigger('click')
+    expect(rowValues(6)).toEqual(['100 g', '60 g', '60 g', '0 g', '–'])
+    await sortButtons()[6].trigger('click')
+    expect(rowValues(6)).toEqual(['0 g', '60 g', '60 g', '100 g', '–'])
+
+    await sortButtons()[1].trigger('click')
+    expect(rowDates()).toEqual(['21.07.2026', '18.07.2026', '20.07.2026', '19.07.2026', '17.07.2026'])
+    expect(rowValues(1)).toEqual(['●Erfasst', '●Erfasst', '●Kalorienwert fehlt', '●Keine Daten', '●future_status'])
+    await sortButtons()[1].trigger('click')
+    expect(rowDates()).toEqual(['17.07.2026', '19.07.2026', '20.07.2026', '21.07.2026', '18.07.2026'])
+    expect(rowValues(1)).toEqual(['●future_status', '●Keine Daten', '●Kalorienwert fehlt', '●Erfasst', '●Erfasst'])
+
+    apiMock.mockResolvedValueOnce(dailyPoints.slice().reverse())
+    await wrapper.get('.filter-panel button').trigger('click')
+    await flushPromises()
+    expect(rowDates()).toEqual(['17.07.2026', '19.07.2026', '20.07.2026', '21.07.2026', '18.07.2026'])
+    wrapper.unmount()
+  })
+
 
   it('filters weekday analysis by week or a custom date range', async () => {
     apiMock.mockResolvedValue({

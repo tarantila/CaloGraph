@@ -37,6 +37,103 @@ function numericValue(value: number | null | undefined) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
+function numericSortValue(point: DailyPoint, column: SortColumn) {
+  switch (column) {
+    case 'calories_kcal': return numericValue(point.calories_kcal)
+    case 'deviation_kcal': return numericValue(point.deviation_kcal)
+    case 'protein_g': return numericValue(point.protein_g)
+    case 'carbs_g': return numericValue(point.carbs_g)
+    case 'fat_g': return numericValue(point.fat_g)
+    default: return null
+  }
+}
+
+type SortColumn = 'date' | 'status' | 'calories_kcal' | 'deviation_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'
+type SortDirection = 'asc' | 'desc'
+
+const sortColumn = ref<SortColumn>('date')
+const sortDirection = ref<SortDirection>('desc')
+const statusSortRank: Record<string, number> = {
+  complete: 0,
+  probably_complete: 0,
+  probably_incomplete: 1,
+  incomplete: 1,
+  no_data: 2,
+}
+
+function compareNumbers(
+  left: number | null,
+  right: number | null,
+  direction: SortDirection,
+) {
+  const leftMissing = left == null
+  const rightMissing = right == null
+  if (leftMissing || rightMissing) {
+    if (leftMissing && rightMissing) return 0
+    return leftMissing ? 1 : -1
+  }
+  const result = left - right
+  return direction === 'asc' ? result : -result
+}
+
+function compareDates(left: string, right: string, direction: SortDirection) {
+  const result = left.localeCompare(right)
+  return direction === 'asc' ? result : -result
+}
+
+function compareStatuses(left: string, right: string, direction: SortDirection) {
+  const leftRank = statusSortRank[left] ?? 3
+  const rightRank = statusSortRank[right] ?? 3
+  if (leftRank !== rightRank) {
+    const result = leftRank - rightRank
+    return direction === 'asc' ? result : -result
+  }
+  return 0
+}
+
+const sortedPoints = computed(() =>
+  points.value
+    .map((point, index) => ({ point, index }))
+    .sort(({ point: left, index: leftIndex }, { point: right, index: rightIndex }) => {
+      let result = 0
+      if (sortColumn.value === 'date') {
+        result = compareDates(left.date, right.date, sortDirection.value)
+      } else if (sortColumn.value === 'status') {
+        result = compareStatuses(left.tracking_status, right.tracking_status, sortDirection.value)
+      } else {
+        result = compareNumbers(
+          numericSortValue(left, sortColumn.value),
+          numericSortValue(right, sortColumn.value),
+          sortDirection.value,
+        )
+      }
+      if (result !== 0) return result
+      if (left.date !== right.date) return compareDates(left.date, right.date, 'desc')
+      return leftIndex - rightIndex
+    })
+    .map(({ point }) => point),
+)
+
+function sortBy(column: SortColumn) {
+  if (sortColumn.value === column) {
+    sortDirection.value = sortDirection.value === 'desc' ? 'asc' : 'desc'
+    return
+  }
+  sortColumn.value = column
+  sortDirection.value = column === 'status' ? 'asc' : 'desc'
+}
+
+function sortIndicator(column: SortColumn) {
+  if (sortColumn.value !== column) return '↕'
+  return sortDirection.value === 'desc' ? '↓' : '↑'
+}
+
+function ariaSort(column: SortColumn) {
+  return sortColumn.value === column
+    ? sortDirection.value === 'desc' ? 'descending' : 'ascending'
+    : 'none'
+}
+
 
 async function load() {
   error.value = ''
@@ -118,9 +215,17 @@ const weekdays = computed(() =>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>{{ t('common.date') }}</th><th>{{ t('common.status') }}</th><th class="number">{{ t('charts.calories') }}</th><th class="number">{{ t('common.deviation') }}</th><th class="number">{{ t('charts.protein') }}</th><th class="number">{{ t('charts.carbs') }}</th><th class="number">{{ t('charts.fat') }}</th></tr></thead>
+          <thead><tr>
+            <th :aria-sort="ariaSort('date')"><button class="table-sort-button" type="button" :aria-label="t('daily.sortBy', { column: t('common.date') })" @click="sortBy('date')">{{ t('common.date') }} <span aria-hidden="true">{{ sortIndicator('date') }}</span></button></th>
+            <th :aria-sort="ariaSort('status')"><button class="table-sort-button" type="button" :aria-label="t('daily.sortBy', { column: t('common.status') })" @click="sortBy('status')">{{ t('common.status') }} <span aria-hidden="true">{{ sortIndicator('status') }}</span></button></th>
+            <th class="number" :aria-sort="ariaSort('calories_kcal')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.calories') })" @click="sortBy('calories_kcal')">{{ t('charts.calories') }} <span aria-hidden="true">{{ sortIndicator('calories_kcal') }}</span></button></th>
+            <th class="number" :aria-sort="ariaSort('deviation_kcal')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('common.deviation') })" @click="sortBy('deviation_kcal')">{{ t('common.deviation') }} <span aria-hidden="true">{{ sortIndicator('deviation_kcal') }}</span></button></th>
+            <th class="number" :aria-sort="ariaSort('protein_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.protein') })" @click="sortBy('protein_g')">{{ t('charts.protein') }} <span aria-hidden="true">{{ sortIndicator('protein_g') }}</span></button></th>
+            <th class="number" :aria-sort="ariaSort('carbs_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.carbs') })" @click="sortBy('carbs_g')">{{ t('charts.carbs') }} <span aria-hidden="true">{{ sortIndicator('carbs_g') }}</span></button></th>
+            <th class="number" :aria-sort="ariaSort('fat_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.fat') })" @click="sortBy('fat_g')">{{ t('charts.fat') }} <span aria-hidden="true">{{ sortIndicator('fat_g') }}</span></button></th>
+          </tr></thead>
           <tbody>
-            <tr v-for="point in points" :key="point.date">
+            <tr v-for="point in sortedPoints" :key="point.date">
               <td>{{ formatGermanDate(point.date) }}</td>
               <td><StatusBadge :status="point.tracking_status" /></td>
               <td class="number">{{ display(point.calories_kcal, ' kcal') }}</td>

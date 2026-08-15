@@ -71,10 +71,10 @@ async function retrySessionRestore() {
   <RouterView v-else-if="usesFocusedLayout" />
   <div v-else class="app-shell">
     <aside :class="['sidebar', { open: menuOpen }]" :aria-label="t('navigation.aria')">
-      <div class="brand">
+      <RouterLink class="brand" :to="{ name: 'overview' }" @click="menuOpen = false">
         <img class="brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
         <strong>CaloGraph</strong>
-      </div>
+      </RouterLink>
       <nav>
         <RouterLink
           v-for="item in navigation"
@@ -101,10 +101,10 @@ async function retrySessionRestore() {
           <PhX v-if="menuOpen" :size="24" aria-hidden="true" />
           <PhList v-else :size="24" aria-hidden="true" />
         </button>
-        <div class="mobile-brand" aria-label="CaloGraph">
+        <RouterLink class="mobile-brand" :to="{ name: 'overview' }" @click="menuOpen = false">
           <img class="mobile-brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
           <strong>CaloGraph</strong>
-        </div>
+        </RouterLink>
       </header>
       <main id="main-content" class="page"><RouterView /></main>
     </div>
