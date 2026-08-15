@@ -58,17 +58,18 @@ measurements; those are omitted and reported through `valid_with_errors` or
 ## Browser file imports
 
 `POST /api/v1/import/apple-health/file` accepts one Apple Health `export.xml`
-or ZIP of up to 500 MiB by default. The ZIP may expand to at most 2 GiB, must
+or ZIP of up to 500 MiB by default. The ZIP may expand to at most 512 MiB, must
 contain exactly one `export.xml`, and is checked for unsafe paths, entry count,
-per-entry and aggregate compression ratio, and entry integrity before any
-import data is persisted. The `export.xml` entry may be stored or Deflate
+and per-entry and aggregate compression ratio. Its `export.xml` is decompressed
+and parsed once through a bounded stream; ZIP integrity is verified before any
+samples or import state are committed. The entry may be stored or Deflate
 compressed. XML is parsed incrementally and accepted samples are persisted in
 configurable batches of 500.
 
 `POST /api/v1/import/yazio/file` accepts one YAZIO JSON file of up to 10 MiB.
-The frontend proxy permits at most one concurrent large Apple Health upload,
-and the application independently limits file imports per user and client IP.
-Only one import or validation may process data for a user at a time.
+The frontend proxy permits one concurrent large Apple Health upload globally.
+The application independently limits file imports per user and client IP. Only
+one import or validation may process data for a user at a time.
 
 The relevant settings are `MAX_UPLOAD_BYTES`,
 `NGINX_MAX_UPLOAD_BYTES`, `BACKEND_TMPFS_BYTES`,
@@ -85,11 +86,12 @@ With a stable `id`, a later import updates the existing record. Without an ID,
 CaloGraph creates a SHA-256 fingerprint from user, adapter, metric, timestamps,
 value, unit, and source identifier. The same payload can be sent repeatedly.
 
-Large file imports checkpoint completed batches. If parsing or reading fails
-after a checkpoint, the response and import history use `partial_failed`.
-Already committed samples remain available, while the final unfinished batch
-is discarded. Resubmitting the same file is the recovery procedure and does
-not duplicate previously committed samples.
+Large non-ZIP file imports checkpoint completed batches. If their parsing or
+reading fails after a checkpoint, the response and import history use
+`partial_failed`. Already committed samples remain available, while the final
+unfinished batch is discarded. ZIP integrity, XML, and import-limit failures
+roll back their entire import. Resubmitting the same file is the recovery
+procedure and does not duplicate previously committed samples.
 
 `POST /api/v1/import/apple-health/validate` performs mapping and validation
 without persistence. Responses contain the batch ID, status, and counts for

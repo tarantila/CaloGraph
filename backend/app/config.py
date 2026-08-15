@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     max_json_payload_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024**2)
     max_upload_bytes: int = Field(default=500 * 1024 * 1024, ge=1024, le=2 * 1024**3)
     max_zip_uncompressed_bytes: int = Field(
-        default=2 * 1024 * 1024 * 1024,
+        default=512 * 1024 * 1024,
         ge=1024,
         le=8 * 1024**3,
     )

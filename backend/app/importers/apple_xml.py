@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import IO
+from typing import Protocol
 
 from defusedxml.ElementTree import iterparse  # type: ignore[import-untyped]
 
@@ -16,6 +16,10 @@ from app.importers.errors import safe_sample_error
 from app.importers.json_adapter import AdapterResult
 
 
+class ReadableByteStream(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
 @dataclass(slots=True)
 class AppleHealthRecord:
     sample: CanonicalSample | None = None
@@ -24,7 +28,7 @@ class AppleHealthRecord:
 
 
 def iter_apple_health_xml(
-    stream: IO[bytes],
+    stream: ReadableByteStream,
     timezone: str,
 ) -> Iterator[AppleHealthRecord]:
     item_index = 0
@@ -79,7 +83,7 @@ def iter_apple_health_xml(
         element.clear()
 
 
-def parse_apple_health_xml(stream: IO[bytes], timezone: str) -> AdapterResult:
+def parse_apple_health_xml(stream: ReadableByteStream, timezone: str) -> AdapterResult:
     result = AdapterResult(source_type="apple_health_xml")
     for record in iter_apple_health_xml(stream, timezone):
         result.add_received()

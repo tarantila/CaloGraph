@@ -123,23 +123,25 @@ deleted hourly after expiry.
 
 Historical Apple Health uploads default to 500 MiB. The bundled Nginx permits
 512 MiB through `NGINX_MAX_UPLOAD_BYTES` on that one endpoint for multipart
-overhead, forwards the body without proxy buffering, and admits only one
-concurrent large upload. The backend uses a 600 MiB
-`BACKEND_TMPFS_BYTES`-controlled ephemeral `/tmp` tmpfs for Starlette's upload
-spool; no health export is written to a host bind mount or persistent Docker
-volume. An outer reverse proxy must allow slightly more than 500 MiB and use a
-request timeout suitable for the connection, or the upload will be rejected
-before reaching CaloGraph.
+overhead, forwards the body without proxy buffering, and limits one upload
+globally. `client_body_timeout` closes stalled request bodies after 60 seconds
+without progress. The backend uses a 600 MiB `BACKEND_TMPFS_BYTES`-controlled
+ephemeral `/tmp` tmpfs for Starlette's upload spool; no health export is written
+to a host bind mount or persistent Docker volume. An outer reverse proxy must allow
+slightly more than 500 MiB, enforce a suitable upload timeout, and overwrite
+forwarding headers at the Internet trust boundary, or the upload will be
+rejected before reaching CaloGraph.
 
-File-import rate limits, XML record/sample caps, the 2-GiB expanded ZIP limit,
+File-import rate limits, XML record/sample caps, the 512-MiB expanded ZIP limit,
 and the 500-record database batch size are configurable through the
 `MAX_IMPORT_*`, `MAX_ZIP_*`, `IMPORT_BATCH_SIZE`, and `FILE_IMPORT_*` settings
-in `.env`. Measure representative exports before raising them.
-Production validation requires the Nginx limit to include multipart overhead,
-the backend tmpfs to include additional reserve space, JSON not to exceed the
-general upload limit, and the expanded ZIP ceiling not to be smaller than the
-upload ceiling. The expanded XML is streamed and does not need to fit into
-tmpfs.
+in `.env`. The ZIP entry is decompressed and parsed once through that bound;
+ZIP, CRC, XML, and expanded-size failures roll back its import completely.
+Measure representative exports before raising limits. Production validation
+requires the Nginx limit to include multipart overhead, the backend tmpfs to
+include additional reserve space, JSON not to exceed the general upload limit,
+and the expanded ZIP ceiling not to be smaller than the upload ceiling. The
+expanded XML is streamed and does not need to fit into tmpfs.
 
 Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Set
 `YAZIO_SYNC_INTERVAL_HOURS` and `YAZIO_SYNC_DAYS` to the deployment-wide

@@ -93,11 +93,13 @@ backups, and the availability of the private application.
   decimal values, allowlisted metrics, and database constraints.
 - **Malicious ZIP/XML:** total and individual size limits, entry count,
   compression ratio, path checks, exactly one `export.xml`, no DTD, entities,
-  or network access, and streaming processing. Nginx admits only one concurrent
-  large upload, Starlette uses one bounded ephemeral tmpfs spool, supported
-  samples are bulk-written in bounded batches, total records/errors/unknown
-  types are capped, and per-user plus per-IP temporary rate limits protect
-  upload and validation paths. Completed checkpoints survive as
+  or network access, and single-pass bounded streaming. ZIP, CRC, XML, and
+  expanded-size failures roll back an Apple Health ZIP import before samples or
+  import state are committed. Nginx permits one large upload globally, applies a
+  60-second stalled-body timeout, and Starlette uses one bounded ephemeral tmpfs
+  spool. Supported samples are bulk-written in bounded batches; total records,
+  errors, and unknown types are capped, and per-user plus per-IP temporary rate
+  limits protect upload and validation paths. Non-ZIP parsing failures can retain
   `partial_failed` and can be retried idempotently.
 - **Container breakout and resource exhaustion:** application containers drop
   every Linux capability, PostgreSQL retains only the ownership and user-switch

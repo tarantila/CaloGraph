@@ -8,12 +8,15 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import security_events
+from app.api import imports as import_api
 from app.config import settings
 from app.main import app
 from app.models import HealthSample, ImportBatch, ImportError, User
+from app.services import import_service
 
 CONTENT_SENTINEL = "PRIVATE_ENCRYPTED_ZIP_PAYLOAD_SENTINEL"
 FILENAME_SENTINEL = "PRIVATE_ENCRYPTED_ZIP_FILENAME_SENTINEL.zip"
@@ -28,6 +31,20 @@ CRC_METADATA_SENTINEL = b"PRIVATE_CRC_ZIP_METADATA_SENTINEL"
 REFERENCE_PATTERN = re.compile(r"^[a-f0-9]{16}$")
 REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 EMPTY_HEALTH_XML = b"<?xml version='1.0'?><HealthData></HealthData>"
+
+
+
+def test_bounded_zip_entry_stream_verifies_the_end_at_exact_budget() -> None:
+    stream = import_api._BoundedZipEntryStream(io.BytesIO(b"abc"), 3, 3)
+
+    assert stream.read() == b"abc"
+    assert stream.read() == b""
+
+    oversized = import_api._BoundedZipEntryStream(io.BytesIO(b"abcd"), 3, 3)
+
+    assert oversized.read() == b"abc"
+    with pytest.raises(import_api._ZipExpandedSizeLimitError):
+        oversized.read()
 
 
 def _zip_with_encrypted_entry_flag() -> bytes:
@@ -247,8 +264,8 @@ def test_unsupported_zip_compression_returns_safe_422_without_writes(
     assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
 
 
-def _zip_with_bad_crc() -> bytes:
-    xml = f"<HealthData><!--{CRC_CONTENT_SENTINEL}--></HealthData>".encode()
+def _zip_with_bad_crc(xml: bytes | None = None) -> bytes:
+    xml = xml or f"<HealthData><!--{CRC_CONTENT_SENTINEL}--></HealthData>".encode()
     buffer = io.BytesIO()
     entry = zipfile.ZipInfo("export.xml")
     entry.comment = CRC_METADATA_SENTINEL
@@ -368,6 +385,177 @@ def test_bad_crc_returns_safe_422_without_partial_persistence(
     assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
     assert db.get(ImportBatch, preserved_batch_id) is not None
 
+
+def test_bad_crc_after_flushed_samples_rolls_back_the_entire_zip_import(
+    client: TestClient,
+    user: User,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "import_batch_size", 2)
+    records = "".join(
+        (
+            '<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+            f'sourceName="Synthetic" unit="kcal" value="{500 + index}" '
+            f'startDate="2024-01-02 12:0{index}:00 +0000" />'
+        )
+        for index in range(3)
+    )
+    original_persist = import_service._persist_sample_batch
+    persisted_batches = 0
+
+    def count_persisted_batch(*args, **kwargs):
+        nonlocal persisted_batches
+        persisted_batches += 1
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(import_service, "_persist_sample_batch", count_persisted_batch)
+    archive = _zip_with_bad_crc(
+        (
+            f"<HealthData><!--{CRC_CONTENT_SENTINEL}-->{records}"
+            f"<!--{'x' * (2 * 16 * 1024)}--></HealthData>"
+        ).encode()
+    )
+
+    response = _upload_zip(client, _login_headers(client, user), archive)
+
+    assert response.status_code == 422
+    assert persisted_batches >= 1
+    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
+    assert db.scalar(select(func.count()).select_from(ImportError)) == 0
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
+
+def test_bad_crc_at_exact_expanded_size_rolls_back_the_entire_zip_import(
+    client: TestClient,
+    user: User,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "import_batch_size", 2)
+    xml = (
+        b"<HealthData>"
+        b"<!--" + CRC_CONTENT_SENTINEL.encode() + b"-->"
+        b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+        b'sourceName="Synthetic" unit="kcal" value="500" '
+        b'startDate="2024-01-02 12:00:00 +0000" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+        b'sourceName="Synthetic" unit="kcal" value="501" '
+        b'startDate="2024-01-02 12:01:00 +0000" />'
+        b"</HealthData>"
+    )
+    monkeypatch.setattr(settings, "max_zip_uncompressed_bytes", len(xml))
+
+    response = _upload_zip(client, _login_headers(client, user), _zip_with_bad_crc(xml))
+
+    assert response.status_code == 422
+    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
+    assert db.scalar(select(func.count()).select_from(ImportError)) == 0
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
+
+
+def test_database_error_after_flushed_zip_samples_rolls_back_the_entire_import(
+    client: TestClient,
+    user: User,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "import_batch_size", 2)
+    original_persist = import_service._persist_sample_batch
+
+    def fail_after_flush(*args, **kwargs):
+        original_persist(*args, **kwargs)
+        raise SQLAlchemyError("synthetic database failure")
+
+    monkeypatch.setattr(import_service, "_persist_sample_batch", fail_after_flush)
+    xml = (
+        b"<HealthData>"
+        b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+        b'sourceName="Synthetic" unit="kcal" value="500" '
+        b'startDate="2024-01-02 12:00:00 +0000" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+        b'sourceName="Synthetic" unit="kcal" value="501" '
+        b'startDate="2024-01-02 12:01:00 +0000" />'
+        b"</HealthData>"
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as failing_client:
+        response = _upload_zip(
+            failing_client,
+            _login_headers(failing_client, user),
+            _zip_bytes([("export.xml", xml)]),
+        )
+
+    assert response.status_code == 500
+    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
+    assert db.scalar(select(func.count()).select_from(ImportError)) == 0
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
+
+@pytest.mark.parametrize(
+    ("payload", "configure_limit"),
+    [
+        (
+            (
+                b"<HealthData>"
+                b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+                b'sourceName="Synthetic" unit="kcal" value="500" '
+                b'startDate="2024-01-02 12:00:00 +0000" />'
+                b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+                b'sourceName="Synthetic" unit="kcal" value="501" '
+                b'startDate="2024-01-02 12:01:00 +0000" />'
+                b"<Record"
+            ),
+            lambda monkeypatch: None,
+        ),
+        (
+            (
+                b"<HealthData>"
+                b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+                b'sourceName="Synthetic" unit="kcal" value="500" '
+                b'startDate="2024-01-02 12:00:00 +0000" />'
+                b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+                b'sourceName="Synthetic" unit="kcal" value="501" '
+                b'startDate="2024-01-02 12:01:00 +0000" />'
+                b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" '
+                b'sourceName="Synthetic" unit="kcal" value="502" '
+                b'startDate="2024-01-02 12:02:00 +0000" />'
+                b"</HealthData>"
+            ),
+            lambda monkeypatch: monkeypatch.setattr(settings, "max_import_records", 2),
+        ),
+    ],
+    ids=["late_xml_error", "record_limit"],
+)
+def test_late_zip_failures_after_flushed_samples_roll_back_entire_import(
+    client: TestClient,
+    user: User,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    configure_limit,
+) -> None:
+    monkeypatch.setattr(settings, "import_batch_size", 2)
+    configure_limit(monkeypatch)
+    original_persist = import_service._persist_sample_batch
+    persisted_batches = 0
+
+    def count_persisted_batch(*args, **kwargs):
+        nonlocal persisted_batches
+        persisted_batches += 1
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(import_service, "_persist_sample_batch", count_persisted_batch)
+
+    response = _upload_zip(
+        client,
+        _login_headers(client, user),
+        _zip_bytes([("export.xml", payload)]),
+    )
+
+    assert response.status_code == 422
+    assert persisted_batches >= 1
+    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
+    assert db.scalar(select(func.count()).select_from(ImportError)) == 0
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
 
 def _zip_bytes(
     entries: list[tuple[str | zipfile.ZipInfo, bytes]],
@@ -490,6 +678,37 @@ def test_supported_zip_compression_is_imported(
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
     assert db.scalar(select(func.count()).select_from(ImportBatch)) == 1
+
+
+def test_accepted_zip_entry_is_opened_once(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = zipfile.ZipFile.open
+    opened_entries = 0
+
+    def count_entry_open(
+        archive: zipfile.ZipFile,
+        name: str | zipfile.ZipInfo,
+        mode: str = "r",
+        *args: object,
+        **kwargs: object,
+    ):
+        nonlocal opened_entries
+        if mode == "r" and isinstance(name, zipfile.ZipInfo) and name.filename == "export.xml":
+            opened_entries += 1
+        return original_open(archive, name, mode, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", count_entry_open)
+    response = _upload_zip(
+        client,
+        _login_headers(client, user),
+        _zip_bytes([("export.xml", EMPTY_HEALTH_XML)]),
+    )
+
+    assert response.status_code == 200
+    assert opened_entries == 1
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,8 @@
 import hashlib
 import zipfile
+import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import IO
 from xml.etree.ElementTree import ParseError
 
 import zstandard
@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.importers.apple_xml import iter_apple_health_xml
+from app.importers.apple_xml import ReadableByteStream, iter_apple_health_xml
 from app.importers.common import CanonicalSample, local_date_for
 from app.importers.errors import ImportLimitError
 from app.importers.json_adapter import AdapterResult
@@ -52,6 +52,9 @@ def _start_batch(
     source_type: str,
     client_identifier: str | None,
     payload_hash: str | None = None,
+    *,
+    commit: bool = True,
+    log_started: bool = True,
 ) -> ImportBatch:
     batch = ImportBatch(
         user_id=user.id,
@@ -61,14 +64,18 @@ def _start_batch(
         payload_hash=payload_hash,
     )
     db.add(batch)
-    db.commit()
-    db.refresh(batch)
-    log_security_event(
-        "import.started",
-        actor_ref=security_reference("user", user.id),
-        target_ref=security_reference("import_batch", batch.id),
-        details={"source_type": source_type},
-    )
+    if commit:
+        db.commit()
+        db.refresh(batch)
+    else:
+        db.flush()
+    if log_started:
+        log_security_event(
+            "import.started",
+            actor_ref=security_reference("user", user.id),
+            target_ref=security_reference("import_batch", batch.id),
+            details={"source_type": source_type},
+        )
     return batch
 
 
@@ -248,6 +255,8 @@ def _checkpoint(
     counters: ImportCounters,
     unknown_types: set[str],
     errors: list[tuple[int | None, str | None, str, str]],
+    *,
+    commit: bool = True,
 ) -> None:
     _add_import_errors(db, batch, errors)
     errors.clear()
@@ -257,7 +266,8 @@ def _checkpoint(
     batch.skipped = counters.duplicate_skipped + counters.unknown_count
     batch.failed = counters.failed
     batch.unknown_types = sorted(unknown_types)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def _partial_failure_detail(exc: Exception) -> str:
@@ -318,13 +328,18 @@ def _finish_partial(
     )
     return _summary(batch)
 
+def _discard_failed_atomic_import(db: Session) -> None:
+    db.rollback()
+
 
 def persist_apple_health_stream(
     db: Session,
     user: User,
-    stream: IO[bytes],
+    stream: ReadableByteStream,
     content_type: str,
     client_identifier: str | None,
+    *,
+    atomic: bool = False,
 ) -> ImportSummary:
     with shared_user_operation(db, user.id) as active_user:
         return _persist_apple_health_stream_locked(
@@ -333,18 +348,28 @@ def persist_apple_health_stream(
             stream,
             content_type,
             client_identifier,
+            atomic=atomic,
         )
 
 
 def _persist_apple_health_stream_locked(
     db: Session,
     user: User,
-    stream: IO[bytes],
+    stream: ReadableByteStream,
     content_type: str,
     client_identifier: str | None,
+    *,
+    atomic: bool,
 ) -> ImportSummary:
     del content_type
-    batch = _start_batch(db, user, "apple_health_xml", client_identifier)
+    batch = _start_batch(
+        db,
+        user,
+        "apple_health_xml",
+        client_identifier,
+        commit=not atomic,
+        log_started=not atomic,
+    )
     counters = ImportCounters()
     samples: list[CanonicalSample] = []
     pending_errors: list[tuple[int | None, str | None, str, str]] = []
@@ -385,7 +410,8 @@ def _persist_apple_health_stream_locked(
                 counters.updated += updated
                 counters.duplicate_skipped += skipped
                 samples.clear()
-                _checkpoint(db, batch, counters, unknown_types, pending_errors)
+                if not atomic:
+                    _checkpoint(db, batch, counters, unknown_types, pending_errors)
 
         if samples:
             inserted, updated, skipped = _persist_sample_batch(
@@ -394,8 +420,23 @@ def _persist_apple_health_stream_locked(
             counters.inserted += inserted
             counters.updated += updated
             counters.duplicate_skipped += skipped
-        _checkpoint(db, batch, counters, unknown_types, pending_errors)
-    except (DefusedXmlException, ImportLimitError, OSError, ParseError, zipfile.BadZipFile) as exc:
+        _checkpoint(db, batch, counters, unknown_types, pending_errors, commit=not atomic)
+    except (DefusedXmlException, OSError, ParseError, zipfile.BadZipFile, zlib.error) as exc:
+        if atomic:
+            _discard_failed_atomic_import(db)
+            raise
+        return _finish_partial(
+            db,
+            batch.id,
+            counters,
+            unknown_types,
+            pending_errors,
+            exc,
+        )
+    except ImportLimitError as exc:
+        if atomic:
+            _discard_failed_atomic_import(db)
+            raise
         return _finish_partial(
             db,
             batch.id,
@@ -405,6 +446,9 @@ def _persist_apple_health_stream_locked(
             exc,
         )
     except SQLAlchemyError as exc:
+        if atomic:
+            _discard_failed_atomic_import(db)
+            raise
         _finish_partial(
             db,
             batch.id,
@@ -414,6 +458,14 @@ def _persist_apple_health_stream_locked(
             exc,
         )
         raise
+
+    if atomic:
+        log_security_event(
+            "import.started",
+            actor_ref=security_reference("user", batch.user_id),
+            target_ref=security_reference("import_batch", batch.id),
+            details={"source_type": batch.source_type},
+        )
 
     batch.status = "completed_with_errors" if counters.failed else "completed"
     batch.finished_at = datetime.now(UTC)

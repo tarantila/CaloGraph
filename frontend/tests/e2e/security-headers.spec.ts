@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import http from 'node:http'
 
 const baselineHeaders = {
   'x-content-type-options': 'nosniff',
@@ -57,4 +58,48 @@ test('ignores forwarded HTTPS from an untrusted peer', async ({ request }) => {
 
   expect(response.headers()['strict-transport-security']).toBeUndefined()
   expect(response.headers()['cross-origin-opener-policy']).toBeUndefined()
+})
+
+test('admits only one concurrent Apple Health file upload', async ({ request }, testInfo) => {
+  const endpoint = new URL(
+    '/api/v1/import/apple-health/file',
+    testInfo.project.use.baseURL ?? 'http://127.0.0.1:8180',
+  )
+  const heldUpload = http.request({
+    hostname: endpoint.hostname,
+    port: endpoint.port || undefined,
+    path: endpoint.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Length': '1024',
+      'Content-Type': 'multipart/form-data; boundary=upload-boundary',
+      Host: endpoint.host,
+    },
+  })
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      heldUpload.once('error', reject)
+      heldUpload.write('--upload-boundary\r\n', (error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+    })
+
+    let response
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      response = await request.post('/api/v1/import/apple-health/file')
+      if (response.status() === 429) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    expect(response?.status()).toBe(429)
+  } finally {
+    heldUpload.destroy()
+  }
 })

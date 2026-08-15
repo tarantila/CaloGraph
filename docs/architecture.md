@@ -94,8 +94,9 @@ additional service.
 Historical uploads are streamed during the request and expose upload progress
 in the browser. Nginx forwards the Apple Health request without buffering it a
 second time; its multipart ceiling and Starlette's ephemeral `/tmp` spool are
-driven by validated byte settings. The XML adapter yields one record at a time, services
-perform bulk lookups and commit accepted samples in 500-record batches, and a
-PostgreSQL advisory lock permits only one import per user across backend
-workers. A failed import after a checkpoint is retained as `partial_failed` so
-a retry can continue idempotently.
+driven by validated byte settings. The XML adapter yields one record at a time,
+services perform bulk lookups and commit accepted samples in 500-record batches,
+and a PostgreSQL advisory lock permits only one import per user across backend
+workers. Non-ZIP failures after a checkpoint are retained as `partial_failed`
+so a retry can continue idempotently; ZIP integrity, XML, and limit failures
+roll back their import completely.
