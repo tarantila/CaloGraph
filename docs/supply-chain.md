@@ -74,6 +74,21 @@ CI run after visibility change before the release workflow is dispatched;
 earlier private images have no qualifying attestations. Start the manual
 release only after that successful rerun so release and `latest` receive
 provenance and SBOM attestations.
+
+## Release attribution
+
+Release metadata is generated automatically by the manual release workflow.
+Visible GitHub attribution for newly created annotated release tags and GitHub
+releases uses the repository secret `CALOGRAPH_RELEASE_TOKEN`. It is a
+repository-specific fine-grained personal access token with the minimum
+required repository permission `Contents: Read and write`.
+
+`GITHUB_TOKEN` remains responsible for checkout, Main-CI and supply-chain
+read checks, attestations, GHCR login, and image promotion. The release secret
+is used only to create the annotated tag and GitHub release. A missing release
+secret, or one not belonging to `tarantila`, fails the workflow before any
+mutation. Rotate the secret before expiry; neither its value nor token ID is
+documented.
 Repository hardening should additionally protect `v*` tags with a ruleset that
 restricts updates and deletions. This is not a release-workflow trust-boundary
 requirement after the release flow was changed to `workflow_dispatch`, because

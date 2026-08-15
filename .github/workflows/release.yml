@@ -19,12 +19,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
       actions: read
       attestations: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
     steps:
       - name: Validate release invocation
@@ -80,6 +79,7 @@ jobs:
         id: validate
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
         run: scripts/release/validate-release.sh "$RELEASE_VERSION" "$RELEASE_COMMIT"
@@ -87,6 +87,7 @@ jobs:
       - name: Validate release metadata before tag creation
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
         run: |
@@ -121,34 +122,173 @@ jobs:
             esac
           fi
 
+      - name: Validate release identity
+        id: identity
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.CALOGRAPH_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$RELEASE_TOKEN" ]] || {
+            printf 'CALOGRAPH_RELEASE_TOKEN ist nicht gesetzt.\n' >&2
+            exit 1
+          }
+          user_json=$(GH_TOKEN="$RELEASE_TOKEN" gh api user)
+          release_login=$(jq -er '.login' <<<"$user_json")
+          [[ "$release_login" == tarantila ]] || {
+            printf 'Release-Token gehört nicht zu tarantila: %s\n' "$release_login" >&2
+            exit 1
+          }
+          release_id=$(jq -er '.id | tostring' <<<"$user_json")
+          [[ "$release_id" =~ ^[0-9]+$ ]] || {
+            printf 'Release-Identität enthält keine gültige numerische ID.\n' >&2
+            exit 1
+          }
+          release_name=$(jq -er \
+            'if (.name // "") != "" then .name else .login end' \
+            <<<"$user_json")
+          [[ "$release_name" != *$'\n'* && "$release_name" != *$'\r'* ]] || {
+            printf 'Release-Name enthält unzulässige Zeilenumbrüche.\n' >&2
+            exit 1
+          }
+          release_email="${release_id}+${release_login}@users.noreply.github.com"
+          printf 'Release-Identität: %s\n' "$release_login"
+          printf 'release_login=%s\n' "$release_login" >>"$GITHUB_OUTPUT"
+          printf 'release_name=%s\n' "$release_name" >>"$GITHUB_OUTPUT"
+          printf 'release_email=%s\n' "$release_email" >>"$GITHUB_OUTPUT"
+
       - name: Create or verify release tag
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.CALOGRAPH_RELEASE_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
+          RELEASE_NAME: ${{ steps.identity.outputs.release_name }}
+          RELEASE_EMAIL: ${{ steps.identity.outputs.release_email }}
         run: |
           set -Eeuo pipefail
           tag_ref="refs/tags/$RELEASE_VERSION"
-          remote_tag_commit=$(git ls-remote origin "$tag_ref" "$tag_ref^{}" \
-            | awk -v tag="$tag_ref" '
-                $2 == tag {plain = $1}
-                $2 == tag "^{}" {peeled = $1}
-                END {print peeled ? peeled : plain}')
+          remote_tag_refs=$(git ls-remote origin "$tag_ref" "$tag_ref^{}")
+          remote_tag_object=$(awk -v tag="$tag_ref" '$2 == tag {print $1; exit}' <<<"$remote_tag_refs")
+          remote_tag_peeled=$(awk -v tag="$tag_ref" '$2 == tag "^{}" {print $1; exit}' <<<"$remote_tag_refs")
+          remote_tag_commit=${remote_tag_peeled:-$remote_tag_object}
           if [[ -n "$remote_tag_commit" ]]; then
             [[ "$remote_tag_commit" == "$RELEASE_COMMIT" ]] || {
               printf 'Release-Tag zeigt auf einen anderen Commit: %s\n' "$RELEASE_VERSION" >&2
               exit 1
             }
           else
-            git -c user.name='github-actions[bot]' \
-              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "CaloGraph $RELEASE_VERSION"
-            git push origin "refs/tags/$RELEASE_VERSION"
+            tag_payload=$(jq -n \
+              --arg tag "$RELEASE_VERSION" \
+              --arg message "CaloGraph $RELEASE_VERSION" \
+              --arg object "$RELEASE_COMMIT" \
+              --arg name "$RELEASE_NAME" \
+              --arg email "$RELEASE_EMAIL" \
+              '{
+                tag: $tag,
+                message: $message,
+                object: $object,
+                type: "commit",
+                tagger: {
+                  name: $name,
+                  email: $email
+                }
+              }')
+            tag_error_file="$RUNNER_TEMP/tag-object-error.txt"
+            tag_json=$(GH_TOKEN="$RELEASE_TOKEN" gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/tags" \
+              --input - \
+              <<<"$tag_payload" \
+              2>"$tag_error_file")
+            annotated_tag_sha=$(jq -er '.sha' <<<"$tag_json")
+            [[ "$annotated_tag_sha" =~ ^[0-9a-f]{40}$ ]] || {
+              printf 'GitHub lieferte keine gültige Annotated-Tag-SHA.\n' >&2
+              exit 1
+            }
+            jq -e \
+              --arg tag "$RELEASE_VERSION" \
+              --arg message "CaloGraph $RELEASE_VERSION" \
+              --arg commit "$RELEASE_COMMIT" \
+              --arg name "$RELEASE_NAME" \
+              --arg email "$RELEASE_EMAIL" \
+              '(.tag == $tag)
+               and (.message == $message)
+               and (.object.type == "commit")
+               and (.object.sha == $commit)
+               and (.tagger.name == $name)
+               and (.tagger.email == $email)' \
+              <<<"$tag_json" >/dev/null || {
+                printf 'GitHub-Tagobjekt wurde nicht wie erwartet erzeugt.\n' >&2
+                exit 1
+              }
+
+            ref_payload=$(jq -n \
+              --arg ref "$tag_ref" \
+              --arg sha "$annotated_tag_sha" \
+              '{ref: $ref, sha: $sha}')
+            ref_error_file="$RUNNER_TEMP/tag-ref-error.txt"
+            if ref_json=$(GH_TOKEN="$RELEASE_TOKEN" gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              --input - \
+              <<<"$ref_payload" \
+              2>"$ref_error_file"); then
+              :
+            else
+              status=$?
+              error=$(cat "$ref_error_file")
+              case "$error" in
+                *"HTTP 422"*|*"Reference already exists"*)
+                  raced_refs=$(git ls-remote origin "$tag_ref" "$tag_ref^{}")
+                  raced_tag_object=$(awk -v tag="$tag_ref" '$2 == tag {print $1; exit}' <<<"$raced_refs")
+                  raced_tag_peeled=$(awk -v tag="$tag_ref" '$2 == tag "^{}" {print $1; exit}' <<<"$raced_refs")
+                  [[ -n "$raced_tag_peeled" && "$raced_tag_peeled" == "$RELEASE_COMMIT" ]] || {
+                    printf 'Race bei Release-Tag-Erstellung führte zu inkonsistentem Tag.\n' >&2
+                    exit 1
+                  }
+                  annotated_tag_sha="$raced_tag_object"
+                  ;;
+                *) printf '%s\n' "$error" >&2; exit "$status" ;;
+              esac
+            fi
+
+            verified_refs=$(git ls-remote origin "$tag_ref" "$tag_ref^{}")
+            verified_tag_object=$(awk -v tag="$tag_ref" '$2 == tag {print $1; exit}' <<<"$verified_refs")
+            verified_tag_peeled=$(awk -v tag="$tag_ref" '$2 == tag "^{}" {print $1; exit}' <<<"$verified_refs")
+            [[ "$verified_tag_object" == "$annotated_tag_sha" ]] || {
+              printf 'Release-Tagobjekt konnte nicht verifiziert werden.\n' >&2
+              exit 1
+            }
+            [[ -n "$verified_tag_peeled" && "$verified_tag_peeled" == "$RELEASE_COMMIT" ]] || {
+              printf 'Release-Tag zeigt nach Erstellung nicht auf RELEASE_COMMIT.\n' >&2
+              exit 1
+            }
+            tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$annotated_tag_sha")
+            jq -e \
+              --arg tag "$RELEASE_VERSION" \
+              --arg message "CaloGraph $RELEASE_VERSION" \
+              --arg commit "$RELEASE_COMMIT" \
+              --arg name "$RELEASE_NAME" \
+              --arg email "$RELEASE_EMAIL" \
+              '(.tag == $tag)
+               and (.message == $message)
+               and (.object.type == "commit")
+               and (.object.sha == $commit)
+               and (.tagger.name == $name)
+               and (.tagger.email == $email)' \
+              <<<"$tag_json" >/dev/null || {
+                printf 'Neu erzeugtes Release-Tagobjekt ist inkonsistent.\n' >&2
+                exit 1
+              }
           fi
 
       - name: Sign in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          printf '%s' "$GH_TOKEN" \
+          printf '%s' "$GHCR_TOKEN" \
             | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
       - name: Promote verified immutable images
@@ -168,6 +308,9 @@ jobs:
       - name: Create or verify GitHub Release
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.CALOGRAPH_RELEASE_TOKEN }}
+          RELEASE_LOGIN: ${{ steps.identity.outputs.release_login }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
         run: |
@@ -176,6 +319,7 @@ jobs:
           git show "$RELEASE_COMMIT:CHANGELOG.md" >"$RUNNER_TEMP/CHANGELOG.md"
           release_notes=$(CHANGELOG_FILE="$RUNNER_TEMP/CHANGELOG.md" scripts/release-notes.sh "${RELEASE_VERSION#v}")
           release_error_file="$RUNNER_TEMP/release-create-error.txt"
+          release_created=false
           if release_json=$(gh api \
             "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" \
             2>"$release_error_file"); then
@@ -199,21 +343,41 @@ jobs:
             error=$(cat "$release_error_file")
             case "$error" in
               *"HTTP 404"*|*"Not Found"*)
-                gh release create "$RELEASE_VERSION" \
+                GH_TOKEN="$RELEASE_TOKEN" gh release create "$RELEASE_VERSION" \
                   --repo "$GITHUB_REPOSITORY" \
                   --verify-tag \
                   --title "$release_title" \
                   --notes "$release_notes"
+                release_created=true
                 ;;
               *) printf '%s\n' "$error" >&2; exit "$status" ;;
             esac
           fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION" \
-            | jq -e \
-              --arg title "$release_title" \
-              --arg tag "$RELEASE_VERSION" \
-              '(.name == $title)
-               and (.tag_name == $tag)
-               and (.draft == false)
-               and (.prerelease == false)
-               and (.immutable == true)' >/dev/null
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION")
+          jq -e \
+            --arg title "$release_title" \
+            --arg tag "$RELEASE_VERSION" \
+            --arg notes "$release_notes" \
+            '(.name == $title)
+             and (.tag_name == $tag)
+             and (.draft == false)
+             and (.prerelease == false)
+             and (.immutable == true)
+             and ((.body == $notes) or (.body | rtrimstr("\n") == $notes))' \
+            <<<"$release_json" >/dev/null || {
+              printf 'GitHub Release ist nach dem Erzeugen inkonsistent.\n' >&2
+              exit 1
+            }
+          # Historical immutable releases retain their original author; only a
+          # release created by this run receives the new attribution check.
+          if [[ "$release_created" == true ]]; then
+            jq -e \
+              --arg actor "$RELEASE_LOGIN" \
+              '(.author.login == $actor)' \
+              <<<"$release_json" >/dev/null || {
+                printf 'Neuer GitHub Release hat nicht den erwarteten Autor: %s\n' "$RELEASE_LOGIN" >&2
+                exit 1
+              }
+            printf 'Neuen GitHub Release %s mit Autor %s verifiziert.\n' \
+              "$RELEASE_VERSION" "$RELEASE_LOGIN"
+          fi
