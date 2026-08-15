@@ -219,8 +219,8 @@ server {
         # limit. Keep request buffering disabled to avoid a second large
         # temporary file on the Docker host.
         client_max_body_size 512m;
+        # This is an inter-read idle timeout, not an absolute upload deadline.
         client_body_timeout 3600s;
-
         proxy_pass http://calograph_frontend;
         proxy_http_version 1.1;
         proxy_set_header Connection "";

@@ -17,6 +17,8 @@ logging.getLogger("pydantic_settings").setLevel(logging.INFO)
 
 
 MAX_SECRET_FILE_BYTES = 16 * 1024
+APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS = 2
+BACKEND_TMPFS_RESERVE_BYTES = 16 * 1024 * 1024
 RuntimeRole = Literal["backend", "scheduler"]
 
 KNOWN_INSECURE_SECRETS = frozenset(
@@ -139,7 +141,8 @@ class Settings(BaseSettings):
         le=2 * 1024**3,
     )
     backend_tmpfs_bytes: int = Field(
-        default=600 * 1024 * 1024,
+        default=APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS * (512 * 1024 * 1024)
+        + BACKEND_TMPFS_RESERVE_BYTES,
         ge=1024,
         le=4 * 1024**3,
     )
@@ -450,9 +453,15 @@ class Settings(BaseSettings):
                 errors.append(
                     "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
                 )
-            if self.backend_tmpfs_bytes < self.nginx_max_upload_bytes + 16 * 1024 * 1024:
+            required_backend_tmpfs_bytes = (
+                APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS * self.nginx_max_upload_bytes
+                + BACKEND_TMPFS_RESERVE_BYTES
+            )
+            if self.backend_tmpfs_bytes < required_backend_tmpfs_bytes:
                 errors.append(
-                    "BACKEND_TMPFS_BYTES needs reserve space above NGINX_MAX_UPLOAD_BYTES"
+                    "BACKEND_TMPFS_BYTES must cover "
+                    f"{APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS} concurrent uploads plus "
+                    f"{BACKEND_TMPFS_RESERVE_BYTES // (1024 * 1024)} MiB reserve"
                 )
 
         if errors:

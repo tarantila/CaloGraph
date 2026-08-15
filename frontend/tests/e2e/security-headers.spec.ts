@@ -60,7 +60,7 @@ test('ignores forwarded HTTPS from an untrusted peer', async ({ request }) => {
   expect(response.headers()['cross-origin-opener-policy']).toBeUndefined()
 })
 
-test('admits only one concurrent Apple Health file upload', async ({ request }, testInfo) => {
+test('rejects a second concurrent Apple Health upload from the same client', async ({ request }, testInfo) => {
   const endpoint = new URL(
     '/api/v1/import/apple-health/file',
     testInfo.project.use.baseURL ?? 'http://127.0.0.1:8180',

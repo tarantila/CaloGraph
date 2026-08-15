@@ -67,18 +67,21 @@ compressed. XML is parsed incrementally and accepted samples are persisted in
 configurable batches of 500.
 
 `POST /api/v1/import/yazio/file` accepts one YAZIO JSON file of up to 10 MiB.
-The frontend proxy permits one concurrent large Apple Health upload globally.
-The application independently limits file imports per user and client IP. Only
-one import or validation may process data for a user at a time.
+The frontend proxy admits at most two concurrent large Apple Health uploads
+globally and at most one per client IP. `client_body_timeout 60s` remains
+defense-in-depth against bodies with no progress; it is not an absolute
+upload deadline. The application independently limits file imports per user
+and client IP. Only one import or validation may process data for a user at a
+time.
 
 The relevant settings are `MAX_UPLOAD_BYTES`,
 `NGINX_MAX_UPLOAD_BYTES`, `BACKEND_TMPFS_BYTES`,
 `MAX_ZIP_UNCOMPRESSED_BYTES`, `MAX_ZIP_ENTRIES`, `MAX_IMPORT_RECORDS`,
 `MAX_IMPORT_SAMPLES`, `MAX_IMPORT_ERRORS`, `MAX_IMPORT_UNKNOWN_TYPES`,
 `IMPORT_BATCH_SIZE`, and the `FILE_IMPORT_*` rate limits. Production startup
-validates the capacity relationships. Raise the record limit deliberately if a
-legitimate long-running Apple Health history exceeds the default one million
-XML records.
+requires `BACKEND_TMPFS_BYTES >= 2 * NGINX_MAX_UPLOAD_BYTES + 16 MiB` for the
+two global upload slots. Raise the record limit deliberately if a legitimate
+long-running Apple Health history exceeds the default one million XML records.
 
 ## Idempotency
 

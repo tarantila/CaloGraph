@@ -348,6 +348,29 @@ def test_scheduler_rejects_default_rate_limit_secret(
 
 def test_valid_production_configuration_passes_runtime_check() -> None:
     valid_production_settings().validate_runtime_security()
+def test_default_production_upload_budget_covers_two_global_slots() -> None:
+    configured = valid_production_settings()
+
+    assert configured.backend_tmpfs_bytes == 2 * 512 * 1024 * 1024 + 16 * 1024 * 1024
+    configured.validate_runtime_security()
+
+
+def test_production_rejects_tmpfs_budget_below_two_global_upload_slots() -> None:
+    configured = valid_production_settings(backend_tmpfs_bytes=600 * 1024 * 1024)
+
+    with pytest.raises(ProductionConfigurationError, match="2 concurrent uploads"):
+        configured.validate_runtime_security()
+
+def test_production_upload_budget_scales_with_nginx_limit() -> None:
+    nginx_max_upload_bytes = 768 * 1024 * 1024
+    configured = valid_production_settings(
+        nginx_max_upload_bytes=nginx_max_upload_bytes,
+        backend_tmpfs_bytes=2 * nginx_max_upload_bytes + 16 * 1024 * 1024,
+    )
+
+    configured.validate_runtime_security()
+
+
 
 
 @pytest.mark.parametrize(
