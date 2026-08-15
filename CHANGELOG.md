@@ -5,6 +5,31 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-15
+
+### Changed
+
+- Compatible maintenance dependencies were refreshed without introducing
+  deferred major-version upgrades.
+- Release tagging and GitHub Release creation now use the scoped repository
+  owner release identity while the normal GitHub Actions token remains
+  restricted for release metadata operations.
+
+### Fixed
+
+- The daily view shows the newest day first by default and allows every visible
+  column to be sorted with deterministic handling of missing values.
+- Desktop and mobile CaloGraph branding now link back to the overview.
+
+### Security
+
+- Apple Health ZIP imports process `export.xml` through a single bounded
+  decompression stream and roll back failed ZIP imports atomically.
+- The expanded ZIP budget is reduced to 512 MiB.
+- Large Apple Health uploads are limited to one concurrent connection per
+  trusted client IP and two globally, with the backend temporary-storage
+  budget validated for that concurrency.
+
 ## [0.3.6] - 2026-08-14
 
 ### Changed
@@ -413,7 +438,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tarantila/CaloGraph/compare/v0.3.3...v0.3.4

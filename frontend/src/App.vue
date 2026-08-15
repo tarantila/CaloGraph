@@ -88,7 +88,7 @@ async function retrySessionRestore() {
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
-        <small>CaloGraph v0.3.6</small>
+        <small>CaloGraph v0.3.7</small>
         <button class="sidebar-signout" type="button" @click="signOut">
           <PhSignOut :size="18" aria-hidden="true" />
           {{ t('navigation.logout') }}

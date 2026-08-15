@@ -30,7 +30,7 @@ validate_password_blocklist()
 
 app = FastAPI(
     title="CaloGraph API",
-    version="0.3.6",
+    version="0.3.7",
     description=(
         "Lokale Analyse- und Import-API. CaloGraph greift nicht serverseitig auf Apple Health "
         "oder iCloud zu."
