@@ -17,6 +17,7 @@ import {
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { i18n } from './i18n'
+import type { Achievement } from './types'
 import { useAuthStore } from './stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
@@ -65,6 +66,13 @@ async function retrySessionRestore() {
       : `${window.location.pathname}${window.location.search}${window.location.hash}`
   await router.replace(currentPath)
 }
+
+function hasAchievementKey(item: Achievement): item is Achievement & { key: string } {
+  return typeof item.key === 'string'
+}
+
+const newlyUnlockedAchievements = computed(() => auth.newlyUnlockedAchievements.filter(hasAchievementKey))
+
 function achievementLabel(key: string): string {
   return t(`achievements.names.${key}`)
 }
@@ -85,10 +93,10 @@ function dismissAchievementNotice(): void {
   </main>
   <RouterView v-else-if="usesFocusedLayout" />
   <div v-else class="app-shell">
-    <div v-if="auth.newlyUnlockedAchievements.length" class="achievement-toast" role="status">
+    <div v-if="newlyUnlockedAchievements.length" class="achievement-toast" role="status">
       <div>
         <strong>{{ t('achievements.unlockedTitle') }}</strong>
-        <span v-for="item in auth.newlyUnlockedAchievements" :key="item.key">
+        <span v-for="item in newlyUnlockedAchievements" :key="item.key">
           {{ achievementLabel(item.key) }}
         </span>
       </div>

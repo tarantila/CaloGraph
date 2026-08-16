@@ -175,6 +175,9 @@ class Settings(BaseSettings):
     import_rate_limit: int = Field(default=30, ge=1, le=100_000)
     import_rate_limit_window_seconds: int = Field(default=60, ge=60, le=86_400)
     import_ip_rate_limit: int = Field(default=60, ge=1, le=100_000)
+    reconcile_rate_limit: int = Field(default=12, ge=1, le=100_000)
+    reconcile_ip_rate_limit: int = Field(default=24, ge=1, le=100_000)
+    reconcile_rate_limit_window_seconds: int = Field(default=300, ge=60, le=86_400)
     file_import_user_rate_limit: int = Field(default=3, ge=1, le=1_000)
     file_import_ip_rate_limit: int = Field(default=6, ge=1, le=10_000)
     file_import_rate_limit_window_seconds: int = Field(

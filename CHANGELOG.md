@@ -16,6 +16,11 @@ follows [Semantic Versioning](https://semver.org/).
   by default, so Compose uses the public `latest` image until an operator
   deliberately selects a reviewed release tag.
 
+### Security
+
+- Hardened achievement reconciliation against stale revoked sessions, hidden
+  achievement metadata disclosure, and expensive repeated full-history scans.
+
 ## [0.3.7] - 2026-08-15
 
 ### Changed

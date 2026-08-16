@@ -301,6 +301,39 @@ describe('authentication store', () => {
     auth.completeTargetSetup()
     expect(auth.needsTargetSetup).toBe(false)
   })
+  it('behält die Session bei einem Reconcile-Rate-Limit', async () => {
+    const user = {
+      id: '1',
+      username: 'admin',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      is_admin: false,
+      is_active: true,
+      deactivated_at: null,
+      raw_payload_retention_days: 0,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          type: 'urn:calograph:problem:rate-limited',
+          status: 429,
+          detail: 'Zu viele Anfragen. Bitte später erneut versuchen.',
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/problem+json', 'Retry-After': '60' } },
+      ),
+    )
+    const auth = useAuthStore()
+    setCsrfToken('csrf')
+    auth.user = user
+    auth.needsTargetSetup = false
+
+    await auth.reconcileAchievements(true)
+
+    expect(auth.user).toEqual(user)
+    expect(auth.newlyUnlockedAchievements).toEqual([])
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
   it('verwirft veraltete Achievement-Reconciliation nach Sessionwechsel', async () => {
     const firstUser = {
       id: 'first',

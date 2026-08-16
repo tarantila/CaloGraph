@@ -78,9 +78,9 @@ class AchievementFacts:
 
 @dataclass(frozen=True, slots=True)
 class AchievementStatus:
-    key: str
+    key: str | None
     category: str
-    kind: str
+    kind: str | None
     hidden: bool
     unlocked: bool
     unlocked_at: datetime | None
@@ -126,6 +126,7 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
             HealthSample.user_id == user.id,
             HealthSample.metric_type.in_(PRIMARY_METRIC_LIST),
         )
+        .distinct()
     ).all()
     macro_metrics_by_day: dict[date, set[str]] = {}
     full_house_sources_by_day: dict[date, set[str]] = {}
@@ -242,11 +243,12 @@ def _status_items(
     for definition in ACHIEVEMENT_DEFINITIONS:
         unlocked_at = unlocked_at_by_key.get(definition.key)
         unlocked = unlocked_at is not None
+        locked_hidden = definition.hidden and not unlocked
         statuses.append(
             AchievementStatus(
-                key=definition.key,
+                key=None if locked_hidden else definition.key,
                 category=definition.category,
-                kind=definition.kind,
+                kind=None if locked_hidden else definition.kind,
                 hidden=definition.hidden,
                 unlocked=unlocked,
                 unlocked_at=unlocked_at,

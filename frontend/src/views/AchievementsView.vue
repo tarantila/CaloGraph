@@ -22,12 +22,13 @@ const groups = computed(() =>
 )
 
 function label(item: Achievement): string {
-  return item.hidden && !item.unlocked ? t('achievements.hiddenName') : t(`achievements.names.${item.key}`)
+  if (item.hidden && !item.unlocked) return t('achievements.hiddenName')
+  return item.key ? t(`achievements.names.${item.key}`) : t('achievements.hiddenName')
 }
 
 function description(item: Achievement): string {
   if (item.hidden && !item.unlocked) return t('achievements.hiddenDescription')
-  return t(`achievements.descriptions.${item.key}`)
+  return item.key ? t(`achievements.descriptions.${item.key}`) : t('achievements.hiddenDescription')
 }
 
 function categoryLabel(category: string): string {
@@ -64,8 +65,8 @@ onMounted(async () => {
       </div>
       <div class="achievement-grid">
         <article
-          v-for="item in group.items"
-          :key="item.key"
+          v-for="(item, index) in group.items"
+          :key="item.key ?? `${group.category}-${index}`"
           :class="['card', 'achievement-card', { unlocked: item.unlocked, hidden: item.hidden && !item.unlocked }]"
         >
           <div class="achievement-card-icon">
@@ -74,7 +75,7 @@ onMounted(async () => {
             <PhTrophy v-else :size="22" weight="duotone" />
           </div>
           <div class="achievement-card-content">
-            <h3>{{ label(item) }}</h3>
+            <h3><span v-if="item.hidden && !item.unlocked" aria-hidden="true">??? </span>{{ label(item) }}</h3>
             <p>{{ description(item) }}</p>
             <div v-if="!item.unlocked && item.target != null" class="achievement-progress">
               <div class="achievement-progress-label">

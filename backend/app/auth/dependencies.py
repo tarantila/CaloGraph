@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -36,25 +37,40 @@ def _activity_write_is_due(last_used_at: datetime | None, now: datetime) -> bool
     return comparable_last_used_at <= now - AUTH_ACTIVITY_WRITE_INTERVAL
 
 
-def current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    raw = request.cookies.get(session_cookie_name())
+def _request_session(
+    request: Request,
+    db: Session,
+    *,
+    user_id: UUID | None = None,
+    now: datetime | None = None,
+) -> UserSession | None:
+    raw = request.cookies.get(session_cookie_name(), "")
     if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Anmeldung erforderlich"
-        )
-    now = datetime.now(UTC)
-    idle_cutoff = now - timedelta(hours=settings.session_idle_timeout_hours)
-    session = db.scalar(
-        select(UserSession).where(
-            UserSession.token_hash == hash_session_token(raw),
-            UserSession.revoked_at.is_(None),
-            UserSession.expires_at > now,
-            func.coalesce(UserSession.last_used_at, UserSession.created_at)
-            > idle_cutoff,
-        )
+        return None
+    current_time = now or datetime.now(UTC)
+    idle_cutoff = current_time - timedelta(hours=settings.session_idle_timeout_hours)
+    conditions = [
+        UserSession.token_hash == hash_session_token(raw),
+        UserSession.revoked_at.is_(None),
+        UserSession.expires_at > current_time,
+        func.coalesce(UserSession.last_used_at, UserSession.created_at) > idle_cutoff,
+    ]
+    if user_id is not None:
+        conditions.append(UserSession.user_id == user_id)
+    return db.scalar(
+        select(UserSession)
+        .where(*conditions)
+        .execution_options(populate_existing=True)
     )
+
+
+def current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    now = datetime.now(UTC)
+    session = _request_session(request, db, now=now)
     if not session:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sitzung ungültig")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Sitzung ungültig"
+        )
     user = db.get(User, session.user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Konto inaktiv")
@@ -64,7 +80,6 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
             db.commit()
             return active_user
     return user
-
 
 def _validate_csrf(
     request: Request,
@@ -80,9 +95,7 @@ def _validate_csrf(
             problem_type=INVALID_REQUEST_ORIGIN,
         )
     raw = request.cookies.get(session_cookie_name(), "")
-    session = db.scalar(
-        select(UserSession).where(UserSession.token_hash == hash_session_token(raw))
-    )
+    session = _request_session(request, db, user_id=user.id)
     supplied_hash = hash_session_token(x_csrf_token) if x_csrf_token else ""
     stable_hash = hash_session_token(csrf_token_for_session(raw))
     legacy_match = secrets_compare(session.csrf_hash, supplied_hash) if session else False
@@ -93,6 +106,20 @@ def _validate_csrf(
             detail="CSRF-Prüfung fehlgeschlagen",
             problem_type=CSRF_VALIDATION_FAILED,
         )
+
+
+def _revalidate_locked_session(request: Request, user_id: UUID, db: Session) -> User:
+    session = _request_session(request, db, user_id=user_id)
+    user = db.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .execution_options(populate_existing=True)
+    )
+    if session is None:
+        raise HTTPException(status_code=401, detail="Sitzung ungültig")
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Konto inaktiv")
+    return user
 
 
 def require_csrf(
@@ -114,7 +141,7 @@ def require_csrf_exclusive(
 ) -> Iterator[User]:
     _validate_csrf(request, x_csrf_token, user, db)
     with exclusive_user_lifecycle_operation(db, user.id):
-        yield user
+        yield _revalidate_locked_session(request, user.id, db)
 
 def secrets_compare(left: str, right: str) -> bool:
     import hmac

@@ -107,9 +107,9 @@ export interface ApiProblem {
 }
 
 export interface Achievement {
-  key: string
+  key?: string | null
   category: string
-  kind: string
+  kind?: string | null
   hidden: boolean
   unlocked: boolean
   unlocked_at?: string | null

@@ -145,6 +145,13 @@ requires `BACKEND_TMPFS_BYTES >= 2 * NGINX_MAX_UPLOAD_BYTES + 16 MiB`, the Nginx
 limit to include multipart overhead, JSON not to exceed the general upload
 limit, and the expanded ZIP ceiling not to be smaller than the upload ceiling.
 The expanded XML is streamed and does not need to fit into tmpfs.
+Achievement listing and reconciliation use the shared database-backed rate
+limiter: `RECONCILE_RATE_LIMIT` applies per user and `RECONCILE_IP_RATE_LIMIT`
+applies per normalized client IP within `RECONCILE_RATE_LIMIT_WINDOW_SECONDS`.
+The defaults allow normal bootstrap and import-triggered reconciliation while
+bounding repeated full-history calculations. A `429` response does not
+invalidate the authenticated session; the frontend retries reconciliation on
+the next authenticated bootstrap or explicit import.
 
 Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Set
 `YAZIO_SYNC_INTERVAL_HOURS` and `YAZIO_SYNC_DAYS` to the deployment-wide

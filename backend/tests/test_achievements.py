@@ -1,10 +1,11 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import Mock
 
 from sqlalchemy.orm import Session
 
 from app.models import HealthSample, ImportBatch, User, UserAchievement
-from app.services.achievements import reconcile_achievements
+from app.services.achievements import load_facts, reconcile_achievements
 
 METRICS = {
     "dietary_energy_kcal": "kcal",
@@ -120,3 +121,26 @@ def test_hidden_achievements_use_reconstructible_facts(db: Session, user: User) 
     assert unlocked["hidden_leap_day"].progress is None
     assert unlocked["hidden_leap_day"].target is None
     assert unlocked["hidden_leap_day"].unlocked
+
+
+def test_load_facts_aggregates_nutrition_presence_rows(
+    db: Session,
+    user: User,
+    monkeypatch,
+) -> None:
+    add_day(db, user, date(2026, 8, 16))
+    db.commit()
+
+    execute = Mock(wraps=db.execute)
+    monkeypatch.setattr(db, "execute", execute)
+
+    facts = load_facts(db, user)
+
+    nutrition_statements = [
+        call.args[0]
+        for call in execute.call_args_list
+        if "metric_type" in str(call.args[0]) and "source_type" in str(call.args[0])
+    ]
+    assert len(nutrition_statements) == 1
+    assert nutrition_statements[0]._distinct
+    assert facts.macro_complete_dates == frozenset({date(2026, 8, 16)})

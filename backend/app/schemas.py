@@ -431,9 +431,9 @@ class TargetSettingsResponse(BaseModel):
 
 
 class AchievementResponse(BaseModel):
-    key: str
+    key: str | None = None
     category: str
-    kind: str
+    kind: str | None = None
     hidden: bool
     unlocked: bool
     unlocked_at: datetime | None
