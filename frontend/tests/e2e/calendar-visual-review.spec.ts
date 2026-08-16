@@ -68,6 +68,12 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
     if (path.endsWith('/analytics/calendar')) {
       return route.fulfill({ json: { days: calendarDays } })
     }
+    if (path.endsWith('/auth/csrf')) {
+      return route.fulfill({ json: { csrf_token: 'review-csrf' } })
+    }
+    if (path.endsWith('/achievements/reconcile')) {
+      return route.fulfill({ json: { achievements: [], newly_unlocked: [] } })
+    }
     return route.fulfill({ status: 404, json: { detail: `Unhandled review route: ${path}` } })
   })
 

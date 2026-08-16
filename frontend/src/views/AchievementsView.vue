@@ -76,7 +76,7 @@ onMounted(async () => {
           <div class="achievement-card-content">
             <h3>{{ label(item) }}</h3>
             <p>{{ description(item) }}</p>
-            <div v-if="!item.unlocked && item.target !== null" class="achievement-progress">
+            <div v-if="!item.unlocked && item.target != null" class="achievement-progress">
               <div class="achievement-progress-label">
                 <span>{{ t('achievements.progress') }}</span>
                 <strong>{{ item.progress ?? 0 }} / {{ item.target }}</strong>

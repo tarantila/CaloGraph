@@ -301,6 +301,68 @@ describe('authentication store', () => {
     auth.completeTargetSetup()
     expect(auth.needsTargetSetup).toBe(false)
   })
+  it('verwirft veraltete Achievement-Reconciliation nach Sessionwechsel', async () => {
+    const firstUser = {
+      id: 'first',
+      username: 'first',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: false,
+      is_active: true,
+      deactivated_at: null,
+    }
+    const secondUser = { ...firstUser, id: 'second', username: 'second' }
+    let releaseFirst!: (response: Response) => void
+    const firstResponse = new Promise<Response>((resolve) => { releaseFirst = resolve })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/achievements/reconcile')) {
+        if (fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/achievements/reconcile')).length === 1) {
+          return firstResponse
+        }
+        return new Response(JSON.stringify({ achievements: [], newly_unlocked: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected request: ${String(input)}`)
+    })
+    const auth = useAuthStore()
+    setCsrfToken('csrf')
+    auth.user = firstUser
+    auth.needsTargetSetup = false
+
+    const staleReconciliation = auth.reconcileAchievements(true)
+    await Promise.resolve()
+    auth.clearSession()
+    setCsrfToken('csrf')
+    auth.user = secondUser
+    auth.needsTargetSetup = false
+    releaseFirst(new Response(JSON.stringify({
+      achievements: [],
+      newly_unlocked: [{
+        key: 'first_day',
+        category: 'tracking',
+        kind: 'milestone',
+        hidden: false,
+        unlocked: true,
+        unlocked_at: '2026-08-16T10:00:00Z',
+        progress: 1,
+        target: 1,
+        sort_order: 10,
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await staleReconciliation
+
+    expect(auth.newlyUnlockedAchievements).toEqual([])
+    await auth.reconcileAchievements(true)
+    expect(auth.newlyUnlockedAchievements).toEqual([])
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/achievements/reconcile'))).toHaveLength(2)
+  })
 
   it('reloads the target setup state when another user logs in', async () => {
     const firstUser = {

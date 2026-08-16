@@ -96,19 +96,29 @@ export const useAuthStore = defineStore('auth', () => {
     sessionRestoreUnavailable.value = false
   }
 
-  async function reconcileAchievementsIfReady(): Promise<void> {
-    if (!user.value || needsTargetSetup.value !== false || reconciledUserId === user.value.id) return
+  async function reconcileAchievements(force = false): Promise<void> {
+    const currentUser = user.value
+    const reconcileGeneration = currentProfileUpdateGeneration()
+    if (!currentUser || needsTargetSetup.value !== false || (!force && reconciledUserId === currentUser.id)) return
     try {
       const result = await api<{
         achievements: Achievement[]
         newly_unlocked: Achievement[]
       }>('/achievements/reconcile', { method: 'POST' })
+      if (
+        !user.value ||
+        user.value.id !== currentUser.id ||
+        currentProfileUpdateGeneration() !== reconcileGeneration
+      ) {
+        return
+      }
       newlyUnlockedAchievements.value = result.newly_unlocked ?? []
-      reconciledUserId = user.value.id
+      reconciledUserId = currentUser.id
     } catch {
       // Reconciliation is retried at the next authenticated bootstrap.
     }
   }
+
 
   async function ensureUser(applyLocale = true): Promise<boolean> {
     const generation = currentProfileUpdateGeneration()
@@ -140,7 +150,7 @@ export const useAuthStore = defineStore('auth', () => {
         return Boolean(user.value)
       }
     }
-    await reconcileAchievementsIfReady()
+    await reconcileAchievements()
     return true
   }
 
@@ -240,6 +250,7 @@ export const useAuthStore = defineStore('auth', () => {
     sessionRestoreUnavailable,
     newlyUnlockedAchievements,
     ensureUser,
+    reconcileAchievements,
     applyCurrentUserLocale,
     login,
     loginWithPasskey,

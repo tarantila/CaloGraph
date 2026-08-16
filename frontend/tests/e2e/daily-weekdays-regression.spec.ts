@@ -154,6 +154,12 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
         },
       })
     }
+    if (path.endsWith('/auth/csrf')) {
+      return route.fulfill({ json: { csrf_token: 'review-csrf' } })
+    }
+    if (path.endsWith('/achievements/reconcile')) {
+      return route.fulfill({ json: { achievements: [], newly_unlocked: [] } })
+    }
     return route.fulfill({ status: 404, json: { detail: `Unhandled review route: ${path}` } })
   })
   await page.setViewportSize({ width: 1440, height: 1000 })

@@ -112,9 +112,9 @@ export interface Achievement {
   kind: string
   hidden: boolean
   unlocked: boolean
-  unlocked_at: string | null
-  progress: number | null
-  target: number | null
+  unlocked_at?: string | null
+  progress?: number | null
+  target?: number | null
   sort_order: number
 }
 

@@ -12,9 +12,11 @@ import DateInput from '../components/DateInput.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDateTime } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
+import { useAuthStore } from '../stores/auth'
 import type { ApiProblem, ImportBatch, YazioStatus } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
+const auth = useAuthStore()
 
 interface ImportErrorDetail {
   item_index: number | null
@@ -148,6 +150,7 @@ async function upload() {
             : counts
         messageIsError.value = result.status === 'partial_failed' || result.failed > 0
         if (result.status !== 'partial_failed') selected.value = null
+        await auth.reconcileAchievements(true)
         await load()
       } else {
         messageIsError.value = true

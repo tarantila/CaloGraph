@@ -120,6 +120,12 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
       })
     }
     if (path.endsWith('/analytics/trends')) return route.fulfill({ json: { points } })
+    if (path.endsWith('/auth/csrf')) {
+      return route.fulfill({ json: { csrf_token: 'review-csrf' } })
+    }
+    if (path.endsWith('/achievements/reconcile')) {
+      return route.fulfill({ json: { achievements: [], newly_unlocked: [] } })
+    }
     return route.fulfill({ status: 404, json: { detail: `Unhandled review route: ${path}` } })
   })
 
