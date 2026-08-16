@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from typing import Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -13,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from app.analytics.service import PRIMARY_NUTRITION_METRICS
 from app.models import HealthSample, ImportBatch, User, UserAchievement
-
 
 SUCCESSFUL_IMPORT_STATUSES: Final = ("completed", "completed_with_errors")
 SUPPORTED_SOURCE_TYPES: Final = frozenset(
@@ -93,7 +93,7 @@ def _best_streak(days: tuple[date, ...]) -> int:
     if not days:
         return 0
     best = current = 1
-    for previous, current_day in zip(days, days[1:]):
+    for previous, current_day in pairwise(days):
         if current_day == previous + timedelta(days=1):
             current += 1
         else:
@@ -103,7 +103,7 @@ def _best_streak(days: tuple[date, ...]) -> int:
 
 
 def _has_internal_gap(days: tuple[date, ...]) -> bool:
-    return any((current - previous).days > 1 for previous, current in zip(days, days[1:]))
+    return any((current - previous).days > 1 for previous, current in pairwise(days))
 
 
 def load_facts(db: Session, user: User) -> AchievementFacts:

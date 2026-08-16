@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from app.models import HealthSample, ImportBatch, User, UserAchievement
 from app.services.achievements import reconcile_achievements
 
-
 METRICS = {
     "dietary_energy_kcal": "kcal",
     "protein_g": "g",
