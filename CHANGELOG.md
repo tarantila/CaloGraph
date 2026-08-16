@@ -5,21 +5,27 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-08-16
+
 ### Added
 
-- Added user-scoped achievements with historical reconciliation, hidden
-  discoveries, deterministic progress, and localized frontend cards.
+- Added user-scoped achievements with historical reconciliation, progress,
+  hidden discoveries, and localized frontend cards.
 
 ### Changed
 
 - The production environment template now leaves `CALOGRAPH_VERSION` unset
   by default, so Compose uses the public `latest` image until an operator
   deliberately selects a reviewed release tag.
+- Grouped imports, data status, budgets and targets, and account navigation at
+  the bottom of the sidebar while keeping analytics and achievements in the
+  primary navigation.
 
 ### Security
 
 - Hardened achievement reconciliation against stale revoked sessions, hidden
   achievement metadata disclosure, and expensive repeated full-history scans.
+  Achievement listing and reconciliation now share user- and IP-based limits.
 
 ## [0.3.7] - 2026-08-15
 
@@ -454,7 +460,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tarantila/CaloGraph/compare/v0.3.4...v0.3.5
