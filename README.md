@@ -119,9 +119,9 @@ The backend container applies pending Alembic migrations before it starts. The
 application is then available at
 [http://127.0.0.1:8180](http://127.0.0.1:8180).
 
-Compose pulls the public `latest` application images from GHCR by default. The
-production template instead pins `CALOGRAPH_VERSION` to its matching tested
-`vX.Y.Z` release. Review and update that value deliberately when upgrading.
+Compose pulls the public `latest` application images from GHCR by default.
+The production template keeps that default; set `CALOGRAPH_VERSION` to a
+reviewed `vX.Y.Z` release and use `--no-build` when reproducibility matters.
 Contributors can build the checked-out source with `make dev` or
 `docker compose up -d --build`.
 

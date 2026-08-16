@@ -245,8 +245,8 @@ dump. Source updates and container updates remain separate, auditable steps.
 
 Release images are available from GHCR after the complete CI, exact-image
 browser/production-smoke tests, and high/critical vulnerability gate succeed.
-Compose defaults to the public GHCR image repositories. Set a release
-`CALOGRAPH_VERSION`, then start with `--no-build` so deployment cannot silently
-replace the tested image with a local build. Image tags, signed attestations,
-SPDX SBOMs, dependency automation, and cleanup rules are described in
-[supply-chain.md](supply-chain.md).
+Compose defaults to the public GHCR `latest` image repositories. Set a reviewed
+release `CALOGRAPH_VERSION` and start with `--no-build` for reproducible
+deployments that cannot silently replace the tested image with a local build.
+Image tags, signed attestations, SPDX SBOMs, dependency automation, and cleanup
+rules are described in [supply-chain.md](supply-chain.md).

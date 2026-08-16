@@ -108,9 +108,9 @@ gh attestation verify \
 
 ## Running release images
 
-Compose defaults to the public `latest` image repositories. The production
-environment template overrides that default with its matching release. For a
-reproducible deployment, keep an existing release tag in `.env`:
+Compose defaults to the public `latest` image repositories, including the
+production environment template. For a reproducible deployment, set a reviewed
+release tag in `.env`:
 
 ```dotenv
 CALOGRAPH_VERSION=vX.Y.Z
