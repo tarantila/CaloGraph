@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -274,8 +274,9 @@ def _insert_unlocked(
         {"user_id": user_id, "achievement_key": key, "unlocked_at": unlocked_at}
         for key in keys
     ]
-    table = UserAchievement.__table__
+    table: Any = UserAchievement.__table__
     dialect = db.get_bind().dialect.name
+    statement: Any
     if dialect == "postgresql":
         statement = postgres_insert(table).values(values)
     elif dialect == "sqlite":
