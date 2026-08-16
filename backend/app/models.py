@@ -396,6 +396,24 @@ class HealthSample(Base):
     )
 
 
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "achievement_key",
+            name="uq_user_achievement_key",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    achievement_key: Mapped[str] = mapped_column(String(64))
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TrackingOverride(Base):
     __tablename__ = "tracking_overrides"
     __table_args__ = (UniqueConstraint("user_id", "local_date", name="uq_tracking_override_day"),)

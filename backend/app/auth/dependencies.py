@@ -19,6 +19,7 @@ from app.problem_types import CSRF_VALIDATION_FAILED, INVALID_REQUEST_ORIGIN, Pr
 from app.services.user_operation_lock import (
     InactiveUserOperation,
     UserOperationBusy,
+    exclusive_user_lifecycle_operation,
     shared_user_operation,
 )
 
@@ -65,12 +66,12 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
-def require_csrf(
+def _validate_csrf(
     request: Request,
-    x_csrf_token: str = Header(default=""),
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> Iterator[User]:
+    x_csrf_token: str,
+    user: User,
+    db: Session,
+) -> None:
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") not in settings.trusted_origin_list:
         raise ProblemHTTPException(
@@ -92,9 +93,28 @@ def require_csrf(
             detail="CSRF-Prüfung fehlgeschlagen",
             problem_type=CSRF_VALIDATION_FAILED,
         )
+
+
+def require_csrf(
+    request: Request,
+    x_csrf_token: str = Header(default=""),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> Iterator[User]:
+    _validate_csrf(request, x_csrf_token, user, db)
     with shared_user_operation(db, user.id) as active_user:
         yield active_user
 
+
+def require_csrf_exclusive(
+    request: Request,
+    x_csrf_token: str = Header(default=""),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> Iterator[User]:
+    _validate_csrf(request, x_csrf_token, user, db)
+    with exclusive_user_lifecycle_operation(db, user.id):
+        yield user
 
 def secrets_compare(left: str, right: str) -> bool:
     import hmac

@@ -10,6 +10,7 @@ import {
   PhSignOut,
   PhSquaresFour,
   PhTarget,
+  PhTrophy,
   PhUserCircle,
   PhX,
 } from '@phosphor-icons/vue'
@@ -37,6 +38,7 @@ const navigation = [
   { to: { name: 'micronutrients' }, label: 'navigation.micronutrients', icon: PhChartBar },
   { to: { name: 'quality' }, label: 'navigation.quality', icon: PhDatabase },
   { to: { name: 'imports' }, label: 'navigation.imports', icon: PhDownloadSimple },
+  { to: { name: 'achievements' }, label: 'navigation.achievements', icon: PhTrophy },
   { to: { name: 'targets' }, label: 'navigation.targets', icon: PhTarget },
   { to: { name: 'account' }, label: 'navigation.account', icon: PhUserCircle },
 ]
@@ -58,6 +60,13 @@ async function retrySessionRestore() {
       : `${window.location.pathname}${window.location.search}${window.location.hash}`
   await router.replace(currentPath)
 }
+function achievementLabel(key: string): string {
+  return t(`achievements.names.${key}`)
+}
+
+function dismissAchievementNotice(): void {
+  auth.clearAchievementNotice()
+}
 </script>
 
 <template>
@@ -70,6 +79,17 @@ async function retrySessionRestore() {
   </main>
   <RouterView v-else-if="usesFocusedLayout" />
   <div v-else class="app-shell">
+    <div v-if="auth.newlyUnlockedAchievements.length" class="achievement-toast" role="status">
+      <div>
+        <strong>{{ t('achievements.unlockedTitle') }}</strong>
+        <span v-for="item in auth.newlyUnlockedAchievements" :key="item.key">
+          {{ achievementLabel(item.key) }}
+        </span>
+      </div>
+      <button type="button" :aria-label="t('common.close')" @click="dismissAchievementNotice">
+        <PhX :size="18" aria-hidden="true" />
+      </button>
+    </div>
     <aside :class="['sidebar', { open: menuOpen }]" :aria-label="t('navigation.aria')">
       <RouterLink class="brand" :to="{ name: 'overview' }" @click="menuOpen = false">
         <img class="brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />

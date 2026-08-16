@@ -320,6 +320,17 @@ describe('authentication store', () => {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'bootstrap-csrf' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        achievements: [],
+        newly_unlocked: [],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         mfa_required: false,
         user: secondUser,

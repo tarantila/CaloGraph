@@ -105,3 +105,23 @@ export interface ApiProblem {
   detail?: string
   request_id?: string
 }
+
+export interface Achievement {
+  key: string
+  category: string
+  kind: string
+  hidden: boolean
+  unlocked: boolean
+  unlocked_at: string | null
+  progress: number | null
+  target: number | null
+  sort_order: number
+}
+
+export interface AchievementListResponse {
+  achievements: Achievement[]
+}
+
+export interface AchievementReconcileResponse extends AchievementListResponse {
+  newly_unlocked: Achievement[]
+}

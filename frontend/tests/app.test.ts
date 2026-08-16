@@ -37,6 +37,7 @@ async function mountApp(path = '/tage') {
       { path: '/mikronaehrstoffe', name: 'micronutrients', component: { template: '<h1>Mikronährstoffe</h1>' } },
       { path: '/datenqualitaet', name: 'quality', component: { template: '<h1>Datenstatus</h1>' } },
       { path: '/importe', name: 'imports', component: { template: '<h1>Importe</h1>' } },
+      { path: '/erfolge', name: 'achievements', component: { template: '<h1>Erfolge</h1>' } },
       { path: '/budgets-und-ziele', name: 'targets', component: { template: '<h1>Ziele</h1>' } },
       { path: '/konto', name: 'account', component: { template: '<h1>Konto</h1>' } },
     ],

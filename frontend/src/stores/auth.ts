@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 import { ApiError, ApiTransportError, api, setCsrfToken } from '../api'
 import { applyUserLocale, PUBLIC_LOCALE, setLocale } from '../i18n'
-import type { User } from '../types'
+import type { Achievement, User } from '../types'
 import {
   authenticateWithPasskey,
   type WebAuthnOptionsResponse,
@@ -15,16 +15,18 @@ export const useAuthStore = defineStore('auth', () => {
   const mfaRequired = ref(false)
   const needsTargetSetup = ref<boolean | null>(null)
   const sessionRestoreUnavailable = ref(false)
+  const newlyUnlockedAchievements = ref<Achievement[]>([])
   let profileUpdateGeneration = 0
   let profileUpdatePending = false
   let profileUpdateQueue: Promise<void> = Promise.resolve()
+  let reconciledUserId: string | null = null
   function setAuthenticatedUser(value: User, applyLocale = true): void {
     profileUpdateGeneration += 1
+    if (user.value?.id !== value.id) reconciledUserId = null
     sessionRestoreUnavailable.value = false
     user.value = value
     if (applyLocale) applyUserLocale(value.language)
   }
-
   function applyCurrentUserLocale(): void {
     if (user.value) applyUserLocale(user.value.language)
   }
@@ -84,12 +86,28 @@ export const useAuthStore = defineStore('auth', () => {
     mfaRequired.value = false
     needsTargetSetup.value = null
     sessionRestoreUnavailable.value = false
+    newlyUnlockedAchievements.value = []
+    reconciledUserId = null
     setCsrfToken(null)
     setLocale(PUBLIC_LOCALE)
   }
 
   function clearSessionRestoreError(): void {
     sessionRestoreUnavailable.value = false
+  }
+
+  async function reconcileAchievementsIfReady(): Promise<void> {
+    if (!user.value || needsTargetSetup.value !== false || reconciledUserId === user.value.id) return
+    try {
+      const result = await api<{
+        achievements: Achievement[]
+        newly_unlocked: Achievement[]
+      }>('/achievements/reconcile', { method: 'POST' })
+      newlyUnlockedAchievements.value = result.newly_unlocked ?? []
+      reconciledUserId = user.value.id
+    } catch {
+      // Reconciliation is retried at the next authenticated bootstrap.
+    }
   }
 
   async function ensureUser(applyLocale = true): Promise<boolean> {
@@ -122,6 +140,7 @@ export const useAuthStore = defineStore('auth', () => {
         return Boolean(user.value)
       }
     }
+    await reconcileAchievementsIfReady()
     return true
   }
 
@@ -196,6 +215,10 @@ export const useAuthStore = defineStore('auth', () => {
       loading.value = false
     }
   }
+
+  function clearAchievementNotice(): void {
+    newlyUnlockedAchievements.value = []
+  }
   function cancelMfa(): void {
     mfaRequired.value = false
   }
@@ -215,6 +238,7 @@ export const useAuthStore = defineStore('auth', () => {
     mfaRequired,
     needsTargetSetup,
     sessionRestoreUnavailable,
+    newlyUnlockedAchievements,
     ensureUser,
     applyCurrentUserLocale,
     login,
@@ -230,6 +254,7 @@ export const useAuthStore = defineStore('auth', () => {
     commitProfileUpdate,
     clearSession,
     clearSessionRestoreError,
+    clearAchievementNotice,
     logout,
   }
 })

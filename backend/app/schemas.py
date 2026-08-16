@@ -428,3 +428,23 @@ class DailyPoint(BaseModel):
 
 class TargetSettingsResponse(BaseModel):
     targets: list[TargetResponse]
+
+
+class AchievementResponse(BaseModel):
+    key: str
+    category: str
+    kind: str
+    hidden: bool
+    unlocked: bool
+    unlocked_at: datetime | None
+    progress: int | None
+    target: int | None
+    sort_order: int
+
+
+class AchievementListResponse(BaseModel):
+    achievements: list[AchievementResponse]
+
+
+class AchievementReconcileResponse(AchievementListResponse):
+    newly_unlocked: list[AchievementResponse]

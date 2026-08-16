@@ -5,6 +5,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added user-scoped achievements with historical reconciliation, hidden
+  discoveries, deterministic progress, and localized frontend cards.
+
 ## [0.3.7] - 2026-08-15
 
 ### Changed
