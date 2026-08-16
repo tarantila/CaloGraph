@@ -48,6 +48,53 @@ async function mountApp(path = '/tage') {
   return { router, wrapper }
 }
 
+describe('App-Sidebar-Navigation', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('trennt primäre und utility Navigation in der geforderten Reihenfolge', async () => {
+    const { wrapper } = await mountApp('/erfolge')
+    const navigationGroups = wrapper.findAll('aside nav')
+
+    expect(navigationGroups).toHaveLength(2)
+    expect(navigationGroups[0].findAll('a').map((link) => link.attributes('href'))).toEqual([
+      '/',
+      '/tage',
+      '/wochen',
+      '/wochentage',
+      '/kalender',
+      '/trends',
+      '/mikronaehrstoffe',
+      '/erfolge',
+    ])
+    expect(navigationGroups[1].findAll('a').map((link) => link.attributes('href'))).toEqual([
+      '/importe',
+      '/datenqualitaet',
+      '/budgets-und-ziele',
+      '/konto',
+    ])
+    expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
+    expect(navigationGroups[0].get('a[href="/erfolge"]').classes()).toContain('active')
+    expect(wrapper.findAll('aside nav a')).toHaveLength(12)
+    wrapper.unmount()
+  })
+
+  it('schließt das mobile Menü auch bei einem Utility-Navigationseintrag', async () => {
+    const { router, wrapper } = await mountApp()
+    await wrapper.get('.menu-button').trigger('click')
+    expect(wrapper.get('aside').classes()).toContain('open')
+
+    await wrapper.get('.sidebar-utility-navigation a[href="/konto"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('account')
+    expect(wrapper.get('aside').classes()).not.toContain('open')
+    expect(wrapper.get('.sidebar-utility-navigation a[href="/konto"]').classes()).toContain('active')
+    wrapper.unmount()
+  })
+})
+
 describe('App-Brand-Navigation', () => {
   beforeEach(() => {
     document.body.innerHTML = ''

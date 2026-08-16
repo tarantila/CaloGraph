@@ -91,13 +91,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sidebar nav a:hover { background: #121f33; color: #fff; }
 .sidebar nav a.active { background: #2b2154; color: #fff; }
 .sidebar nav a.active svg { color: #b396ff; }
+.sidebar-lower { margin-top: auto; }
+.sidebar-utility-navigation { margin-bottom: .55rem; }
 .sidebar-footer {
-  margin-top: auto;
   padding: 1rem .45rem 0;
   border-top: 1px solid #202d40;
   color: var(--muted);
 }
-.sidebar-footer > small { display: block; margin: 0 0 .9rem .62rem; font-size: .67rem; }
 .sidebar-signout {
   display: flex;
   align-items: center;

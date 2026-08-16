@@ -28,7 +28,7 @@ const usesFocusedLayout = computed(
   () => route.meta.public === true || route.meta.onboarding === true,
 )
 
-const navigation = [
+const primaryNavigation = [
   { to: { name: 'overview' }, label: 'navigation.overview', icon: PhSquaresFour },
   { to: { name: 'daily' }, label: 'navigation.daily', icon: PhListBullets },
   { to: { name: 'weekly' }, label: 'navigation.weekly', icon: PhChartBar },
@@ -36,14 +36,19 @@ const navigation = [
   { to: { name: 'calendar' }, label: 'navigation.calendar', icon: PhCalendarBlank },
   { to: { name: 'trends' }, label: 'navigation.trends', icon: PhChartLineUp },
   { to: { name: 'micronutrients' }, label: 'navigation.micronutrients', icon: PhChartBar },
-  { to: { name: 'quality' }, label: 'navigation.quality', icon: PhDatabase },
-  { to: { name: 'imports' }, label: 'navigation.imports', icon: PhDownloadSimple },
   { to: { name: 'achievements' }, label: 'navigation.achievements', icon: PhTrophy },
+]
+
+const utilityNavigation = [
+  { to: { name: 'imports' }, label: 'navigation.imports', icon: PhDownloadSimple },
+  { to: { name: 'quality' }, label: 'navigation.quality', icon: PhDatabase },
   { to: { name: 'targets' }, label: 'navigation.targets', icon: PhTarget },
   { to: { name: 'account' }, label: 'navigation.account', icon: PhUserCircle },
 ]
 
-function isNavActive(item: (typeof navigation)[number]) {
+type NavigationItem = (typeof primaryNavigation)[number] | (typeof utilityNavigation)[number]
+
+function isNavActive(item: NavigationItem) {
   return item.to.name === route.name
 }
 
@@ -67,6 +72,7 @@ function achievementLabel(key: string): string {
 function dismissAchievementNotice(): void {
   auth.clearAchievementNotice()
 }
+
 </script>
 
 <template>
@@ -95,9 +101,9 @@ function dismissAchievementNotice(): void {
         <img class="brand-logo" src="/branding/calograph-app-logo-256.png" alt="" aria-hidden="true" />
         <strong>CaloGraph</strong>
       </RouterLink>
-      <nav>
+      <nav class="sidebar-primary-navigation" :aria-label="t('navigation.primaryAria')">
         <RouterLink
-          v-for="item in navigation"
+          v-for="item in primaryNavigation"
           :key="item.label"
           :class="{ active: isNavActive(item) }"
           :to="item.to"
@@ -107,12 +113,26 @@ function dismissAchievementNotice(): void {
           {{ t(item.label) }}
         </RouterLink>
       </nav>
-      <div class="sidebar-footer">
-        <small>CaloGraph v0.3.7</small>
-        <button class="sidebar-signout" type="button" @click="signOut">
-          <PhSignOut :size="18" aria-hidden="true" />
-          {{ t('navigation.logout') }}
-        </button>
+      <div class="sidebar-lower">
+        <nav class="sidebar-utility-navigation" :aria-label="t('navigation.utilityAria')">
+          <RouterLink
+            v-for="item in utilityNavigation"
+            :key="item.label"
+            :class="{ active: isNavActive(item) }"
+            :to="item.to"
+            @click="menuOpen = false"
+          >
+            <component :is="item.icon" :size="20" weight="regular" aria-hidden="true" />
+            {{ t(item.label) }}
+          </RouterLink>
+        </nav>
+        <div class="sidebar-footer">
+          <small>CaloGraph v0.3.7</small>
+          <button class="sidebar-signout" type="button" @click="signOut">
+            <PhSignOut :size="18" aria-hidden="true" />
+            {{ t('navigation.logout') }}
+          </button>
+        </div>
       </div>
     </aside>
     <div class="main-column">

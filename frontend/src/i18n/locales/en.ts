@@ -5,7 +5,11 @@ const en = {
     date: 'Date', source: 'Source', period: 'Period', from: 'From', to: 'To',
   },
   navigation: {
-    aria: 'Main navigation', overview: 'Overview', daily: 'Daily view', weekly: 'Weekly budget', weekdays: 'Weekdays', trends: 'Trends', micronutrients: 'Micronutrients', calendar: 'Calendar', quality: 'Data status', imports: 'Imports', achievements: 'Achievements', targets: 'Budgets & targets', account: 'Account', logout: 'Sign out', open: 'Open navigation', close: 'Close navigation',
+    aria: 'Main navigation', primaryAria: 'Primary navigation', utilityAria: 'Utility navigation',
+    overview: 'Overview', daily: 'Daily view', weekly: 'Weekly budget', weekdays: 'Weekdays',
+    trends: 'Trends', micronutrients: 'Micronutrients', calendar: 'Calendar', quality: 'Data status',
+    imports: 'Imports', achievements: 'Achievements', targets: 'Budgets & targets', account: 'Account',
+    logout: 'Sign out', open: 'Open navigation', close: 'Close navigation',
   },
   weekdays: { monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday', title: 'Weekday analysis', description: 'Recurring patterns from Monday to Sunday based on recorded days.', loading: 'Evaluating weekdays …', stats: 'Weekday metrics', highest: 'Highest average', lowest: 'Lowest average', mostProtein: 'Most protein', dataBasis: 'Data basis', chartTitle: 'Calories by weekday', chartRange: 'Mean and median', tableTitle: 'Distribution by weekday', tableDescription: 'The interval shows the range between the 25th and 75th percentile.', mean: 'Mean', median: 'Median', middle50: 'Middle 50%', averageDeviation: 'Average budget difference' },
   dateInput: { placeholder: 'DD/MM/YYYY', invalid: 'Enter a valid date in the format DD/MM/YYYY.', choose: 'Choose date in calendar', calendar: 'Calendar' },

@@ -7,7 +7,8 @@ const de = {
     date: 'Datum', source: 'Quelle', period: 'Zeitraum', from: 'Von', to: 'Bis',
   },
   navigation: {
-    aria: 'Hauptnavigation', overview: 'Übersicht', daily: 'Tagesverlauf', weekly: 'Wochenbudget',
+    aria: 'Hauptnavigation', primaryAria: 'Primäre Navigation', utilityAria: 'Weitere Navigation',
+    overview: 'Übersicht', daily: 'Tagesverlauf', weekly: 'Wochenbudget',
     weekdays: 'Wochentage', trends: 'Trends', micronutrients: 'Mikronährstoffe', calendar: 'Kalender',
     quality: 'Datenstatus', imports: 'Importe', achievements: 'Erfolge', targets: 'Budgets & Ziele', account: 'Konto', logout: 'Abmelden',
     open: 'Navigation öffnen', close: 'Navigation schließen',

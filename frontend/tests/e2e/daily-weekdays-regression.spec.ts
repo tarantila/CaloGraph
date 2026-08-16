@@ -169,11 +169,25 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   await expect(page.getByText('1.800 kcal', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('NaN')).toHaveCount(0)
 
-  const navigation = (await page.locator('.sidebar nav a').allTextContents()).map((label) =>
+  const primaryNavigation = (await page.locator('.sidebar-primary-navigation a').allTextContents()).map((label) =>
     label.trim(),
   )
-  expect(navigation.indexOf('Kalender')).toBe(navigation.indexOf('Wochentage') + 1)
-
+  expect(primaryNavigation).toEqual([
+    'Übersicht',
+    'Tagesverlauf',
+    'Wochenbudget',
+    'Wochentage',
+    'Kalender',
+    'Trends',
+    'Mikronährstoffe',
+    'Erfolge',
+  ])
+  const utilityNavigation = (await page.locator('.sidebar-utility-navigation a').allTextContents()).map((label) =>
+    label.trim(),
+  )
+  expect(utilityNavigation).toEqual(['Importe', 'Datenstatus', 'Budgets & Ziele', 'Konto'])
+  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(12)
+  expect(page.locator('.sidebar nav a.active')).toHaveCount(1)
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()
   const weekdayRows = page.locator('table tbody tr')
@@ -187,6 +201,7 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   await expect(page).toHaveURL(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/)
   await page.getByRole('link', { name: 'Konto' }).click()
   await expect(page.getByRole('heading', { name: 'Konto' })).toBeVisible()
+  await expect(page.locator('.sidebar-utility-navigation a.active')).toHaveAttribute('href', '/konto')
   await page.locator('select[name="language"]').selectOption('en')
   await expect(page.locator('select[name="language"]')).toHaveValue('en')
   await page.getByRole('button', { name: 'Profil speichern' }).click()
