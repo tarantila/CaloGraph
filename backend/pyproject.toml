@@ -23,7 +23,7 @@ dependencies = [
   "qrcode==8.2",
   "requests==2.34.2",
   "sqlalchemy==2.0.52",
-  "uvicorn[standard]==0.52.1",
+  "uvicorn[standard]==0.52.3",
   "webauthn==3.0.0",
   "yazio-exporter==0.2.0",
   "zstandard==0.25.0",
@@ -31,12 +31,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "hypothesis==6.165.3",
+  "hypothesis==6.165.6",
   "mypy==2.3.0",
   "pip-audit==2.10.1",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
-  "ruff==0.16.2",
+  "ruff==0.16.3",
 ]
 
 [tool.hatch.build.targets.wheel]
