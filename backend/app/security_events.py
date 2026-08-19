@@ -86,6 +86,11 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "integration.yazio.sync_failed": EventSpec(
         "failure", logging.WARNING, frozenset({"mode"})
     ),
+    "settings.target.activity_configured": EventSpec(
+        "success",
+        logging.INFO,
+        frozenset({"activity_mode", "activity_source_type"}),
+    ),
     "request.failed": EventSpec("failure", logging.ERROR),
     "security.rate_limit.triggered": EventSpec(
         "blocked",

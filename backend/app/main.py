@@ -163,6 +163,7 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         headers=exc.headers,
+        media_type="application/problem+json",
         content={
             "type": getattr(exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",

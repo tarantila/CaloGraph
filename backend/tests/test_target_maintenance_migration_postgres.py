@@ -1,6 +1,7 @@
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -10,7 +11,7 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import NutritionTarget, User
+from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -66,16 +67,24 @@ def test_maintenance_migration_removes_budget_ordering_constraint() -> None:
             )
             db.add(user)
             db.flush()
-            target = NutritionTarget(
-                user_id=user.id,
-                valid_from=date(2026, 8, 11),
-                calories_kcal=Decimal("3000"),
-                maintenance_kcal=Decimal("2500"),
-                protein_g=Decimal("140"),
+            target_id = uuid4()
+            db.execute(
+                text(
+                    "INSERT INTO nutrition_targets "
+                    "(id, user_id, valid_from, calories_kcal, maintenance_kcal, protein_g, created_at) "
+                    "VALUES (:id, :user_id, :valid_from, :calories_kcal, :maintenance_kcal, "
+                    ":protein_g, :created_at)"
+                ),
+                {
+                    "id": target_id,
+                    "user_id": user.id,
+                    "valid_from": date(2026, 8, 11),
+                    "calories_kcal": Decimal("3000"),
+                    "maintenance_kcal": Decimal("2500"),
+                    "protein_g": Decimal("140"),
+                    "created_at": datetime.now(UTC),
+                },
             )
-            db.add(target)
-            db.flush()
-            target_id = target.id
             db.commit()
 
         for invalid_maintenance in (
@@ -86,16 +95,24 @@ def test_maintenance_migration_removes_budget_ordering_constraint() -> None:
             Decimal("-Infinity"),
         ):
             with SessionLocal() as db:
-                target = db.get(NutritionTarget, target_id)
-                assert target is not None
-                target.maintenance_kcal = invalid_maintenance
                 with pytest.raises(sa.exc.DBAPIError):
+                    db.execute(
+                        text(
+                            "UPDATE nutrition_targets SET maintenance_kcal = :maintenance_kcal "
+                            "WHERE id = :id"
+                        ),
+                        {"maintenance_kcal": invalid_maintenance, "id": target_id},
+                    )
                     db.commit()
+                db.rollback()
 
         with SessionLocal() as db:
-            target = db.get(NutritionTarget, target_id)
-            assert target is not None
-            target.maintenance_kcal = None
+            db.execute(
+                text(
+                    "UPDATE nutrition_targets SET maintenance_kcal = NULL WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
             db.commit()
     finally:
         command.upgrade(alembic_config, "head")

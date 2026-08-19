@@ -460,6 +460,52 @@ def test_target_rejects_non_finite_maintenance(
         )
 
 
+@pytest.mark.parametrize(
+    ("activity_mode", "activity_source_type"),
+    [
+        ("full", None),
+        ("off", "apple_health_xml"),
+    ],
+)
+def test_target_rejects_invalid_activity_configuration(
+    activity_mode: str, activity_source_type: str | None
+) -> None:
+    with pytest.raises(ValidationError):
+        TargetInput(
+            valid_from=date(2026, 8, 11),
+            calories_kcal=Decimal("2000"),
+            protein_g=Decimal("140"),
+            activity_mode=activity_mode,
+            activity_source_type=activity_source_type,
+        )
+
+
+def test_target_rejects_activity_source_without_user_data(
+    client: TestClient, user: User
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+
+    response = client.put(
+        "/api/v1/settings/targets/2024-01-01",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={
+            "valid_from": "2024-01-01",
+            "calories_kcal": 2000,
+            "protein_g": 140,
+            "activity_mode": "full",
+            "activity_source_type": "apple_health_xml",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith("activity-source-unavailable")
+    assert response.headers["content-type"] == "application/problem+json"
+
+
 def test_target_delete_preserves_history_and_requires_one_version(
     client: TestClient,
     user: User,

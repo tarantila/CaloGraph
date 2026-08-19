@@ -85,6 +85,7 @@ def test_security_event_catalog_covers_required_sensitive_actions() -> None:
         "integration.yazio.connection_configured",
         "integration.yazio.sync_failed",
         "security.rate_limit.triggered",
+        "settings.target.activity_configured",
     }
     assert required <= EVENT_SPECS.keys()
 

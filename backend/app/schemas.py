@@ -367,11 +367,22 @@ class TargetInput(BaseModel):
     maintenance_kcal: Decimal | None = Field(
         default=None, gt=0, max_digits=12, decimal_places=3
     )
+    activity_mode: Literal["off", "full"] = "off"
+    activity_source_type: Literal[
+        "yazio_export_v1", "apple_health_xml", "health_auto_export_v2"
+    ] | None = None
     protein_g: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     carbs_g: Decimal | None = Field(default=None, ge=0)
     fat_g: Decimal | None = Field(default=None, ge=0)
     fiber_g: Decimal | None = Field(default=None, ge=0)
 
+    @model_validator(mode="after")
+    def activity_source_matches_mode(self) -> TargetInput:
+        if self.activity_mode == "off" and self.activity_source_type is not None:
+            raise ValueError("Im deaktivierten Modus darf keine Aktivitätsquelle gesetzt sein")
+        if self.activity_mode == "full" and self.activity_source_type is None:
+            raise ValueError("Für Aktivitätskalorien muss eine Quelle ausgewählt werden")
+        return self
 
 
 class TargetResponse(TargetInput):
@@ -412,12 +423,23 @@ class TrackingOverrideInput(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+ActivityDataStatus = Literal["disabled", "disabled_with_data", "missing", "credited"]
+
+
 class DailyPoint(BaseModel):
     date: date
     calories_kcal: Decimal | None
     target_kcal: Decimal | None
     maintenance_kcal: Decimal | None
     deviation_kcal: Decimal | None
+    activity_mode: Literal["off", "full"] | None
+    activity_source_type: str | None
+    active_energy_kcal: Decimal | None
+    activity_credit_kcal: Decimal
+    activity_data_status: ActivityDataStatus
+    effective_budget_kcal: Decimal | None
+    effective_maintenance_kcal: Decimal | None
+    effective_deviation_kcal: Decimal | None
     protein_g: Decimal | None
     carbs_g: Decimal | None
     fat_g: Decimal | None
@@ -430,6 +452,10 @@ class TargetSettingsResponse(BaseModel):
     targets: list[TargetResponse]
 
 
+
+
+class ActivitySourceResponse(BaseModel):
+    source_type: Literal["yazio_export_v1", "apple_health_xml", "health_auto_export_v2"]
 class AchievementResponse(BaseModel):
     key: str | None = None
     category: str

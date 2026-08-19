@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_SOURCE_TYPES
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -18,6 +19,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import (
     ApiToken,
+    HealthSample,
     NutritionTarget,
     PasskeyCredential,
     TrackingOverride,
@@ -27,6 +29,7 @@ from app.models import (
     UserTotpCredential,
 )
 from app.problem_types import (
+    ACTIVITY_SOURCE_UNAVAILABLE,
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
@@ -34,6 +37,7 @@ from app.problem_types import (
     ProblemHTTPException,
 )
 from app.schemas import (
+    ActivitySourceResponse,
     MfaCodeRequest,
     MfaManagementRequest,
     MfaStatusResponse,
@@ -436,8 +440,65 @@ def targets(
     )
 
 
+@router.get("/activity-sources", response_model=list[ActivitySourceResponse])
+def activity_sources(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[ActivitySourceResponse]:
+    return [
+        ActivitySourceResponse(source_type=source_type)
+        for source_type in _available_activity_sources(db, user.id)
+    ]
+
+
 def _lock_target_owner(db: Session, user_id: UUID) -> None:
     db.scalar(select(User).where(User.id == user_id).with_for_update())
+
+def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
+    return list(
+        db.scalars(
+            select(HealthSample.source_type)
+            .where(
+                HealthSample.user_id == user_id,
+                HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+                HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
+            )
+            .distinct()
+            .order_by(HealthSample.source_type)
+        )
+    )
+
+
+def _validate_activity_source(
+    db: Session,
+    user: User,
+    payload: TargetInput,
+    *,
+    existing_source: str | None = None,
+) -> None:
+    if payload.activity_mode != "full":
+        return
+    source_type = payload.activity_source_type
+    if source_type == existing_source:
+        return
+    if source_type not in _available_activity_sources(db, user.id):
+        raise ProblemHTTPException(
+            status_code=422,
+            detail="Aktivitätsquelle ist nicht verfügbar",
+            problem_type=ACTIVITY_SOURCE_UNAVAILABLE,
+        )
+
+
+def _log_activity_target_change(target: NutritionTarget, user: User) -> None:
+    details: dict[str, str] = {"activity_mode": target.activity_mode}
+    if target.activity_source_type is not None:
+        details["activity_source_type"] = target.activity_source_type
+    log_security_event(
+        "settings.target.activity_configured",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("nutrition_target", target.id),
+        details=details,
+    )
 
 
 @router.post("/targets", response_model=TargetResponse, status_code=201)
@@ -447,6 +508,7 @@ def create_target(
     db: Session = Depends(get_db),
 ) -> NutritionTarget:
     _lock_target_owner(db, user.id)
+    _validate_activity_source(db, user, payload)
     existing = list(
         db.scalars(
             select(NutritionTarget)
@@ -470,6 +532,7 @@ def create_target(
     db.add(target)
     db.commit()
     db.refresh(target)
+    _log_activity_target_change(target, user)
     return target
 
 
@@ -491,10 +554,17 @@ def update_target(
     )
     if target is None:
         raise HTTPException(status_code=404, detail="Budget- und Zielversion nicht gefunden")
+    _validate_activity_source(
+        db,
+        user,
+        payload,
+        existing_source=target.activity_source_type,
+    )
     for field, value in payload.model_dump(exclude={"valid_from"}).items():
         setattr(target, field, value)
     db.commit()
     db.refresh(target)
+    _log_activity_target_change(target, user)
     return target
 
 

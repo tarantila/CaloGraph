@@ -21,6 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.activity import ACTIVITY_MODES, ACTIVITY_SOURCE_TYPES
 from app.database import Base
 
 
@@ -272,6 +273,20 @@ class NutritionTarget(Base):
             "(maintenance_kcal > 0 AND maintenance_kcal < 'Infinity')",
             name="ck_target_maintenance_positive_finite",
         ),
+        CheckConstraint(
+            f"activity_mode IN ({', '.join(repr(mode) for mode in sorted(ACTIVITY_MODES))})",
+            name="ck_target_activity_mode",
+        ),
+        CheckConstraint(
+            "("
+            "activity_mode = 'off' AND activity_source_type IS NULL"
+            ") OR ("
+            "activity_mode = 'full' AND activity_source_type IS NOT NULL "
+            "AND activity_source_type IN ("
+            f"{', '.join(repr(source) for source in sorted(ACTIVITY_SOURCE_TYPES))}"
+            "))",
+            name="ck_target_activity_source",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -282,6 +297,8 @@ class NutritionTarget(Base):
     valid_to: Mapped[date | None] = mapped_column(Date)
     calories_kcal: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     maintenance_kcal: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    activity_mode: Mapped[str] = mapped_column(String(16), default="off", server_default="off")
+    activity_source_type: Mapped[str | None] = mapped_column(String(64))
     protein_g: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     carbs_g: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     fat_g: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))

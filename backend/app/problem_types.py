@@ -27,6 +27,7 @@ INVALID_CURRENT_PASSWORD = f"{PROBLEM_BASE}invalid-current-password"
 PASSWORD_POLICY = f"{PROBLEM_BASE}password-policy"
 LAST_TARGET_REQUIRED = f"{PROBLEM_BASE}last-target-required"
 TARGET_VERSION_NOT_FOUND = f"{PROBLEM_BASE}target-version-not-found"
+ACTIVITY_SOURCE_UNAVAILABLE = f"{PROBLEM_BASE}activity-source-unavailable"
 
 
 class ProblemHTTPException(HTTPException):
