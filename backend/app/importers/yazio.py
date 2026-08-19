@@ -291,6 +291,17 @@ def _daily_values(
         incoming_unit = energy_unit if input_name == "energy.energy" else "g"
         values.append((input_name, metric_type, value, incoming_unit, canonical_unit))
 
+    if summary.activity_energy is not None:
+        values.append(
+            (
+                "activity_energy",
+                "active_energy_kcal",
+                summary.activity_energy,
+                energy_unit,
+                "kcal",
+            )
+        )
+
     return values
 
 

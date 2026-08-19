@@ -684,7 +684,7 @@ def test_authenticated_yazio_json_upload(client: TestClient, user: User) -> None
         files={"file": ("days.json", payload, "application/json")},
     )
     assert response.status_code == 200
-    assert response.json()["inserted"] == 4
+    assert response.json()["inserted"] == 5
     summary = client.get("/api/v1/dashboard/summary")
     assert summary.status_code == 200
     assert summary.json()["data_start_date"] == "2026-07-20"

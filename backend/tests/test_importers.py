@@ -20,7 +20,7 @@ from app.importers.common import (
     local_date_for,
     normalize_value,
 )
-from app.importers.errors import ImportFormatError, ImportLimitError
+from app.importers.errors import ImportFieldError, ImportFormatError, ImportLimitError
 from app.importers.json_adapter import parse_json_payload
 from app.importers.yazio import parse_yazio_export
 
@@ -40,10 +40,17 @@ json_values = st.recursive(
 
 
 def test_unit_conversions() -> None:
+    assert normalize_value(Decimal("2000"), "cal", "kcal") == Decimal("2.000000")
+    assert normalize_value(Decimal("2000"), "Cal", "kcal") == Decimal("2.000000")
+    assert normalize_value(Decimal("2000"), "kcal", "kcal") == Decimal("2000.000000")
     assert normalize_value(Decimal("418.4"), "kJ", "kcal") == Decimal("100")
     assert normalize_value(Decimal("2"), "L", "ml") == Decimal("2000")
+    assert normalize_value(Decimal("1000"), "mg", "g") == Decimal("1.000000")
+    assert normalize_value(Decimal("1000000"), "µg", "g") == Decimal("1.000000")
     assert normalize_value(Decimal("1.5"), "mg", "ug") == Decimal("1500.0")
     assert normalize_value(Decimal("250"), "mcg", "mg") == Decimal("0.250")
+    with pytest.raises(ImportFieldError, match="Einheit wird nicht unterstützt"):
+        normalize_value(Decimal("1"), "mg", "kcal")
 
 
 def test_decimal_values_fit_the_database_contract() -> None:
@@ -106,6 +113,11 @@ def test_health_auto_export_and_unknown_type() -> None:
                         "data": [{"qty": 5000, "date": "2024-02-06 14:30:00 +0100"}],
                     },
                     {
+                        "name": "active_energy",
+                        "units": "kcal",
+                        "data": [{"qty": 321, "date": "2024-02-06 14:30:00 +0100"}],
+                    },
+                    {
                         "name": "HKQuantityTypeIdentifierBodyMass",
                         "units": "kg",
                         "data": [{"qty": 80, "date": "2024-02-06 14:30:00 +0100"}],
@@ -115,10 +127,50 @@ def test_health_auto_export_and_unknown_type() -> None:
         },
         "Europe/Berlin",
     )
-    assert result.received == 4
-    assert len(result.samples) == 1
+    assert result.received == 5
+    assert len(result.samples) == 2
+    assert {sample.metric_type for sample in result.samples} == {"protein_g", "active_energy_kcal"}
     assert result.unknown_types == {"unknown_private_metric"}
     assert result.unknown_count == 3
+
+
+def test_cal_energy_converts_in_json_and_apple_health_xml() -> None:
+    json_result = parse_json_payload(
+        {
+            "samples": [
+                {
+                    "type": "dietary_energy",
+                    "value": 2000,
+                    "unit": "cal",
+                    "start_at": "2026-08-17T08:00:00+00:00",
+                },
+                {
+                    "type": "active_energy",
+                    "value": 2000,
+                    "unit": "cal",
+                    "start_at": "2026-08-17T08:00:00+00:00",
+                },
+            ]
+        },
+        "Europe/Berlin",
+    )
+    assert [sample.value for sample in json_result.samples] == [
+        Decimal("2.000000"),
+        Decimal("2.000000"),
+    ]
+
+    xml_result = parse_apple_health_xml(
+        io.BytesIO(
+            b'<?xml version="1.0"?><HealthData>'
+            b'<Record type="HKQuantityTypeIdentifierActiveEnergyBurned" value="2000" '
+            b'unit="cal" startDate="2026-08-17 08:00:00 +0200" '
+            b'endDate="2026-08-17 08:30:00 +0200" />'
+            b"</HealthData>"
+        ),
+        "Europe/Berlin",
+    )
+    assert xml_result.samples[0].value == Decimal("2.000000")
+
 
 
 def test_adapter_caps_materialized_errors_and_unknown_types(monkeypatch) -> None:
@@ -283,14 +335,30 @@ def test_xml_entities_are_rejected() -> None:
         parse_apple_health_xml(io.BytesIO(xml), "Europe/Berlin")
 
 
+def test_apple_health_xml_maps_active_energy() -> None:
+    xml = (
+        b'<?xml version="1.0"?><HealthData>'
+        b'<Record type="HKQuantityTypeIdentifierActiveEnergyBurned" value="321" '
+        b'unit="kcal" startDate="2026-08-17 08:00:00 +0200" '
+        b'endDate="2026-08-17 08:30:00 +0200" />'
+        b"</HealthData>"
+    )
+
+    result = parse_apple_health_xml(io.BytesIO(xml), "Europe/Berlin")
+
+    assert len(result.samples) == 1
+    assert result.samples[0].metric_type == "active_energy_kcal"
+    assert result.samples[0].value == Decimal("321")
+
+
 def test_yazio_days_export_is_aggregated_without_meal_details() -> None:
     result = parse_yazio_export(
         {
             "2026-07-20": {
                 "daily_summary": {
-                    "activity_energy": 321,
                     "steps": 8421,
                     "water_intake": 2100,
+                    "activity_energy": 321,
                     "units": {"unit_energy": "kcal"},
                     "meals": {
                         "breakfast": {
@@ -318,13 +386,13 @@ def test_yazio_days_export_is_aggregated_without_meal_details() -> None:
     )
 
     by_metric = {sample.metric_type: sample for sample in result.samples}
-    assert result.received == 4
+    assert result.received == 5
     assert result.errors == []
     assert by_metric["dietary_energy_kcal"].value == Decimal("1250")
+    assert by_metric["active_energy_kcal"].value == Decimal("321")
     assert by_metric["protein_g"].value == Decimal("80")
     assert by_metric["carbohydrates_g"].value == Decimal("150")
     assert by_metric["fat_g"].value == Decimal("45")
-    assert "active_energy_kcal" not in by_metric
     assert "steps" not in by_metric
     assert "water_ml" not in by_metric
     assert by_metric["protein_g"].external_sample_id == "2026-07-20:protein_g"
@@ -410,7 +478,7 @@ def test_yazio_flat_day_format_and_kilojoules_are_supported() -> None:
     assert by_metric["protein_g"] == Decimal("100")
 
 
-def test_yazio_empty_nutrition_day_omits_zero_placeholders() -> None:
+def test_yazio_activity_only_day_preserves_activity_energy() -> None:
     result = parse_yazio_export(
         {
             "2026-07-19": {
@@ -434,9 +502,38 @@ def test_yazio_empty_nutrition_day_omits_zero_placeholders() -> None:
         "Europe/Berlin",
     )
 
-    assert result.samples == []
-    assert result.received == 0
+    assert result.received == 1
+    assert len(result.samples) == 1
+    assert result.samples[0].metric_type == "active_energy_kcal"
+    assert result.samples[0].value == Decimal("120")
     assert result.errors == []
+
+
+def test_yazio_cal_energy_converts_nutrition_and_activity() -> None:
+    result = parse_yazio_export(
+        {
+            "2026-07-19": {
+                "daily_summary": {
+                    "activity_energy": 2000,
+                    "units": {"unit_energy": "cal"},
+                    "meals": {
+                        "breakfast": {
+                            "nutrients": {
+                                "energy.energy": 2000,
+                                "nutrient.protein": 20,
+                            }
+                        }
+                    },
+                }
+            }
+        },
+        "Europe/Berlin",
+    )
+
+    by_metric = {sample.metric_type: sample.value for sample in result.samples}
+    assert by_metric["dietary_energy_kcal"] == Decimal("2.000000")
+    assert by_metric["active_energy_kcal"] == Decimal("2.000000")
+
 
 
 def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:

@@ -114,6 +114,9 @@ METRIC_MAP = {
     "dietary_energy": ("dietary_energy_kcal", "kcal"),
     "dietary_energy_consumed": ("dietary_energy_kcal", "kcal"),
     "HKQuantityTypeIdentifierDietaryEnergyConsumed": ("dietary_energy_kcal", "kcal"),
+    "active_energy": ("active_energy_kcal", "kcal"),
+    "active_energy_burned": ("active_energy_kcal", "kcal"),
+    "HKQuantityTypeIdentifierActiveEnergyBurned": ("active_energy_kcal", "kcal"),
     "dietary_protein": ("protein_g", "g"),
     "HKQuantityTypeIdentifierDietaryProtein": ("protein_g", "g"),
     "dietary_carbohydrates": ("carbohydrates_g", "g"),
@@ -136,9 +139,6 @@ for micronutrient in MICRONUTRIENTS:
 IGNORED_METRIC_TYPES = {
     "dietary_water",
     "HKQuantityTypeIdentifierDietaryWater",
-    "active_energy",
-    "active_energy_burned",
-    "HKQuantityTypeIdentifierActiveEnergyBurned",
     "step_count",
     "HKQuantityTypeIdentifierStepCount",
     "apple_exercise_time",
@@ -194,12 +194,11 @@ def normalize_value(value: Decimal, incoming_unit: str, canonical_unit: str) -> 
         .replace("mcg", "ug")
     )
     canonical = canonical_unit.lower()
-    same_unit = unit == canonical or (
-        unit in {"cal", "kcal"} and canonical == "kcal"
-    )
+    same_unit = unit == canonical
     with localcontext() as context:
         context.prec = 50
         conversions: dict[tuple[str, str], Decimal] = {
+            ("cal", "kcal"): Decimal("0.001"),
             ("kj", "kcal"): Decimal(1) / Decimal("4.184"),
             ("j", "kcal"): Decimal("0.000239005736"),
             ("mg", "g"): Decimal("0.001"),

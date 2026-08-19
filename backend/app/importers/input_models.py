@@ -88,8 +88,8 @@ class YazioMealInput(ImportInputModel):
 class YazioSummaryInput(ImportInputModel):
     units: YazioUnitsInput | None = None
     meals: dict[Text128, YazioMealInput] | None = None
+    activity_energy: Any = None
     error: Any = None
-
 
 class YazioDayInput(YazioSummaryInput):
     daily_summary: YazioSummaryInput | None = None
