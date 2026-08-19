@@ -594,6 +594,10 @@ def test_dashboard_week_budget_always_covers_monday_to_sunday(
         "budget_kcal": 14000.0,
         "deviation_kcal": -14000.0,
         "remaining_kcal": 14000.0,
+        "activity_credit_kcal": 0.0,
+        "effective_budget_kcal": 14000.0,
+        "effective_deviation_kcal": -14000.0,
+        "effective_remaining_kcal": 14000.0,
     }
 
 

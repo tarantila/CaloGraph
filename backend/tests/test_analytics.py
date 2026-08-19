@@ -3,15 +3,20 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.analytics.service import daily_points, percentile
-from app.api.analytics import calendar, micronutrients
+from app.analytics.service import budget_balance, daily_points, percentile
+from app.api.analytics import calendar, daily, micronutrients, trends
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
 from app.models import NutritionTarget, User
 from app.services.import_service import persist_import
 
 
-def metric(day: int, name: str, value: str) -> CanonicalSample:
+def metric(
+    day: int,
+    name: str,
+    value: str,
+    source_type: str = "test",
+) -> CanonicalSample:
     at = datetime(2024, 1, day, 8 + day, tzinfo=UTC)
     unit = "kcal" if "energy" in name else "g"
     return CanonicalSample(
@@ -23,10 +28,10 @@ def metric(day: int, name: str, value: str) -> CanonicalSample:
         at,
         at,
         "Europe/Berlin",
-        "test",
+        source_type,
         "Test",
         "test",
-        f"{day}-{name}",
+        f"{day}-{source_type}-{name}",
     )
 
 
@@ -114,6 +119,13 @@ def test_targetless_nutrition_has_no_budget_or_classification(db: Session, user:
     assert point.deviation_kcal is None
     assert result["days"][0]["classification"] == "no_target"
 
+    assert budget_balance([point]) == {
+        "tracked_days": 1,
+        "within_budget_days": 0,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 1,
+    }
 
 def test_calendar_uses_budget_and_maintenance_thresholds(db: Session, user: User) -> None:
     target = user.targets[0]
@@ -145,6 +157,142 @@ def test_calendar_uses_budget_and_maintenance_thresholds(db: Session, user: User
         "above_maintenance",
     ]
     assert Decimal(result["days"][0]["maintenance_kcal"]) == Decimal("2200")
+
+def test_budget_balance_uses_historical_effective_budgets(
+    db: Session, user: User
+) -> None:
+    old_target = user.targets[0]
+    old_target.maintenance_kcal = Decimal("2200")
+    old_target.valid_to = date(2024, 1, 3)
+    db.add_all(
+        [
+            NutritionTarget(
+                user_id=user.id,
+                valid_from=date(2024, 1, 3),
+                valid_to=date(2024, 1, 5),
+                calories_kcal=Decimal("1800"),
+                maintenance_kcal=Decimal("2100"),
+                activity_mode="full",
+                activity_source_type="apple_health_xml",
+                protein_g=Decimal("120"),
+            ),
+            NutritionTarget(
+                user_id=user.id,
+                valid_from=date(2024, 1, 5),
+                calories_kcal=Decimal("1800"),
+                maintenance_kcal=None,
+                activity_mode="off",
+                activity_source_type=None,
+                protein_g=Decimal("120"),
+            ),
+        ]
+    )
+    db.commit()
+    samples = [
+        metric(1, "dietary_energy_kcal", "2000"),
+        metric(2, "dietary_energy_kcal", "2001"),
+        metric(3, "dietary_energy_kcal", "2100"),
+        metric(3, "active_energy_kcal", "300", "apple_health_xml"),
+        metric(4, "dietary_energy_kcal", "2401"),
+        metric(4, "active_energy_kcal", "300", "apple_health_xml"),
+        metric(5, "dietary_energy_kcal", "1900"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test",
+        "test",
+    )
+
+    points = daily_points(db, user, date(2024, 1, 1), date(2024, 1, 5))
+    calendar_result = calendar(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 5),
+        user=user,
+        db=db,
+    )
+    expected = {
+        "tracked_days": 5,
+        "within_budget_days": 2,
+        "over_budget_days": 2,
+        "over_maintenance_days": 1,
+        "unclassified_budget_days": 0,
+    }
+    assert [day["classification"] for day in calendar_result["days"]] == [
+        "under_budget",
+        "over_budget",
+        "under_budget",
+        "above_maintenance",
+        "over_budget",
+    ]
+    assert budget_balance(points) == expected
+    assert trends(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 5),
+        user=user,
+        db=db,
+    )["budget_balance"] == expected
+
+
+def test_trends_budget_balance_is_user_scoped(db: Session, user: User) -> None:
+    other = User(username="other", password_hash="test-password")
+    db.add(other)
+    db.flush()
+    db.add(
+        NutritionTarget(
+            user_id=other.id,
+            valid_from=date(2024, 1, 1),
+            calories_kcal=Decimal("2000"),
+            protein_g=Decimal("120"),
+        )
+    )
+    db.commit()
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", [metric(1, "dietary_energy_kcal", "1800")], received=1),
+        None,
+        "x-test-user",
+        "test",
+    )
+    persist_import(
+        db,
+        other,
+        AdapterResult("test", [metric(2, "dietary_energy_kcal", "1800")], received=1),
+        None,
+        "x-test-other",
+        "test",
+    )
+
+    result = trends(user=user, db=db)
+
+    assert result["budget_balance"]["tracked_days"] == 1
+    assert result["budget_balance"]["within_budget_days"] == 1
+    assert result["budget_balance"]["over_budget_days"] == 0
+
+
+def test_trends_budget_balance_does_not_expand_empty_calendar_history(
+    db: Session, user: User
+) -> None:
+    sample = metric(1, "dietary_energy_kcal", "1800")
+    sample.start_at = datetime(1, 1, 1, tzinfo=UTC)
+    sample.end_at = sample.start_at
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", [sample], received=1),
+        None,
+        "x-test-early",
+        "test",
+    )
+
+    result = trends(user=user, db=db)
+
+    assert result["budget_balance"]["tracked_days"] == 1
+    assert result["budget_balance"]["within_budget_days"] == 0
+    assert result["budget_balance"]["unclassified_budget_days"] == 1
 
 
 def test_calendar_budget_remains_primary_above_maintenance(
@@ -181,6 +329,98 @@ def test_calendar_budget_remains_primary_above_maintenance(
         Decimal("-200"),
         Decimal("200"),
     ]
+
+
+
+def test_activity_energy_is_credited_only_from_the_selected_source(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    samples = [
+        metric(1, "dietary_energy_kcal", "2100"),
+        metric(1, "active_energy_kcal", "500", "apple_health_xml"),
+        metric(1, "active_energy_kcal", "200", "yazio_export_v1"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test",
+        "test",
+    )
+
+    point = daily_points(db, user, date(2024, 1, 1), date(2024, 1, 1))[0]
+
+    assert point.active_energy_kcal == Decimal("500")
+    assert point.activity_credit_kcal == Decimal("500")
+    assert point.effective_budget_kcal == Decimal("2500")
+    assert point.effective_deviation_kcal == Decimal("-400")
+    assert point.activity_data_status == "credited"
+
+
+def test_activity_credit_remains_zero_when_selected_source_has_no_day(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    persist_import(
+        db,
+        user,
+        AdapterResult(
+            "test",
+            [metric(1, "dietary_energy_kcal", "2100")],
+            received=1,
+        ),
+        None,
+        "x-test",
+        "test",
+    )
+
+    point = daily_points(db, user, date(2024, 1, 1), date(2024, 1, 1))[0]
+
+    assert point.active_energy_kcal is None
+    assert point.activity_credit_kcal == Decimal()
+    assert point.effective_budget_kcal == Decimal("2000")
+    assert point.activity_data_status == "missing"
+def test_daily_nutrition_source_filter_keeps_historical_activity_source(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    samples = [
+        metric(1, "dietary_energy_kcal", "1800", "yazio_export_v1"),
+        metric(1, "dietary_energy_kcal", "1700", "apple_health_xml"),
+        metric(1, "active_energy_kcal", "300", "apple_health_xml"),
+        metric(1, "active_energy_kcal", "900", "yazio_export_v1"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test-source-filter",
+        "test",
+    )
+
+    result = daily(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 1),
+        source="yazio_export_v1",
+        tracking=None,
+        weekday=None,
+        user=user,
+        db=db,
+    )
+
+    assert result[0].calories_kcal == Decimal("1800")
+    assert result[0].activity_credit_kcal == Decimal("300")
+    assert result[0].effective_budget_kcal == Decimal("2300")
+    assert result[0].active_energy_kcal == Decimal("300")
 
 
 def test_percentiles() -> None:

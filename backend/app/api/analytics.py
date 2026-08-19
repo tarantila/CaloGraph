@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
+    budget_balance_for_user,
+    budget_classification,
     daily_points,
     moving_average,
     percentile,
@@ -41,11 +43,14 @@ def _range(
     return resolved_start, resolved_end
 
 
-def _complete_budget(days: list[DailyPoint]) -> Decimal | None:
-    targets = [day.target_kcal for day in days]
-    if not targets or any(target is None for target in targets):
+def _complete_budget(days: list[DailyPoint], field: str) -> Decimal | None:
+    budgets = [getattr(day, field) for day in days]
+    if not budgets or any(budget is None for budget in budgets):
         return None
-    return sum((target for target in targets if target is not None), Decimal())
+    return sum((budget for budget in budgets if budget is not None), Decimal())
+
+def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
+    return budget_balance_for_user(db, user)
 
 
 @router.get("/analytics/daily", response_model=list[DailyPoint])
@@ -197,7 +202,12 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     current_week = [point for point in points if week_start <= point.date <= today]
     full_week = [point for point in points if week_start <= point.date <= week_end]
     consumed = sum([point.calories_kcal or Decimal() for point in current_week], Decimal())
-    budget = _complete_budget(full_week)
+    budget = _complete_budget(full_week, "target_kcal")
+    effective_budget = _complete_budget(full_week, "effective_budget_kcal")
+    activity_credit = sum(
+        (point.activity_credit_kcal for point in full_week),
+        Decimal(),
+    )
     protein_values = [
         point.protein_g for point in points_through_today[-7:] if point.protein_g is not None
     ]
@@ -225,6 +235,14 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
             "budget_kcal": serialize_decimal(budget),
             "deviation_kcal": serialize_decimal(consumed - budget if budget is not None else None),
             "remaining_kcal": serialize_decimal(budget - consumed if budget is not None else None),
+            "activity_credit_kcal": serialize_decimal(activity_credit),
+            "effective_budget_kcal": serialize_decimal(effective_budget),
+            "effective_deviation_kcal": serialize_decimal(
+                consumed - effective_budget if effective_budget is not None else None
+            ),
+            "effective_remaining_kcal": serialize_decimal(
+                effective_budget - consumed if effective_budget is not None else None
+            ),
         },
         "protein_7d_average_g": serialize_decimal(
             sum(protein_values, Decimal()) / len(protein_values) if protein_values else None
@@ -254,22 +272,32 @@ def weekly(
     weeks = []
     for week_start, days in sorted(grouped.items()):
         consumed = sum([day.calories_kcal or Decimal() for day in days], Decimal())
-        budget = _complete_budget(days)
+        budget = _complete_budget(days, "target_kcal")
+        effective_budget = _complete_budget(days, "effective_budget_kcal")
+        activity_credit = sum((day.activity_credit_kcal for day in days), Decimal())
         present = [day.calories_kcal for day in days if day.calories_kcal is not None]
         cumulative = []
         running_consumed = Decimal()
         running_budget: Decimal | None = Decimal()
+        running_effective_budget: Decimal | None = Decimal()
         for day in days:
             running_consumed += day.calories_kcal or Decimal()
             if running_budget is not None:
                 running_budget = (
                     running_budget + day.target_kcal if day.target_kcal is not None else None
                 )
+            if running_effective_budget is not None:
+                running_effective_budget = (
+                    running_effective_budget + day.effective_budget_kcal
+                    if day.effective_budget_kcal is not None
+                    else None
+                )
             cumulative.append(
                 {
                     "date": day.date.isoformat(),
                     "consumed_kcal": serialize_decimal(running_consumed),
                     "budget_kcal": serialize_decimal(running_budget),
+                    "effective_budget_kcal": serialize_decimal(running_effective_budget),
                 }
             )
         weeks.append(
@@ -282,6 +310,14 @@ def weekly(
                 ),
                 "remaining_kcal": serialize_decimal(
                     budget - consumed if budget is not None else None
+                ),
+                "activity_credit_kcal": serialize_decimal(activity_credit),
+                "effective_budget_kcal": serialize_decimal(effective_budget),
+                "effective_deviation_kcal": serialize_decimal(
+                    consumed - effective_budget if effective_budget is not None else None
+                ),
+                "effective_remaining_kcal": serialize_decimal(
+                    effective_budget - consumed if effective_budget is not None else None
                 ),
                 "mean_kcal": serialize_decimal(
                     sum(present, Decimal()) / len(present) if present else None
@@ -315,6 +351,11 @@ def weekdays(
         deviations = [
             point.deviation_kcal for point in available if point.deviation_kcal is not None
         ]
+        effective_deviations = [
+            point.effective_deviation_kcal
+            for point in available
+            if point.effective_deviation_kcal is not None
+        ]
         proteins = [point.protein_g for point in available if point.protein_g is not None]
         output.append(
             {
@@ -329,6 +370,11 @@ def weekdays(
                 "p75_kcal": serialize_decimal(percentile(values, Decimal("0.75"))),
                 "mean_deviation_kcal": serialize_decimal(
                     sum(deviations, Decimal()) / len(deviations) if deviations else None
+                ),
+                "mean_effective_deviation_kcal": serialize_decimal(
+                    sum(effective_deviations, Decimal()) / len(effective_deviations)
+                    if effective_deviations
+                    else None
                 ),
                 "mean_protein_g": serialize_decimal(
                     sum(proteins, Decimal()) / len(proteins) if proteins else None
@@ -348,6 +394,7 @@ def trends(
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
     points = daily_points(db, user, start, end)
+    historical_budget_balance = _historical_budget_balance(db, user)
     output = []
     for index, point in enumerate(points):
         item = point.model_dump(mode="json")
@@ -375,7 +422,11 @@ def trends(
                 }
             )
         output.append(item)
-    return {"points": output, "incomplete_included": include_incomplete}
+    return {
+        "points": output,
+        "incomplete_included": include_incomplete,
+        "budget_balance": historical_budget_balance,
+    }
 
 
 @router.get("/analytics/calendar")
@@ -388,21 +439,7 @@ def calendar(
     start, end = _range(start, end, user.timezone, 31)
     output = []
     for point in daily_points(db, user, start, end):
-        classification = "no_data"
-        if point.calories_kcal is not None:
-            if point.target_kcal is None:
-                classification = "no_target"
-            # The calorie budget remains primary even when maintenance is lower.
-            elif point.calories_kcal <= point.target_kcal:
-                classification = "under_budget"
-            elif (
-                point.maintenance_kcal is not None and point.calories_kcal > point.maintenance_kcal
-            ):
-                classification = "above_maintenance"
-            else:
-                classification = "over_budget"
-        elif point.tracking_status in {"probably_incomplete", "incomplete"}:
-            classification = "probably_incomplete"
+        classification = budget_classification(point)
         output.append({**point.model_dump(mode="json"), "classification": classification})
     return {"days": output}
 
