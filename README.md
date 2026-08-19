@@ -61,9 +61,9 @@ Import adapters normalize every source into the same `health_samples` model.
 Analytics and the frontend do not depend on the original export format. See
 [docs/architecture.md](docs/architecture.md) for details.
 
-## Current 0.4.0 working scope
+## 0.4.0 feature scope
 
-The current local 0.4.0 working state combines the following user-facing
+The 0.4.0 feature set combines the following user-facing
 areas:
 
 - **Budgets & targets:** target versions are valid for their historical date;

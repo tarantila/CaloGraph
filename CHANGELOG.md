@@ -5,6 +5,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-19
+
 ### Added
 
 - Added user-scoped, historically versioned activity-energy credit from one
@@ -20,9 +22,8 @@ follows [Semantic Versioning](https://semver.org/).
 - Finalized activity-credit presentation across overview, target history, daily
   view, calendar, weekly detail, and trends while keeping weekday analysis and
   data-status/import pages focused on their existing aggregations.
-- Updated the local 0.4.0 README and scope documentation; production examples
-  continue to default to `latest` with optional `CALOGRAPH_VERSION=vX.Y.Z`
-  pinning.
+- Updated the README and scope documentation; production examples continue to
+  default to `latest` with optional `CALOGRAPH_VERSION=vX.Y.Z` pinning.
 
 ### Fixed
 
@@ -34,8 +35,6 @@ follows [Semantic Versioning](https://semver.org/).
 - Restored `mg`/`µg` to gram conversions while retaining the energy-unit
   normalization.
 - Clarified that Trends budget-balance classes are mutually exclusive.
-
-
 
 ## [0.3.8] - 2026-08-16
 
@@ -492,7 +491,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tarantila/CaloGraph/compare/v0.3.5...v0.3.6
