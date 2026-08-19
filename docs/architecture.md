@@ -25,6 +25,12 @@ reads only the internal model. Every import batch, sample, and YAZIO connection
 has a `user_id`; database queries are always restricted to the authenticated
 user. A future native iOS app will use the existing `calograph_sync_v1` format.
 
+Activity energy is normalized as the canonical `active_energy_kcal` metric.
+Analytics applies it only when the target version valid on that day enables
+activity credit and selects the sample's source type; sources are never summed
+automatically. This preserves user isolation and makes historical budget
+results reproducible after a later settings change.
+
 ## Operational decisions
 
 `ENVIRONMENT` is explicit. Before production migrations or the scheduler loop,

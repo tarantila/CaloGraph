@@ -3,9 +3,10 @@
 ## Goal
 
 CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
-Activity, hydration, and weight data are deliberately excluded. Apple Health
-is never queried server-side or through iCloud; authorized iPhone exporters
-send data through the import API.
+It optionally credits imported activity energy from one user-selected source to
+the calorie budget; activity tracking, hydration, and weight remain outside the
+product scope. Apple Health is never queried server-side or through iCloud;
+authorized iPhone exporters send data through the import API.
 
 The dashboard supports German and English. Public authentication pages are
 always English; authenticated users can store their dashboard language in the
@@ -48,12 +49,13 @@ always English; authenticated users can store their dashboard language in the
 ## Scope boundaries
 
 Full localization beyond the German and English dashboard and English public
-authentication pages is planned but is not part of the current MVP.
-Activity and hydration analytics are intentionally not product goals. Weight
-data is neither imported nor analyzed. Manual and scheduled direct YAZIO
-retrieval are explicitly experimental because they rely on an undocumented
-interface. The scheduler stores every connection per user with encrypted
-credentials.
+authentication pages is planned but is not part of the current MVP. Activity
+calorie credit is part of the current product scope: imported activity energy
+from one user-selected source can raise the effective calorie budget. Broader
+activity tracking, hydration analytics, and weight data remain outside scope.
+Manual and scheduled direct YAZIO retrieval are explicitly experimental because
+they rely on an undocumented interface. The scheduler stores every connection
+per user with encrypted credentials.
 
 ## Current implementation status
 

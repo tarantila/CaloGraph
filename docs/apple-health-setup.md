@@ -2,8 +2,9 @@
 
 ## Automatic transfer
 
-1. Install Health Auto Export on the iPhone and grant HealthKit access only to
-   the required nutrition categories.
+1. Install Health Auto Export on the iPhone and grant HealthKit access to the
+   required nutrition categories. If activity credit is to be used, additionally
+   grant **Active Energy Burned**.
 2. Create a device-specific import token in CaloGraph.
 3. Create a REST API automation using JSON, Export Version 2, and the import
    endpoint.

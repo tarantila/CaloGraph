@@ -5,6 +5,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added user-scoped, historically versioned activity-energy credit from one
+  selected Apple Health, Health Auto Export, or YAZIO source to effective
+  calorie budgets, including source-aware analytics, calendar and weekly
+  presentation.
+- Added an all-time Trends budget balance with tracked, within-budget,
+  over-budget, and over-maintenance day counts using historically effective
+  budgets.
+
+### Changed
+
+- Finalized activity-credit presentation across overview, target history, daily
+  view, calendar, weekly detail, and trends while keeping weekday analysis and
+  data-status/import pages focused on their existing aggregations.
+- Updated the local 0.4.0 README and scope documentation; production examples
+  continue to default to `latest` with optional `CALOGRAPH_VERSION=vX.Y.Z`
+  pinning.
+
+### Fixed
+
+- Correctly convert small-calorie (`cal`) energy units to kilocalories.
+- Clarify that the Daily nutrition-source filter does not override the
+  independently versioned activity source.
+- Bound all-time Trends budget-balance processing to tracked nutrition days
+  instead of materializing every calendar day across the full history.
+- Restored `mg`/`µg` to gram conversions while retaining the energy-unit
+  normalization.
+- Clarified that Trends budget-balance classes are mutually exclusive.
+
+
+
 ## [0.3.8] - 2026-08-16
 
 ### Added

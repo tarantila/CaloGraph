@@ -19,7 +19,8 @@
 - `account_recovery_tokens`: HMAC-only one-time administrator-issued recovery
   tokens with creation, expiration, consumption, and revocation timestamps.
 - `nutrition_targets`: versioned calorie budgets, independent optional
-  maintenance-calorie estimates, and nutrient targets using the half-open
+  maintenance-calorie estimates, nutrient targets, and a versioned optional
+  activity-energy mode with exactly one selected source, using the half-open
   interval `valid_from <= day < valid_to`. Calorie budgets and finite, positive
   maintenance estimates have no ordering relationship.
 - `tracking_quality_settings`: legacy settings from the former completeness

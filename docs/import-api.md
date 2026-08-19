@@ -12,6 +12,11 @@ scope, are shown once, and are stored exclusively as hashes.
 `date` or `startDate`, and may include `endDate`, `id`, `source`, and
 `sourceBundle`.
 
+Supported activity-energy measurements are normalized to
+`active_energy_kcal` in kcal. They affect analytics only after the user selects
+the originating source in a target version; importing them never changes a
+budget by itself.
+
 ## Source-neutral CaloGraph sync format v1
 
 ```json
@@ -40,15 +45,19 @@ storing data. Both endpoints use an import token like the Apple Health JSON
 endpoint.
 
 The same files can be uploaded under **Importe** in the browser. CaloGraph
-aggregates the four macronutrient fields across all meals and imports supported
-vitamins and minerals as daily values. Activity energy, steps, and water are
-deliberately ignored. Meal, product, and recipe names are not stored.
+aggregates the four macronutrient fields across all meals, imports supported
+vitamins and minerals as daily values, and accepts daily `activity_energy` as
+`active_energy_kcal` when supplied. Steps and water are deliberately ignored.
+Meal, product, and recipe names are not stored.
 
-Timestamps require a UTC offset. Units are converted in a controlled manner to
-kcal, g, mg, and µg. Negative, infinite, non-numeric values and values outside
-the database ranges are rejected. Source fields, external identifiers, units,
-client identifiers, and IANA timezones are validated against the corresponding
-storage contract before persistence.
+Timestamps require a UTC offset. Energy values use `kcal` as the canonical
+unit: `kcal` is unchanged, `cal` means a small calorie and converts with
+factor `0.001`, and `kJ`/`J` use the existing physical conversions. Other
+units are converted in a controlled manner to `g`, `mg`, and µg. Negative,
+infinite, non-numeric values and values outside the database ranges are
+rejected. Source fields, external identifiers, units, client identifiers, and
+IANA timezones are validated against the corresponding storage contract before
+persistence.
 
 Structurally unusable JSON receives a generic `422` response without echoing
 submitted fields. A well-formed export can still contain individual invalid

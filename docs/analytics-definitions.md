@@ -6,6 +6,48 @@ A sample is assigned to the local date of its start time in the user's time
 zone. Weeks start on Monday by default. A weekly budget is the sum of the
 budget version valid on each day; deviation is intake minus budget.
 
+
+## Optional activity credit
+
+Each target version may either ignore activity energy or credit all
+`active_energy_kcal` values from exactly one selected source. On a credited
+day, `effective_budget_kcal = target_kcal + active_energy_kcal` and, when a
+maintenance estimate exists, `effective_maintenance_kcal =
+maintenance_kcal + active_energy_kcal`. The effective deviation uses the
+effective budget. Protein and macro targets never change.
+
+Activity values from other sources are not summed, and a missing selected-source
+value contributes zero rather than an estimate. Activity availability is shown
+separately and does not change nutrition-data completeness. The selected source
+and mode are part of each historical target version, so later configuration
+changes do not revalue past days.
+
+## Activity presentation
+
+The effective budget and credited activity are shown together where they
+explain a user's calorie budget: the overview, target history, daily view,
+calendar, weekly detail, and trends. Trends uses `activity_credit_kcal` as a
+separate stacked bar segment and keeps the 7-, 14-, and 28-day averages based
+only on calorie intake.
+
+The weekly chart keeps its budget lines and presents the aggregate activity
+credit in the weekly detail table. Weekday analysis intentionally does not add
+an activity metric because its weekday aggregates do not preserve the
+day-specific target/source history. Data-status and import pages describe
+coverage and import operations, so they do not duplicate budget credit there.
+
+## All-time budget balance
+
+The Trends budget balance summarizes all tracked nutrition days from the first
+tracked day through today, independently of the chart's selected range. It
+counts `tracked_days`, `within_budget_days`, `over_budget_days`, and
+`over_maintenance_days` using each day's historical `effective_budget_kcal`
+and `effective_maintenance_kcal`. Days without a valid historical budget
+remain tracked but are reported as `unclassified_budget_days` rather than
+being assigned a current or synthetic target. Processing uses bounded chunks
+of tracked dates, so empty calendar days are not materialized and query
+parameter size remains bounded.
+
 ## Missing values
 
 Days without measurements remain `null`. They are not interpreted as zero
@@ -54,16 +96,19 @@ The calendar opens on the current month and can navigate to previous calendar
 months. The current month is month-to-date; completed months include every day
 from the first through the last day.
 
-Each day uses the target version valid on that date. The calorie budget is the
-primary threshold regardless of the optional maintenance estimate: intake at
-or below the budget is green. Intake above the budget is orange unless it is
-also above a configured maintenance estimate, in which case it is red. Thus an
-intake above maintenance but still within a higher calorie budget remains
-green. Without a maintenance estimate, a day above the budget remains orange
-instead of being assigned an arbitrary red threshold. Missing calorie values
-retain a separate neutral status. Text supplements every color.
+Each day uses the target version valid on that date. The effective calorie
+budget is the primary threshold: it is the unchanged base budget unless that
+version enables activity credit for its selected source. Intake at or below the
+effective budget is green. Intake above it is orange unless it is also above
+the effective maintenance estimate, in which case it is red. Thus an intake
+above the effective maintenance estimate but still within a higher effective
+budget remains green. Without a maintenance estimate, a day above the effective
+budget remains orange instead of being assigned an arbitrary red threshold.
+Missing calorie values retain a separate neutral status. Text supplements every
+color.
 
-The "over budget" count includes both orange and red days. The separate
-"above maintenance" count includes only days that exceed both the calorie
-budget and the configured maintenance estimate. Average calories use recorded
+The calendar's generic "over budget" count includes both orange and red days.
+The Trends budget balance uses mutually exclusive classes: `over_budget_days`
+contains only days above the effective budget that do not exceed effective
+maintenance, while `over_maintenance_days` contains the red subset separately.
 calorie values only; missing days are excluded rather than interpreted as zero.

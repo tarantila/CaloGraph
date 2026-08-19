@@ -4,12 +4,11 @@
 
 <h1 align="center">CaloGraph</h1>
 
-CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO data.
-It puts individual days into the context of weekly budgets, trends,
-micronutrients, and data coverage without moral judgment or external telemetry.
-CaloGraph currently focuses on nutrition data. Optional activity support is
-planned, while additional health data may be considered separately in the
-future.
+CaloGraph is a self-hosted nutrition dashboard for Apple Health and YAZIO
+data. It combines daily nutrition, versioned budgets and targets, optional
+activity-calorie credits, trends, achievements, and data-quality views without
+moral judgment or external telemetry. Activity tracking, hydration, weight,
+and medical interpretation remain outside the product scope.
 
 ![CaloGraph nutrition dashboard with calorie, macronutrient, weekly summary, and data status views](docs/assets/dashboard-overview.png)
 
@@ -28,17 +27,22 @@ future.
 ## Features
 
 - Daily calories, protein, carbohydrates, and fat
+- Versioned budgets and targets with historical validity
+- Optional activity-calorie credits from one selected Apple Health, Health Auto
+  Export, or YAZIO source
+- Trends with 7-, 14-, and 28-day nutrition averages, effective budgets, and
+  an all-time budget balance
+- Weekly budget, weekday analysis, and an accessible calendar
 - Micronutrient analysis for 13 vitamins and 13 minerals, including source
   coverage and a neutral EU NRV comparison
-- Versioned nutrition targets and accurate weekly budgets
-- 7-, 14-, and 28-day averages without treating missing days as zero
-- Weekday analysis with mean, median, and percentiles
-- Accessible calendar view with graded calorie-budget deviations
 - Clear distinction between recorded and missing nutrition data
 - Idempotent REST imports for Health Auto Export v2 and the CaloGraph sync format
 - Defensive historical Apple Health XML/ZIP imports
-- Experimental YAZIO JSON import, manual retrieval, encrypted scheduled sync,
-  and dashboard-triggered sync
+- YAZIO `days.json`/`nutrients.json` import, manual retrieval, encrypted
+  scheduled sync, and dashboard-triggered sync
+- User-scoped achievements with progress, reconciliation, and localized cards
+- German and English authenticated dashboard UI; public authentication remains
+  English
 - Local authentication, CSRF protection, and hashed import tokens
 - Fully local Docker Compose deployment without third-party analytics
 
@@ -56,6 +60,30 @@ Browser → Nginx/Vue (127.0.0.1:8180) → FastAPI → PostgreSQL
 Import adapters normalize every source into the same `health_samples` model.
 Analytics and the frontend do not depend on the original export format. See
 [docs/architecture.md](docs/architecture.md) for details.
+
+## Current 0.4.0 working scope
+
+The current local 0.4.0 working state combines the following user-facing
+areas:
+
+- **Budgets & targets:** target versions are valid for their historical date;
+  daily and weekly views use the matching budget instead of backfilling the
+  current target.
+- **Activity calories:** a target version can credit activity energy from one
+  selected source. The credit increases the effective calorie budget for that
+  day; protein and macro targets remain unchanged. Activity is presented in
+  the overview, target settings, daily view, calendar, weekly detail, and
+  trends. The weekday analysis and data-status/import pages intentionally do
+  not add activity metrics: their aggregations describe weekday nutrition
+  patterns or import/data coverage, not budget credit.
+- **Achievements:** user-scoped achievements track progress and historical
+  reconciliation without exposing another account's data.
+- **Languages:** authenticated dashboard content is available in German and
+  English. Public authentication pages remain English.
+
+YAZIO remains an experimental integration because it uses an undocumented
+provider interface. The historical YAZIO importer and scheduled sync are
+idempotent and user-scoped; Health Auto Export remains the recommended default.
 
 ## Quick start
 
@@ -119,9 +147,10 @@ The backend container applies pending Alembic migrations before it starts. The
 application is then available at
 [http://127.0.0.1:8180](http://127.0.0.1:8180).
 
-Compose pulls the public `latest` application images from GHCR by default.
-The production template keeps that default; set `CALOGRAPH_VERSION` to a
-reviewed `vX.Y.Z` release and use `--no-build` when reproducibility matters.
+`.env.production.example` and the default Compose configuration use the public
+GHCR `latest` images. For a reviewed, reproducible release, optionally set
+`CALOGRAPH_VERSION=vX.Y.Z` and start with `--no-build`; this pinning does not
+change the default.
 Contributors can build the checked-out source with `make dev` or
 `docker compose up -d --build`.
 
