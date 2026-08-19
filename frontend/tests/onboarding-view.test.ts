@@ -115,7 +115,9 @@ describe('SetupView', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
-      }),
+        activity_mode: 'off',
+        activity_source_type: null,
+    })
     })
     expect(auth.needsTargetSetup).toBe(false)
     expect(router.currentRoute.value.name).toBe('overview')

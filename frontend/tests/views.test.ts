@@ -55,8 +55,8 @@ describe('main views', () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/dashboard/summary') {
         return Promise.resolve({
-          today: { date: '2026-07-19', calories_kcal: null, target_kcal: null, protein_g: null, tracking_status: 'no_data', tracking_reasons: ['Keine Daten'] },
-          week: { consumed_kcal: 0, budget_kcal: null, deviation_kcal: null, remaining_kcal: null },
+          today: { date: '2026-07-19', calories_kcal: null, target_kcal: null, maintenance_kcal: null, deviation_kcal: null, activity_mode: null, activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: 0, activity_data_status: 'disabled', effective_budget_kcal: null, effective_maintenance_kcal: null, effective_deviation_kcal: null, protein_g: null, tracking_status: 'no_data', tracking_reasons: ['Keine Daten'] },
+          week: { consumed_kcal: 0, budget_kcal: null, deviation_kcal: null, remaining_kcal: null, activity_credit_kcal: 0, effective_budget_kcal: null, effective_deviation_kcal: null, effective_remaining_kcal: null },
           protein_7d_average_g: null,
           last_import_at: null,
           data_start_date: '2026-06-01',
@@ -83,8 +83,7 @@ describe('main views', () => {
     const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Ernährungsüberblick')
-    expect(wrapper.text()).toContain('Verbleibend')
-    expect(wrapper.text()).toContain('Wochenrest')
+    expect(wrapper.text()).toContain('Verbleibend nach Aktivität')
     expect(wrapper.text()).toContain('Noch kein vollständiges Wochenbudget')
     expect(wrapper.text()).toContain('Wochenzusammenfassung')
     expect(wrapper.text()).toContain('Datenstatus')
@@ -232,7 +231,16 @@ describe('main views', () => {
       { date: '2026-07-23', calories_kcal: 2150, target_kcal: 2100 },
     ].map((point) => ({
       ...point,
+      maintenance_kcal: null,
       deviation_kcal: point.calories_kcal - point.target_kcal,
+      activity_mode: 'off',
+      activity_source_type: null,
+      active_energy_kcal: null,
+      activity_credit_kcal: 0,
+      activity_data_status: 'disabled',
+      effective_budget_kcal: point.target_kcal,
+      effective_maintenance_kcal: null,
+      effective_deviation_kcal: point.calories_kcal - point.target_kcal,
       protein_g: 130,
       carbs_g: 220,
       fat_g: 70,
@@ -244,7 +252,16 @@ describe('main views', () => {
       if (path === '/dashboard/summary') {
         return Promise.resolve({
           today: points.at(-1),
-          week: { consumed_kcal: 7900, budget_kcal: 8800, deviation_kcal: -900, remaining_kcal: 900 },
+          week: {
+            consumed_kcal: 7900,
+            budget_kcal: 8800,
+            deviation_kcal: -900,
+            remaining_kcal: 900,
+            activity_credit_kcal: 0,
+            effective_budget_kcal: 8800,
+            effective_deviation_kcal: -900,
+            effective_remaining_kcal: 900,
+          },
           protein_7d_average_g: 130,
           last_import_at: null,
           data_start_date: '2026-07-20',
@@ -254,8 +271,8 @@ describe('main views', () => {
       }
       if (path === '/settings/targets') {
         return Promise.resolve([
-          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null },
-          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null },
+          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
+          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
         ])
       }
       if (path === '/imports') return Promise.resolve([])
@@ -280,10 +297,12 @@ describe('main views', () => {
     const option = caloriePanel!.props('option') as {
       series: Array<{ name: string; data: Array<number | null>; step?: string }>
     }
-    const budgetSeries = option.series.find((series) => series.name === 'Tagesbudget')
+    const baseBudgetSeries = option.series.find((series) => series.name === 'Basisbudget')
+    const effectiveBudgetSeries = option.series.find((series) => series.name === 'Effektives Budget')
 
-    expect(budgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
-    expect(budgetSeries?.step).toBe('middle')
+    expect(baseBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
+    expect(baseBudgetSeries?.step).toBe('middle')
+    expect(effectiveBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
       '20.07. – 23.07.2026 · 4/4 mit Daten',
     )
@@ -307,13 +326,101 @@ describe('main views', () => {
     })
   })
 
+  it('shows credited activity below the remaining budget and in the calorie tooltip', async () => {
+    const point = {
+      date: '2026-07-23',
+      calories_kcal: 1800,
+      target_kcal: 2100,
+      maintenance_kcal: null,
+      deviation_kcal: -300,
+      activity_mode: 'full',
+      activity_source_type: 'apple_health_xml',
+      active_energy_kcal: 317,
+      activity_credit_kcal: 317,
+      activity_data_status: 'credited',
+      effective_budget_kcal: 2417,
+      effective_maintenance_kcal: null,
+      effective_deviation_kcal: -617,
+      protein_g: 130,
+      carbs_g: 220,
+      fat_g: 70,
+      tracking_status: 'complete',
+      tracking_score: 8,
+      tracking_reasons: [],
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/dashboard/summary') {
+        return Promise.resolve({
+          today: point,
+          week: {
+            consumed_kcal: 1800,
+            budget_kcal: 2100,
+            deviation_kcal: -300,
+            remaining_kcal: 300,
+            activity_credit_kcal: 317,
+            effective_budget_kcal: 2417,
+            effective_deviation_kcal: -617,
+            effective_remaining_kcal: 617,
+          },
+          protein_7d_average_g: 130,
+          last_import_at: null,
+          data_start_date: point.date,
+          data_end_date: point.date,
+          data_day_count: 1,
+        })
+      }
+      if (path === '/settings/targets') return Promise.resolve([])
+      if (path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve({ available: true, configured: false })
+      return Promise.resolve({ points: [point] })
+    })
+    const wrapper = mount(OverviewView, {
+      global: {
+        stubs: {
+          ChartPanel: {
+            props: ['title', 'option', 'empty', 'height'],
+            template: '<section><slot name="header-actions" /></section>',
+          },
+        },
+      },
+    })
+    await flushPromises()
+
+    const caloriePanel = wrapper
+      .findAllComponents(ChartPanel)
+      .find((panel) => panel.props('title') === 'Kalorienaufnahme')
+    const option = caloriePanel!.props('option') as {
+      tooltip: { formatter: (params: unknown) => string }
+    }
+
+    expect(wrapper.text()).toContain('inkl. +317 kcal durch Aktivitäten')
+    expect(
+      option.tooltip.formatter([{
+        axisValueLabel: '23.07.',
+        dataIndex: 0,
+        marker: '',
+        seriesName: 'Aufnahme',
+        value: 1800,
+      }]),
+    ).toContain('Aktivitätsgutschrift: +317 kcal')
+  })
+
   it('keeps the trends page focused on nutrition without weight tracking', async () => {
     apiMock.mockResolvedValue({
       points: [{
         date: '2026-07-23',
         calories_kcal: 2050,
         target_kcal: 2100,
+        maintenance_kcal: null,
         deviation_kcal: -50,
+        activity_mode: 'off',
+        activity_source_type: null,
+        active_energy_kcal: null,
+        activity_credit_kcal: 0,
+        activity_data_status: 'disabled',
+        effective_budget_kcal: 2100,
+        effective_maintenance_kcal: null,
+        effective_deviation_kcal: -50,
         protein_g: 140,
         carbs_g: 200,
         fat_g: 70,
@@ -324,10 +431,18 @@ describe('main views', () => {
         average_14d: 1980,
         average_28d: 1950,
       }],
+      budget_balance: {
+        tracked_days: 1,
+        within_budget_days: 1,
+        over_budget_days: 0,
+        over_maintenance_days: 0,
+        unclassified_budget_days: 0,
+      },
     })
 
     const wrapper = mount(TrendsView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
+    expect(wrapper.text()).not.toContain('ohne historisches Budget')
 
     expect(wrapper.text()).toContain('Protein am letzten Tag')
     expect(wrapper.text()).not.toContain('Gewicht')
@@ -338,8 +453,198 @@ describe('main views', () => {
     ])
     const calorieOption = chartPanels[0].props('option') as {
       xAxis: { data: string[] }
+      legend: { data: string[] }
+      series: Array<{ name: string; data: unknown[] }>
     }
     expect(calorieOption.xAxis.data).toEqual(['23.07.'])
+    expect(calorieOption.legend.data).not.toContain('Aktivitätsgutschrift')
+    expect(calorieOption.series.map((series) => series.name)).toEqual([
+      'Kalorienaufnahme',
+      '7-Tage-Schnitt',
+      '14-Tage-Schnitt',
+      '28-Tage-Schnitt',
+      'Effektives Tagesbudget',
+    ])
+    expect(calorieOption.series.at(-1)?.data).toEqual([2100])
+  })
+  it('zeigt die historische Budgetbilanz als neutrale Trends-Statistik', async () => {
+    apiMock.mockResolvedValue({
+      points: [],
+      budget_balance: {
+        tracked_days: 81,
+        within_budget_days: 64,
+        over_budget_days: 12,
+        over_maintenance_days: 5,
+        unclassified_budget_days: 2,
+      },
+    })
+
+    const wrapper = mount(TrendsView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    const balance = wrapper.get('.budget-balance-section')
+    expect(balance.text()).toContain('Budgetbilanz')
+    expect(balance.text()).toContain('Seit deinem ersten getrackten Tag')
+    expect(balance.text()).toContain('Getrackte Tage81')
+    expect(balance.text()).toContain('Im Budget64')
+    expect(balance.text()).toContain('Über Budget12')
+    expect(balance.text()).toContain('Über Erhaltungsbedarf5')
+    expect(balance.text()).toContain('davon 2 ohne historisches Budget')
+  })
+  it('zeigt historische Aktivitätsgutschriften mit korrekter Null- und Fehlend-Semantik', async () => {
+    apiMock.mockResolvedValue({
+      points: [
+        {
+          date: '2026-07-20',
+          calories_kcal: 1450,
+          target_kcal: 1580,
+          maintenance_kcal: null,
+          deviation_kcal: -130,
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          active_energy_kcal: 999,
+          activity_credit_kcal: 310,
+          activity_data_status: 'credited',
+          effective_budget_kcal: 1890,
+          effective_maintenance_kcal: null,
+          effective_deviation_kcal: -440,
+          protein_g: 120,
+          carbs_g: 150,
+          fat_g: 50,
+          tracking_status: 'complete',
+          tracking_score: 1,
+          tracking_reasons: [],
+          average_7d: 1450,
+          average_14d: 1450,
+          average_28d: 1450,
+        },
+        {
+          date: '2026-07-21',
+          calories_kcal: 1500,
+          target_kcal: 1580,
+          maintenance_kcal: null,
+          deviation_kcal: -80,
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          active_energy_kcal: 0,
+          activity_credit_kcal: 0,
+          activity_data_status: 'credited',
+          effective_budget_kcal: 1580,
+          effective_maintenance_kcal: null,
+          effective_deviation_kcal: -80,
+          protein_g: 121,
+          carbs_g: 151,
+          fat_g: 51,
+          tracking_status: 'complete',
+          tracking_score: 1,
+          tracking_reasons: [],
+          average_7d: 1475,
+          average_14d: 1475,
+          average_28d: 1475,
+        },
+        {
+          date: '2026-07-22',
+          calories_kcal: 1510,
+          target_kcal: 1580,
+          maintenance_kcal: null,
+          deviation_kcal: -70,
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          active_energy_kcal: 410,
+          activity_credit_kcal: 0,
+          activity_data_status: 'missing',
+          effective_budget_kcal: 1580,
+          effective_maintenance_kcal: null,
+          effective_deviation_kcal: -70,
+          protein_g: 122,
+          carbs_g: 152,
+          fat_g: 52,
+          tracking_status: 'complete',
+          tracking_score: 1,
+          tracking_reasons: [],
+          average_7d: 1487,
+          average_14d: 1487,
+          average_28d: 1487,
+        },
+        {
+          date: '2026-07-23',
+          calories_kcal: 1520,
+          target_kcal: 1580,
+          maintenance_kcal: null,
+          deviation_kcal: -60,
+          activity_mode: 'off',
+          activity_source_type: null,
+          active_energy_kcal: 500,
+          activity_credit_kcal: 0,
+          activity_data_status: 'disabled',
+          effective_budget_kcal: 1580,
+          effective_maintenance_kcal: null,
+          effective_deviation_kcal: -60,
+          protein_g: 123,
+          carbs_g: 153,
+          fat_g: 53,
+          tracking_status: 'complete',
+          tracking_score: 1,
+          tracking_reasons: [],
+          average_7d: 1495,
+          average_14d: 1495,
+          average_28d: 1495,
+        },
+      ],
+    })
+
+    const wrapper = mount(TrendsView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    const option = wrapper.findAllComponents(ChartPanel)[0].props('option') as {
+      legend: { data: string[] }
+      series: Array<{
+        name: string
+        type: string
+        data: unknown[]
+        stack?: string
+        barMaxWidth?: number
+        itemStyle?: { color?: string; borderColor?: string; borderWidth?: number }
+      }>
+      tooltip: { formatter: (params: unknown) => string }
+    }
+    expect(option.legend.data).toContain('Aktivitätsgutschrift')
+    const barSeries = option.series.filter((series) => series.type === 'bar')
+    expect(barSeries.map((series) => series.name)).toEqual(['Kalorienaufnahme', 'Aktivitätsgutschrift'])
+    expect(barSeries.map((series) => series.stack)).toEqual(['calories', 'calories'])
+    expect(barSeries.map((series) => series.barMaxWidth)).toEqual([24, 24])
+    expect(option.series.filter((series) => series.type === 'line').every((series) => series.stack == null)).toBe(true)
+    const activitySeries = option.series.find((series) => series.name === 'Aktivitätsgutschrift')
+    expect(activitySeries?.data).toEqual([310, 0, null, null])
+    expect(activitySeries?.itemStyle).toMatchObject({
+      color: '#f6c445',
+      borderColor: '#ffe08a',
+      borderWidth: 1,
+    })
+    expect(activitySeries?.itemStyle?.color).not.toBe('#fb923c')
+
+    const tooltip = option.tooltip.formatter([{
+      axisValueLabel: '20.07.',
+      dataIndex: 0,
+      marker: '',
+      seriesName: 'Kalorienaufnahme',
+      value: 1450,
+    }])
+    expect(tooltip).not.toContain('Gesamtbalken')
+    expect(tooltip).toContain('Aktivitätsgutschrift: +310 kcal')
+    expect(tooltip).toContain('Basisbudget: 1.580 kcal')
+    expect(tooltip).toContain('Effektives Tagesbudget: 1.890 kcal')
+    expect(tooltip).toContain('7-Tage-Schnitt: 1.450 kcal')
+
+    const missingActivityTooltip = option.tooltip.formatter([{
+      axisValueLabel: '22.07.',
+      dataIndex: 2,
+      marker: '',
+      seriesName: 'Kalorienaufnahme',
+      value: 1510,
+    }])
+    expect(missingActivityTooltip).not.toContain('Aktivitätsgutschrift')
+    expect(missingActivityTooltip).not.toContain('+0')
   })
 
   it('does not backfill historical days with the current calorie target', async () => {
@@ -354,21 +659,23 @@ describe('main views', () => {
         point.target_kcal == null
           ? null
           : Number(point.calories_kcal) - Number(point.target_kcal),
-      protein_g: 80,
-      carbs_g: 100,
-      fat_g: 40,
+      maintenance_kcal: null,
+      activity_mode: 'off',
+      activity_source_type: null,
       active_energy_kcal: null,
-      steps: null,
+      activity_credit_kcal: 0,
+      activity_data_status: 'disabled',
+      effective_budget_kcal: point.target_kcal,
+      effective_maintenance_kcal: null,
+      effective_deviation_kcal: point.target_kcal == null ? null : Number(point.calories_kcal) - Number(point.target_kcal),
       tracking_status: 'probably_incomplete',
-      tracking_score: 0.5,
-      tracking_reasons: [],
     }))
 
     apiMock.mockImplementation((path: string) => {
       if (path === '/dashboard/summary') {
         return Promise.resolve({
           today: dailyPoints.at(-1),
-          week: { consumed_kcal: 3778.5036, budget_kcal: 8800, deviation_kcal: -5021.4964, remaining_kcal: 5021.4964 },
+          week: { consumed_kcal: 3778.5036, budget_kcal: 8800, deviation_kcal: -5021.4964, remaining_kcal: 5021.4964, activity_credit_kcal: 0, effective_budget_kcal: 8800, effective_deviation_kcal: -5021.4964, effective_remaining_kcal: 5021.4964 },
           protein_7d_average_g: 80,
           last_import_at: '2026-07-23T11:22:23Z',
           data_start_date: '2026-07-20',
@@ -377,7 +684,7 @@ describe('main views', () => {
         })
       }
       if (path === '/settings/targets') {
-        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }])
+        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null }])
       }
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
@@ -405,6 +712,7 @@ describe('main views', () => {
     expect(budgetRow).toBeDefined()
     expect(budgetRow!.text()).toContain('1 von 1 Tag')
     expect(budgetRow!.text()).not.toContain('4 von 4 Tagen')
+    expect(wrapper.text()).not.toContain('Aktivitätsgutschrift')
   })
 
   it('renders an empty weekly budget without converting missing data to zero days', async () => {
@@ -423,6 +731,10 @@ describe('main views', () => {
         budget_kcal: 2200,
         deviation_kcal: -300,
         remaining_kcal: 300,
+        activity_credit_kcal: 0,
+        effective_budget_kcal: 2200,
+        effective_deviation_kcal: -300,
+        effective_remaining_kcal: 300,
         mean_kcal: 1900,
         median_kcal: 1900,
       }],
@@ -446,6 +758,10 @@ describe('main views', () => {
         budget_kcal: null,
         deviation_kcal: null,
         remaining_kcal: null,
+        activity_credit_kcal: 0,
+        effective_budget_kcal: null,
+        effective_deviation_kcal: null,
+        effective_remaining_kcal: null,
         mean_kcal: 1900,
         median_kcal: 1900,
       }],
@@ -453,10 +769,10 @@ describe('main views', () => {
     const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Noch verfügbar–')
-    expect(wrapper.text()).not.toContain('Noch verfügbar0 kcal')
-    expect(wrapper.findAll('td').filter((cell) => cell.text() === '–')).toHaveLength(2)
-    const differenceCell = wrapper.get('tbody tr').findAll('td')[3]
+    expect(wrapper.text()).toContain('Verbleibend nach Aktivität–')
+    expect(wrapper.text()).not.toContain('Verbleibend nach Aktivität0 kcal')
+    expect(wrapper.findAll('td').filter((cell) => cell.text() === '–')).toHaveLength(4)
+    const differenceCell = wrapper.get('tbody tr').findAll('td')[5]
     expect(differenceCell.classes()).not.toContain('under')
     expect(differenceCell.classes()).not.toContain('over')
   })
@@ -464,10 +780,10 @@ describe('main views', () => {
   it('hebt Wochen über dem Budget standardmäßig hervor und lässt sich umschalten', async () => {
     apiMock.mockResolvedValue({
       weeks: [
-        { week_start: '2026-07-20', consumed_kcal: 2500, budget_kcal: 2200, deviation_kcal: 300, remaining_kcal: -300, mean_kcal: 2500, median_kcal: 2500 },
-        { week_start: '2026-07-27', consumed_kcal: 2200, budget_kcal: 2200, deviation_kcal: 0, remaining_kcal: 0, mean_kcal: 2200, median_kcal: 2200 },
-        { week_start: '2026-08-03', consumed_kcal: 1900, budget_kcal: 2200, deviation_kcal: -300, remaining_kcal: 300, mean_kcal: 1900, median_kcal: 1900 },
-        { week_start: '2026-08-10', consumed_kcal: 2100, budget_kcal: null, deviation_kcal: null, remaining_kcal: null, mean_kcal: 2100, median_kcal: 2100 },
+        { week_start: '2026-07-20', consumed_kcal: 2500, budget_kcal: 2200, deviation_kcal: 300, remaining_kcal: -300, activity_credit_kcal: 0, effective_budget_kcal: 2200, effective_deviation_kcal: 300, effective_remaining_kcal: -300, mean_kcal: 2500, median_kcal: 2500 },
+        { week_start: '2026-07-27', consumed_kcal: 2200, budget_kcal: 2200, deviation_kcal: 0, remaining_kcal: 0, activity_credit_kcal: 0, effective_budget_kcal: 2200, effective_deviation_kcal: 0, effective_remaining_kcal: 0, mean_kcal: 2200, median_kcal: 2200 },
+        { week_start: '2026-08-03', consumed_kcal: 1900, budget_kcal: 2200, deviation_kcal: -300, remaining_kcal: 300, activity_credit_kcal: 0, effective_budget_kcal: 2200, effective_deviation_kcal: -300, effective_remaining_kcal: 300, mean_kcal: 1900, median_kcal: 1900 },
+        { week_start: '2026-08-10', consumed_kcal: 2100, budget_kcal: null, deviation_kcal: null, remaining_kcal: null, activity_credit_kcal: 0, effective_budget_kcal: null, effective_deviation_kcal: null, effective_remaining_kcal: null, mean_kcal: 2100, median_kcal: 2100 },
       ],
     })
     const wrapper = mount(WeeklyView, {
@@ -513,11 +829,11 @@ describe('main views', () => {
   it('uses budget thresholds, calculates numeric averages, and navigates by month', async () => {
     apiMock.mockResolvedValue({
       days: [
-        { date: '2026-07-18', calories_kcal: '1600.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'under_budget' },
-        { date: '2026-07-19', calories_kcal: '2000.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'over_budget' },
-        { date: '2026-07-20', calories_kcal: '2400.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', tracking_status: 'complete', classification: 'above_maintenance' },
-        { date: '2026-07-21', calories_kcal: '2800.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', tracking_status: 'complete', classification: 'under_budget' },
-        { date: '2026-07-22', calories_kcal: '3200.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', tracking_status: 'complete', classification: 'above_maintenance' },
+        { date: '2026-07-18', calories_kcal: '1600.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', deviation_kcal: '-200.000', activity_mode: 'off', activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: '0.000', activity_data_status: 'disabled', effective_budget_kcal: '1800.000', effective_maintenance_kcal: '2200.000', effective_deviation_kcal: '-200.000', tracking_status: 'complete', classification: 'under_budget' },
+        { date: '2026-07-19', calories_kcal: '2000.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', deviation_kcal: '200.000', activity_mode: 'off', activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: '0.000', activity_data_status: 'disabled', effective_budget_kcal: '1800.000', effective_maintenance_kcal: '2200.000', effective_deviation_kcal: '200.000', tracking_status: 'complete', classification: 'over_budget' },
+        { date: '2026-07-20', calories_kcal: '2400.000', target_kcal: '1800.000', maintenance_kcal: '2200.000', deviation_kcal: '600.000', activity_mode: 'off', activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: '0.000', activity_data_status: 'disabled', effective_budget_kcal: '1800.000', effective_maintenance_kcal: '2200.000', effective_deviation_kcal: '600.000', tracking_status: 'complete', classification: 'above_maintenance' },
+        { date: '2026-07-21', calories_kcal: '2800.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', deviation_kcal: '-200.000', activity_mode: 'off', activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: '0.000', activity_data_status: 'disabled', effective_budget_kcal: '3000.000', effective_maintenance_kcal: '2500.000', effective_deviation_kcal: '-200.000', tracking_status: 'complete', classification: 'under_budget' },
+        { date: '2026-07-22', calories_kcal: '3200.000', target_kcal: '3000.000', maintenance_kcal: '2500.000', deviation_kcal: '200.000', activity_mode: 'off', activity_source_type: null, active_energy_kcal: null, activity_credit_kcal: '0.000', activity_data_status: 'disabled', effective_budget_kcal: '3000.000', effective_maintenance_kcal: '2500.000', effective_deviation_kcal: '200.000', tracking_status: 'complete', classification: 'above_maintenance' },
       ],
     })
     const wrapper = mount(CalendarView)
@@ -543,7 +859,7 @@ describe('main views', () => {
     expect(Number(calorieProgress[3].attributes('value'))).toBeCloseTo(2800 / 3000)
     expect(calorieProgress[4].attributes('value')).toBe('1')
     expect(calorieProgress[0].attributes('aria-label')).toBe(
-      '1.600 von 1.800 kcal Tagesbudget',
+      '1.600 von 1.800 kcal Effektives Budget',
     )
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/calendar\?start=\d{4}-\d{2}-01&end=\d{4}-\d{2}-\d{2}$/,
@@ -736,6 +1052,78 @@ describe('main views', () => {
     await flushPromises()
     expect(rowDates()).toEqual(['17.07.2026', '19.07.2026', '20.07.2026', '21.07.2026', '18.07.2026'])
     wrapper.unmount()
+  })
+
+  it('shows and sorts historical activity credits only when activity is relevant', async () => {
+    apiMock.mockResolvedValue([
+      {
+        date: '2026-07-18',
+        calories_kcal: 1800,
+        deviation_kcal: -200,
+        activity_mode: 'full',
+        activity_credit_kcal: 317,
+        activity_data_status: 'credited',
+        protein_g: 120,
+        carbs_g: 180,
+        fat_g: 60,
+        tracking_status: 'complete',
+      },
+      {
+        date: '2026-07-19',
+        calories_kcal: 1800,
+        deviation_kcal: -200,
+        activity_mode: 'full',
+        activity_credit_kcal: 0,
+        activity_data_status: 'credited',
+        protein_g: 120,
+        carbs_g: 180,
+        fat_g: 60,
+        tracking_status: 'complete',
+      },
+      {
+        date: '2026-07-20',
+        calories_kcal: 1800,
+        deviation_kcal: -200,
+        activity_mode: 'full',
+        activity_credit_kcal: 0,
+        activity_data_status: 'missing',
+        protein_g: 120,
+        carbs_g: 180,
+        fat_g: 60,
+        tracking_status: 'complete',
+      },
+      {
+        date: '2026-07-21',
+        calories_kcal: 1800,
+        deviation_kcal: -200,
+        activity_mode: 'off',
+        activity_credit_kcal: 0,
+        activity_data_status: 'disabled',
+        protein_g: 120,
+        carbs_g: 180,
+        fat_g: 60,
+        tracking_status: 'complete',
+      },
+    ])
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: DailyView }],
+    })
+    await router.push('/')
+    await router.isReady()
+    const wrapper = mount(DailyView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const activityHeader = wrapper.findAll('thead button').find(
+      (button) => button.text().includes('Aktivitätsgutschrift'),
+    )
+    const activityValues = () =>
+      wrapper.findAll('tbody tr').map((row) => row.findAll('td')[4].text())
+
+    expect(activityHeader).toBeDefined()
+    expect(activityValues()).toEqual(['–', '–', '0 kcal', '+317 kcal'])
+    await activityHeader!.trigger('click')
+    expect(activityValues()).toEqual(['+317 kcal', '0 kcal', '–', '–'])
   })
 
 
@@ -1025,11 +1413,12 @@ describe('main views', () => {
     const now = new Date()
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
-    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }
+    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null }
     const historicalTarget = { ...currentTarget, id: 'historical-target', valid_from: '2026-07-27', valid_to: '2026-08-02' }
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/profile') return Promise.resolve(user)
       if (path === '/settings/targets') return Promise.resolve([currentTarget, historicalTarget])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
       if (path === `/settings/targets/${today}`) return Promise.resolve({ ...currentTarget, calories_kcal: 2300 })
       if (path === '/settings/tokens') return Promise.resolve([])
       if (path === '/settings/passkeys') return Promise.resolve([])
@@ -1049,6 +1438,7 @@ describe('main views', () => {
       }
       if (path === '/users/invitations') return Promise.resolve([])
       return Promise.resolve({})
+
     })
 
     const targetsWrapper = mount(SettingsView, { props: { section: 'targets' } })
@@ -1082,7 +1472,9 @@ describe('main views', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
-      }),
+        activity_mode: 'off',
+        activity_source_type: null,
+    })
     })
 
     const accountWrapper = mount(SettingsView, { props: { section: 'account' } })
@@ -1117,6 +1509,48 @@ describe('main views', () => {
     expect(accountWrapper.text()).toContain(
       'https://nutrition.example.test/einladung#token=invite_example',
     )
+  })
+  it('uses an activity switch, hides its source while disabled, and summarizes history compactly', async () => {
+    const target = {
+      id: 'target',
+      valid_from: '2026-08-11',
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      activity_mode: 'full',
+      activity_source_type: 'apple_health_xml',
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') {
+        return Promise.resolve([{ source_type: 'apple_health_xml' }])
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'targets' } })
+    await flushPromises()
+    const activitySwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
+
+    expect(activitySwitch.element.checked).toBe(true)
+    expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
+    expect(wrapper.get<HTMLSelectElement>('select[name="activity-source"]').element.value).toBe(
+      'apple_health_xml',
+    )
+    expect(wrapper.text()).toContain('An · Apple Health')
+    expect(wrapper.text()).toContain('Importierte Aktivitätskalorien erhöhen dein Kalorienbudget')
+
+    await activitySwitch.setValue(false)
+    expect(wrapper.get('.activity-status-badge').text()).toBe('Deaktiviert')
+    expect(wrapper.find('select[name="activity-source"]').exists()).toBe(false)
+
+    await activitySwitch.setValue(true)
+    expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
+    expect(wrapper.find('select[name="activity-source"]').exists()).toBe(true)
   })
 
   it('starts targetless users with empty required goals and saves only their values', async () => {
@@ -1157,6 +1591,8 @@ describe('main views', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        activity_mode: 'off',
+        activity_source_type: null,
       }),
     })
     expect(auth.needsTargetSetup).toBe(false)

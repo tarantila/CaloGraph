@@ -15,6 +15,10 @@ interface Week {
   budget_kcal: number | null
   deviation_kcal: number | null
   remaining_kcal: number | null
+  activity_credit_kcal: number
+  effective_budget_kcal: number | null
+  effective_deviation_kcal: number | null
+  effective_remaining_kcal: number | null
   mean_kcal: number | null
   median_kcal: number | null
 }
@@ -54,7 +58,7 @@ const averageWeek = computed(() =>
     : null,
 )
 const weeksWithinBudget = computed(() =>
-  recordedWeeks.value.filter((week) => week.deviation_kcal != null && week.deviation_kcal <= 0).length,
+  recordedWeeks.value.filter((week) => week.effective_deviation_kcal != null && week.effective_deviation_kcal <= 0).length,
 )
 
 const option = computed<EChartsOption>(() => ({
@@ -69,7 +73,7 @@ const option = computed<EChartsOption>(() => ({
   legend: {
     top: 0,
     right: 0,
-    data: [t('charts.intake'), t('weekly.budgetTable')],
+    data: [t('charts.intake'), t('activity.baseBudget'), t('activity.effectiveBudget')],
     textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
   },
   grid: { left: 58, right: 18, top: 48, bottom: 40 },
@@ -93,18 +97,26 @@ const option = computed<EChartsOption>(() => ({
       type: 'bar',
       barMaxWidth: 34,
       data: weeks.value.map((week) =>
-        highlightOverBudget.value && week.deviation_kcal != null && week.deviation_kcal > 0
+        highlightOverBudget.value && week.effective_deviation_kcal != null && week.effective_deviation_kcal > 0
           ? { value: week.consumed_kcal, itemStyle: { color: '#fb7185' } }
           : week.consumed_kcal,
       ),
       itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
     },
     {
-      name: t('weekly.budgetTable'),
+      name: t('activity.baseBudget'),
       type: 'line',
       showSymbol: false,
       data: weeks.value.map((week) => week.budget_kcal),
-      lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
+      lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
+      itemStyle: { color: '#64748b' },
+    },
+    {
+      name: t('activity.effectiveBudget'),
+      type: 'line',
+      showSymbol: false,
+      data: weeks.value.map((week) => week.effective_budget_kcal),
+      lineStyle: { color: '#fb923c', width: 2 },
       itemStyle: { color: '#fb923c' },
     },
   ],
@@ -132,7 +144,7 @@ function weekLabel(value: string) {
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhGauge :size="20" weight="duotone" /></span>
-        <span><small>{{ t('weekly.available') }}</small><strong>{{ latestWeek?.remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.remaining_kcal, 0))} kcal` }}</strong></span>
+        <span><small>{{ t('activity.effectiveRemaining') }}</small><strong>{{ latestWeek?.effective_remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.effective_remaining_kcal, 0))} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhClockCounterClockwise :size="20" weight="duotone" /></span>
@@ -144,7 +156,7 @@ function weekLabel(value: string) {
       </article>
     </section>
     <ChartPanel
-      :title="t('charts.intake') + ' & ' + t('weekly.budgetTable')"
+      :title="t('charts.intake') + ' & ' + t('activity.effectiveBudget')"
       :option="option"
       :empty="!recordedWeeks.length"
       :height="330"
@@ -165,20 +177,22 @@ function weekLabel(value: string) {
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>{{ weeklyRange }}</th><th class="number">{{ t('charts.intake') }}</th><th class="number">{{ t('weekly.budgetTable') }}</th><th class="number">{{ t('weekly.deviation') }}</th><th class="number">{{ t('daily.average') }}</th><th class="number">{{ t('weekly.median') }}</th></tr></thead>
+          <thead><tr><th>{{ weeklyRange }}</th><th class="number">{{ t('charts.intake') }}</th><th class="number">{{ t('activity.baseBudget') }}</th><th class="number">{{ t('activity.activityCredit') }}</th><th class="number">{{ t('activity.effectiveBudget') }}</th><th class="number">{{ t('activity.effectiveDeviation') }}</th><th class="number">{{ t('daily.average') }}</th><th class="number">{{ t('weekly.median') }}</th></tr></thead>
           <tbody>
             <tr v-for="week in [...weeks].reverse()" :key="week.week_start">
               <td><strong>{{ weekLabel(week.week_start) }}</strong></td>
               <td class="number">{{ format.format(week.consumed_kcal) }} kcal</td>
               <td class="number">{{ week.budget_kcal == null ? '–' : `${format.format(week.budget_kcal)} kcal` }}</td>
-              <td :class="['number', 'difference-value', week.deviation_kcal == null ? null : week.deviation_kcal > 0 ? 'over' : 'under']">
-                <template v-if="week.deviation_kcal != null">{{ week.deviation_kcal > 0 ? '+' : '' }}{{ format.format(week.deviation_kcal) }} kcal</template>
+              <td class="number">{{ week.activity_credit_kcal > 0 ? `+${format.format(week.activity_credit_kcal)} kcal` : '–' }}</td>
+              <td class="number">{{ week.effective_budget_kcal == null ? '–' : `${format.format(week.effective_budget_kcal)} kcal` }}</td>
+              <td :class="['number', 'difference-value', week.effective_deviation_kcal == null ? null : week.effective_deviation_kcal > 0 ? 'over' : 'under']">
+                <template v-if="week.effective_deviation_kcal != null">{{ week.effective_deviation_kcal > 0 ? '+' : '' }}{{ format.format(week.effective_deviation_kcal) }} kcal</template>
                 <template v-else>–</template>
               </td>
               <td class="number">{{ week.mean_kcal == null ? '–' : `${format.format(week.mean_kcal)} kcal` }}</td>
               <td class="number">{{ week.median_kcal == null ? '–' : `${format.format(week.median_kcal)} kcal` }}</td>
             </tr>
-            <tr v-if="!weeks.length"><td colspan="6" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
+            <tr v-if="!weeks.length"><td colspan="8" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
           </tbody>
         </table>
       </div>

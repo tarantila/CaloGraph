@@ -36,6 +36,10 @@ interface Summary {
     budget_kcal: number | null
     deviation_kcal: number | null
     remaining_kcal: number | null
+    activity_credit_kcal: number
+    effective_budget_kcal: number | null
+    effective_deviation_kcal: number | null
+    effective_remaining_kcal: number | null
   }
   protein_7d_average_g: number | null
   last_import_at: string | null
@@ -174,7 +178,7 @@ const currentTarget = computed(() => {
 })
 
 const calorieTarget = computed(
-  () => summary.value?.today.target_kcal ?? currentTarget.value?.calories_kcal ?? null,
+  () => summary.value?.today.effective_budget_kcal ?? currentTarget.value?.calories_kcal ?? null,
 )
 const proteinTarget = computed(() => currentTarget.value?.protein_g ?? null)
 const todayCalories = computed(() => summary.value?.today.calories_kcal ?? null)
@@ -183,6 +187,17 @@ const caloriesRemaining = computed(() => {
   if (todayCalories.value == null || calorieTarget.value == null) return null
   return calorieTarget.value - todayCalories.value
 })
+const todayActivityNote = computed(() => {
+  const today = summary.value?.today
+  if (!today) return null
+  if (Number(today.activity_credit_kcal) > 0) {
+    return t('activity.creditForToday', {
+      value: integer.format(Number(today.activity_credit_kcal)),
+    })
+  }
+  return today.activity_data_status === 'missing' ? t('activity.noDataForToday') : null
+})
+
 const proteinProgress = computed(() => {
   if (todayProtein.value == null || !proteinTarget.value) return 0
   return Math.min(todayProtein.value / proteinTarget.value, 1)
@@ -290,7 +305,7 @@ const weekAverageProtein = computed(() =>
 const weekBudgetComparisons = computed(() =>
   recordedWeekPoints.value.flatMap((point) => {
     if (point.calories_kcal == null) return []
-    const rawBudgetKcal = point.target_kcal
+    const rawBudgetKcal = point.effective_budget_kcal
     if (rawBudgetKcal == null) return []
     const caloriesKcal = Number(point.calories_kcal)
     const budgetKcal = Number(rawBudgetKcal)
@@ -364,15 +379,43 @@ const tooltip = {
   borderColor: '#324157',
   textStyle: { color: '#f3f6fb' },
 }
+type CalorieTooltipEntry = {
+  axisValueLabel: string
+  dataIndex: number
+  marker: string
+  seriesName: string
+  value: number | null
+}
+
+function formatCalorieTooltip(params: unknown) {
+  const entries = Array.isArray(params) ? params as CalorieTooltipEntry[] : []
+  if (!entries.length) return ''
+  const day = trends.value[entries[0].dataIndex]
+  const rows = entries.map(
+    (entry) =>
+      `${entry.marker}${entry.seriesName}: ${
+        entry.value == null ? '–' : `${integer.format(Number(entry.value))} kcal`
+      }`,
+  )
+  if (day && Number(day.activity_credit_kcal) > 0) {
+    rows.push(
+      `${t('activity.activityCredit')}: +${integer.format(Number(day.activity_credit_kcal))} kcal`,
+    )
+  } else if (day?.activity_data_status === 'missing') {
+    rows.push(t('activity.noDataForDay'))
+  }
+  return [`<strong>${entries[0].axisValueLabel}</strong>`, ...rows].join('<br/>')
+}
+
 
 const calorieBarData = computed(() =>
   trends.value.map((item) => {
     if (item.calories_kcal == null) return null
 
     const calories = Number(item.calories_kcal)
-    const budget = Number(item.target_kcal)
+    const budget = Number(item.effective_budget_kcal)
     const isOverBudget =
-      item.target_kcal != null && Number.isFinite(budget) && calories > budget
+      item.effective_budget_kcal != null && Number.isFinite(budget) && calories > budget
 
     if (highlightOverBudget.value && isOverBudget) {
       return {
@@ -387,12 +430,11 @@ const calorieBarData = computed(() =>
 
 const calorieChart = computed<EChartsOption>(() => ({
   animationDuration: 500,
-  tooltip: { ...tooltip, trigger: 'axis', valueFormatter: (value) => `${integer.format(Number(value))} kcal` },
+  tooltip: { ...tooltip, trigger: 'axis', formatter: formatCalorieTooltip },
   legend: {
     top: 0,
     right: 0,
-    data: [t('overviewUi.intake'), t('overviewUi.budget')],
-    textStyle: { color: chartText, fontFamily: 'Inter' },
+    data: [t('overviewUi.intake'), t('activity.baseBudget'), t('activity.effectiveBudget')],
     itemWidth: 14,
     itemHeight: 8,
   },
@@ -427,13 +469,23 @@ const calorieChart = computed<EChartsOption>(() => ({
       emphasis: { itemStyle: { color: '#a78bfa' } },
     },
     {
-      name: t('overviewUi.budget'),
+      name: t('activity.baseBudget'),
       type: 'line',
       data: trends.value.map((item) => item.target_kcal),
       step: 'middle',
       connectNulls: false,
       showSymbol: false,
-      lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
+      lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
+      itemStyle: { color: '#64748b' },
+    },
+    {
+      name: t('activity.effectiveBudget'),
+      type: 'line',
+      data: trends.value.map((item) => item.effective_budget_kcal),
+      step: 'middle',
+      connectNulls: false,
+      showSymbol: false,
+      lineStyle: { color: '#fb923c', width: 2 },
       itemStyle: { color: '#fb923c' },
     },
   ],
@@ -547,12 +599,13 @@ const macroChart = computed<EChartsOption>(() => ({
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.remaining') }}</span></div>
+        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('activity.effectiveRemaining') }}</span></div>
         <div class="metric-card-value">
           {{ caloriesRemaining == null ? '–' : integer.format(Math.max(caloriesRemaining, 0)) }}
           <small>{{ t('common.kcal') }}</small>
         </div>
         <p>{{ caloriesRemaining != null && caloriesRemaining < 0 ? t('overviewUi.dailyOverBudget', { value: integer.format(Math.abs(caloriesRemaining)) }) : t('overviewUi.availableToday') }}</p>
+        <small v-if="todayActivityNote" class="activity-credit-note">{{ todayActivityNote }}</small>
       </article>
 
       <article class="card metric-card">
@@ -572,17 +625,20 @@ const macroChart = computed<EChartsOption>(() => ({
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.weekRemaining') }}</span></div>
+        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('activity.effectiveRemaining') }}</span></div>
         <div class="metric-card-value">
-          {{ summary.week.remaining_kcal == null ? '–' : integer.format(Math.max(summary.week.remaining_kcal, 0)) }}
-          <small v-if="summary.week.remaining_kcal != null">{{ t('common.kcal') }}</small>
+          {{ summary.week.effective_remaining_kcal == null ? '–' : integer.format(Math.max(summary.week.effective_remaining_kcal, 0)) }}
+          <small v-if="summary.week.effective_remaining_kcal != null">{{ t('common.kcal') }}</small>
         </div>
-        <p v-if="summary.week.remaining_kcal == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
-        <p v-else-if="summary.week.remaining_kcal < 0">
-          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(summary.week.remaining_kcal)) }) }}
+        <p v-if="summary.week.effective_remaining_kcal == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
+        <p v-else-if="summary.week.effective_remaining_kcal < 0">
+          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(summary.week.effective_remaining_kcal)) }) }}
         </p>
         <p v-else>
-          {{ t('overviewUi.weekBudget', { consumed: integer.format(summary.week.consumed_kcal), budget: integer.format(summary.week.budget_kcal!) }) }}
+          {{ t('activity.baseBudget') }} {{ summary.week.budget_kcal == null ? '–' : `${integer.format(summary.week.budget_kcal)} kcal` }}
+          <template v-if="summary.week.activity_credit_kcal > 0">
+            · {{ t('activity.activityCredit') }} +{{ integer.format(summary.week.activity_credit_kcal) }} kcal
+          </template>
         </p>
       </article>
     </section>

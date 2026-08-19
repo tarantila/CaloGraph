@@ -55,8 +55,8 @@ function calorieValue(day: DailyPoint) {
 }
 
 function budgetValue(day: DailyPoint) {
-  if (day.target_kcal == null) return null
-  const value = Number(day.target_kcal)
+  if (day.effective_budget_kcal == null) return null
+  const value = Number(day.effective_budget_kcal)
   return Number.isFinite(value) && value > 0 ? value : null
 }
 
@@ -71,7 +71,7 @@ function calorieProgressLabel(day: DailyPoint) {
   const calories = calorieValue(day)
   const budget = budgetValue(day)
   if (calories == null || budget == null) return ''
-  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${t('charts.dailyBudget')}`
+  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${t('activity.effectiveBudget')}`
 }
 
 function monthRange() {
@@ -210,11 +210,18 @@ const averageCalories = computed(() => {
           <b>{{ calorieValue(day) == null ? '–' : format.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
           <span>{{ classificationLabel(day.classification) }}</span>
           <small v-if="day.target_kcal != null" class="calendar-day-reference">
-            {{ t('calendar.budget', { value: format.format(Number(day.target_kcal)) }) }}
-            <template v-if="day.maintenance_kcal != null">
-              · {{ t('setup.maintenance') }} {{ format.format(Number(day.maintenance_kcal)) }}
+            {{ t('activity.baseBudget') }} {{ format.format(Number(day.target_kcal)) }}
+            <template v-if="day.activity_credit_kcal > 0">
+              · {{ t('activity.activityCredit') }} +{{ format.format(Number(day.activity_credit_kcal)) }}
             </template>
+            · {{ t('activity.effectiveBudget') }} {{ day.effective_budget_kcal == null ? '–' : format.format(Number(day.effective_budget_kcal)) }}
             kcal
+          </small>
+          <small v-if="day.activity_data_status === 'missing'" class="calendar-day-reference">
+            {{ t('activity.noDataForDay') }}
+          </small>
+          <small v-else-if="day.activity_data_status === 'credited'" class="calendar-day-reference">
+            {{ t('activity.credited') }}
           </small>
           <StatusBadge v-if="day.tracking_status !== 'complete' && day.tracking_status !== 'no_data'" :status="day.tracking_status" />
           <progress

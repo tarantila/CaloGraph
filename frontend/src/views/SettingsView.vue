@@ -22,7 +22,7 @@ import {
   TARGET_LIMITS,
   TargetValidationError,
 } from '../target-form'
-import type { Target, User, YazioStatus } from '../types'
+import type { ActivitySourceType, Target, User, YazioStatus } from '../types'
 import {
   createPasskey,
   isPasskeySupported,
@@ -90,6 +90,7 @@ const profile = reactive({ language: 'de' as 'de' | 'en', timezone: 'Europe/Berl
 const t = i18n.global.t.bind(i18n.global)
 const target = reactive(createEmptyTargetDraft())
 const targets = ref<Target[]>([])
+const activitySources = ref<ActivitySourceType[]>([])
 const targetToDelete = ref<Target | null>(null)
 const deletingTarget = ref(false)
 const targetDeleteError = ref('')
@@ -180,14 +181,46 @@ const targetDeleteDescription = computed(() => {
 const yazioHistoricalSyncFailed = computed(
   () => yazio.value?.historical_sync?.state === 'failed',
 )
+const selectableActivitySources = computed(() => {
+  const sourceTypes = new Set(activitySources.value)
+  if (target.activity_source_type) sourceTypes.add(target.activity_source_type)
+  return [...sourceTypes].sort()
+})
+const activityEnabled = computed({
+  get: () => target.activity_mode === 'full',
+  set: (enabled: boolean) => {
+    target.activity_mode = enabled ? 'full' : 'off'
+    if (!enabled) target.activity_source_type = null
+  },
+})
+
+function activityHistoryLabel(item: Target) {
+  return item.activity_mode === 'full'
+    ? t('activity.historyEnabled', { source: activitySourceLabel(item.activity_source_type) })
+    : t('activity.historyDisabled')
+}
+
+
+function activitySourceLabel(sourceType: ActivitySourceType | null) {
+  if (!sourceType) return '–'
+  return t(`activity.source.${sourceType}`)
+}
 
 async function loadTargets() {
-  const targetResult = await api<Target[]>('/settings/targets')
+  const [targetResult, sourceResult] = await Promise.all([
+    api<Target[]>('/settings/targets'),
+    api<Array<{ source_type: ActivitySourceType }>>('/settings/activity-sources'),
+  ])
   targets.value = targetResult
+  activitySources.value = Array.isArray(sourceResult)
+    ? sourceResult.map((item) => item.source_type)
+    : []
   const currentTarget = targetResult.find((item) => item.valid_to == null) ?? targetResult[0]
   if (currentTarget) {
     target.calories_kcal = Number(currentTarget.calories_kcal)
     target.maintenance_kcal = currentTarget.maintenance_kcal == null ? null : Number(currentTarget.maintenance_kcal)
+    target.activity_mode = currentTarget.activity_mode ?? 'off'
+    target.activity_source_type = currentTarget.activity_source_type ?? null
     target.protein_g = Number(currentTarget.protein_g)
     target.carbs_g = currentTarget.carbs_g == null ? null : Number(currentTarget.carbs_g)
     target.fat_g = currentTarget.fat_g == null ? null : Number(currentTarget.fat_g)
@@ -404,6 +437,7 @@ function targetDeleteLabel(item: Target) {
 async function saveTarget() {
   error.value = ''
   message.value = ''
+  savingTarget.value = true
   try {
     await saveTargetDraft(target, targets.value)
     message.value = t('settingsUi.targetSaved', { date: formatGermanDate(target.valid_from) })
@@ -674,6 +708,38 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <label class="field">{{ t('settingsUi.validFrom') }}<DateInput v-model="target.valid_from" required /></label>
             <label class="field">{{ t('settingsUi.calorieBudget') }}<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
             <label class="field">{{ t('settingsUi.maintenance') }}<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>{{ t('settingsUi.maintenanceHelp') }}</small></label>
+            <fieldset class="field full activity-target-settings">
+              <legend class="activity-card-header">
+                <span>{{ t('activity.title') }}</span>
+                <span
+                  :class="['activity-status-badge', { active: activityEnabled }]"
+                >{{ activityEnabled ? t('activity.statusActive') : t('activity.statusDisabled') }}</span>
+              </legend>
+              <p class="activity-description">{{ t('activity.description') }}</p>
+              <label class="activity-toggle-row">
+                <span>{{ t('activity.enabled') }}</span>
+                <input
+                  v-model="activityEnabled"
+                  type="checkbox"
+                  role="switch"
+                  :disabled="!selectableActivitySources.length"
+                />
+              </label>
+              <div v-if="activityEnabled" class="activity-source-settings">
+                <label class="field">
+                  {{ t('activity.sourceLabel') }}
+                  <select v-model="target.activity_source_type" name="activity-source" required>
+                    <option :value="null" disabled>{{ t('activity.sourcePlaceholder') }}</option>
+                    <option v-for="sourceType in selectableActivitySources" :key="sourceType" :value="sourceType">
+                      {{ activitySourceLabel(sourceType) }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <small v-if="!selectableActivitySources.length" class="activity-source-unavailable">
+                {{ t('activity.noSources') }}
+              </small>
+            </fieldset>
             <label class="field">{{ t('settingsUi.proteinTarget') }}<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
             <label class="field">{{ t('settingsUi.carbsTarget') }}<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <label class="field">{{ t('settingsUi.fatTarget') }}<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
@@ -699,13 +765,14 @@ function passkeyDeviceLabel(passkey: Passkey) {
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th><th class="actions">{{ t('common.actions') }}</th></tr></thead>
+            <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th>{{ t('activity.title') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th><th class="actions">{{ t('common.actions') }}</th></tr></thead>
             <tbody>
               <tr v-for="item in targets" :key="item.id">
                 <td>{{ formatGermanDate(item.valid_from) }}</td>
                 <td>{{ item.valid_to ? formatGermanDate(item.valid_to) : t('settingsUi.current') }}</td>
                 <td class="number">{{ integer.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
                 <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
+                <td>{{ activityHistoryLabel(item) }}</td>
                 <td class="number">{{ integer.format(Number(item.protein_g)) }} {{ t('common.grams') }}</td>
                 <td class="actions">
                   <button
@@ -720,7 +787,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
                   </button>
                 </td>
               </tr>
-              <tr v-if="!targets.length"><td colspan="6" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
+              <tr v-if="!targets.length"><td colspan="7" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
             </tbody>
           </table>
         </div>

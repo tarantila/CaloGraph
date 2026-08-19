@@ -1,6 +1,6 @@
 import { api } from './api'
 import { i18n } from './i18n'
-import type { Target } from './types'
+import type { ActivityMode, ActivitySourceType, Target } from './types'
 
 type TargetNumericValue = number | null | ''
 
@@ -12,6 +12,8 @@ export interface TargetDraft {
   carbs_g: TargetNumericValue
   fat_g: TargetNumericValue
   fiber_g: TargetNumericValue
+  activity_mode: ActivityMode
+  activity_source_type: ActivitySourceType | null
 }
 
 export const TARGET_LIMITS = {
@@ -31,6 +33,8 @@ export function createEmptyTargetDraft(): TargetDraft {
     carbs_g: null,
     fat_g: null,
     fiber_g: null,
+    activity_mode: 'off',
+    activity_source_type: null,
   }
 }
 
@@ -95,6 +99,9 @@ export async function saveTargetDraft(
   const carbsG = normalizeOptionalNutrient(target.carbs_g, 'targetForm.nutrientLabelCarbs')
   const fatG = normalizeOptionalNutrient(target.fat_g, 'targetForm.nutrientLabelFat')
   const fiberG = normalizeOptionalNutrient(target.fiber_g, 'targetForm.nutrientLabelFiber')
+  if (target.activity_mode === 'full' && target.activity_source_type === null) {
+    throw new TargetValidationError(i18n.global.t('activity.sourceRequired'))
+  }
 
   const payload = {
     valid_from: target.valid_from,
@@ -104,6 +111,9 @@ export async function saveTargetDraft(
     carbs_g: carbsG,
     fat_g: fatG,
     fiber_g: fiberG,
+    activity_mode: target.activity_mode,
+    activity_source_type:
+      target.activity_mode === 'full' ? target.activity_source_type : null,
   }
   const existing = existingTargets.some((item) => item.valid_from === target.valid_from)
   await api(existing ? `/settings/targets/${target.valid_from}` : '/settings/targets', {

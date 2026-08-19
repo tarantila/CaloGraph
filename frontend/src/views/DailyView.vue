@@ -41,6 +41,10 @@ function numericSortValue(point: DailyPoint, column: SortColumn) {
   switch (column) {
     case 'calories_kcal': return numericValue(point.calories_kcal)
     case 'deviation_kcal': return numericValue(point.deviation_kcal)
+    case 'activity_credit_kcal':
+      return point.activity_data_status === 'credited'
+        ? numericValue(point.activity_credit_kcal)
+        : null
     case 'protein_g': return numericValue(point.protein_g)
     case 'carbs_g': return numericValue(point.carbs_g)
     case 'fat_g': return numericValue(point.fat_g)
@@ -48,7 +52,7 @@ function numericSortValue(point: DailyPoint, column: SortColumn) {
   }
 }
 
-type SortColumn = 'date' | 'status' | 'calories_kcal' | 'deviation_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'
+type SortColumn = 'date' | 'status' | 'calories_kcal' | 'deviation_kcal' | 'activity_credit_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'
 type SortDirection = 'asc' | 'desc'
 
 const sortColumn = ref<SortColumn>('date')
@@ -168,6 +172,16 @@ const averageCalories = computed(() => {
 const missingPoints = computed(() =>
   points.value.filter((point) => point.tracking_status === 'no_data'),
 )
+const activityColumnVisible = computed(() =>
+  points.value.some((point) => point.activity_mode === 'full' || point.activity_credit_kcal > 0),
+)
+function displayActivityCredit(point: DailyPoint) {
+  if (point.activity_data_status !== 'credited') return '–'
+  const credit = numericValue(point.activity_credit_kcal)
+  if (credit == null) return '–'
+  return `${credit > 0 ? '+' : ''}${number.format(credit)} kcal`
+}
+
 const weekdays = computed(() =>
   ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((key) =>
     t(`weekdays.${key}`),
@@ -220,6 +234,7 @@ const weekdays = computed(() =>
             <th :aria-sort="ariaSort('status')"><button class="table-sort-button" type="button" :aria-label="t('daily.sortBy', { column: t('common.status') })" @click="sortBy('status')">{{ t('common.status') }} <span aria-hidden="true">{{ sortIndicator('status') }}</span></button></th>
             <th class="number" :aria-sort="ariaSort('calories_kcal')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.calories') })" @click="sortBy('calories_kcal')">{{ t('charts.calories') }} <span aria-hidden="true">{{ sortIndicator('calories_kcal') }}</span></button></th>
             <th class="number" :aria-sort="ariaSort('deviation_kcal')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('common.deviation') })" @click="sortBy('deviation_kcal')">{{ t('common.deviation') }} <span aria-hidden="true">{{ sortIndicator('deviation_kcal') }}</span></button></th>
+            <th v-if="activityColumnVisible" class="number" :aria-sort="ariaSort('activity_credit_kcal')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('activity.activityCredit') })" @click="sortBy('activity_credit_kcal')">{{ t('activity.activityCredit') }} <span aria-hidden="true">{{ sortIndicator('activity_credit_kcal') }}</span></button></th>
             <th class="number" :aria-sort="ariaSort('protein_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.protein') })" @click="sortBy('protein_g')">{{ t('charts.protein') }} <span aria-hidden="true">{{ sortIndicator('protein_g') }}</span></button></th>
             <th class="number" :aria-sort="ariaSort('carbs_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.carbs') })" @click="sortBy('carbs_g')">{{ t('charts.carbs') }} <span aria-hidden="true">{{ sortIndicator('carbs_g') }}</span></button></th>
             <th class="number" :aria-sort="ariaSort('fat_g')"><button class="table-sort-button number" type="button" :aria-label="t('daily.sortBy', { column: t('charts.fat') })" @click="sortBy('fat_g')">{{ t('charts.fat') }} <span aria-hidden="true">{{ sortIndicator('fat_g') }}</span></button></th>
@@ -230,11 +245,12 @@ const weekdays = computed(() =>
               <td><StatusBadge :status="point.tracking_status" /></td>
               <td class="number">{{ display(point.calories_kcal, ' kcal') }}</td>
               <td class="number">{{ display(point.deviation_kcal, ' kcal') }}</td>
+              <td v-if="activityColumnVisible" class="number">{{ displayActivityCredit(point) }}</td>
               <td class="number">{{ display(point.protein_g, ' g') }}</td>
               <td class="number">{{ display(point.carbs_g, ' g') }}</td>
               <td class="number">{{ display(point.fat_g, ' g') }}</td>
             </tr>
-            <tr v-if="!points.length"><td colspan="7" class="empty">{{ t('daily.noDays') }}</td></tr>
+            <tr v-if="!points.length"><td :colspan="activityColumnVisible ? 8 : 7" class="empty">{{ t('daily.noDays') }}</td></tr>
           </tbody>
         </table>
       </div>

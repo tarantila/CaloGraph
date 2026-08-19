@@ -17,8 +17,14 @@ const points = calorieValues.map((calories, index) => {
     fat_g: 56 + (index % 5) * 4,
     target_kcal: 2200,
     deviation_kcal: calories - 2200,
+    activity_mode: 'full',
+    activity_source_type: 'apple_health_xml',
     active_energy_kcal: 520,
-    steps: 9400,
+    activity_credit_kcal: 520,
+    activity_data_status: 'credited',
+    effective_budget_kcal: 2720,
+    effective_maintenance_kcal: null,
+    effective_deviation_kcal: calories - 2720,
     tracking_status: 'complete',
     tracking_score: 1,
     tracking_reasons: [],
@@ -57,6 +63,10 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
             budget_kcal: 15400,
             deviation_kcal: -7348,
             remaining_kcal: 7348,
+            activity_credit_kcal: 3640,
+            effective_budget_kcal: 19040,
+            effective_deviation_kcal: -10988,
+            effective_remaining_kcal: 10988,
           },
           protein_7d_average_g: 122,
           last_import_at: '2026-07-23T08:42:00+02:00',
@@ -79,6 +89,8 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
             fat_g: 70,
             fiber_g: 30,
             water_ml: 2500,
+            activity_mode: 'full',
+            activity_source_type: 'apple_health_xml',
           },
         ],
       })
@@ -119,7 +131,20 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
         },
       })
     }
-    if (path.endsWith('/analytics/trends')) return route.fulfill({ json: { points } })
+    if (path.endsWith('/analytics/trends')) {
+      return route.fulfill({
+        json: {
+          points,
+          budget_balance: {
+            tracked_days: 30,
+            within_budget_days: 23,
+            over_budget_days: 5,
+            over_maintenance_days: 2,
+            unclassified_budget_days: 0,
+          },
+        },
+      })
+    }
     if (path.endsWith('/auth/csrf')) {
       return route.fulfill({ json: { csrf_token: 'review-csrf' } })
     }
@@ -135,8 +160,10 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
   await expect(page.getByText('Ernährungs-Analytics')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Alle' })).toBeVisible()
   await expect(page.getByText('Selbst gehostet')).toHaveCount(0)
-  await expect(page.getByText('Wochenrest')).toBeVisible()
-  await expect(page.getByText(/Mo–So · 8.052 von 15.400 kcal/)).toBeVisible()
+  await expect(page.getByText('Verbleibend nach Aktivität').first()).toBeVisible()
+  await expect(page.getByText('inkl. +520 kcal durch Aktivitäten')).toBeVisible()
+  await expect(page.getByText(/Basisbudget 15.400 kcal/)).toBeVisible()
+  await expect(page.getByText(/Aktivitätsgutschrift \+3.640 kcal/)).toBeVisible()
   await expect(page.locator('.dashboard-heading .sync-status')).toHaveCount(0)
 
   const dataStatusCard = page.locator('.quality-card')
@@ -166,13 +193,27 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
           return (
             style.position === 'absolute' &&
             element.offsetParent !== null &&
-            element.textContent?.includes('Tagesbudget')
+            element.textContent?.includes('Effektives Budget')
           )
         })
         return tooltip?.textContent ?? ''
       }),
     )
-    .toContain('Tagesbudget')
+    .toContain('Effektives Budget')
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll<HTMLDivElement>('div')].find((element) => {
+          const style = getComputedStyle(element)
+          return (
+            style.position === 'absolute' &&
+            element.offsetParent !== null &&
+            element.textContent?.includes('Aktivitätsgutschrift')
+          )
+        })?.textContent ?? '',
+      ),
+    )
+    .toContain('Aktivitätsgutschrift: +520 kcal')
 
   const macroChart = page.getByRole('img', { name: 'Makronährstoff-Verteilung' })
   const box = await macroChart.boundingBox()
@@ -201,5 +242,55 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
   await dataStatusCard.screenshot({ path: 'test-results/data-status.png' })
   await page.screenshot({ path: 'test-results/overview-icons-and-tooltip.png', fullPage: true })
   await page.screenshot({ path: 'test-results/overview-periods-and-budget.png', fullPage: true })
+  await page.goto('/trends')
+  await expect(page.getByRole('heading', { name: 'Trends' })).toBeVisible()
+  const budgetBalance = page.locator('.budget-balance-section')
+  await expect(budgetBalance).toBeVisible()
+  await expect(budgetBalance).toContainText('Budgetbilanz')
+  await expect(budgetBalance).toContainText('Getrackte Tage')
+  await expect(budgetBalance).toContainText('30')
+  await expect(budgetBalance).toContainText('Im Budget')
+  await expect(budgetBalance).toContainText('23')
+  const trendsChart = page.getByRole('img', { name: 'Kalorien und gleitende Mittelwerte' })
+  await expect(trendsChart).toBeVisible()
+  const trendsBox = await trendsChart.boundingBox()
+  expect(trendsBox).not.toBeNull()
+  await page.mouse.move(
+    trendsBox!.x + trendsBox!.width * 0.72,
+    trendsBox!.y + trendsBox!.height * 0.38,
+  )
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll<HTMLDivElement>('div')].find((element) => {
+          const style = getComputedStyle(element)
+          return (
+            style.position === 'absolute' &&
+            element.offsetParent !== null &&
+            element.textContent?.includes('Effektives Tagesbudget')
+          )
+        })?.textContent ?? '',
+      ),
+    )
+    .toContain('Effektives Tagesbudget')
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll<HTMLDivElement>('div')].find((element) => {
+          const style = getComputedStyle(element)
+          return (
+            style.position === 'absolute' &&
+            element.offsetParent !== null &&
+            element.textContent?.includes('Aktivitätsgutschrift')
+          )
+        })?.textContent ?? '',
+      ),
+    )
+    .toContain('Aktivitätsgutschrift')
+  await page.screenshot({ path: 'test-results/trends-activity-credit.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(trendsChart).toBeVisible()
+  await page.screenshot({ path: 'test-results/trends-activity-credit-mobile.png', fullPage: true })
+
   expect(browserErrors).toEqual([])
 })

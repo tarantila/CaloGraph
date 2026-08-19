@@ -3,7 +3,9 @@ import {
   PhBarbell,
   PhCalendarBlank,
   PhChartBar,
+  PhCheckCircle,
   PhTrendUp,
+  PhWarningCircle,
 } from '@phosphor-icons/vue'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
@@ -13,9 +15,17 @@ import ChartPanel from '../components/ChartPanel.vue'
 import { formatGermanDate, formatGermanDayMonth } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint } from '../types'
+interface BudgetBalance {
+  tracked_days: number
+  within_budget_days: number
+  over_budget_days: number
+  over_maintenance_days: number
+  unclassified_budget_days: number
+}
 
 const t = i18n.global.t.bind(i18n.global)
 const points = ref<DailyPoint[]>([])
+const budgetBalance = ref<BudgetBalance | null>(null)
 const loading = ref(true)
 const error = ref('')
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
@@ -25,7 +35,9 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    points.value = (await api<{ points: DailyPoint[] }>('/analytics/trends')).points
+    const response = await api<{ points: DailyPoint[]; budget_balance: BudgetBalance }>('/analytics/trends')
+    points.value = response.points
+    budgetBalance.value = response.budget_balance ?? null
   } catch (cause) {
     error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
@@ -41,12 +53,64 @@ const recordedDays = computed(() => points.value.filter((item) => item.calories_
 const latestSevenDayAverage = computed(() =>
   [...points.value].reverse().find((item) => item.average_7d != null)?.average_7d ?? null,
 )
+const activityRelevant = computed(() =>
+  points.value.some((item) => item.activity_data_status === 'credited'),
+)
+const activityCreditData = computed(() =>
+  points.value.map((item) =>
+    item.activity_data_status === 'credited' ? item.activity_credit_kcal : null,
+  ),
+)
 const rangeLabel = computed(() => {
   if (!points.value.length) return t('common.noData')
   const first = formatGermanDayMonth(points.value[0].date)
   const last = formatGermanDate(points.value.at(-1)!.date)
   return `${first} – ${last}`
 })
+
+type CalorieTooltipEntry = {
+  axisValueLabel: string
+  dataIndex: number
+  marker: string
+  seriesName: string
+  value: number | null
+}
+
+function formatCalorieTooltip(params: unknown) {
+  const entries = Array.isArray(params) ? params as CalorieTooltipEntry[] : []
+  if (!entries.length) return ''
+  const day = points.value[entries[0].dataIndex]
+  if (!day) return ''
+  const marker = (seriesName: string) => entries.find((entry) => entry.seriesName === seriesName)?.marker ?? ''
+  const formatRow = (label: string, value: number | null, prefix = '', seriesName = label) =>
+    `${marker(seriesName)}${label}: ${value == null ? '–' : `${prefix}${integer.format(Number(value))} kcal`}`
+  const rows = [
+    formatRow(t('charts.calories'), day.calories_kcal, '', t('charts.calories')),
+  ]
+  if (day.activity_data_status === 'credited') {
+    rows.push(formatRow(
+      t('activity.activityCredit'),
+      day.activity_credit_kcal,
+      '+',
+      t('activity.activityCredit'),
+    ))
+  }
+  if (day.target_kcal != null) {
+    rows.push(formatRow(t('activity.baseBudget'), day.target_kcal))
+  }
+  if (day.effective_budget_kcal != null) {
+    rows.push(formatRow(
+      t('charts.effectiveDailyBudget'),
+      day.effective_budget_kcal,
+      '',
+      t('charts.effectiveDailyBudget'),
+    ))
+  }
+  if (day.average_7d != null) rows.push(formatRow(t('trends.average7'), day.average_7d))
+  if (day.average_14d != null) rows.push(formatRow(t('trends.average14'), day.average_14d))
+  if (day.average_28d != null) rows.push(formatRow(t('trends.average28'), day.average_28d))
+  return [`<strong>${entries[0].axisValueLabel}</strong>`, ...rows].join('<br/>')
+}
 
 const tooltip = {
   trigger: 'axis' as const,
@@ -61,11 +125,18 @@ const splitLine = { lineStyle: { color: '#263449', type: 'dashed' as const } }
 
 const calorieOption = computed<EChartsOption>(() => ({
   animationDuration: 500,
-  tooltip: { ...tooltip, valueFormatter: (value) => `${integer.format(Number(value))} ${t('common.kcal')}` },
+  tooltip: { ...tooltip, formatter: formatCalorieTooltip },
   legend: {
     top: 0,
     right: 0,
-    data: [t('charts.calories'), t('trends.average7'), t('trends.average14'), t('trends.average28'), t('charts.dailyBudget')],
+    data: [
+      t('charts.calories'),
+      ...(activityRelevant.value ? [t('activity.activityCredit')] : []),
+      t('trends.average7'),
+      t('trends.average14'),
+      t('trends.average28'),
+      t('charts.effectiveDailyBudget'),
+    ],
     textStyle: legendText,
     itemWidth: 14,
     itemHeight: 8,
@@ -83,10 +154,26 @@ const calorieOption = computed<EChartsOption>(() => ({
     {
       name: t('charts.calories'),
       type: 'bar',
+      stack: 'calories',
       barMaxWidth: 24,
       data: points.value.map((item) => item.calories_kcal),
       itemStyle: { color: '#8b5cf6', borderRadius: [4, 4, 0, 0] },
     },
+    ...(activityRelevant.value
+      ? [{
+          name: t('activity.activityCredit'),
+          type: 'bar' as const,
+          stack: 'calories',
+          barMaxWidth: 24,
+          data: activityCreditData.value,
+          itemStyle: {
+            color: '#f6c445',
+            borderColor: '#ffe08a',
+            borderWidth: 1,
+            borderRadius: [3, 3, 0, 0],
+          },
+        }]
+      : []),
     {
       name: t('trends.average7'),
       type: 'line',
@@ -109,10 +196,10 @@ const calorieOption = computed<EChartsOption>(() => ({
       lineStyle: { color: '#d19bff', width: 2 },
     },
     {
-      name: t('charts.dailyBudget'),
+      name: t('charts.effectiveDailyBudget'),
       type: 'line',
       showSymbol: false,
-      data: points.value.map((item) => item.target_kcal),
+      data: points.value.map((item) => item.effective_budget_kcal),
       lineStyle: { color: '#fb923c', type: 'dashed', width: 2 },
       itemStyle: { color: '#fb923c' },
     },
@@ -121,7 +208,11 @@ const calorieOption = computed<EChartsOption>(() => ({
 
 const nutritionOption = computed<EChartsOption>(() => ({
   animationDuration: 500,
-  tooltip: { ...tooltip, valueFormatter: (value) => `${decimal.format(Number(value))} ${t('common.grams')}` },
+  tooltip: {
+    ...tooltip,
+    trigger: 'axis',
+    valueFormatter: (value) => `${decimal.format(Number(value))} ${t('common.grams')}`,
+  },
   legend: {
     top: 0,
     right: 0,
@@ -187,6 +278,39 @@ const nutritionOption = computed<EChartsOption>(() => ({
         <span class="insight-icon orange"><PhCalendarBlank :size="20" weight="duotone" /></span>
         <span><small>{{ t('trends.dataBasis') }}</small><strong>{{ t('trends.recordedDays', { recorded: recordedDays, total: points.length }) }}</strong></span>
       </article>
+    </section>
+    <section class="card budget-balance-section" aria-labelledby="budget-balance-title">
+      <div class="section-card-header">
+        <div>
+          <h2 id="budget-balance-title">{{ t('budgetBalance.title') }}</h2>
+          <p>{{ t('budgetBalance.description') }}</p>
+        </div>
+      </div>
+      <div class="budget-balance-grid">
+        <article class="card insight-card">
+          <span class="insight-icon purple"><PhCalendarBlank :size="20" weight="duotone" aria-hidden="true" /></span>
+          <span>
+            <small>{{ t('budgetBalance.tracked') }}</small>
+            <strong>{{ budgetBalance?.tracked_days ?? '–' }}</strong>
+            <small
+              v-if="budgetBalance?.unclassified_budget_days"
+              class="budget-balance-secondary"
+            >{{ t('budgetBalance.unclassifiedCount', { count: budgetBalance.unclassified_budget_days }) }}</small>
+          </span>
+        </article>
+        <article class="card insight-card">
+          <span class="insight-icon teal"><PhCheckCircle :size="20" weight="duotone" aria-hidden="true" /></span>
+          <span><small>{{ t('budgetBalance.within') }}</small><strong>{{ budgetBalance?.within_budget_days ?? '–' }}</strong></span>
+        </article>
+        <article class="card insight-card">
+          <span class="insight-icon orange"><PhWarningCircle :size="20" weight="duotone" aria-hidden="true" /></span>
+          <span><small>{{ t('budgetBalance.over') }}</small><strong>{{ budgetBalance?.over_budget_days ?? '–' }}</strong></span>
+        </article>
+        <article class="card insight-card">
+          <span class="insight-icon red"><PhWarningCircle :size="20" weight="duotone" aria-hidden="true" /></span>
+          <span><small>{{ t('budgetBalance.maintenance') }}</small><strong>{{ budgetBalance?.over_maintenance_days ?? '–' }}</strong></span>
+        </article>
+      </div>
     </section>
     <div class="trend-chart-grid">
       <ChartPanel

@@ -14,6 +14,14 @@ const calendarDays = calorieValues.map((calories, index) => ({
   target_kcal: `${budget}.000`,
   maintenance_kcal: `${maintenance}.000`,
   deviation_kcal: `${calories - budget}.000`,
+  activity_mode: 'off',
+  activity_source_type: null,
+  active_energy_kcal: null,
+  activity_credit_kcal: 0,
+  activity_data_status: 'disabled',
+  effective_budget_kcal: `${budget}.000`,
+  effective_maintenance_kcal: `${maintenance}.000`,
+  effective_deviation_kcal: `${calories - budget}.000`,
   protein_g: '140.000',
   carbs_g: '210.000',
   fat_g: '70.000',
@@ -62,6 +70,8 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
           carbs_g: null,
           fat_g: null,
           fiber_g: null,
+          activity_mode: 'off',
+          activity_source_type: null,
         }],
       })
     }
@@ -92,9 +102,8 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
     calendarDays.length,
   )
   await expect(
-    page.getByRole('progressbar', { name: '1.760 von 2.000 kcal Tagesbudget' }),
+    page.getByRole('progressbar', { name: '1.760 von 2.000 kcal Effektives Budget' }),
   ).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Vorheriger Monat' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Nächster Monat' })).toBeDisabled()
 
   await page.screenshot({

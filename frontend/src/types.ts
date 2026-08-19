@@ -17,12 +17,27 @@ export type TrackingStatus =
   | 'incomplete'
   | 'no_data'
 
+export type ActivityMode = 'off' | 'full'
+export type ActivityDataStatus = 'disabled' | 'disabled_with_data' | 'missing' | 'credited'
+export type ActivitySourceType =
+  | 'yazio_export_v1'
+  | 'apple_health_xml'
+  | 'health_auto_export_v2'
+
 export interface DailyPoint {
   date: string
   calories_kcal: number | null
   target_kcal: number | null
   maintenance_kcal: number | null
   deviation_kcal: number | null
+  activity_mode: ActivityMode | null
+  activity_source_type: ActivitySourceType | null
+  active_energy_kcal: number | null
+  activity_credit_kcal: number
+  activity_data_status: ActivityDataStatus
+  effective_budget_kcal: number | null
+  effective_maintenance_kcal: number | null
+  effective_deviation_kcal: number | null
   protein_g: number | null
   carbs_g: number | null
   fat_g: number | null
@@ -96,6 +111,8 @@ export interface Target {
   carbs_g: number | null
   fat_g: number | null
   fiber_g: number | null
+  activity_mode: ActivityMode
+  activity_source_type: ActivitySourceType | null
 }
 
 export interface ApiProblem {

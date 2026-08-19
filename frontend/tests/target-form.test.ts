@@ -10,7 +10,12 @@ beforeEach(() => {
   setLocale(DEFAULT_LOCALE)
 })
 
-function targetDraft(caloriesKcal: number, maintenanceKcal: number | null): TargetDraft {
+function targetDraft(
+  caloriesKcal: number,
+  maintenanceKcal: number | null,
+  activityMode: TargetDraft['activity_mode'] = 'off',
+  activitySourceType: TargetDraft['activity_source_type'] = null,
+): TargetDraft {
   return {
     valid_from: '2026-08-11',
     calories_kcal: caloriesKcal,
@@ -19,6 +24,8 @@ function targetDraft(caloriesKcal: number, maintenanceKcal: number | null): Targ
     carbs_g: null,
     fat_g: null,
     fiber_g: null,
+    activity_mode: activityMode,
+    activity_source_type: activitySourceType,
   }
 }
 
@@ -47,6 +54,8 @@ describe('target form persistence', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        activity_mode: 'off',
+        activity_source_type: null,
       }),
     })
   })
@@ -60,4 +69,30 @@ describe('target form persistence', () => {
       expect(apiMock).not.toHaveBeenCalled()
     },
   )
+
+  it('persists a selected activity source with full activity credit', async () => {
+    await saveTargetDraft(targetDraft(2000, 2500, 'full', 'apple_health_xml'))
+
+    expect(apiMock).toHaveBeenCalledWith('/settings/targets', {
+      method: 'POST',
+      body: JSON.stringify({
+        valid_from: '2026-08-11',
+        calories_kcal: 2000,
+        maintenance_kcal: 2500,
+        protein_g: 140,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+        activity_mode: 'full',
+        activity_source_type: 'apple_health_xml',
+      }),
+    })
+  })
+
+  it('rejects full activity credit without a selected source', async () => {
+    await expect(saveTargetDraft(targetDraft(2000, 2500, 'full'))).rejects.toThrow(
+      'Für Aktivitätskalorien muss eine Quelle ausgewählt werden.',
+    )
+    expect(apiMock).not.toHaveBeenCalled()
+  })
 })
