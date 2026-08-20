@@ -5,6 +5,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-20
+
+### Changed
+
+- Updated the backend runtime server to Uvicorn 0.52.3.
+- Refreshed the backend test, type-checking, and linting toolchain.
+- Updated the GitHub Actions uv setup integration to v10.0.1.
+- Updated frontend Intlify development types to 11.4.8.
+
 ## [0.4.0] - 2026-08-19
 
 ### Added
@@ -491,7 +500,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tarantila/CaloGraph/compare/v0.3.6...v0.3.7
