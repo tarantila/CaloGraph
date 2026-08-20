@@ -26,7 +26,7 @@
     "vue-router": "5.2.0"
   },
   "devDependencies": {
-    "@intlify/devtools-types": "^10.0.8",
+    "@intlify/devtools-types": "^11.4.8",
     "@playwright/test": "1.62.1",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.13.3",
