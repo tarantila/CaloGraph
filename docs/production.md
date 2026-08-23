@@ -92,10 +92,10 @@ New single-factor passwords require at least 15 characters and are checked
 locally against a bundled digest blocklist derived from SecLists; CaloGraph
 does not send password material to an external breach service. Production
 sessions use an `__Host-` cookie with `Secure`, `HttpOnly`, `Path=/`, no
-`Domain`, and `SameSite=Lax`. The server enforces a 24-hour idle timeout and a
+`Domain`, and `SameSite=Lax`. The server enforces a seven-day idle timeout and a
 30-day absolute timeout by default. `SESSION_IDLE_TIMEOUT_HOURS` can be lowered
-or raised to at most seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered
-but not raised above 30 days. The scheduler deletes expired, idle, and revoked
+but cannot exceed seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered but
+cannot exceed 30 days. The scheduler deletes expired, idle, and revoked
 session rows hourly. Active session and import-token timestamps are written at
 most once every five minutes so read-heavy dashboard traffic does not turn into
 an equal number of database commits.

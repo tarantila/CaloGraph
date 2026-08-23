@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import packageMetadata from '../package.json'
 import App from '../src/App.vue'
 import { useAuthStore } from '../src/stores/auth'
 
@@ -77,6 +78,13 @@ describe('App-Sidebar-Navigation', () => {
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
     expect(navigationGroups[0].get('a[href="/erfolge"]').classes()).toContain('active')
     expect(wrapper.findAll('aside nav a')).toHaveLength(12)
+    wrapper.unmount()
+  })
+
+  it('renders the sidebar version from frontend/package.json', async () => {
+    const { wrapper } = await mountApp()
+
+    expect(wrapper.get('.sidebar-footer small').text()).toBe(`CaloGraph v${packageMetadata.version}`)
     wrapper.unmount()
   })
 

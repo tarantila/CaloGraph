@@ -83,7 +83,7 @@ describe('main views', () => {
     const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Ernährungsüberblick')
-    expect(wrapper.text()).toContain('Verbleibend nach Aktivität')
+    expect(wrapper.text()).toContain('Verbleibend')
     expect(wrapper.text()).toContain('Noch kein vollständiges Wochenbudget')
     expect(wrapper.text()).toContain('Wochenzusammenfassung')
     expect(wrapper.text()).toContain('Datenstatus')
@@ -297,12 +297,12 @@ describe('main views', () => {
     const option = caloriePanel!.props('option') as {
       series: Array<{ name: string; data: Array<number | null>; step?: string }>
     }
-    const baseBudgetSeries = option.series.find((series) => series.name === 'Basisbudget')
-    const effectiveBudgetSeries = option.series.find((series) => series.name === 'Effektives Budget')
+    const dailyBudgetSeries = option.series.find((series) => series.name === 'Tagesbudget')
 
-    expect(baseBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
-    expect(baseBudgetSeries?.step).toBe('middle')
-    expect(effectiveBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
+    expect(dailyBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
+    expect(dailyBudgetSeries?.step).toBe('middle')
+    expect(option.series.find((series) => series.name === 'Basisbudget')).toBeUndefined()
+    expect(option.series.find((series) => series.name === 'Effektives Budget')).toBeUndefined()
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
       '20.07. – 23.07.2026 · 4/4 mit Daten',
     )
@@ -391,6 +391,7 @@ describe('main views', () => {
       .find((panel) => panel.props('title') === 'Kalorienaufnahme')
     const option = caloriePanel!.props('option') as {
       tooltip: { formatter: (params: unknown) => string }
+      series: Array<{ name: string; data: Array<number | null> }>
     }
 
     expect(wrapper.text()).toContain('inkl. +317 kcal durch Aktivitäten')
@@ -403,6 +404,13 @@ describe('main views', () => {
         value: 1800,
       }]),
     ).toContain('Aktivitätsgutschrift: +317 kcal')
+
+    expect(option.series.map((series) => series.name)).toEqual([
+      'Aufnahme',
+      'Basisbudget',
+      'Effektives Budget',
+    ])
+    expect(option.series.find((series) => series.name === 'Effektives Budget')?.data).toEqual([2417])
   })
 
   it('keeps the trends page focused on nutrition without weight tracking', async () => {
@@ -463,7 +471,7 @@ describe('main views', () => {
       '7-Tage-Schnitt',
       '14-Tage-Schnitt',
       '28-Tage-Schnitt',
-      'Effektives Tagesbudget',
+      'Tagesbudget',
     ])
     expect(calorieOption.series.at(-1)?.data).toEqual([2100])
   })
@@ -615,13 +623,14 @@ describe('main views', () => {
     expect(barSeries.map((series) => series.barMaxWidth)).toEqual([24, 24])
     expect(option.series.filter((series) => series.type === 'line').every((series) => series.stack == null)).toBe(true)
     const activitySeries = option.series.find((series) => series.name === 'Aktivitätsgutschrift')
-    expect(activitySeries?.data).toEqual([310, 0, null, null])
+    expect(activitySeries?.data).toEqual([310, null, null, null])
     expect(activitySeries?.itemStyle).toMatchObject({
       color: '#f6c445',
       borderColor: '#ffe08a',
       borderWidth: 1,
     })
     expect(activitySeries?.itemStyle?.color).not.toBe('#fb923c')
+    expect(option.series.find((series) => series.name === 'Effektives Tagesbudget')?.data).toEqual([1890, null, null, null])
 
     const tooltip = option.tooltip.formatter([{
       axisValueLabel: '20.07.',
@@ -643,8 +652,8 @@ describe('main views', () => {
       seriesName: 'Kalorienaufnahme',
       value: 1510,
     }])
+    expect(missingActivityTooltip).toContain('Tagesbudget: 1.580 kcal')
     expect(missingActivityTooltip).not.toContain('Aktivitätsgutschrift')
-    expect(missingActivityTooltip).not.toContain('+0')
   })
 
   it('does not backfill historical days with the current calorie target', async () => {
@@ -769,10 +778,10 @@ describe('main views', () => {
     const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Verbleibend nach Aktivität–')
-    expect(wrapper.text()).not.toContain('Verbleibend nach Aktivität0 kcal')
-    expect(wrapper.findAll('td').filter((cell) => cell.text() === '–')).toHaveLength(4)
-    const differenceCell = wrapper.get('tbody tr').findAll('td')[5]
+    expect(wrapper.text()).toContain('Wochenrest–')
+    expect(wrapper.text()).not.toContain('Wochenrest0 kcal')
+    expect(wrapper.findAll('td').filter((cell) => cell.text() === '–')).toHaveLength(2)
+    const differenceCell = wrapper.get('tbody tr').findAll('td')[3]
     expect(differenceCell.classes()).not.toContain('under')
     expect(differenceCell.classes()).not.toContain('over')
   })
@@ -826,6 +835,42 @@ describe('main views', () => {
     })
   })
 
+  it('keeps historical activity credits visible without duplicating inactive weekly budgets', async () => {
+    apiMock.mockResolvedValue({
+      weeks: [
+        { week_start: '2026-07-20', consumed_kcal: 2100, budget_kcal: 2200, deviation_kcal: -100, remaining_kcal: 100, activity_credit_kcal: 0, effective_budget_kcal: 2200, effective_deviation_kcal: -100, effective_remaining_kcal: 100, mean_kcal: 2100, median_kcal: 2100 },
+        { week_start: '2026-07-27', consumed_kcal: 2300, budget_kcal: 2200, deviation_kcal: 100, remaining_kcal: -100, activity_credit_kcal: 300, effective_budget_kcal: 2500, effective_deviation_kcal: -200, effective_remaining_kcal: 200, mean_kcal: 2300, median_kcal: 2300 },
+      ],
+    })
+    const wrapper = mount(WeeklyView, {
+      global: {
+        stubs: {
+          ChartPanel: {
+            props: ['title', 'option', 'empty', 'height'],
+            template: '<section />',
+          },
+        },
+      },
+    })
+    await flushPromises()
+
+    const panel = wrapper.findComponent(ChartPanel)
+    const option = panel.props('option') as { series: Array<{ name: string; data: Array<number | null> }> }
+    const rows = wrapper.findAll('tbody tr')
+
+    expect(wrapper.text()).toContain('Verbleibend nach Aktivität')
+    const headers = wrapper.findAll('thead th').map((header) => header.text())
+    expect(headers).toContain('Aktivitätsgutschrift')
+    expect(headers).toContain('Abweichung')
+    expect(headers).not.toContain('Abweichung zum effektiven Budget')
+    expect(option.series.find((series) => series.name === 'Effektives Budget')?.data).toEqual([null, 2500])
+    expect(rows[0].findAll('td').map((cell) => cell.text())).toContain('+300 kcal')
+    expect(rows[0].findAll('td')[5].text()).toBe('-200 kcal')
+    expect(rows[1].findAll('td').slice(3, 5).map((cell) => cell.text())).toEqual(['–', '–'])
+    expect(rows[1].findAll('td')[5].text()).toBe('-100 kcal')
+    expect(wrapper.text()).toContain('2 von 2')
+  })
+
   it('uses budget thresholds, calculates numeric averages, and navigates by month', async () => {
     apiMock.mockResolvedValue({
       days: [
@@ -857,9 +902,8 @@ describe('main views', () => {
     expect(calorieProgress[1].attributes('value')).toBe('1')
     expect(calorieProgress[2].attributes('value')).toBe('1')
     expect(Number(calorieProgress[3].attributes('value'))).toBeCloseTo(2800 / 3000)
-    expect(calorieProgress[4].attributes('value')).toBe('1')
     expect(calorieProgress[0].attributes('aria-label')).toBe(
-      '1.600 von 1.800 kcal Effektives Budget',
+      '1.600 von 1.800 kcal Tagesbudget',
     )
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/calendar\?start=\d{4}-\d{2}-01&end=\d{4}-\d{2}-\d{2}$/,
@@ -870,6 +914,92 @@ describe('main views', () => {
     await flushPromises()
     expect(apiMock).toHaveBeenCalledTimes(2)
     expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
+  })
+
+  it('uses effective calendar budgets only for positive activity credits', async () => {
+    const base = {
+      calories_kcal: 1800,
+      target_kcal: 2000,
+      maintenance_kcal: null,
+      deviation_kcal: -200,
+      active_energy_kcal: null,
+      effective_maintenance_kcal: null,
+      protein_g: 120,
+      carbs_g: 180,
+      fat_g: 60,
+      tracking_status: 'complete',
+      tracking_score: 1,
+      tracking_reasons: [],
+      classification: 'under_budget',
+    }
+    apiMock.mockResolvedValue({
+      days: [
+        {
+          ...base,
+          date: '2026-07-18',
+          calories_kcal: 2100,
+          deviation_kcal: 100,
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          active_energy_kcal: 300,
+          activity_credit_kcal: 300,
+          activity_data_status: 'credited',
+          effective_budget_kcal: 2300,
+          effective_deviation_kcal: -200,
+        },
+        {
+          ...base,
+          date: '2026-07-19',
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          activity_credit_kcal: 0,
+          activity_data_status: 'credited',
+          effective_budget_kcal: 2000,
+          effective_deviation_kcal: -200,
+        },
+        {
+          ...base,
+          date: '2026-07-20',
+          activity_mode: 'full',
+          activity_source_type: 'apple_health_xml',
+          activity_credit_kcal: 0,
+          activity_data_status: 'missing',
+          effective_budget_kcal: 2000,
+          effective_deviation_kcal: -200,
+        },
+        {
+          ...base,
+          date: '2026-07-21',
+          activity_mode: 'off',
+          activity_source_type: null,
+          active_energy_kcal: 300,
+          activity_credit_kcal: 0,
+          activity_data_status: 'disabled_with_data',
+          effective_budget_kcal: 2000,
+          effective_deviation_kcal: -200,
+        },
+      ],
+    })
+    const wrapper = mount(CalendarView)
+    await flushPromises()
+    const [credited, creditedZero, missing, disabledWithData] = wrapper.findAll('.calendar-day')
+
+    expect(credited.text()).toContain('Basisbudget 2.000')
+    expect(credited.text()).toContain('Aktivitätsgutschrift +300')
+    expect(credited.text()).toContain('Effektives Budget 2.300')
+    expect(credited.text()).toContain('Aktivitätskalorien berücksichtigt')
+    expect(credited.get('progress').attributes('aria-label')).toBe(
+      '2.100 von 2.300 kcal Effektives Budget',
+    )
+
+    for (const day of [creditedZero, missing, disabledWithData]) {
+      expect(day.text()).toMatch(/Tagesbudget\s+2\.000\s+kcal/)
+      expect(day.text()).not.toContain('Aktivitätsgutschrift')
+      expect(day.text()).not.toContain('Effektives Budget')
+      expect(day.get('progress').attributes('aria-label')).toBe(
+        '1.800 von 2.000 kcal Tagesbudget',
+      )
+    }
   })
 
   it('labels nutrition without a target without assigning a budget class', async () => {
@@ -1054,6 +1184,34 @@ describe('main views', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    ['activity mode off', { activity_mode: 'off', activity_data_status: 'disabled', activity_credit_kcal: 0 }],
+    ['activity mode full without source data', { activity_mode: 'full', activity_data_status: 'missing', activity_credit_kcal: 0 }],
+    ['disabled activity data', { activity_mode: 'off', activity_data_status: 'disabled_with_data', activity_credit_kcal: 0 }],
+  ])('hides the activity credit column for %s', async (_scenario, activity) => {
+    apiMock.mockResolvedValue([{
+      date: '2026-07-18',
+      calories_kcal: 1800,
+      deviation_kcal: -200,
+      protein_g: 120,
+      carbs_g: 180,
+      fat_g: 60,
+      tracking_status: 'complete',
+      ...activity,
+    }])
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: DailyView }],
+    })
+    await router.push('/')
+    await router.isReady()
+    const wrapper = mount(DailyView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Aktivitätsgutschrift')
+    wrapper.unmount()
+  })
+
   it('shows and sorts historical activity credits only when activity is relevant', async () => {
     apiMock.mockResolvedValue([
       {
@@ -1121,9 +1279,9 @@ describe('main views', () => {
       wrapper.findAll('tbody tr').map((row) => row.findAll('td')[4].text())
 
     expect(activityHeader).toBeDefined()
-    expect(activityValues()).toEqual(['–', '–', '0 kcal', '+317 kcal'])
+    expect(activityValues()).toEqual(['–', '–', '–', '+317 kcal'])
     await activityHeader!.trigger('click')
-    expect(activityValues()).toEqual(['+317 kcal', '0 kcal', '–', '–'])
+    expect(activityValues()).toEqual(['+317 kcal', '–', '–', '–'])
   })
 
 

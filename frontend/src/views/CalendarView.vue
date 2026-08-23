@@ -9,6 +9,7 @@ import {
 } from '@phosphor-icons/vue'
 import { computed, onMounted, ref } from 'vue'
 
+import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDayMonth, formatGermanWeekday } from '../date-format'
@@ -55,8 +56,9 @@ function calorieValue(day: DailyPoint) {
 }
 
 function budgetValue(day: DailyPoint) {
-  if (day.effective_budget_kcal == null) return null
-  const value = Number(day.effective_budget_kcal)
+  const rawBudget = hasActivityCredit(day) ? day.effective_budget_kcal : day.target_kcal
+  if (rawBudget == null) return null
+  const value = Number(rawBudget)
   return Number.isFinite(value) && value > 0 ? value : null
 }
 
@@ -71,7 +73,8 @@ function calorieProgressLabel(day: DailyPoint) {
   const calories = calorieValue(day)
   const budget = budgetValue(day)
   if (calories == null || budget == null) return ''
-  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${t('activity.effectiveBudget')}`
+  const label = hasActivityCredit(day) ? t('activity.effectiveBudget') : t('charts.dailyBudget')
+  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${label}`
 }
 
 function monthRange() {
@@ -210,17 +213,14 @@ const averageCalories = computed(() => {
           <b>{{ calorieValue(day) == null ? '–' : format.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
           <span>{{ classificationLabel(day.classification) }}</span>
           <small v-if="day.target_kcal != null" class="calendar-day-reference">
-            {{ t('activity.baseBudget') }} {{ format.format(Number(day.target_kcal)) }}
-            <template v-if="day.activity_credit_kcal > 0">
+            {{ hasActivityCredit(day) ? t('activity.baseBudget') : t('charts.dailyBudget') }} {{ format.format(Number(day.target_kcal)) }}
+            <template v-if="hasActivityCredit(day)">
               · {{ t('activity.activityCredit') }} +{{ format.format(Number(day.activity_credit_kcal)) }}
+              · {{ t('activity.effectiveBudget') }} {{ day.effective_budget_kcal == null ? '–' : format.format(Number(day.effective_budget_kcal)) }}
             </template>
-            · {{ t('activity.effectiveBudget') }} {{ day.effective_budget_kcal == null ? '–' : format.format(Number(day.effective_budget_kcal)) }}
             kcal
           </small>
-          <small v-if="day.activity_data_status === 'missing'" class="calendar-day-reference">
-            {{ t('activity.noDataForDay') }}
-          </small>
-          <small v-else-if="day.activity_data_status === 'credited'" class="calendar-day-reference">
+          <small v-if="hasActivityCredit(day)" class="calendar-day-reference">
             {{ t('activity.credited') }}
           </small>
           <StatusBadge v-if="day.tracking_status !== 'complete' && day.tracking_status !== 'no_data'" :status="day.tracking_status" />

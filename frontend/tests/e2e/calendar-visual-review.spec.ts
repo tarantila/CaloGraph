@@ -102,7 +102,7 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
     calendarDays.length,
   )
   await expect(
-    page.getByRole('progressbar', { name: '1.760 von 2.000 kcal Effektives Budget' }),
+    page.getByRole('progressbar', { name: '1.760 von 2.000 kcal Tagesbudget' }),
   ).toBeVisible()
   await expect(page.getByRole('button', { name: 'Nächster Monat' })).toBeDisabled()
 

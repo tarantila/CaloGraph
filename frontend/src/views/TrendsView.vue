@@ -7,9 +7,10 @@ import {
   PhTrendUp,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import type { EChartsOption } from 'echarts'
+import type { EChartsOption, LineSeriesOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
+import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import { formatGermanDate, formatGermanDayMonth } from '../date-format'
@@ -53,12 +54,10 @@ const recordedDays = computed(() => points.value.filter((item) => item.calories_
 const latestSevenDayAverage = computed(() =>
   [...points.value].reverse().find((item) => item.average_7d != null)?.average_7d ?? null,
 )
-const activityRelevant = computed(() =>
-  points.value.some((item) => item.activity_data_status === 'credited'),
-)
+const activityRelevant = computed(() => points.value.some(hasActivityCredit))
 const activityCreditData = computed(() =>
   points.value.map((item) =>
-    item.activity_data_status === 'credited' ? item.activity_credit_kcal : null,
+    hasActivityCredit(item) ? item.activity_credit_kcal : null,
   ),
 )
 const rangeLabel = computed(() => {
@@ -87,24 +86,26 @@ function formatCalorieTooltip(params: unknown) {
   const rows = [
     formatRow(t('charts.calories'), day.calories_kcal, '', t('charts.calories')),
   ]
-  if (day.activity_data_status === 'credited') {
+  if (hasActivityCredit(day)) {
     rows.push(formatRow(
       t('activity.activityCredit'),
       day.activity_credit_kcal,
       '+',
       t('activity.activityCredit'),
     ))
-  }
-  if (day.target_kcal != null) {
-    rows.push(formatRow(t('activity.baseBudget'), day.target_kcal))
-  }
-  if (day.effective_budget_kcal != null) {
-    rows.push(formatRow(
-      t('charts.effectiveDailyBudget'),
-      day.effective_budget_kcal,
-      '',
-      t('charts.effectiveDailyBudget'),
-    ))
+    if (day.target_kcal != null) {
+      rows.push(formatRow(t('activity.baseBudget'), day.target_kcal, '', t('activity.baseBudget')))
+    }
+    if (day.effective_budget_kcal != null) {
+      rows.push(formatRow(
+        t('charts.effectiveDailyBudget'),
+        day.effective_budget_kcal,
+        '',
+        t('charts.effectiveDailyBudget'),
+      ))
+    }
+  } else if (day.target_kcal != null) {
+    rows.push(formatRow(t('charts.dailyBudget'), day.target_kcal, '', t('charts.dailyBudget')))
   }
   if (day.average_7d != null) rows.push(formatRow(t('trends.average7'), day.average_7d))
   if (day.average_14d != null) rows.push(formatRow(t('trends.average14'), day.average_14d))
@@ -123,88 +124,114 @@ const axisLine = { lineStyle: { color: '#263449' } }
 const axisLabel = { color: '#98a5b9', fontFamily: 'Inter' }
 const splitLine = { lineStyle: { color: '#263449', type: 'dashed' as const } }
 
-const calorieOption = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: { ...tooltip, formatter: formatCalorieTooltip },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [
-      t('charts.calories'),
-      ...(activityRelevant.value ? [t('activity.activityCredit')] : []),
-      t('trends.average7'),
-      t('trends.average14'),
-      t('trends.average28'),
-      t('charts.effectiveDailyBudget'),
+const calorieOption = computed<EChartsOption>(() => {
+  const budgetSeries: LineSeriesOption[] = activityRelevant.value
+    ? [
+        {
+          name: t('activity.baseBudget'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: points.value.map((item) => item.target_kcal),
+          lineStyle: { color: '#64748b', type: 'dashed', width: 2 },
+          itemStyle: { color: '#64748b' },
+        },
+        {
+          name: t('charts.effectiveDailyBudget'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: points.value.map((item) =>
+            hasActivityCredit(item) ? item.effective_budget_kcal : null,
+          ),
+          lineStyle: { color: '#fb923c', type: 'dashed', width: 2 },
+          itemStyle: { color: '#fb923c' },
+        },
+      ]
+    : [
+        {
+          name: t('charts.dailyBudget'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: points.value.map((item) => item.target_kcal),
+          lineStyle: { color: '#64748b', type: 'dashed', width: 2 },
+          itemStyle: { color: '#64748b' },
+        },
+      ]
+  return {
+    animationDuration: 500,
+    tooltip: { ...tooltip, formatter: formatCalorieTooltip },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [
+        t('charts.calories'),
+        ...(activityRelevant.value ? [t('activity.activityCredit')] : []),
+        t('trends.average7'),
+        t('trends.average14'),
+        t('trends.average28'),
+        ...budgetSeries.map((series) => String(series.name)),
+      ],
+      textStyle: legendText,
+      itemWidth: 14,
+      itemHeight: 8,
+    },
+    grid: { left: 58, right: 18, top: 54, bottom: 38 },
+    xAxis: {
+      type: 'category',
+      data: points.value.map((item) => formatGermanDayMonth(item.date)),
+      axisLine,
+      axisTick: { show: false },
+      axisLabel: { ...axisLabel, hideOverlap: true },
+    },
+    yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel, splitLine },
+    series: [
+      {
+        name: t('charts.calories'),
+        type: 'bar',
+        stack: 'calories',
+        barMaxWidth: 24,
+        data: points.value.map((item) => item.calories_kcal),
+        itemStyle: { color: '#8b5cf6', borderRadius: [4, 4, 0, 0] },
+      },
+      ...(activityRelevant.value
+        ? [{
+            name: t('activity.activityCredit'),
+            type: 'bar' as const,
+            stack: 'calories',
+            barMaxWidth: 24,
+            data: activityCreditData.value,
+            itemStyle: {
+              color: '#f6c445',
+              borderColor: '#ffe08a',
+              borderWidth: 1,
+              borderRadius: [3, 3, 0, 0],
+            },
+          }]
+        : []),
+      {
+        name: t('trends.average7'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.average_7d),
+        lineStyle: { color: '#2dd4bf', width: 3 },
+      },
+      {
+        name: t('trends.average14'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.average_14d),
+        lineStyle: { color: '#5b8ff9', width: 2 },
+      },
+      {
+        name: t('trends.average28'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.average_28d),
+        lineStyle: { color: '#d19bff', width: 2 },
+      },
+      ...budgetSeries,
     ],
-    textStyle: legendText,
-    itemWidth: 14,
-    itemHeight: 8,
-  },
-  grid: { left: 58, right: 18, top: 54, bottom: 38 },
-  xAxis: {
-    type: 'category',
-    data: points.value.map((item) => formatGermanDayMonth(item.date)),
-    axisLine,
-    axisTick: { show: false },
-    axisLabel: { ...axisLabel, hideOverlap: true },
-  },
-  yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel, splitLine },
-  series: [
-    {
-      name: t('charts.calories'),
-      type: 'bar',
-      stack: 'calories',
-      barMaxWidth: 24,
-      data: points.value.map((item) => item.calories_kcal),
-      itemStyle: { color: '#8b5cf6', borderRadius: [4, 4, 0, 0] },
-    },
-    ...(activityRelevant.value
-      ? [{
-          name: t('activity.activityCredit'),
-          type: 'bar' as const,
-          stack: 'calories',
-          barMaxWidth: 24,
-          data: activityCreditData.value,
-          itemStyle: {
-            color: '#f6c445',
-            borderColor: '#ffe08a',
-            borderWidth: 1,
-            borderRadius: [3, 3, 0, 0],
-          },
-        }]
-      : []),
-    {
-      name: t('trends.average7'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.average_7d),
-      lineStyle: { color: '#2dd4bf', width: 3 },
-    },
-    {
-      name: t('trends.average14'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.average_14d),
-      lineStyle: { color: '#5b8ff9', width: 2 },
-    },
-    {
-      name: t('trends.average28'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.average_28d),
-      lineStyle: { color: '#d19bff', width: 2 },
-    },
-    {
-      name: t('charts.effectiveDailyBudget'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.effective_budget_kcal),
-      lineStyle: { color: '#fb923c', type: 'dashed', width: 2 },
-      itemStyle: { color: '#fb923c' },
-    },
-  ],
-}))
+  }
+})
 
 const nutritionOption = computed<EChartsOption>(() => ({
   animationDuration: 500,

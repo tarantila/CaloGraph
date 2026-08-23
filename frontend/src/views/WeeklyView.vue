@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { PhCalendarBlank, PhChartBar, PhClockCounterClockwise, PhGauge } from '@phosphor-icons/vue'
-import type { EChartsOption } from 'echarts'
+import type { EChartsOption, LineSeriesOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
+import { hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import { formatDate, formatDayMonth, shiftIsoDate } from '../date-format'
@@ -57,70 +58,97 @@ const averageWeek = computed(() =>
     ? recordedWeeks.value.reduce((sum, week) => sum + week.consumed_kcal, 0) / recordedWeeks.value.length
     : null,
 )
+const weekHasActivityCredit = (week: Week) =>
+  hasActivityCreditAmount(week.activity_credit_kcal)
+const activityRelevant = computed(() => weeks.value.some(weekHasActivityCredit))
+const deviationForWeek = (week: Week) =>
+  weekHasActivityCredit(week) ? week.effective_deviation_kcal : week.deviation_kcal
+const remainingForWeek = (week: Week) =>
+  weekHasActivityCredit(week) ? week.effective_remaining_kcal : week.remaining_kcal
 const weeksWithinBudget = computed(() =>
-  recordedWeeks.value.filter((week) => week.effective_deviation_kcal != null && week.effective_deviation_kcal <= 0).length,
+  recordedWeeks.value.filter((week) => {
+    const deviation = deviationForWeek(week)
+    return deviation != null && deviation <= 0
+  }).length,
 )
 
-const option = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: {
-    trigger: 'axis',
-    backgroundColor: '#111d30',
-    borderColor: '#324157',
-    textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${format.format(Number(value))} ${t('common.kcal')}`,
-  },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [t('charts.intake'), t('activity.baseBudget'), t('activity.effectiveBudget')],
-    textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  grid: { left: 58, right: 18, top: 48, bottom: 40 },
-  xAxis: {
-    type: 'category',
-    data: weeks.value.map((week) => formatDayMonth(week.week_start)),
-    axisLine: { lineStyle: { color: '#263449' } },
-    axisTick: { show: false },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  yAxis: {
-    type: 'value',
-    name: t('common.kcal'),
-    nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
-    splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
-  },
-  series: [
-    {
-      name: t('charts.intake'),
-      type: 'bar',
-      barMaxWidth: 34,
-      data: weeks.value.map((week) =>
-        highlightOverBudget.value && week.effective_deviation_kcal != null && week.effective_deviation_kcal > 0
-          ? { value: week.consumed_kcal, itemStyle: { color: '#fb7185' } }
-          : week.consumed_kcal,
-      ),
-      itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+const option = computed<EChartsOption>(() => {
+  const budgetSeries: LineSeriesOption[] = activityRelevant.value
+    ? [
+        {
+          name: t('activity.baseBudget'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: weeks.value.map((week) => week.budget_kcal),
+          lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
+          itemStyle: { color: '#64748b' },
+        },
+        {
+          name: t('activity.effectiveBudget'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: weeks.value.map((week) =>
+            weekHasActivityCredit(week) ? week.effective_budget_kcal : null,
+          ),
+          lineStyle: { color: '#fb923c', width: 2 },
+          itemStyle: { color: '#fb923c' },
+        },
+      ]
+    : [
+        {
+          name: t('weekly.budgetTable'),
+          type: 'line' as const,
+          showSymbol: false,
+          data: weeks.value.map((week) => week.budget_kcal),
+          lineStyle: { color: '#64748b', width: 2 },
+          itemStyle: { color: '#64748b' },
+        },
+      ]
+  return {
+    animationDuration: 500,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#111d30',
+      borderColor: '#324157',
+      textStyle: { color: '#f3f6fb' },
+      valueFormatter: (value) => `${format.format(Number(value))} ${t('common.kcal')}`,
     },
-    {
-      name: t('activity.baseBudget'),
-      type: 'line',
-      showSymbol: false,
-      data: weeks.value.map((week) => week.budget_kcal),
-      lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
-      itemStyle: { color: '#64748b' },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [t('charts.intake'), ...budgetSeries.map((series) => String(series.name))],
     },
-    {
-      name: t('activity.effectiveBudget'),
-      type: 'line',
-      showSymbol: false,
-      data: weeks.value.map((week) => week.effective_budget_kcal),
-      lineStyle: { color: '#fb923c', width: 2 },
-      itemStyle: { color: '#fb923c' },
+    grid: { left: 58, right: 18, top: 48, bottom: 40 },
+    xAxis: {
+      type: 'category',
+      data: weeks.value.map((week) => formatDayMonth(week.week_start)),
+      axisLine: { lineStyle: { color: '#263449' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
     },
-  ],
-}))
+    yAxis: {
+      type: 'value',
+      name: t('common.kcal'),
+      nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
+      axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
+      splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
+    },
+    series: [
+      {
+        name: t('charts.intake'),
+        type: 'bar',
+        barMaxWidth: 34,
+        data: weeks.value.map((week) =>
+          highlightOverBudget.value && deviationForWeek(week) != null && deviationForWeek(week)! > 0
+            ? { value: week.consumed_kcal, itemStyle: { color: '#fb7185' } }
+            : week.consumed_kcal,
+        ),
+        itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+      },
+      ...budgetSeries,
+    ],
+  }
+})
 
 function weekLabel(value: string) {
   return `${formatDayMonth(value)} – ${formatDate(shiftIsoDate(value, 6))}`
@@ -144,7 +172,7 @@ function weekLabel(value: string) {
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhGauge :size="20" weight="duotone" /></span>
-        <span><small>{{ t('activity.effectiveRemaining') }}</small><strong>{{ latestWeek?.effective_remaining_kcal == null ? '–' : `${format.format(Math.max(latestWeek.effective_remaining_kcal, 0))} kcal` }}</strong></span>
+        <span><small>{{ latestWeek && weekHasActivityCredit(latestWeek) ? t('activity.effectiveRemaining') : t('overview.weekRemaining') }}</small><strong>{{ latestWeek == null || remainingForWeek(latestWeek) == null ? '–' : `${format.format(Math.max(remainingForWeek(latestWeek)!, 0))} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhClockCounterClockwise :size="20" weight="duotone" /></span>
@@ -156,7 +184,7 @@ function weekLabel(value: string) {
       </article>
     </section>
     <ChartPanel
-      :title="t('charts.intake') + ' & ' + t('activity.effectiveBudget')"
+      :title="t('charts.intake') + ' & ' + (activityRelevant ? t('activity.effectiveBudget') : t('weekly.budgetTable'))"
       :option="option"
       :empty="!recordedWeeks.length"
       :height="330"
@@ -177,22 +205,24 @@ function weekLabel(value: string) {
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>{{ weeklyRange }}</th><th class="number">{{ t('charts.intake') }}</th><th class="number">{{ t('activity.baseBudget') }}</th><th class="number">{{ t('activity.activityCredit') }}</th><th class="number">{{ t('activity.effectiveBudget') }}</th><th class="number">{{ t('activity.effectiveDeviation') }}</th><th class="number">{{ t('daily.average') }}</th><th class="number">{{ t('weekly.median') }}</th></tr></thead>
+          <thead><tr><th>{{ weeklyRange }}</th><th class="number">{{ t('charts.intake') }}</th><th class="number">{{ activityRelevant ? t('activity.baseBudget') : t('weekly.budgetTable') }}</th><template v-if="activityRelevant"><th class="number">{{ t('activity.activityCredit') }}</th><th class="number">{{ t('activity.effectiveBudget') }}</th></template><th class="number">{{ t('common.deviation') }}</th><th class="number">{{ t('daily.average') }}</th><th class="number">{{ t('weekly.median') }}</th></tr></thead>
           <tbody>
             <tr v-for="week in [...weeks].reverse()" :key="week.week_start">
               <td><strong>{{ weekLabel(week.week_start) }}</strong></td>
               <td class="number">{{ format.format(week.consumed_kcal) }} kcal</td>
               <td class="number">{{ week.budget_kcal == null ? '–' : `${format.format(week.budget_kcal)} kcal` }}</td>
-              <td class="number">{{ week.activity_credit_kcal > 0 ? `+${format.format(week.activity_credit_kcal)} kcal` : '–' }}</td>
-              <td class="number">{{ week.effective_budget_kcal == null ? '–' : `${format.format(week.effective_budget_kcal)} kcal` }}</td>
-              <td :class="['number', 'difference-value', week.effective_deviation_kcal == null ? null : week.effective_deviation_kcal > 0 ? 'over' : 'under']">
-                <template v-if="week.effective_deviation_kcal != null">{{ week.effective_deviation_kcal > 0 ? '+' : '' }}{{ format.format(week.effective_deviation_kcal) }} kcal</template>
+              <template v-if="activityRelevant">
+                <td class="number">{{ weekHasActivityCredit(week) ? `+${format.format(week.activity_credit_kcal)} kcal` : '–' }}</td>
+                <td class="number">{{ !weekHasActivityCredit(week) || week.effective_budget_kcal == null ? '–' : `${format.format(week.effective_budget_kcal)} kcal` }}</td>
+              </template>
+              <td :class="['number', 'difference-value', deviationForWeek(week) == null ? null : deviationForWeek(week)! > 0 ? 'over' : 'under']">
+                <template v-if="deviationForWeek(week) != null">{{ deviationForWeek(week)! > 0 ? '+' : '' }}{{ format.format(deviationForWeek(week)!) }} kcal</template>
                 <template v-else>–</template>
               </td>
               <td class="number">{{ week.mean_kcal == null ? '–' : `${format.format(week.mean_kcal)} kcal` }}</td>
               <td class="number">{{ week.median_kcal == null ? '–' : `${format.format(week.median_kcal)} kcal` }}</td>
             </tr>
-            <tr v-if="!weeks.length"><td colspan="8" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
+            <tr v-if="!weeks.length"><td :colspan="activityRelevant ? 8 : 6" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
           </tbody>
         </table>
       </div>

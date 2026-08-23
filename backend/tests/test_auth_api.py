@@ -14,7 +14,7 @@ from app.models import NutritionTarget, TrackingQualitySettings, User, UserSessi
 from app.schemas import TargetInput
 
 
-def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
+def test_login_csrf_and_logout(client: TestClient, user: User, db) -> None:
     del user
     response = client.post(
         "/api/v1/auth/login",
@@ -27,11 +27,17 @@ def test_login_csrf_and_logout(client: TestClient, user: User) -> None:
     assert "__host-" not in session_cookie
     assert "httponly" in session_cookie
     assert "samesite=lax" in session_cookie
+    expected_max_age = int(timedelta(days=settings.session_absolute_timeout_days).total_seconds())
+    assert f"max-age={expected_max_age}" in session_cookie
+    assert f"max-age={settings.session_idle_timeout_hours * 3600}" not in session_cookie
     assert "path=/" in session_cookie
     forbidden = client.post("/api/v1/auth/logout")
     assert forbidden.status_code == 403
     logged_out = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
     assert logged_out.status_code == 204
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    assert session.revoked_at is not None
 
 
 def test_production_session_cookie_uses_host_prefix(
@@ -63,6 +69,7 @@ def test_idle_and_absolute_session_timeouts_are_server_enforced(
     db,
 ) -> None:
     del user
+    assert settings.session_idle_timeout_hours == 168
     login = client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "correct-horse-battery-staple"},
@@ -70,9 +77,14 @@ def test_idle_and_absolute_session_timeouts_are_server_enforced(
     assert login.status_code == 200
     session = db.scalar(select(UserSession))
     assert session is not None
-    session.last_used_at = datetime.now(UTC) - timedelta(
-        hours=settings.session_idle_timeout_hours + 1
-    )
+    session.last_used_at = datetime.now(UTC) - timedelta(hours=167)
+    db.commit()
+
+    assert client.get("/api/v1/auth/me").status_code == 200
+    db.expire_all()
+    session = db.get(UserSession, session.id)
+    assert session is not None
+    session.last_used_at = datetime.now(UTC) - timedelta(hours=169)
     db.commit()
 
     assert client.get("/api/v1/auth/me").status_code == 401
@@ -84,6 +96,7 @@ def test_idle_and_absolute_session_timeouts_are_server_enforced(
     assert login.status_code == 200
     newest = db.scalars(select(UserSession).order_by(UserSession.created_at.desc())).first()
     assert newest is not None
+    newest.last_used_at = datetime.now(UTC)
     newest.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     db.commit()
 

@@ -12,9 +12,10 @@ import {
   PhTrendUp,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import type { EChartsOption } from 'echarts'
+import type { EChartsOption, LineSeriesOption } from 'echarts'
 import { computed, onMounted, ref } from 'vue'
 
+import { hasActivityCredit, hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import {
@@ -177,9 +178,16 @@ const currentTarget = computed(() => {
   )
 })
 
-const calorieTarget = computed(
-  () => summary.value?.today.effective_budget_kcal ?? currentTarget.value?.calories_kcal ?? null,
+const todayActivityRelevant = computed(() =>
+  summary.value != null && hasActivityCredit(summary.value.today),
 )
+const calorieTarget = computed(() => {
+  const today = summary.value?.today
+  if (!today) return currentTarget.value?.calories_kcal ?? null
+  return todayActivityRelevant.value
+    ? today.effective_budget_kcal
+    : today.target_kcal ?? currentTarget.value?.calories_kcal ?? null
+})
 const proteinTarget = computed(() => currentTarget.value?.protein_g ?? null)
 const todayCalories = computed(() => summary.value?.today.calories_kcal ?? null)
 const todayProtein = computed(() => summary.value?.today.protein_g ?? null)
@@ -189,13 +197,18 @@ const caloriesRemaining = computed(() => {
 })
 const todayActivityNote = computed(() => {
   const today = summary.value?.today
-  if (!today) return null
-  if (Number(today.activity_credit_kcal) > 0) {
-    return t('activity.creditForToday', {
-      value: integer.format(Number(today.activity_credit_kcal)),
-    })
-  }
-  return today.activity_data_status === 'missing' ? t('activity.noDataForToday') : null
+  if (!today || !hasActivityCredit(today)) return null
+  return t('activity.creditForToday', {
+    value: integer.format(Number(today.activity_credit_kcal)),
+  })
+})
+const weekActivityRelevant = computed(() =>
+  summary.value != null && hasActivityCreditAmount(summary.value.week.activity_credit_kcal),
+)
+const weekRemaining = computed(() => {
+  const week = summary.value?.week
+  if (!week) return null
+  return weekActivityRelevant.value ? week.effective_remaining_kcal : week.remaining_kcal
 })
 
 const proteinProgress = computed(() => {
@@ -302,10 +315,12 @@ const weekAverageCalories = computed(() =>
 const weekAverageProtein = computed(() =>
   average(recordedWeekPoints.value.map((point) => point.protein_g)),
 )
+const budgetForPoint = (point: DailyPoint) =>
+  hasActivityCredit(point) ? point.effective_budget_kcal : point.target_kcal
 const weekBudgetComparisons = computed(() =>
   recordedWeekPoints.value.flatMap((point) => {
     if (point.calories_kcal == null) return []
-    const rawBudgetKcal = point.effective_budget_kcal
+    const rawBudgetKcal = budgetForPoint(point)
     if (rawBudgetKcal == null) return []
     const caloriesKcal = Number(point.calories_kcal)
     const budgetKcal = Number(rawBudgetKcal)
@@ -397,25 +412,25 @@ function formatCalorieTooltip(params: unknown) {
         entry.value == null ? '–' : `${integer.format(Number(entry.value))} kcal`
       }`,
   )
-  if (day && Number(day.activity_credit_kcal) > 0) {
+  if (day && hasActivityCredit(day)) {
     rows.push(
       `${t('activity.activityCredit')}: +${integer.format(Number(day.activity_credit_kcal))} kcal`,
     )
-  } else if (day?.activity_data_status === 'missing') {
-    rows.push(t('activity.noDataForDay'))
   }
   return [`<strong>${entries[0].axisValueLabel}</strong>`, ...rows].join('<br/>')
 }
 
 
+const visibleActivityCredit = computed(() => trends.value.some(hasActivityCredit))
 const calorieBarData = computed(() =>
   trends.value.map((item) => {
     if (item.calories_kcal == null) return null
 
     const calories = Number(item.calories_kcal)
-    const budget = Number(item.effective_budget_kcal)
+    const rawBudget = budgetForPoint(item)
+    const budget = Number(rawBudget)
     const isOverBudget =
-      item.effective_budget_kcal != null && Number.isFinite(budget) && calories > budget
+      rawBudget != null && Number.isFinite(budget) && calories > budget
 
     if (highlightOverBudget.value && isOverBudget) {
       return {
@@ -428,68 +443,88 @@ const calorieBarData = computed(() =>
   }),
 )
 
-const calorieChart = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: { ...tooltip, trigger: 'axis', formatter: formatCalorieTooltip },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [t('overviewUi.intake'), t('activity.baseBudget'), t('activity.effectiveBudget')],
-    itemWidth: 14,
-    itemHeight: 8,
-  },
-  grid: { left: 54, right: 18, top: 46, bottom: 40 },
-  xAxis: {
-    type: 'category',
-    data: trends.value.map((item) => formatGermanDayMonth(item.date)),
-    axisLine: { lineStyle: { color: chartGrid } },
-    axisTick: { show: false },
-    axisLabel: {
-      color: chartText,
-      fontFamily: 'Inter',
-      fontSize: 9,
-      interval: chartLabelInterval.value,
-      hideOverlap: true,
+const calorieChart = computed<EChartsOption>(() => {
+  const budgetSeries: LineSeriesOption[] = visibleActivityCredit.value
+    ? [
+        {
+          name: t('activity.baseBudget'),
+          type: 'line' as const,
+          data: trends.value.map((item) => item.target_kcal),
+          step: 'middle' as const,
+          connectNulls: false,
+          showSymbol: false,
+          lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
+          itemStyle: { color: '#64748b' },
+        },
+        {
+          name: t('activity.effectiveBudget'),
+          type: 'line' as const,
+          data: trends.value.map((item) =>
+            hasActivityCredit(item) ? item.effective_budget_kcal : null,
+          ),
+          step: 'middle' as const,
+          connectNulls: false,
+          showSymbol: false,
+          lineStyle: { color: '#fb923c', width: 2 },
+          itemStyle: { color: '#fb923c' },
+        },
+      ]
+    : [
+        {
+          name: t('charts.dailyBudget'),
+          type: 'line' as const,
+          data: trends.value.map((item) => item.target_kcal),
+          step: 'middle' as const,
+          connectNulls: false,
+          showSymbol: false,
+          lineStyle: { color: '#64748b', width: 2 },
+          itemStyle: { color: '#64748b' },
+        },
+      ]
+  return {
+    animationDuration: 500,
+    tooltip: { ...tooltip, trigger: 'axis', formatter: formatCalorieTooltip },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [t('overviewUi.intake'), ...budgetSeries.map((series) => String(series.name))],
+      itemWidth: 14,
+      itemHeight: 8,
     },
-  },
-  yAxis: {
-    type: 'value',
-    name: 'kcal',
-    nameTextStyle: { color: chartText, fontFamily: 'Inter', padding: [0, 0, 0, -34] },
-    axisLabel: { color: chartText, fontFamily: 'Inter' },
-    splitLine: { lineStyle: { color: chartGrid, type: 'dashed' } },
-  },
-  series: [
-    {
-      name: t('overviewUi.intake'),
-      type: 'bar',
-      barMaxWidth: 26,
-      data: calorieBarData.value,
-      itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
-      emphasis: { itemStyle: { color: '#a78bfa' } },
+    grid: { left: 54, right: 18, top: 46, bottom: 40 },
+    xAxis: {
+      type: 'category',
+      data: trends.value.map((item) => formatGermanDayMonth(item.date)),
+      axisLine: { lineStyle: { color: chartGrid } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: chartText,
+        fontFamily: 'Inter',
+        fontSize: 9,
+        interval: chartLabelInterval.value,
+        hideOverlap: true,
+      },
     },
-    {
-      name: t('activity.baseBudget'),
-      type: 'line',
-      data: trends.value.map((item) => item.target_kcal),
-      step: 'middle',
-      connectNulls: false,
-      showSymbol: false,
-      lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
-      itemStyle: { color: '#64748b' },
+    yAxis: {
+      type: 'value',
+      name: 'kcal',
+      nameTextStyle: { color: chartText, fontFamily: 'Inter', padding: [0, 0, 0, -34] },
+      axisLabel: { color: chartText, fontFamily: 'Inter' },
+      splitLine: { lineStyle: { color: chartGrid, type: 'dashed' } },
     },
-    {
-      name: t('activity.effectiveBudget'),
-      type: 'line',
-      data: trends.value.map((item) => item.effective_budget_kcal),
-      step: 'middle',
-      connectNulls: false,
-      showSymbol: false,
-      lineStyle: { color: '#fb923c', width: 2 },
-      itemStyle: { color: '#fb923c' },
-    },
-  ],
-}))
+    series: [
+      {
+        name: t('overviewUi.intake'),
+        type: 'bar',
+        barMaxWidth: 26,
+        data: calorieBarData.value,
+        itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+        emphasis: { itemStyle: { color: '#a78bfa' } },
+      },
+      ...budgetSeries,
+    ],
+  }
+})
 
 const macroChart = computed<EChartsOption>(() => ({
   animationDuration: 500,
@@ -599,7 +634,7 @@ const macroChart = computed<EChartsOption>(() => ({
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('activity.effectiveRemaining') }}</span></div>
+        <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ todayActivityRelevant ? t('activity.effectiveRemaining') : t('overview.remaining') }}</span></div>
         <div class="metric-card-value">
           {{ caloriesRemaining == null ? '–' : integer.format(Math.max(caloriesRemaining, 0)) }}
           <small>{{ t('common.kcal') }}</small>
@@ -625,18 +660,18 @@ const macroChart = computed<EChartsOption>(() => ({
       </article>
 
       <article class="card metric-card">
-        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('activity.effectiveRemaining') }}</span></div>
+        <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ weekActivityRelevant ? t('activity.effectiveRemaining') : t('overview.weekRemaining') }}</span></div>
         <div class="metric-card-value">
-          {{ summary.week.effective_remaining_kcal == null ? '–' : integer.format(Math.max(summary.week.effective_remaining_kcal, 0)) }}
-          <small v-if="summary.week.effective_remaining_kcal != null">{{ t('common.kcal') }}</small>
+          {{ weekRemaining == null ? '–' : integer.format(Math.max(weekRemaining, 0)) }}
+          <small v-if="weekRemaining != null">{{ t('common.kcal') }}</small>
         </div>
-        <p v-if="summary.week.effective_remaining_kcal == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
-        <p v-else-if="summary.week.effective_remaining_kcal < 0">
-          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(summary.week.effective_remaining_kcal)) }) }}
+        <p v-if="weekRemaining == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
+        <p v-else-if="weekRemaining < 0">
+          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(weekRemaining)) }) }}
         </p>
         <p v-else>
-          {{ t('activity.baseBudget') }} {{ summary.week.budget_kcal == null ? '–' : `${integer.format(summary.week.budget_kcal)} kcal` }}
-          <template v-if="summary.week.activity_credit_kcal > 0">
+          {{ weekActivityRelevant ? t('activity.baseBudget') : t('weekly.budgetTable') }} {{ summary.week.budget_kcal == null ? '–' : `${integer.format(summary.week.budget_kcal)} kcal` }}
+          <template v-if="weekActivityRelevant">
             · {{ t('activity.activityCredit') }} +{{ integer.format(summary.week.activity_credit_kcal) }} kcal
           </template>
         </p>

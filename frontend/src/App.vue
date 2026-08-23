@@ -18,6 +18,7 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { i18n } from './i18n'
 import type { Achievement } from './types'
+import { APP_VERSION } from './version'
 import { useAuthStore } from './stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
@@ -135,7 +136,7 @@ function dismissAchievementNotice(): void {
           </RouterLink>
         </nav>
         <div class="sidebar-footer">
-          <small>CaloGraph v0.4.0</small>
+          <small>CaloGraph v{{ APP_VERSION }}</small>
           <button class="sidebar-signout" type="button" @click="signOut">
             <PhSignOut :size="18" aria-hidden="true" />
             {{ t('navigation.logout') }}

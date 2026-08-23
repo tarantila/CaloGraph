@@ -8,6 +8,7 @@ import {
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
 import DateFilter from '../components/DateFilter.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -42,9 +43,7 @@ function numericSortValue(point: DailyPoint, column: SortColumn) {
     case 'calories_kcal': return numericValue(point.calories_kcal)
     case 'deviation_kcal': return numericValue(point.deviation_kcal)
     case 'activity_credit_kcal':
-      return point.activity_data_status === 'credited'
-        ? numericValue(point.activity_credit_kcal)
-        : null
+      return hasActivityCredit(point) ? numericValue(point.activity_credit_kcal) : null
     case 'protein_g': return numericValue(point.protein_g)
     case 'carbs_g': return numericValue(point.carbs_g)
     case 'fat_g': return numericValue(point.fat_g)
@@ -172,14 +171,12 @@ const averageCalories = computed(() => {
 const missingPoints = computed(() =>
   points.value.filter((point) => point.tracking_status === 'no_data'),
 )
-const activityColumnVisible = computed(() =>
-  points.value.some((point) => point.activity_mode === 'full' || point.activity_credit_kcal > 0),
-)
+const activityColumnVisible = computed(() => points.value.some(hasActivityCredit))
 function displayActivityCredit(point: DailyPoint) {
-  if (point.activity_data_status !== 'credited') return '–'
+  if (!hasActivityCredit(point)) return '–'
   const credit = numericValue(point.activity_credit_kcal)
   if (credit == null) return '–'
-  return `${credit > 0 ? '+' : ''}${number.format(credit)} kcal`
+  return `+${number.format(credit)} kcal`
 }
 
 const weekdays = computed(() =>
