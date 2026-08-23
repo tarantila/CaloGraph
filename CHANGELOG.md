@@ -5,6 +5,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-23
+
+### Fixed
+
+- Fixed activity-aware calorie labels, tables, and budget series so activity-specific values are shown only when activity calories were actually credited, including historical mixed periods.
+- Fixed the sidebar version display by deriving it from the frontend package version and added regression coverage to prevent hardcoded release versions.
+
+### Changed
+
+- Increased the default session idle timeout from 24 hours to seven days while keeping the 30-day absolute session lifetime.
+- Updated the development environment's pip to 26.2.1 so the complete dependency audit no longer reports PYSEC-2026-3721.
+
 ## [0.4.1] - 2026-08-20
 
 ### Changed
@@ -500,7 +512,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/tarantila/CaloGraph/compare/v0.3.7...v0.3.8
