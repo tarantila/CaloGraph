@@ -89,6 +89,16 @@ bei der Anzeige im Admin-Center an ipwho.is übertragen. Ergebnisse werden
 begrenzt im Prozess gecacht; private und lokale Adressen werden nie extern
 aufgelöst. GeoIP-Ausfälle dürfen Login, Audit-Speicherung oder die Admin-Seite
 nicht blockieren.
+
+`SECURITY_AUDIT_GEOIP_TIMEOUT_SECONDS=2` ist der standardmäßige HTTP-Timeout
+für die externe GeoIP-Anfrage. `SECURITY_AUDIT_GEOIP_CACHE_SECONDS=3600`
+bestimmt, wie lange ein Ergebnis pro öffentlicher IP im In-Memory-Cache des
+jeweiligen Backend-Prozesses gehalten wird. Der Cache ist auf 512 Einträge
+begrenzt und wird bei einem Backend-Neustart verworfen. Auch fehlgeschlagene
+oder ergebnislose externe Auflösungen werden für die konfigurierte Cache-Dauer
+gespeichert, damit ein nicht erreichbarer Provider nicht bei jedem Aufruf
+erneut kontaktiert wird.
+
 Fail2ban should read the public Nginx or HAProxy access log, where the validated
 client address is available, rather than trying to ban an HMAC `client_ref`.
 A concrete filter and jail matching CaloGraph's documented JSON Nginx format
