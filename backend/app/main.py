@@ -2,6 +2,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -13,12 +14,19 @@ from app.api.router import api_router
 from app.auth.password_policy import validate_password_blocklist
 from app.config import settings
 from app.database import engine
+from app.problem_types import DATA_EXPORT_BUSY
 from app.security_events import (
     log_security_event,
     security_reference,
     security_request_context,
 )
-from app.services.rate_limit import RateLimitExceeded, normalize_client_ip
+from app.services.app_logs import record_app_log
+from app.services.data_export import export_status_cookie
+from app.services.rate_limit import (
+    RateLimitExceeded,
+    normalize_audit_client_ip,
+    normalize_client_ip,
+)
 from app.services.user_operation_lock import InactiveUserOperation, UserOperationBusy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -30,7 +38,7 @@ validate_password_blocklist()
 
 app = FastAPI(
     title="CaloGraph API",
-    version="0.4.2",
+    version="0.5.0",
     description=(
         "Lokale Analyse- und Import-API. CaloGraph greift nicht serverseitig auf Apple Health "
         "oder iCloud zu."
@@ -63,6 +71,7 @@ def api_openapi() -> JSONResponse:
 async def security_and_request_id(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
+    started = perf_counter()
     incoming_request_id = request.headers.get("x-request-id", "")
     request_id = (
         incoming_request_id
@@ -70,13 +79,24 @@ async def security_and_request_id(
         else uuid.uuid4().hex
     )
     request.state.request_id = request_id
+    request.state.client_ip = normalize_audit_client_ip(
+        request.client.host if request.client else None
+    )
     client = normalize_client_ip(request.client.host if request.client else None)
     with security_request_context(request_id, security_reference("client", client)):
         try:
             response = await call_next(request)
         except Exception:
+            record_app_log(
+                level="ERROR",
+                action=f"{request.method} {request.url.path}",
+                duration_ms=round((perf_counter() - started) * 1000),
+                request_id=request_id,
+                status=500,
+            )
             log_security_event("request.failed", reason="unhandled_exception")
             raise
+    duration_ms = round((perf_counter() - started) * 1000)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -92,6 +112,14 @@ async def security_and_request_id(
         if settings.hsts_include_subdomains:
             hsts += "; includeSubDomains"
         response.headers["Strict-Transport-Security"] = hsts
+    level = "ERROR" if response.status_code >= 500 else "WARNING" if response.status_code >= 400 else "INFO"
+    record_app_log(
+        level=level,
+        action=f"{request.method} {request.url.path}",
+        duration_ms=duration_ms,
+        request_id=request_id,
+        status=response.status_code,
+    )
     logger.info(
         "request method=%s path=%s status=%s request_id=%s",
         request.method,
@@ -100,6 +128,8 @@ async def security_and_request_id(
         request_id,
     )
     return response
+
+
 
 
 def _log_import_rejection(request: Request, status_code: int) -> None:
@@ -160,7 +190,7 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
         )
     else:
         _log_import_rejection(request, exc.status_code)
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         headers=exc.headers,
         media_type="application/problem+json",
@@ -172,6 +202,26 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
             "request_id": getattr(request.state, "request_id", None),
         },
     )
+    if request.url.path == "/api/v1/settings/export":
+        raw_download_id = request.query_params.get("download_id")
+        try:
+            download_id = uuid.UUID(raw_download_id) if raw_download_id else None
+        except ValueError:
+            download_id = None
+        if download_id is not None:
+            if exc.status_code == 401:
+                response.headers["Set-Cookie"] = export_status_cookie(
+                    download_id,
+                    "unauthenticated",
+                    secure=settings.cookie_secure,
+                )
+            elif exc.status_code == 429 and getattr(exc, "problem_type", None) == DATA_EXPORT_BUSY:
+                response.headers["Set-Cookie"] = export_status_cookie(
+                    download_id,
+                    "busy",
+                    secure=settings.cookie_secure,
+                )
+    return response
 
 
 @app.exception_handler(RequestValidationError)

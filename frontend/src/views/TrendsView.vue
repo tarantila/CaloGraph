@@ -8,13 +8,18 @@ import {
   PhWarningCircle,
 } from '@phosphor-icons/vue'
 import type { EChartsOption, LineSeriesOption } from 'echarts'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import type { RouteLocationNormalizedLoaded, Router } from 'vue-router'
 
 import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
+import { parseAnalyticsCompactPreset, type AnalyticsCompactPreset } from '../analytics-period'
+import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
-import { formatGermanDate, formatGermanDayMonth } from '../date-format'
+import { formatGermanDate, formatGermanDayMonth, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
+import { useAuthStore } from '../stores/auth'
 import type { DailyPoint } from '../types'
 interface BudgetBalance {
   tracked_days: number
@@ -25,6 +30,42 @@ interface BudgetBalance {
 }
 
 const t = i18n.global.t.bind(i18n.global)
+const route = useRoute() as RouteLocationNormalizedLoaded | undefined
+const router = useRouter() as Router | undefined
+const auth = useAuthStore()
+const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+const defaultStart = shiftIsoDate(today, -89)
+
+function queryValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function validIsoDate(value: string | null): value is string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
+const queryStart = queryValue(route?.query.start)
+const queryEnd = queryValue(route?.query.end)
+const hasValidQueryRange = validIsoDate(queryStart) && validIsoDate(queryEnd) && queryStart <= queryEnd
+const start = ref(hasValidQueryRange ? queryStart : defaultStart)
+const end = ref(hasValidQueryRange ? queryEnd : today)
+const compactPresets: AnalyticsCompactPreset[] = ['30', '90', '180', 'year', 'all']
+const queryPeriod = parseAnalyticsCompactPreset(route?.query.period, compactPresets)
+
+function periodMatchesRange(value: AnalyticsCompactPreset | undefined, rangeStart: string, rangeEnd: string, hasRange: boolean) {
+  if (!value || !hasRange) return undefined
+  if (value === 'custom' || value === 'all') return value
+  const expectedStart = value === 'year'
+    ? `${rangeEnd.slice(0, 4)}-01-01`
+    : shiftIsoDate(rangeEnd, -(Number(value) - 1))
+  return rangeStart === expectedStart ? value : undefined
+}
+
+const period = ref<AnalyticsCompactPreset | undefined>(
+  periodMatchesRange(queryPeriod, start.value, end.value, hasValidQueryRange),
+)
 const points = ref<DailyPoint[]>([])
 const budgetBalance = ref<BudgetBalance | null>(null)
 const loading = ref(true)
@@ -32,11 +73,63 @@ const error = ref('')
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
 const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
 
+function selectPeriod(value: AnalyticsCompactPreset) {
+  period.value = value
+}
+
+const rangePreset = computed(() => {
+  if (start.value === shiftIsoDate(end.value, -29)) return '30'
+  if (start.value === shiftIsoDate(end.value, -89)) return '90'
+  if (start.value === shiftIsoDate(end.value, -179)) return '180'
+  if (start.value === `${end.value.slice(0, 4)}-01-01`) return 'year'
+  return 'custom'
+})
+
+watch(
+  () => [
+    queryValue(route?.query.start),
+    queryValue(route?.query.end),
+    queryValue(route?.query.period),
+  ] as const,
+  ([nextStart, nextEnd, nextPeriod]) => {
+    const hasValidRange =
+      validIsoDate(nextStart) && validIsoDate(nextEnd) && nextStart <= nextEnd
+    const resolvedStart = hasValidRange ? nextStart : defaultStart
+    const resolvedEnd = hasValidRange ? nextEnd : today
+    const resolvedPeriod = periodMatchesRange(
+      parseAnalyticsCompactPreset(nextPeriod, compactPresets),
+      resolvedStart,
+      resolvedEnd,
+      hasValidRange,
+    )
+    if (resolvedPeriod !== period.value) period.value = resolvedPeriod
+    if (resolvedStart === start.value && resolvedEnd === end.value) return
+    start.value = resolvedStart
+    end.value = resolvedEnd
+    void load()
+  },
+)
+
+
 async function load() {
+  if (!validIsoDate(start.value) || !validIsoDate(end.value) || start.value > end.value) {
+    error.value = t('settingsUi.invalidRange')
+    points.value = []
+    budgetBalance.value = null
+    loading.value = false
+    return
+  }
   loading.value = true
   error.value = ''
+  await router?.replace({
+    query: { ...route?.query, start: start.value, end: end.value, period: period.value || undefined },
+  })
   try {
-    const response = await api<{ points: DailyPoint[]; budget_balance: BudgetBalance }>('/analytics/trends')
+    const params = new URLSearchParams({ start: start.value, end: end.value })
+    if (period.value === 'all') params.set('period', 'all')
+    const response = await api<{ points: DailyPoint[]; budget_balance: BudgetBalance }>(
+      `/analytics/trends?${params.toString()}`,
+    )
     points.value = response.points
     budgetBalance.value = response.budget_balance ?? null
   } catch (cause) {
@@ -45,7 +138,7 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(() => { void load() })
 
 const latestNutrition = computed(() =>
   [...points.value].reverse().find((item) => item.calories_kcal != null),
@@ -60,12 +153,9 @@ const activityCreditData = computed(() =>
     hasActivityCredit(item) ? item.activity_credit_kcal : null,
   ),
 )
-const rangeLabel = computed(() => {
-  if (!points.value.length) return t('common.noData')
-  const first = formatGermanDayMonth(points.value[0].date)
-  const last = formatGermanDate(points.value.at(-1)!.date)
-  return `${first} – ${last}`
-})
+const rangeLabel = computed(() =>
+  `${formatGermanDayMonth(start.value)} – ${formatGermanDate(end.value)}`,
+)
 
 type CalorieTooltipEntry = {
   axisValueLabel: string
@@ -282,8 +372,19 @@ const nutritionOption = computed<EChartsOption>(() => ({
 </script>
 
 <template>
-  <div class="page-heading">
-    <div><h1>{{ t('trends.title') }}</h1><p>{{ t('trends.description') }}</p></div>
+  <div class="page-heading analytics-page-heading">
+    <div class="analytics-page-heading-content">
+      <div><h1>{{ t('trends.title') }}</h1><p>{{ t('trends.description') }}</p></div>
+      <AnalyticsPeriodFilter
+        v-model:start="start"
+        v-model:end="end"
+        :initial-preset="rangePreset"
+        :compact-presets="compactPresets"
+        :compact-preset="period"
+        @preset="selectPeriod"
+        @apply="load"
+      />
+    </div>
   </div>
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
   <div v-else-if="loading" class="dashboard-loading">{{ t('trends.loading') }}</div>

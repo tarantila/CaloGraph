@@ -5,6 +5,7 @@ import {
   PhChartLineUp,
   PhDatabase,
   PhDownloadSimple,
+  PhInfo,
   PhList,
   PhListBullets,
   PhSignOut,
@@ -48,10 +49,20 @@ const utilityNavigation = [
   { to: { name: 'account' }, label: 'navigation.account', icon: PhUserCircle },
 ]
 
+const adminConsoleNavigation = {
+  to: { name: 'admin-overview' },
+  label: 'adminNav.title',
+  icon: PhSquaresFour,
+}
+
 type NavigationItem = (typeof primaryNavigation)[number] | (typeof utilityNavigation)[number]
 
 function isNavActive(item: NavigationItem) {
   return item.to.name === route.name
+}
+
+function isAdminConsoleActive() {
+  return route.path === '/admin' || route.path.startsWith('/admin/')
 }
 
 async function signOut() {
@@ -135,8 +146,21 @@ function dismissAchievementNotice(): void {
             {{ t(item.label) }}
           </RouterLink>
         </nav>
+        <nav v-if="auth.user?.is_admin" class="sidebar-utility-navigation admin-navigation" :aria-label="t('adminNav.title')">
+          <RouterLink
+            :class="{ active: isAdminConsoleActive() }"
+            :to="adminConsoleNavigation.to"
+            @click="menuOpen = false"
+          >
+            <component :is="adminConsoleNavigation.icon" :size="20" weight="regular" aria-hidden="true" />
+            {{ t(adminConsoleNavigation.label) }}
+          </RouterLink>
+        </nav>
         <div class="sidebar-footer">
-          <small>CaloGraph v{{ APP_VERSION }}</small>
+          <div class="sidebar-footer-version">
+            <PhInfo :size="18" aria-hidden="true" />
+            <small>CaloGraph v{{ APP_VERSION }}</small>
+          </div>
           <button class="sidebar-signout" type="button" @click="signOut">
             <PhSignOut :size="18" aria-hidden="true" />
             {{ t('navigation.logout') }}

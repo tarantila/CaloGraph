@@ -27,6 +27,7 @@ const apiProblemMessages: Record<string, string> = {
   'urn:calograph:problem:validation-error': 'errors.validation',
   'urn:calograph:problem:invalid-timezone': 'errors.invalidTimezone',
   'urn:calograph:problem:rate-limited': 'errors.rateLimited',
+  'urn:calograph:problem:data-export-busy': 'errors.dataExportBusy',
   'urn:calograph:problem:admin-reauthentication-failed': 'errors.adminReauthFailed',
   'urn:calograph:problem:admin-required': 'errors.adminRequired',
   'urn:calograph:problem:user-not-found': 'errors.userNotFound',
@@ -126,7 +127,7 @@ export function setAuthenticationExpiredHandler(handler: (() => void) | null): v
   authenticationExpiredHandler = handler
 }
 
-function notifyAuthenticationExpired(): void {
+export function notifyAuthenticationExpired(): void {
   authenticationExpiredHandler?.()
 }
 

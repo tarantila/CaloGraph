@@ -172,6 +172,11 @@ class Settings(BaseSettings):
     session_idle_timeout_hours: int = Field(default=168, ge=1, le=168)
     session_absolute_timeout_days: int = Field(default=30, ge=1, le=30)
     rate_limit_retention_hours: int = Field(default=24, ge=1, le=720)
+    security_audit_retention_days: int = Field(default=90, ge=1, le=3_650)
+    release_status_enabled: bool = False
+    security_audit_geoip_provider: Literal["disabled", "ipwhois"] = "disabled"
+    security_audit_geoip_timeout_seconds: float = Field(default=2.0, ge=0.2, le=10.0)
+    security_audit_geoip_cache_seconds: int = Field(default=3_600, ge=60, le=86_400)
     import_rate_limit: int = Field(default=30, ge=1, le=100_000)
     import_rate_limit_window_seconds: int = Field(default=60, ge=60, le=86_400)
     import_ip_rate_limit: int = Field(default=60, ge=1, le=100_000)

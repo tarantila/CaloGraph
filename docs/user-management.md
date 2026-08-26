@@ -53,12 +53,14 @@ deactivation or reactivation is safe and retains the same end state.
 
 ## Administrator interface
 
-Under **Konto → Benutzerverwaltung**, administrators see every account's role
-and active state; inactive accounts also show their deactivation timestamp.
-The current administrator is marked explicitly and has no lifecycle controls
-in the interface. Active foreign accounts can be deactivated, while inactive
-foreign accounts can be reactivated, receive an administrator-issued recovery
-link, have their authenticators reset, or be permanently deleted.
+Under **Administration** administrators see the overview, user management,
+invitations, persistent sign-in audit log, and safe system status. The account
+page contains only the current user's profile, authentication factors, API
+tokens, YAZIO connection, and personal data tools.
+
+The user page reuses the lifecycle controls described below. The audit log is
+paginated, filterable, retains pseudonymous client references, and never stores
+authentication secrets or health values.
 
 Deactivation and reactivation use explicit confirmation dialogs that describe
 which credentials and data remain valid. Recovery issuance, authenticator

@@ -3,6 +3,7 @@ import {
   PhCheckCircle,
   PhDatabase,
   PhDownloadSimple,
+  PhFile,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
@@ -291,18 +292,19 @@ const importsWithIssues = computed(() =>
           <h2>{{ t('importsUi.exportTitle') }}</h2>
           <p>{{ t('importsUi.exportHelp') }}</p>
         </div>
-        <label class="import-file-picker">
-          <span>{{ t('importsUi.chooseFile') }}</span>
-          <small>{{ t('importsUi.fileTypes') }}</small>
-          <input type="file" accept=".xml,.zip,.json,application/xml,application/zip,application/json" @change="selectFile" />
-        </label>
-        <div v-if="selected" class="selected-file">
-          <PhDatabase :size="18" weight="duotone" />
-          <span><strong>{{ selected.name }}</strong><small>{{ fileSize(selected.size) }}</small></span>
+        <div class="import-action-column">
+          <label class="import-file-picker">
+            <span>{{ t('importsUi.chooseFile') }}</span>
+            <small>{{ t('importsUi.fileTypes') }}</small>
+            <input type="file" accept=".xml,.zip,.json,application/xml,application/zip,application/json" @change="selectFile" />
+          </label>
+          <button class="button compact-action import-submit" type="button" :disabled="!selected || uploading" @click="upload">
+            {{ uploading ? (progress >= 100 ? t('importsUi.processing') : t('importsUi.uploadProgress', { progress })) : t('importsUi.upload') }}
+          </button>
         </div>
-        <button class="button import-submit" type="button" :disabled="!selected || uploading" @click="upload">
-          {{ uploading ? (progress >= 100 ? t('importsUi.processing') : t('importsUi.uploadProgress', { progress })) : t('importsUi.upload') }}
-        </button>
+        <div v-if="selected" class="selected-file">
+          <PhFile :size="20" /><div><strong>{{ selected.name }}</strong><small>{{ fileSize(selected.size) }}</small></div>
+        </div>
         <progress v-if="uploading" class="metric-progress import-progress" :value="progress" max="100">{{ progress }} %</progress>
         <p v-if="message" :class="['import-message', { error: messageIsError }]" :role="messageIsError ? 'alert' : 'status'">{{ message }}</p>
       </article>
@@ -350,7 +352,7 @@ const importsWithIssues = computed(() =>
           <DateInput v-model="historyTo" :disabled="historicalSyncing" />
         </label>
         <button
-          class="button secondary"
+          class="button secondary compact-action"
           type="button"
           :disabled="!yazioStatus?.available || !yazioStatus?.configured || !yazioStatus?.sync_enabled || historicalSyncing || yazioStatus?.historical_sync?.state === 'pending' || yazioStatus?.historical_sync?.state === 'running'"
           @click="queueHistoricalSync"

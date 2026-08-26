@@ -4,6 +4,9 @@ umask 077
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 project_name=${PRODUCTION_SMOKE_PROJECT:-calograph-production-smoke}
+smoke_edge_subnet=${PRODUCTION_SMOKE_EDGE_SUBNET:-172.31.250.0/24}
+smoke_edge_gateway_ip=${PRODUCTION_SMOKE_EDGE_GATEWAY_IP:-172.31.250.1}
+smoke_frontend_proxy_ip=${PRODUCTION_SMOKE_FRONTEND_PROXY_IP:-172.31.250.10}
 smoke_root=$(mktemp -d)
 smoke_env="$smoke_root/production.env"
 response_headers="$smoke_root/response-headers"
@@ -93,9 +96,9 @@ chmod 444 \
 sed -i \
   -e 's/calograph\.example\.com/calograph-ci.internal/g' \
   -e 's/CALOGRAPH_PORT=8180/CALOGRAPH_PORT=18180/g' \
-  -e 's/CALOGRAPH_EDGE_SUBNET=172\.30\.0\.0\/24/CALOGRAPH_EDGE_SUBNET=172.31.250.0\/24/g' \
-  -e 's/CALOGRAPH_EDGE_GATEWAY_IP=172\.30\.0\.1/CALOGRAPH_EDGE_GATEWAY_IP=172.31.250.1/g' \
-  -e 's/CALOGRAPH_FRONTEND_PROXY_IP=172\.30\.0\.10/CALOGRAPH_FRONTEND_PROXY_IP=172.31.250.10/g' \
+  -e "s|CALOGRAPH_EDGE_SUBNET=172\\.30\\.0\\.0/24|CALOGRAPH_EDGE_SUBNET=$smoke_edge_subnet|g" \
+  -e "s/CALOGRAPH_EDGE_GATEWAY_IP=172\\.30\\.0\\.1/CALOGRAPH_EDGE_GATEWAY_IP=$smoke_edge_gateway_ip/g" \
+  -e "s/CALOGRAPH_FRONTEND_PROXY_IP=172\\.30\\.0\\.10/CALOGRAPH_FRONTEND_PROXY_IP=$smoke_frontend_proxy_ip/g" \
   -e 's/RECOVERY_RATE_LIMIT=10/RECOVERY_RATE_LIMIT=7/g' \
   -e 's/RECOVERY_IP_RATE_LIMIT=30/RECOVERY_IP_RATE_LIMIT=11/g' \
   -e 's/RECOVERY_RATE_LIMIT_WINDOW_SECONDS=900/RECOVERY_RATE_LIMIT_WINDOW_SECONDS=777/g' \
@@ -139,7 +142,7 @@ do
   fi
 done
 if ! printf '%s\n' "$backend_environment" \
-  | grep -q '^TRUSTED_PROXY_NETWORKS=172.31.250.10/32$'; then
+  | grep -Fxq "TRUSTED_PROXY_NETWORKS=$smoke_frontend_proxy_ip/32"; then
   fail "Backend does not trust only the fixed frontend proxy address."
 fi
 for expected_setting in \
@@ -303,6 +306,46 @@ login_status=$(curl --silent --show-error \
   http://127.0.0.1:18180/api/v1/auth/login)
 if [ "$login_status" != "200" ]; then
   fail "Production login returned HTTP $login_status instead of 200."
+fi
+
+ipv4_proxy_login_status=$(curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  --header 'X-Forwarded-For: 203.0.113.42' \
+  --header 'Content-Type: application/json' \
+  --data '{"username":"proxy-ipv4-probe","password":"synthetic-invalid-password"}' \
+  http://127.0.0.1:18180/api/v1/auth/login)
+if [ "$ipv4_proxy_login_status" != "401" ]; then
+  fail "Trusted proxy IPv4 audit probe returned HTTP $ipv4_proxy_login_status instead of 401."
+fi
+
+ipv6_proxy_login_status=$(curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --header 'Host: calograph-ci.internal' \
+  --header 'X-Forwarded-For: 2001:db8::42' \
+  --header 'Content-Type: application/json' \
+  --data '{"username":"proxy-ipv6-probe","password":"synthetic-invalid-password"}' \
+  http://127.0.0.1:18180/api/v1/auth/login)
+if [ "$ipv6_proxy_login_status" != "401" ]; then
+  fail "Trusted proxy IPv6 audit probe returned HTTP $ipv6_proxy_login_status instead of 401."
+fi
+
+proxy_audit_ips=$(compose exec -T postgres psql \
+  --username calograph \
+  --dbname calograph \
+  --tuples-only \
+  --no-align \
+  --command \
+    "SELECT client_ip
+     FROM security_audit_events
+     WHERE event = 'auth.login.failed'
+     ORDER BY occurred_at DESC
+     LIMIT 2;")
+expected_proxy_audit_ips=$(printf '%s\n' '2001:db8::42' '203.0.113.42')
+if [ "$proxy_audit_ips" != "$expected_proxy_audit_ips" ]; then
+  fail "Trusted proxy IPv4/IPv6 audit addresses were not preserved exactly."
 fi
 normalized_login_headers=$(tr -d '\r' <"$response_headers")
 for required_cookie_pattern in \

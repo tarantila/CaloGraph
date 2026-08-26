@@ -5,6 +5,62 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-24
+
+### Added
+
+- Added a documented, machine-readable ZIP export of each user's CaloGraph data under Account.
+- Added a dedicated administrator area for users, invitations, sign-in audit events, and safe system status.
+- Added administrator App-Logs with filtering and bounded in-memory retention.
+- Added persistent security-audit history with bounded retention.
+- Added a separate CSV archive export and validated, idempotent CaloGraph backup import with preview.
+- Added operational backup/restore documentation for encrypted PostgreSQL backups and isolated recovery checks.
+- Added persistent, timezone-aware authenticated usage-day tracking for usage achievements.
+- Added new achievements covering authenticated usage, activity credits, long-term history, budget revisions, exports, portable restore, MFA, and passkeys.
+- Added visible and hidden achievements: One Week In, Going Steady, Century Club, Long-Term Relationship, More Headroom, Room to Move, The Big Picture, Change of Plans, Ordered Takeout, Spreadsheet Ready, Welcome Back, Double Locked, Password? What Password?, and Déjà Vu.
+
+### Changed
+
+- Large data exports are streamed through the backend and documented reverse-proxy path.
+- Added a shared responsive period filter for the Micronutrients, Trends, Weekdays, and Daily analytics views, including URL-preserved All and Individuell state, while preserving the full desktop DateFilter.
+- Kept activity-credit budget presentation consistent across dashboard, weekly, calendar, target-history, and trends analytics.
+- Made external GitHub release-status checks opt-in to avoid unsolicited outbound metadata requests.
+
+### Configuration / Environment
+
+- The development Compose fallback version is now `0.5.0`; production image tags remain operator-selectable through `CALOGRAPH_VERSION`.
+- The Compose fallback for `SESSION_IDLE_TIMEOUT_HOURS` is now 168 hours (seven days) instead of 24 hours. Explicit operator values are unchanged.
+- Added optional Security-Audit settings with defaults `SECURITY_AUDIT_RETENTION_DAYS=90`, `SECURITY_AUDIT_GEOIP_PROVIDER=disabled`, `SECURITY_AUDIT_GEOIP_TIMEOUT_SECONDS=2`, and `SECURITY_AUDIT_GEOIP_CACHE_SECONDS=3600`.
+- Added `RELEASE_STATUS_ENABLED=false`; external GitHub release checks require explicit opt-in.
+- `CALOGRAPH_PUBLIC_URL` remains a required production deployment setting and is not a new E2E-only requirement.
+
+Existing v0.4.2 installations do not need new environment values for the default
+behavior. Run the database migrations through the normal upgrade path before
+starting the updated application. No proxy rule change is required when the
+documented reverse-proxy configuration is already in use.
+
+### Fixed
+
+- Kept deleted-user audit events valid after hard deletion by retaining the pseudonymous target snapshot without a dangling user foreign key.
+- Fixed the dashboard All period to respect the analytics range limit and trigger the explicit all-history achievement path.
+- Fixed ChartPanel initialization when an initially empty card receives data later, including observer and chart cleanup on disposal.
+- Updated Alpine runtime packages during image builds to include current security fixes.
+
+### Database / Migrations
+
+- Added persistent Security-Audit storage through migration `20260824_0017_security_audit_events`.
+- Added persistent authenticated Usage Days through migration `20260826_0018_usage_days`.
+- The v0.5.0 Alembic head is `20260826_0018`; existing installations must run the normal database upgrade before application startup.
+
+### Upgrade Notes
+
+- **ACTION REQUIRED:** run `alembic upgrade head` using the normal deployment path before serving v0.5.0.
+- No new required environment variables are introduced for the default behavior.
+- Existing explicit `SESSION_IDLE_TIMEOUT_HOURS` values are preserved; only the Compose fallback changes.
+- `RELEASE_STATUS_ENABLED` remains disabled unless an operator explicitly opts in.
+- No proxy rule change is required with the documented reverse-proxy configuration.
+- No breaking API or database downgrade path is introduced.
+
 ## [0.4.2] - 2026-08-23
 
 ### Fixed
@@ -512,7 +568,8 @@ follows [Semantic Versioning](https://semver.org/).
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tarantila/CaloGraph/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tarantila/CaloGraph/compare/v0.3.8...v0.4.0

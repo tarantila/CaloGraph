@@ -9,7 +9,13 @@ import {
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, localizeApiError } from '../api'
-import DateFilter from '../components/DateFilter.vue'
+import {
+  analyticsPresetMatchesRange,
+  inferDesktopPreset,
+  parseAnalyticsCompactPreset,
+  type AnalyticsCompactPreset,
+} from '../analytics-period'
+import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import { formatGermanDateTime, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -57,12 +63,24 @@ const before = shiftIsoDate(today, -29)
 const start = ref(String(route.query.start ?? before))
 const end = ref(String(route.query.end ?? today))
 const source = ref(String(route.query.source ?? 'yazio_export_v1'))
+const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
+const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
+const period = ref<AnalyticsCompactPreset | undefined>(
+  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
+    ? periodCandidate
+    : undefined,
+)
+const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
 const result = ref<MicronutrientResponse | null>(null)
 const error = ref('')
 const loading = ref(true)
 const syncingHistory = ref(false)
 const syncMessage = ref('')
 const syncError = ref('')
+
+function selectPeriod(value: AnalyticsCompactPreset) {
+  period.value = value
+}
 
 const number = createNumberFormatter({ maximumFractionDigits: 2 })
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
@@ -88,11 +106,13 @@ async function load(allowSourceFallback = true) {
       start: start.value,
       end: end.value,
       source: source.value || undefined,
+      period: period.value || undefined,
     },
   })
   try {
     const params = new URLSearchParams({ start: start.value, end: end.value })
     if (source.value) params.set('source', source.value)
+    if (period.value === 'all') params.set('period', 'all')
     const response = await api<MicronutrientResponse>(`/analytics/micronutrients?${params}`)
     const selectedSourceExists = response.available_sources.some(
       (item) => item.source_type === source.value,
@@ -198,12 +218,22 @@ async function syncYazioHistory() {
 }
 </script>
 <template>
-  <div class="page-heading micronutrient-heading">
-    <div>
-      <h1>{{ t('micronutrients.title') }}</h1>
-      <p>{{ t('micronutrients.description') }}</p>
+  <div class="page-heading analytics-page-heading micronutrient-heading">
+    <div class="analytics-page-heading-content">
+      <div>
+        <h1>{{ t('micronutrients.title') }}</h1>
+        <p>{{ t('micronutrients.description') }}</p>
+      </div>
+      <AnalyticsPeriodFilter
+        v-model:start="start"
+        v-model:end="end"
+        :initial-preset="desktopPreset"
+        :compact-presets="compactPresets"
+        :compact-preset="period"
+        @preset="selectPeriod"
+        @apply="load()"
+      />
     </div>
-    <DateFilter v-model:start="start" v-model:end="end" @apply="load()" />
   </div>
 
   <section class="card filter-panel micronutrient-source-filter" :aria-label="t('micronutrients.chooseSource')">

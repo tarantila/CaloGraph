@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import median
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
@@ -23,6 +23,7 @@ from app.database import get_db
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample, ImportBatch, User
 from app.schemas import DailyPoint
+from app.services.achievements import unlock_achievement_keys
 
 router = APIRouter(tags=["Analytics"])
 
@@ -42,6 +43,23 @@ def _range(
         raise HTTPException(status_code=422, detail="Datumsbereich ist zu groß")
     return resolved_start, resolved_end
 
+def _unlock_big_picture_if_requested(
+    db: Session,
+    user: User,
+    period: Literal["all"] | None,
+) -> None:
+    if period != "all":
+        return
+    first, last = db.execute(
+        select(func.min(HealthSample.local_date), func.max(HealthSample.local_date)).where(
+            HealthSample.user_id == user.id,
+            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
+            HealthSample.value > 0,
+        )
+    ).one()
+    if first is not None and last is not None and (last - first).days >= 364:
+        unlock_achievement_keys(db, user.id, ("the_big_picture",))
+
 
 def _complete_budget(days: list[DailyPoint], field: str) -> Decimal | None:
     budgets = [getattr(day, field) for day in days]
@@ -60,10 +78,12 @@ def daily(
     source: str | None = None,
     tracking: str | None = None,
     weekday: int | None = Query(default=None, ge=0, le=6),
+    period: Literal["all"] | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> list[DailyPoint]:
     start, end = _range(start, end, user.timezone)
+    _unlock_big_picture_if_requested(db, user, period)
     points = daily_points(db, user, start, end, source)
     if tracking:
         statuses = set(tracking.split(","))
@@ -72,16 +92,17 @@ def daily(
         points = [point for point in points if point.date.weekday() == weekday]
     return points
 
-
 @router.get("/analytics/micronutrients")
 def micronutrients(
     start: date | None = None,
     end: date | None = None,
     source: str | None = Query(default="yazio_export_v1", max_length=64),
+    period: Literal["all"] | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 30)
+    _unlock_big_picture_if_requested(db, user, period)
 
     all_source_rows = db.execute(
         select(HealthSample.source_type, func.max(HealthSample.updated_at))
@@ -331,15 +352,16 @@ def weekly(
         )
     return {"weeks": weeks}
 
-
 @router.get("/analytics/weekdays")
 def weekdays(
     start: date | None = None,
     end: date | None = None,
+    period: Literal["all"] | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 180)
+    _unlock_big_picture_if_requested(db, user, period)
     groups: dict[int, list[DailyPoint]] = defaultdict(list)
     for point in daily_points(db, user, start, end):
         groups[point.date.weekday()].append(point)
@@ -389,10 +411,12 @@ def trends(
     start: date | None = None,
     end: date | None = None,
     include_incomplete: bool = Query(False),
+    period: Literal["all"] | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
+    _unlock_big_picture_if_requested(db, user, period)
     points = daily_points(db, user, start, end)
     historical_budget_balance = _historical_budget_balance(db, user)
     output = []

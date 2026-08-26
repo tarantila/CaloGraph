@@ -141,6 +141,6 @@ def test_load_facts_aggregates_nutrition_presence_rows(
         for call in execute.call_args_list
         if "metric_type" in str(call.args[0]) and "source_type" in str(call.args[0])
     ]
-    assert len(nutrition_statements) == 1
+    assert len(nutrition_statements) == 2
     assert nutrition_statements[0]._distinct
     assert facts.macro_complete_dates == frozenset({date(2026, 8, 16)})

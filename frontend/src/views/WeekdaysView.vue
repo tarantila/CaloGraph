@@ -5,8 +5,14 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
+import {
+  analyticsPresetMatchesRange,
+  inferDesktopPreset,
+  parseAnalyticsCompactPreset,
+  type AnalyticsCompactPreset,
+} from '../analytics-period'
+import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
-import DateFilter from '../components/DateFilter.vue'
 import { createNumberFormatter, i18n } from '../i18n'
 
 interface Weekday {
@@ -36,10 +42,22 @@ const iso = (value: Date) => {
 }
 const start = ref(String(route.query.start ?? iso(defaultStartDate)))
 const end = ref(String(route.query.end ?? iso(currentDate)))
+const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', '180', 'all']
+const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
+const period = ref<AnalyticsCompactPreset | undefined>(
+  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
+    ? periodCandidate
+    : undefined,
+)
+const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
 const weekdays = ref<Weekday[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 0 })
+
+function selectPeriod(value: AnalyticsCompactPreset) {
+  period.value = value
+}
 
 function weekdayLabel(day: number) {
   const keys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
@@ -55,9 +73,13 @@ function numericValue(value: number | null) {
 async function load() {
   error.value = ''
   loading.value = true
-  await router.replace({ query: { start: start.value, end: end.value } })
+  await router.replace({
+    query: { start: start.value, end: end.value, period: period.value || undefined },
+  })
   try {
-    const result = await api<{ weekdays: Weekday[] }>(`/analytics/weekdays?start=${start.value}&end=${end.value}`)
+    const params = new URLSearchParams({ start: start.value, end: end.value })
+    if (period.value === 'all') params.set('period', 'all')
+    const result = await api<{ weekdays: Weekday[] }>(`/analytics/weekdays?${params}`)
     weekdays.value = result.weekdays.map((item) => ({
       ...item,
       count: Number(item.count),
@@ -141,9 +163,19 @@ const option = computed<EChartsOption>(() => ({
 </script>
 
 <template>
-  <div class="page-heading">
-    <div><h1>{{ t('weekdays.title') }}</h1><p>{{ t('weekdays.description') }}</p></div>
-    <DateFilter v-model:start="start" v-model:end="end" @apply="load" />
+  <div class="page-heading analytics-page-heading">
+    <div class="analytics-page-heading-content">
+      <div><h1>{{ t('weekdays.title') }}</h1><p>{{ t('weekdays.description') }}</p></div>
+      <AnalyticsPeriodFilter
+        v-model:start="start"
+        v-model:end="end"
+        :initial-preset="desktopPreset"
+        :compact-presets="compactPresets"
+        :compact-preset="period"
+        @preset="selectPeriod"
+        @apply="load"
+      />
+    </div>
   </div>
   <div v-if="error" class="card error" role="alert">{{ error }}</div>
   <div v-else-if="loading" class="dashboard-loading">{{ t('weekdays.loading') }}</div>

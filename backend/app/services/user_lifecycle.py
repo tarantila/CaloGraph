@@ -72,6 +72,8 @@ def _log_rejection(
         "admin.user.lifecycle_rejected",
         actor_ref=security_reference("user", actor_id),
         target_ref=security_reference("user", target_id),
+        actor_user_id=actor_id,
+        target_user_id=target_id,
         details={"action": action, "reason": reason},
     )
 
@@ -85,6 +87,8 @@ def _log_failure(
         "admin.user.lifecycle_failed",
         actor_ref=security_reference("user", actor_id),
         target_ref=security_reference("user", target_id),
+        actor_user_id=actor_id,
+        target_user_id=target_id,
         details={"action": action, "reason": "transaction_failed"},
     )
 
@@ -185,11 +189,21 @@ def _ensure_not_self_action(
         _reject(action, "self_action")
 
 
-def _success_event(event: str, actor_id: UUID, target_id: UUID) -> None:
+def _success_event(
+    event: str,
+    actor_id: UUID,
+    target_id: UUID,
+    *,
+    persist_target: bool = True,
+    target_username: str | None = None,
+) -> None:
     log_security_event(
         event,
         actor_ref=security_reference("user", actor_id),
         target_ref=security_reference("user", target_id),
+        actor_user_id=actor_id,
+        target_user_id=target_id if persist_target else None,
+        username_snapshot=security_reference("user", target_id) if target_username is not None else None,
     )
 
 
@@ -375,6 +389,13 @@ def delete_user(
             db.execute(
                 delete(RateLimitBucket).where(RateLimitBucket.key_hash.in_(rate_limit_hashes))
             )
+        target_username = target.username
         db.execute(delete(User).where(User.id == target.id))
         db.commit()
-    _success_event("admin.user.deleted", actor_id, target_id)
+    _success_event(
+        "admin.user.deleted",
+        actor_id,
+        target_id,
+        persist_target=False,
+        target_username=target_username,
+    )

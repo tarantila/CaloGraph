@@ -215,7 +215,7 @@ function formatTimestamp(value: string) {
 <template>
   <div class="user-management">
     <div
-      class="table-scroll"
+      class="table-scroll admin-desktop-table"
       :inert="modalOpen"
       :aria-hidden="modalOpen ? 'true' : undefined"
     >
@@ -258,6 +258,39 @@ function formatTimestamp(value: string) {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="mobile-user-list" :inert="modalOpen" :aria-hidden="modalOpen ? 'true' : undefined">
+      <article v-for="item in orderedUsers" :key="item.id" class="mobile-user-card">
+        <div class="mobile-user-card-header">
+          <div>
+            <strong>{{ item.username }}</strong>
+            <span v-if="item.id === props.currentUserId" class="current-user-label">{{ t('management.current') }}</span>
+          </div>
+          <span class="status-badge" :class="item.is_active ? 'success' : 'inactive'">
+            {{ item.is_active ? t('management.active') : t('management.inactive') }}
+          </span>
+        </div>
+        <p class="mobile-user-meta">{{ item.is_admin ? t('management.administrator') : t('management.user') }}</p>
+        <small v-if="!item.is_active && item.deactivated_at" class="status-detail">
+          {{ t('managementUi.since', { date: formatTimestamp(item.deactivated_at) }) }}
+        </small>
+        <span v-if="item.id === props.currentUserId" class="muted">{{ t('management.ownAccount') }}</span>
+        <div v-else class="user-actions mobile-user-actions">
+          <button
+            v-if="item.is_active"
+            class="text-button danger-text"
+            type="button"
+            @click="openSimple('deactivate', item)"
+          >{{ t('management.deactivate') }}</button>
+          <template v-else>
+            <button class="text-button" type="button" @click="openSimple('reactivate', item)">{{ t('management.reactivate') }}</button>
+            <button class="text-button" type="button" @click="openPrivileged('recovery', item)">{{ t('management.issueRecovery') }}</button>
+            <button class="text-button" type="button" @click="openPrivileged('reset', item)">{{ t('management.resetAuthenticators') }}</button>
+            <button class="text-button danger-text" type="button" @click="openPrivileged('delete', item)">{{ t('management.delete') }}</button>
+          </template>
+        </div>
+      </article>
     </div>
 
     <ConfirmDialog

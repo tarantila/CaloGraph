@@ -1,7 +1,7 @@
 import secrets
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from typing import Never
+from typing import Literal, Never
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
@@ -79,6 +79,7 @@ from app.services.rate_limit import (
     ensure_rate_limit_available,
     login_password_slot,
     normalize_account_identifier,
+    normalize_audit_client_ip,
     normalize_client_ip,
     rate_limit_key_id,
 )
@@ -92,13 +93,21 @@ REGISTRATION_COOKIE_NAME = "calograph_registration"
 REGISTRATION_COOKIE_PATH = "/api/v1/auth"
 
 
+def _audit_client_ip(request: Request) -> str | None:
+    return getattr(request.state, "client_ip", None) or normalize_audit_client_ip(
+        request.client.host if request.client else None
+    )
+
+
 def _log_login(
     request: Request,
     outcome: str,
     client_key: str,
     account_key: str,
+    *,
+    actor: User | None = None,
+    auth_method: Literal["password", "password+mfa", "passkey"] | None = None,
 ) -> None:
-    del request
     event, reason = {
         "failed": ("auth.login.failed", "invalid_credentials"),
         "mfa_failed": ("auth.login.failed", "invalid_mfa"),
@@ -106,26 +115,36 @@ def _log_login(
         "succeeded": ("auth.login.succeeded", None),
         "succeeded_with_mfa": ("auth.login.succeeded", None),
     }[outcome]
+    client_ip = _audit_client_ip(request)
     log_security_event(
         event,
+        actor_ref=security_reference("user", actor.id) if actor is not None else None,
         client_ref=rate_limit_key_id(client_key),
         target_ref=rate_limit_key_id(account_key),
         reason=reason,
+        auth_method=auth_method or (
+            "password+mfa" if outcome in {"mfa_failed", "succeeded_with_mfa"} else "password"
+        ),
+        actor_user_id=actor.id if actor is not None else None,
+        username_snapshot=security_reference("user", actor.id) if actor is not None else None,
+        client_ip=client_ip,
     )
 
 
-def _log_password_change(request: Request, outcome: str, user_key: str) -> None:
-    del request
+def _log_password_change(request: Request, outcome: str, user: User) -> None:
     event = {
         "failed": "auth.password.change_failed",
         "succeeded": "auth.password.changed",
     }[outcome]
     log_security_event(
         event,
-        actor_ref=rate_limit_key_id(user_key),
+        actor_ref=security_reference("user", user.id),
+        actor_user_id=user.id,
+        username_snapshot=security_reference("user", user.id),
+        auth_method="password",
+        client_ip=_audit_client_ip(request),
         reason="invalid_current_password" if outcome == "failed" else None,
     )
-
 
 def _set_mfa_challenge_cookie(response: Response, user: User) -> None:
     response.set_cookie(
@@ -400,13 +419,13 @@ def login(
     totp_credential = db.get(UserTotpCredential, user.id)
     if totp_credential is not None and totp_credential.enabled_at is not None:
         _set_mfa_challenge_cookie(response, user)
-        _log_login(request, "mfa_required", client_key, account_key)
+        _log_login(request, "mfa_required", client_key, account_key, actor=user)
         return {"mfa_required": True}
 
     session, raw_token, csrf_token = create_session(db, user)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
-    _log_login(request, "succeeded", client_key, account_key)
+    _log_login(request, "succeeded", client_key, account_key, actor=user)
     return {
         "mfa_required": False,
         "user": UserResponse.model_validate(user),
@@ -426,6 +445,8 @@ def _reject_mfa_login(
     request: Request,
     client_key: str,
     account_key: str,
+    *,
+    actor: User | None = None,
 ) -> Never:
     rate_limit_error: RateLimitExceeded | None = None
     for action, key, limit in (
@@ -445,7 +466,7 @@ def _reject_mfa_login(
                 rate_limit_error = exc
     if rate_limit_error:
         raise rate_limit_error
-    _log_login(request, "mfa_failed", client_key, account_key)
+    _log_login(request, "mfa_failed", client_key, account_key, actor=actor)
     raise ProblemHTTPException(
         status_code=401,
         detail="Benutzername oder Passwort ist falsch",
@@ -515,6 +536,8 @@ def verify_passkey_login(
             "auth.passkey.login_failed",
             client_ref=rate_limit_key_id(client_key),
             reason="invalid_assertion",
+            auth_method="passkey",
+            client_ip=_audit_client_ip(request),
         )
         raise_invalid_login()
     _set_session_cookie(response, session, raw_token)
@@ -523,6 +546,10 @@ def verify_passkey_login(
         "auth.passkey.login_succeeded",
         actor_ref=security_reference("user", user.id),
         client_ref=rate_limit_key_id(client_key),
+        auth_method="passkey",
+        actor_user_id=user.id,
+        username_snapshot=security_reference("user", user.id),
+        client_ip=_audit_client_ip(request),
     )
     return {
         "mfa_required": False,
@@ -574,7 +601,7 @@ def verify_totp_login(
                 credential,
                 payload.code,
             ):
-                _reject_mfa_login(db, request, client_key, account_key)
+                _reject_mfa_login(db, request, client_key, account_key, actor=user)
 
             db.commit()
             clear_rate_limit(db, "mfa-ip", client_key)
@@ -584,7 +611,7 @@ def verify_totp_login(
         _reject_mfa_login(db, request, client_key, account_key)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
-    _log_login(request, "succeeded_with_mfa", client_key, account_key)
+    _log_login(request, "succeeded_with_mfa", client_key, account_key, actor=user)
     return {
         "mfa_required": False,
         "user": UserResponse.model_validate(user),
@@ -637,6 +664,8 @@ def logout(
     log_security_event(
         "auth.session.logged_out",
         actor_ref=security_reference("user", user.id),
+        actor_user_id=user.id,
+        username_snapshot=security_reference("user", user.id),
     )
 
 
@@ -664,7 +693,7 @@ def change_password(
             settings.password_change_rate_limit,
             settings.password_change_rate_limit_window_seconds,
         )
-        _log_password_change(request, "failed", user_key)
+        _log_password_change(request, "failed", user)
         raise ProblemHTTPException(
             status_code=400,
             detail="Aktuelles Passwort ist falsch",
@@ -681,4 +710,4 @@ def change_password(
         ) from None
     user.password_hash = hash_password(payload.new_password)
     revoke_user_sessions(db, user.id)
-    _log_password_change(request, "succeeded", user_key)
+    _log_password_change(request, "succeeded", user)

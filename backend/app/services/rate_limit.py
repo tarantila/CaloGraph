@@ -50,6 +50,17 @@ def normalize_client_ip(value: str | None) -> str:
         return f"{network.network_address}/64"
     return str(address)
 
+def normalize_audit_client_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
+
 
 def hash_rate_limit_key(key: str) -> str:
     return hmac.new(

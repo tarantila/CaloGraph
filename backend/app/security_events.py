@@ -9,9 +9,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, Literal
+from uuid import UUID
 
 from app.config import settings
+from app.services.security_audit import record_security_audit
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,10 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "auth.password.recovery_failed": EventSpec("failure", logging.ERROR),
     "auth.password.recovery_rejected": EventSpec("failure", logging.WARNING),
     "auth.registration.succeeded": EventSpec("success", logging.INFO),
+    "data.exported": EventSpec("success", logging.INFO),
+    "data.import.previewed": EventSpec("success", logging.INFO, _COUNT_FIELDS),
+    "data.import.completed": EventSpec("success", logging.INFO, _COUNT_FIELDS),
+    "data.import.failed": EventSpec("failure", logging.WARNING),
     "auth.session.logged_out": EventSpec("success", logging.INFO),
     "import.completed": EventSpec("success", logging.INFO, _COUNT_FIELDS | {"source_type"}),
     "import.partial_failed": EventSpec(
@@ -138,6 +144,9 @@ def security_request_context(request_id: str, client_ref: str) -> Iterator[None]
         _request_id_context.reset(request_token)
         _client_ref_context.reset(client_token)
 
+def security_context_references() -> tuple[str | None, str | None]:
+    return _request_id_context.get(), _client_ref_context.get()
+
 
 def _validated_reference(value: str | None, field: str) -> str | None:
     if value is not None and not _REFERENCE_PATTERN.fullmatch(value):
@@ -161,7 +170,6 @@ def _validated_details(spec: EventSpec, details: Mapping[str, object]) -> dict[s
             raise ValueError(f"Security event detail {key!r} is not a safe scalar")
     return validated
 
-
 def log_security_event(
     event: str,
     *,
@@ -170,12 +178,18 @@ def log_security_event(
     target_ref: str | None = None,
     reason: str | None = None,
     details: Mapping[str, object] | None = None,
+    request_id: str | None = None,
+    auth_method: Literal["password", "password+mfa", "passkey"] | None = None,
+    actor_user_id: UUID | None = None,
+    target_user_id: UUID | None = None,
+    username_snapshot: str | None = None,
+    client_ip: str | None = None,
 ) -> None:
     spec = EVENT_SPECS.get(event)
     if spec is None:
         raise ValueError(f"Unknown security event: {event}")
-    request_id = _request_id_context.get()
-    if request_id is not None and not _REQUEST_ID_PATTERN.fullmatch(request_id):
+    current_request_id = request_id if request_id is not None else _request_id_context.get()
+    if current_request_id is not None and not _REQUEST_ID_PATTERN.fullmatch(current_request_id):
         raise ValueError("Security event request ID is invalid")
     if reason is not None and not _SAFE_TOKEN_PATTERN.fullmatch(reason):
         raise ValueError("Security event reason must be a bounded identifier")
@@ -187,16 +201,33 @@ def log_security_event(
         "event": event,
         "outcome": spec.outcome,
     }
+    validated_actor_ref = _validated_reference(actor_ref, "actor_ref")
+    validated_client_ref = _validated_reference(
+        client_ref if client_ref is not None else _client_ref_context.get(),
+        "client_ref",
+    )
+    validated_target_ref = _validated_reference(target_ref, "target_ref")
     optional_fields = {
-        "request_id": request_id,
-        "actor_ref": _validated_reference(actor_ref, "actor_ref"),
-        "client_ref": _validated_reference(
-            client_ref if client_ref is not None else _client_ref_context.get(),
-            "client_ref",
-        ),
-        "target_ref": _validated_reference(target_ref, "target_ref"),
+        "request_id": current_request_id,
+        "actor_ref": validated_actor_ref,
+        "client_ref": validated_client_ref,
+        "target_ref": validated_target_ref,
         "reason": reason,
     }
     payload.update({key: value for key, value in optional_fields.items() if value is not None})
     payload.update(_validated_details(spec, details or {}))
     logger.log(spec.level, json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    record_security_audit(
+        event=event,
+        outcome=spec.outcome,
+        auth_method=auth_method,
+        actor_user_id=actor_user_id,
+        target_user_id=target_user_id,
+        actor_ref=validated_actor_ref,
+        target_ref=validated_target_ref,
+        username_snapshot=username_snapshot,
+        request_id=current_request_id,
+        client_ip=client_ip,
+        client_ref=validated_client_ref,
+        reason=reason,
+    )

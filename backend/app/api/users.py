@@ -152,6 +152,8 @@ def create_invitation(
     log_security_event(
         "auth.invitation.created",
         actor_ref=security_reference("user", user.id),
+        actor_user_id=user.id,
+        username_snapshot=security_reference("user", user.id),
         target_ref=security_reference("invitation", invitation.id),
     )
     return InvitationCreatedResponse(
@@ -181,6 +183,8 @@ def revoke_invitation(
     log_security_event(
         "auth.invitation.revoked",
         actor_ref=security_reference("user", user.id),
+        actor_user_id=user.id,
+        username_snapshot=security_reference("user", user.id),
         target_ref=security_reference("invitation", invitation.id),
     )
 

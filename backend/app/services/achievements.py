@@ -7,13 +7,23 @@ from typing import Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from app.activity import ACTIVE_ENERGY_METRIC
 from app.analytics.service import PRIMARY_NUTRITION_METRICS
-from app.models import HealthSample, ImportBatch, User, UserAchievement
+from app.models import (
+    HealthSample,
+    ImportBatch,
+    NutritionTarget,
+    PasskeyCredential,
+    User,
+    UserAchievement,
+    UserTotpCredential,
+    UserUsageDay,
+)
 
 SUCCESSFUL_IMPORT_STATUSES: Final = ("completed", "completed_with_errors")
 SUPPORTED_SOURCE_TYPES: Final = frozenset(
@@ -27,7 +37,6 @@ SUPPORTED_SOURCE_TYPES: Final = frozenset(
 MACRO_METRICS: Final = frozenset({"protein_g", "carbohydrates_g", "fat_g"})
 PRIMARY_METRIC_LIST: Final = tuple(sorted(PRIMARY_NUTRITION_METRICS))
 
-
 @dataclass(frozen=True, slots=True)
 class AchievementDefinition:
     key: str
@@ -36,7 +45,7 @@ class AchievementDefinition:
     hidden: bool
     sort_order: int
     target: int | None = None
-
+    icon: str = "trophy"
 
 ACHIEVEMENT_DEFINITIONS: Final[tuple[AchievementDefinition, ...]] = (
     AchievementDefinition("first_day", "tracking", "milestone", False, 10, 1),
@@ -58,6 +67,20 @@ ACHIEVEMENT_DEFINITIONS: Final[tuple[AchievementDefinition, ...]] = (
     AchievementDefinition("hidden_time_machine", "hidden", "discovery", True, 420),
     AchievementDefinition("hidden_break_day", "hidden", "discovery", True, 430),
     AchievementDefinition("hidden_full_house", "hidden", "discovery", True, 440),
+    AchievementDefinition("one_week_in", "usage", "streak", False, 80, 7, "calendar"),
+    AchievementDefinition("going_steady", "usage", "streak", False, 90, 30, "flame"),
+    AchievementDefinition("century_club", "usage", "milestone", False, 100, 100, "calendar"),
+    AchievementDefinition("long_term_relationship", "usage", "milestone", False, 130, 365, "heart"),
+    AchievementDefinition("more_headroom", "activity", "discovery", True, 240, icon="activity"),
+    AchievementDefinition("room_to_move", "activity", "milestone", False, 250, 7, "activity"),
+    AchievementDefinition("double_locked", "security", "security", False, 270, icon="shield"),
+    AchievementDefinition("password_what_password", "security", "security", False, 280, icon="fingerprint"),
+    AchievementDefinition("change_of_plans", "budget", "milestone", False, 340, 2, "arrows"),
+    AchievementDefinition("ordered_takeout", "export", "export", False, 350, icon="download"),
+    AchievementDefinition("spreadsheet_ready", "export", "export", False, 360, icon="table"),
+    AchievementDefinition("welcome_back", "import", "import", False, 370, icon="upload"),
+    AchievementDefinition("the_big_picture", "analytics", "discovery", True, 450, icon="chart"),
+    AchievementDefinition("deja_vu", "import", "discovery", True, 460, icon="repeat"),
 )
 ACHIEVEMENT_BY_KEY: Final = {item.key: item for item in ACHIEVEMENT_DEFINITIONS}
 
@@ -65,11 +88,19 @@ ACHIEVEMENT_BY_KEY: Final = {item.key: item for item in ACHIEVEMENT_DEFINITIONS}
 @dataclass(frozen=True, slots=True)
 class AchievementFacts:
     tracked_dates: tuple[date, ...]
+    usage_dates: tuple[date, ...]
     macro_complete_dates: frozenset[date]
+    positive_activity_dates: frozenset[date]
     source_types: frozenset[str]
     successful_import_sources: frozenset[str]
     best_streak: int
+    usage_best_streak: int
     historical_span_days: int
+    budget_version_count: int
+    has_mfa: bool
+    has_passkey: bool
+    has_portable_import: bool
+    has_portable_import_repeat: bool
     has_internal_gap: bool
     has_leap_day: bool
     has_full_house: bool
@@ -81,12 +112,15 @@ class AchievementStatus:
     key: str | None
     category: str
     kind: str | None
+    icon: str | None
     hidden: bool
+    placeholder: bool
     unlocked: bool
     unlocked_at: datetime | None
     progress: int | None
     target: int | None
     sort_order: int
+
 
 
 def _best_streak(days: tuple[date, ...]) -> int:
@@ -117,6 +151,42 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
             )
             .distinct()
             .order_by(HealthSample.local_date)
+        )
+    )
+
+    usage_dates = tuple(
+        db.scalars(
+            select(UserUsageDay.activity_date)
+            .where(UserUsageDay.user_id == user.id)
+            .distinct()
+            .order_by(UserUsageDay.activity_date)
+        )
+    )
+    targets = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.valid_from)
+        )
+    )
+    active_rows = db.execute(
+        select(HealthSample.local_date, HealthSample.source_type)
+        .where(
+            HealthSample.user_id == user.id,
+            HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+            HealthSample.value > 0,
+        )
+        .distinct()
+    ).all()
+    positive_activity_dates = frozenset(
+        local_date
+        for local_date, source_type in active_rows
+        if any(
+            target.valid_from <= local_date
+            and (target.valid_to is None or local_date < target.valid_to)
+            and target.activity_mode == "full"
+            and target.activity_source_type == source_type
+            for target in targets
         )
     )
 
@@ -167,18 +237,62 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
     historical_span_days = (
         (tracked_dates[-1] - tracked_dates[0]).days + 1 if tracked_dates else 0
     )
+    budget_version_count = int(
+        db.scalar(
+            select(func.count(NutritionTarget.id)).where(NutritionTarget.user_id == user.id)
+        )
+        or 0
+    )
     has_full_house = any(
         PRIMARY_NUTRITION_METRICS.issubset(macro_metrics_by_day.get(local_date, set()))
         and len(full_house_sources_by_day.get(local_date, set())) >= 2
         for local_date in macro_metrics_by_day
     )
+    has_mfa = db.scalar(
+        select(UserTotpCredential.user_id).where(
+            UserTotpCredential.user_id == user.id,
+            UserTotpCredential.enabled_at.is_not(None),
+        )
+    ) is not None
+    has_passkey = db.scalar(
+        select(PasskeyCredential.id).where(PasskeyCredential.user_id == user.id).limit(1)
+    ) is not None
+    has_portable_import = db.scalar(
+        select(ImportBatch.id)
+        .where(
+            ImportBatch.user_id == user.id,
+            ImportBatch.source_type == "calograph-data-export",
+            ImportBatch.status.in_(SUCCESSFUL_IMPORT_STATUSES),
+        )
+        .limit(1)
+    ) is not None
+    has_portable_import_repeat = db.scalar(
+        select(ImportBatch.payload_hash)
+        .where(
+            ImportBatch.user_id == user.id,
+            ImportBatch.source_type == "calograph-data-export",
+            ImportBatch.status.in_(SUCCESSFUL_IMPORT_STATUSES),
+            ImportBatch.payload_hash.is_not(None),
+        )
+        .group_by(ImportBatch.payload_hash)
+        .having(func.count(ImportBatch.id) >= 2)
+        .limit(1)
+    ) is not None
     return AchievementFacts(
         tracked_dates=tracked_dates,
+        usage_dates=usage_dates,
         macro_complete_dates=macro_complete_dates,
+        positive_activity_dates=positive_activity_dates,
         source_types=source_types,
         successful_import_sources=successful_import_sources,
         best_streak=_best_streak(tracked_dates),
+        usage_best_streak=_best_streak(usage_dates),
         historical_span_days=historical_span_days,
+        budget_version_count=budget_version_count,
+        has_mfa=has_mfa,
+        has_passkey=has_passkey,
+        has_portable_import=has_portable_import,
+        has_portable_import_repeat=has_portable_import_repeat,
         has_internal_gap=_has_internal_gap(tracked_dates),
         has_leap_day=any(day.month == 2 and day.day == 29 for day in tracked_dates),
         has_full_house=has_full_house,
@@ -189,6 +303,14 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
 def _progress_for(definition: AchievementDefinition, facts: AchievementFacts) -> int | None:
     if definition.hidden:
         return None
+    if definition.key in {"one_week_in", "going_steady"}:
+        return min(facts.usage_best_streak, definition.target or 0)
+    if definition.key in {"century_club", "long_term_relationship"}:
+        return min(len(facts.usage_dates), definition.target or 0)
+    if definition.key == "room_to_move":
+        return min(len(facts.positive_activity_dates), definition.target or 0)
+    if definition.key == "change_of_plans":
+        return min(facts.budget_version_count, definition.target or 0)
     if definition.key == "first_day" or definition.key.startswith("tracked_"):
         return min(len(facts.tracked_dates), definition.target or 0)
     if definition.key.startswith("streak_"):
@@ -201,8 +323,25 @@ def _progress_for(definition: AchievementDefinition, facts: AchievementFacts) ->
         return min(facts.historical_span_days, definition.target or 0)
     return None
 
-
 def _qualifies(definition: AchievementDefinition, facts: AchievementFacts) -> bool:
+    if definition.key == "double_locked":
+        return facts.has_mfa
+    if definition.key == "password_what_password":
+        return facts.has_passkey
+    if definition.key == "welcome_back":
+        return facts.has_portable_import
+    if definition.key == "deja_vu":
+        return facts.has_portable_import_repeat
+    if definition.key in {"one_week_in", "going_steady"}:
+        return facts.usage_best_streak >= (definition.target or 0)
+    if definition.key in {"century_club", "long_term_relationship"}:
+        return len(facts.usage_dates) >= (definition.target or 0)
+    if definition.key == "more_headroom":
+        return bool(facts.positive_activity_dates)
+    if definition.key == "room_to_move":
+        return len(facts.positive_activity_dates) >= (definition.target or 0)
+    if definition.key == "change_of_plans":
+        return facts.budget_version_count >= (definition.target or 0)
     if definition.key == "first_day" or definition.key.startswith("tracked_"):
         return len(facts.tracked_dates) >= (definition.target or 0)
     if definition.key.startswith("streak_"):
@@ -243,13 +382,31 @@ def _status_items(
     for definition in ACHIEVEMENT_DEFINITIONS:
         unlocked_at = unlocked_at_by_key.get(definition.key)
         unlocked = unlocked_at is not None
-        locked_hidden = definition.hidden and not unlocked
+        if definition.hidden and not unlocked:
+            statuses.append(
+                AchievementStatus(
+                    key=None,
+                    category="hidden",
+                    kind=None,
+                    icon=None,
+                    hidden=True,
+                    placeholder=True,
+                    unlocked=False,
+                    unlocked_at=None,
+                    progress=None,
+                    target=None,
+                    sort_order=definition.sort_order,
+                )
+            )
+            continue
         statuses.append(
             AchievementStatus(
-                key=None if locked_hidden else definition.key,
+                key=definition.key,
                 category=definition.category,
-                kind=None if locked_hidden else definition.kind,
+                kind=definition.kind,
+                icon=definition.icon,
                 hidden=definition.hidden,
+                placeholder=False,
                 unlocked=unlocked,
                 unlocked_at=unlocked_at,
                 progress=_progress_for(definition, facts) if not unlocked else None,
@@ -289,6 +446,19 @@ def _insert_unlocked(
         index_elements=[table.c.user_id, table.c.achievement_key]
     ).returning(table.c.achievement_key)
     return set(db.scalars(statement))
+
+def unlock_achievement_keys(
+    db: Session,
+    user_id: UUID,
+    keys: list[str] | tuple[str, ...],
+    *,
+    unlocked_at: datetime | None = None,
+) -> set[str]:
+    eligible = [key for key in keys if key in ACHIEVEMENT_BY_KEY]
+    inserted = _insert_unlocked(db, user_id, eligible, unlocked_at or datetime.now(UTC))
+    if inserted:
+        db.commit()
+    return inserted
 
 
 def reconcile_achievements(

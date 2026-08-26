@@ -91,6 +91,7 @@ describe('UserManagement', () => {
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Recovery ausstellen')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Authentikatoren zurücksetzen')
     expect(rowFor(wrapper, 'inactive-user').text()).toContain('Endgültig löschen')
+    expect(wrapper.findAll('.mobile-user-card')).toHaveLength(4)
   })
 
   it('confirms deactivation and refreshes only after the backend succeeds', async () => {

@@ -1,10 +1,14 @@
-from datetime import date
+from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_SOURCE_TYPES
 from app.auth.dependencies import current_user, require_csrf
@@ -30,6 +34,7 @@ from app.models import (
 )
 from app.problem_types import (
     ACTIVITY_SOURCE_UNAVAILABLE,
+    DATA_EXPORT_BUSY,
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
@@ -60,7 +65,15 @@ from app.schemas import (
     UserResponse,
     WebAuthnOptionsResponse,
 )
-from app.security_events import log_security_event, security_reference
+from app.security_events import log_security_event, security_context_references, security_reference
+from app.services.achievements import unlock_achievement_keys
+from app.services.data_export import (
+    ExportBusy,
+    ExportStream,
+    export_status_cookie,
+    open_user_csv_export,
+    open_user_export,
+)
 from app.services.mfa import (
     MfaSetupError,
     begin_totp_setup,
@@ -85,6 +98,19 @@ from app.services.rate_limit import (
 )
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
+
+
+class ExportStreamingResponse(StreamingResponse):
+    def __init__(self, export: ExportStream, **kwargs: Any) -> None:
+        self._export = export
+        super().__init__(content=export, **kwargs)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await run_in_threadpool(self._export.close)
+
 
 
 def _mfa_management_key(user: User) -> str:
@@ -196,6 +222,93 @@ def _verify_management_second_factor_if_enabled(
     _clear_mfa_management_factor_limit(db, user)
 
 
+@router.get("/export")
+def export_user_data(
+    download_id: UUID | None = Query(default=None),
+    user: User = Depends(current_user),
+) -> StreamingResponse:
+    request_id, client_ref = security_context_references()
+    try:
+        export = open_user_export(
+            user.id,
+            request_id=request_id,
+            client_ref=client_ref,
+        )
+    except ExportBusy as exc:
+        headers = {"Retry-After": "30"}
+        if download_id is not None:
+            headers["Set-Cookie"] = export_status_cookie(
+                download_id,
+                "busy",
+                secure=settings.cookie_secure,
+            )
+        raise ProblemHTTPException(
+            status_code=429,
+            detail="Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.",
+            problem_type=DATA_EXPORT_BUSY,
+            headers=headers,
+        ) from exc
+    filename = f"calograph-data-export-{datetime.now(UTC).date().isoformat()}.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Accel-Buffering": "no",
+    }
+    if download_id is not None:
+        headers["Set-Cookie"] = export_status_cookie(
+            download_id,
+            "accepted",
+            secure=settings.cookie_secure,
+        )
+    try:
+        return ExportStreamingResponse(export, media_type="application/zip", headers=headers)
+    except BaseException:
+        export.close()
+        raise
+
+@router.get("/csv-export")
+def export_user_csv(
+    download_id: UUID | None = Query(default=None),
+    user: User = Depends(current_user),
+) -> StreamingResponse:
+    request_id, client_ref = security_context_references()
+    try:
+        export = open_user_csv_export(
+            user.id,
+            request_id=request_id,
+            client_ref=client_ref,
+        )
+    except ExportBusy as exc:
+        headers = {"Retry-After": "30"}
+        if download_id is not None:
+            headers["Set-Cookie"] = export_status_cookie(
+                download_id,
+                "busy",
+                secure=settings.cookie_secure,
+            )
+        raise ProblemHTTPException(
+            status_code=429,
+            detail="Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.",
+            problem_type=DATA_EXPORT_BUSY,
+            headers=headers,
+        ) from exc
+    filename = f"calograph-csv-export-{datetime.now(UTC).date().isoformat()}.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Accel-Buffering": "no",
+    }
+    if download_id is not None:
+        headers["Set-Cookie"] = export_status_cookie(
+            download_id,
+            "accepted",
+            secure=settings.cookie_secure,
+        )
+    try:
+        return ExportStreamingResponse(export, media_type="application/zip", headers=headers)
+    except BaseException:
+        export.close()
+        raise
+
+
 @router.get("/profile", response_model=UserResponse)
 def profile(user: User = Depends(current_user)) -> User:
     return user
@@ -284,6 +397,7 @@ def confirm_totp(
         "auth.mfa.totp_enabled",
         actor_ref=_mfa_log_user_key(user),
     )
+    unlock_achievement_keys(db, user.id, ("double_locked",))
     return RecoveryCodesResponse(recovery_codes=recovery_codes)
 
 
@@ -404,6 +518,7 @@ def register_passkey(
         actor_ref=_mfa_log_user_key(user),
         target_ref=security_reference("passkey", passkey.id),
     )
+    unlock_achievement_keys(db, user.id, ("password_what_password",))
     return passkey
 
 
@@ -533,6 +648,8 @@ def create_target(
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)
+    if len(existing) + 1 >= 2:
+        unlock_achievement_keys(db, user.id, ("change_of_plans",))
     return target
 
 
@@ -680,7 +797,6 @@ def revoke_token(
     token = db.scalar(select(ApiToken).where(ApiToken.id == token_id, ApiToken.user_id == user.id))
     if not token:
         raise HTTPException(status_code=404, detail="Token nicht gefunden")
-    from datetime import UTC, datetime
 
     token.revoked_at = datetime.now(UTC)
     db.commit()

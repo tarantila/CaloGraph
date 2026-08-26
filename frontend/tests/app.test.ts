@@ -19,11 +19,11 @@ const user = {
   deactivated_at: null,
 }
 
-async function mountApp(path = '/tage') {
+async function mountApp(path = '/tage', isAdmin = false) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const auth = useAuthStore()
-  auth.user = user
+  auth.user = { ...user, is_admin: isAdmin }
   auth.needsTargetSetup = false
 
   const router = createRouter({
@@ -41,6 +41,11 @@ async function mountApp(path = '/tage') {
       { path: '/erfolge', name: 'achievements', component: { template: '<h1>Erfolge</h1>' } },
       { path: '/budgets-und-ziele', name: 'targets', component: { template: '<h1>Ziele</h1>' } },
       { path: '/konto', name: 'account', component: { template: '<h1>Konto</h1>' } },
+      { path: '/admin', name: 'admin-overview', component: { template: '<h1>Admin-Center</h1>' } },
+      { path: '/admin/users', name: 'admin-users', component: { template: '<h1>Nutzer</h1>' } },
+      { path: '/admin/invitations', name: 'admin-invitations', component: { template: '<h1>Einladungen</h1>' } },
+      { path: '/admin/security', name: 'admin-audit', component: { template: '<h1>Anmeldeprotokoll</h1>' } },
+      { path: '/admin/system', name: 'admin-system', component: { template: '<h1>Systemstatus</h1>' } },
     ],
   })
   await router.push(path)
@@ -81,10 +86,31 @@ describe('App-Sidebar-Navigation', () => {
     wrapper.unmount()
   })
 
-  it('renders the sidebar version from frontend/package.json', async () => {
-    const { wrapper } = await mountApp()
+  it('shows administrators exactly one primary admin-console entry', async () => {
+    const { wrapper } = await mountApp('/admin/users', true)
 
-    expect(wrapper.get('.sidebar-footer small').text()).toBe(`CaloGraph v${packageMetadata.version}`)
+    const adminLinks = wrapper.findAll('aside a[href^="/admin"]')
+    expect(adminLinks).toHaveLength(1)
+    expect(adminLinks[0].text()).toMatch(/Admin/)
+    expect(adminLinks[0].classes()).toContain('active')
+    expect(wrapper.find('aside a[href="/admin/users"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not show an admin-console entry to normal users', async () => {
+    const { wrapper } = await mountApp()
+    expect(wrapper.find('aside a[href^="/admin"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders an aligned, non-interactive sidebar version row', async () => {
+    const { wrapper } = await mountApp()
+    const versionRow = wrapper.get('.sidebar-footer-version')
+
+    expect(versionRow.get('small').text()).toBe(`CaloGraph v${packageMetadata.version}`)
+    expect(versionRow.get('svg').attributes('aria-hidden')).toBe('true')
+    expect(versionRow.element.tagName).toBe('DIV')
+    expect(wrapper.get('.sidebar-signout').text().trim()).not.toBe('')
     wrapper.unmount()
   })
 

@@ -166,6 +166,20 @@ class UserSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+
+class UserUsageDay(Base):
+    __tablename__ = "user_usage_days"
+    __table_args__ = (
+        UniqueConstraint("user_id", "activity_date", name="uq_user_usage_day"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    activity_date: Mapped[date] = mapped_column(Date, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
 class UserTotpCredential(Base):
     __tablename__ = "user_totp_credentials"
 
@@ -456,6 +470,34 @@ class RateLimitBucket(Base):
     action: Mapped[str] = mapped_column(String(32))
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     count: Mapped[int] = mapped_column(Integer, default=1)
+
+class SecurityAuditEvent(Base):
+    __tablename__ = "security_audit_events"
+    __table_args__ = (
+        Index("ix_security_audit_events_occurred_at", "occurred_at"),
+        Index("ix_security_audit_events_event_outcome", "event", "outcome"),
+        Index("ix_security_audit_events_actor_user_id", "actor_user_id"),
+        Index("ix_security_audit_events_target_user_id", "target_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    event: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(16))
+    auth_method: Mapped[str | None] = mapped_column(String(32))
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", name="fk_security_audit_events_actor_user_id_users", ondelete="SET NULL")
+    )
+    target_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", name="fk_security_audit_events_target_user_id_users", ondelete="SET NULL")
+    )
+    actor_ref: Mapped[str | None] = mapped_column(String(16))
+    target_ref: Mapped[str | None] = mapped_column(String(16))
+    username_snapshot: Mapped[str | None] = mapped_column(String(190))
+    request_id: Mapped[str | None] = mapped_column(String(32))
+    client_ip: Mapped[str | None] = mapped_column(String(64))
+    client_ref: Mapped[str | None] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(64))
 
 
 JsonDict = dict[str, Any]

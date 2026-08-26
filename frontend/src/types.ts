@@ -127,7 +127,9 @@ export interface Achievement {
   key?: string | null
   category: string
   kind?: string | null
+  icon?: string | null
   hidden: boolean
+  placeholder: boolean
   unlocked: boolean
   unlocked_at?: string | null
   progress?: number | null

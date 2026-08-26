@@ -88,12 +88,14 @@ function hasNutritionData(point: DailyPoint) {
 async function loadTrends() {
   if (!summary.value) return
   const end = summary.value.today.date
-  const start =
-    periodDays.value === 'all'
-      ? (summary.value.data_start_date ?? end)
-      : addDays(end, -(periodDays.value - 1))
+  const earliestAllowed = shiftIsoDate(end, -(3660 - 1))
+  const requestedStart = summary.value.data_start_date ?? end
+  const start = periodDays.value === 'all'
+    ? (requestedStart > earliestAllowed ? requestedStart : earliestAllowed)
+    : addDays(end, -(periodDays.value - 1))
+  const periodQuery = periodDays.value === 'all' ? '&period=all' : ''
   const result = await api<{ points: DailyPoint[] }>(
-    `/analytics/trends?start=${start}&end=${end}&include_incomplete=true`,
+    `/analytics/trends?start=${start}&end=${end}&include_incomplete=true${periodQuery}`,
   )
   trends.value = result.points
 }
@@ -477,8 +479,8 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#64748b', width: 2 },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: '#fb923c', width: 2 },
+          itemStyle: { color: '#fb923c' },
         },
       ]
   return {

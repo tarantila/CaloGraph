@@ -1,10 +1,14 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.auth.security import (
@@ -15,8 +19,13 @@ from app.auth.security import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models import ApiToken, User, UserSession
-from app.problem_types import CSRF_VALIDATION_FAILED, INVALID_REQUEST_ORIGIN, ProblemHTTPException
+from app.models import ApiToken, User, UserSession, UserUsageDay
+from app.problem_types import (
+    ADMIN_REQUIRED,
+    CSRF_VALIDATION_FAILED,
+    INVALID_REQUEST_ORIGIN,
+    ProblemHTTPException,
+)
 from app.services.user_operation_lock import (
     InactiveUserOperation,
     UserOperationBusy,
@@ -35,6 +44,29 @@ def _activity_write_is_due(last_used_at: datetime | None, now: datetime) -> bool
     if comparable_last_used_at.tzinfo is None:
         comparable_last_used_at = comparable_last_used_at.replace(tzinfo=UTC)
     return comparable_last_used_at <= now - AUTH_ACTIVITY_WRITE_INTERVAL
+
+def _record_usage_day(db: Session, user: User, now: datetime) -> None:
+    activity_date = now.astimezone(ZoneInfo(user.timezone)).date()
+    table: Any = UserUsageDay.__table__
+    values = {
+        "id": uuid4(),
+        "user_id": user.id,
+        "activity_date": activity_date,
+        "created_at": now,
+    }
+    dialect = db.get_bind().dialect.name
+    statement: Any
+    if dialect == "postgresql":
+        statement = postgres_insert(table).values(values)
+    elif dialect == "sqlite":
+        statement = sqlite_insert(table).values(values)
+    else:
+        raise RuntimeError(f"Unsupported database dialect for usage days: {dialect}")
+    db.execute(
+        statement.on_conflict_do_nothing(
+            index_elements=[table.c.user_id, table.c.activity_date]
+        )
+    )
 
 
 def _request_session(
@@ -77,8 +109,18 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if _activity_write_is_due(session.last_used_at, now):
         with shared_user_operation(db, user.id) as active_user:
             session.last_used_at = now
+            _record_usage_day(db, active_user, now)
             db.commit()
             return active_user
+    return user
+
+def require_admin(user: User = Depends(current_user)) -> User:
+    if not user.is_admin:
+        raise ProblemHTTPException(
+            status_code=403,
+            detail="Administratorrechte erforderlich",
+            problem_type=ADMIN_REQUIRED,
+        )
     return user
 
 def _validate_csrf(

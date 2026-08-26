@@ -36,6 +36,7 @@ from app.services.credential_crypto import (
 from app.services.import_service import persist_import, purge_expired_raw_payloads
 from app.services.passkeys import purge_expired_webauthn_challenges
 from app.services.rate_limit import RateLimitExceeded, purge_expired_rate_limit_buckets
+from app.services.security_audit import purge_expired_security_audit_events
 from app.services.user_lifecycle import (
     UserLifecycleRejected,
     issue_account_recovery,
@@ -539,6 +540,8 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                     recovery_token_deleted = purge_account_recovery_tokens(db)
                     session_deleted = purge_expired_sessions(db)
                     webauthn_challenge_deleted = purge_expired_webauthn_challenges(db)
+                    security_audit_deleted = purge_expired_security_audit_events(db)
+                    db.commit()
                 last_security_cleanup = monotonic_now
                 if rate_limit_deleted:
                     logger.info(
@@ -557,6 +560,8 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
                         "account_recovery_token_cleanup deleted=%s",
                         recovery_token_deleted,
                     )
+                if security_audit_deleted:
+                    logger.info("security_audit_cleanup deleted=%s", security_audit_deleted)
         except Exception:
             logger.exception("yazio_scheduler_cycle_failed")
             if args.once:

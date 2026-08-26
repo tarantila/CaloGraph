@@ -10,7 +10,13 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
-import DateFilter from '../components/DateFilter.vue'
+import {
+  analyticsPresetMatchesRange,
+  inferDesktopPreset,
+  parseAnalyticsCompactPreset,
+  type AnalyticsCompactPreset,
+} from '../analytics-period'
+import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
@@ -28,10 +34,22 @@ const end = ref(String(route.query.end ?? today))
 const source = ref(String(route.query.source ?? ''))
 const tracking = ref(String(route.query.tracking ?? ''))
 const weekday = ref(String(route.query.weekday ?? ''))
+const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
+const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
+const period = ref<AnalyticsCompactPreset | undefined>(
+  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
+    ? periodCandidate
+    : undefined,
+)
+const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
 const points = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
+
+function selectPeriod(value: AnalyticsCompactPreset) {
+  period.value = value
+}
 
 function numericValue(value: number | null | undefined) {
   if (value == null) return null
@@ -141,9 +159,19 @@ function ariaSort(column: SortColumn) {
 async function load() {
   error.value = ''
   loading.value = true
-  await router.replace({ query: { start: start.value, end: end.value, source: source.value || undefined, tracking: tracking.value || undefined, weekday: weekday.value || undefined } })
+  await router.replace({
+    query: {
+      start: start.value,
+      end: end.value,
+      period: period.value || undefined,
+      source: source.value || undefined,
+      tracking: tracking.value || undefined,
+      weekday: weekday.value || undefined,
+    },
+  })
   try {
     const params = new URLSearchParams({ start: start.value, end: end.value })
+    if (period.value === 'all') params.set('period', 'all')
     if (source.value) params.set('source', source.value)
     if (tracking.value) params.set('tracking', tracking.value)
     if (weekday.value) params.set('weekday', weekday.value)
@@ -187,9 +215,19 @@ const weekdays = computed(() =>
 </script>
 
 <template>
-  <div class="page-heading">
-    <div><h1>{{ t('daily.title') }}</h1><p>{{ t('daily.description') }}</p></div>
-    <DateFilter v-model:start="start" v-model:end="end" @apply="load" />
+  <div class="page-heading analytics-page-heading">
+    <div class="analytics-page-heading-content">
+      <div><h1>{{ t('daily.title') }}</h1><p>{{ t('daily.description') }}</p></div>
+      <AnalyticsPeriodFilter
+        v-model:start="start"
+        v-model:end="end"
+        :initial-preset="desktopPreset"
+        :compact-presets="compactPresets"
+        :compact-preset="period"
+        @preset="selectPeriod"
+        @apply="load"
+      />
+    </div>
   </div>
   <section class="card filter-panel" :aria-label="t('daily.filterAria')">
     <div class="filters">

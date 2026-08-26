@@ -31,6 +31,11 @@ from app.schemas import (
 from app.security_events import log_security_event, security_reference
 from app.services.import_guard import ImportAlreadyRunning, import_slot
 from app.services.import_service import persist_apple_health_stream, persist_import
+from app.services.portable_import import (
+    PortableImportError,
+    apply_portable_import,
+    validate_portable_import,
+)
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.user_operation_lock import shared_user_operation
 
@@ -460,6 +465,60 @@ def _import_zip(
                 zlib.error,
             ) as exc:
                 raise HTTPException(status_code=422, detail="Ungültige ZIP-Datei") from exc
+
+
+@router.post("/import/calo/preview")
+def preview_calo_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, int | str]:
+    if _upload_size(file) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Sicherung ist zu groß")
+    _rate_limit_file_import(db, request, user)
+    with _user_import_slot(user):
+        try:
+            result = validate_portable_import(file.file)
+            log_security_event(
+                "data.import.previewed",
+                actor_ref=security_reference("user", user.id),
+                details={"received": int(result.get("health_samples", 0))},
+            )
+            return result
+        except PortableImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/import/calo/apply")
+def apply_calo_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> dict[str, int | str]:
+    if _upload_size(file) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Sicherung ist zu groß")
+    _rate_limit_file_import(db, request, user)
+    with shared_user_operation(db, user.id) as active_user, _user_import_slot(active_user):
+        try:
+            result = apply_portable_import(file.file, active_user, db)
+            log_security_event(
+                "data.import.completed",
+                actor_ref=security_reference("user", active_user.id),
+                details={
+                    "received": int(result.get("inserted", 0)),
+                    "skipped": int(result.get("skipped", 0)),
+                },
+            )
+            return result
+        except PortableImportError as exc:
+            log_security_event(
+                "data.import.failed",
+                actor_ref=security_reference("user", active_user.id),
+                reason="invalid_backup",
+            )
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/imports", response_model=list[ImportBatchResponse])

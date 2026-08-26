@@ -4,6 +4,32 @@ CaloGraph binds to `127.0.0.1:8180` by default. The external proxy terminates
 TLS and connects locally to this port. The current application does not use
 WebSockets.
 
+## Development request identity
+
+The development Compose override serves Vite on
+`http://127.0.0.1:8180`. The browser connects to the host port; Docker then
+forwards the request to the frontend container and Vite proxies `/api` to the
+backend. The backend TCP peer is therefore the frontend container, not the
+browser.
+
+Vite cannot recover a Windows/WSL browser address reliably after this NAT
+boundary. It therefore overwrites the development forwarding headers with the
+canonical local address `127.0.0.1`:
+
+```text
+Browser -> 127.0.0.1:8180 -> Vite/frontend container -> backend
+TCP peer at backend: frontend container
+X-Real-IP: 127.0.0.1
+X-Forwarded-For: 127.0.0.1
+X-Forwarded-Proto: http
+request.client.host: 127.0.0.1
+```
+
+This development-only value means local access; it is not a guessed LAN
+address. Direct requests to the backend remain outside the trusted proxy
+allowlist and cannot override the audit IP with a client-supplied forwarding
+header.
+
 ## Canonical public URL
 
 Set the externally reachable origin in `.env`:
@@ -202,8 +228,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
-    # Ordinary JSON and form requests stay small. The Apple Health route below
-    # receives the separately calibrated 512 MiB multipart ceiling.
+    # Ordinary JSON and form requests stay small. The Apple Health and
+    # portable-backup routes below receive the separately calibrated 512 MiB
+    # multipart ceiling.
     client_max_body_size 12m;
 
     access_log /var/log/nginx/calograph-access.log calograph_safe;
@@ -238,6 +265,50 @@ server {
         proxy_send_timeout 3600s;
     }
 
+    # CaloGraph portable backup preview/apply accepts the same bounded large
+    # multipart payload as Apple Health imports.
+    location ^~ /api/v1/import/calo/ {
+        client_max_body_size 512m;
+        client_body_timeout 3600s;
+        proxy_pass http://calograph_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Request-ID $request_id;
+
+        proxy_hide_header Strict-Transport-Security;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Data exports are streamed through every proxy layer. Keep this exact
+    # location before the generic public location so large ZIP responses are
+    # not buffered or cut off by the ordinary page/API defaults.
+    location ~ ^/api/v1/settings/(?:export|csv-export)$ {
+        proxy_pass http://calograph_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Request-ID $request_id;
+
+        proxy_hide_header Strict-Transport-Security;
+        proxy_buffering off;
+        proxy_max_temp_file_size 0;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
     location / {
         proxy_pass http://calograph_frontend;
         proxy_http_version 1.1;
@@ -258,6 +329,11 @@ server {
     }
 }
 ```
+
+Der Datenexport und der CSV-Export sind große, serverseitig gestreamte Downloads.
+Die spezifischen Locations deaktivieren deshalb Response-Buffering und temporäre
+Proxy-Dateien und verwenden einen ausreichend langen Read-Timeout. Die generische
+`location /` bleibt für gewöhnliche Seiten und Responses unverändert.
 
 This example intentionally overwrites `X-Forwarded-For` with `$remote_addr`.
 If a trusted CDN is added, configure its published CIDRs with
@@ -322,8 +398,7 @@ the pseudonymous application events. The following filter matches the JSON
 
 datepattern = ^\{"time":"{DATE}",
 
-failregex = ^"remote_addr":"<HOST>","method":"(?:POST|PUT)","path":"/api/v1/(?:auth/(?:login|passkey/verify|mfa/totp/verify|invitation/exchange)|yazio/connection)","protocol":"HTTP/[0-9.]+","status":(?:401|429),
-
+failregex = ^\{"time":"[^"]+","remote_addr":"<HOST>","method":"(?:POST|PUT)","path":"/api/v1/(?:auth/(?:login|passkey/verify|mfa/totp/verify|invitation/exchange)|yazio/connection)","protocol":"HTTP/[0-9.]+","status":(?:401|429),
 ignoreregex =
 ```
 

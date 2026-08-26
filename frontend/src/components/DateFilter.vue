@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import { isoDateInTimeZone, isoWeekday, shiftIsoDate } from '../date-format'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import DateInput from './DateInput.vue'
 
-const props = defineProps<{ start: string; end: string }>()
+const props = defineProps<{ start: string; end: string; initialPreset?: string }>()
 const emit = defineEmits<{ 'update:start': [value: string]; 'update:end': [value: string]; apply: [] }>()
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
@@ -14,7 +14,12 @@ const startModel = computed({ get: () => props.start, set: (value) => emit('upda
 const endModel = computed({ get: () => props.end, set: (value) => emit('update:end', value) })
 const startInput = ref<InstanceType<typeof DateInput> | null>(null)
 const endInput = ref<InstanceType<typeof DateInput> | null>(null)
-const preset = ref('custom')
+const preset = ref(props.initialPreset ?? 'custom')
+
+watch(
+  () => props.initialPreset,
+  (value) => { preset.value = value ?? 'custom' },
+)
 
 function apply() {
   if (!startInput.value?.reportValidity() || !endInput.value?.reportValidity()) return
@@ -60,6 +65,6 @@ async function applyPreset() {
     </label>
     <label class="field">{{ t('common.from') }} <DateInput ref="startInput" v-model="startModel" /></label>
     <label class="field">{{ t('common.to') }} <DateInput ref="endInput" v-model="endModel" /></label>
-    <button class="button secondary" type="submit">{{ t('common.apply') }}</button>
+    <button class="button secondary compact-action compact-apply" type="submit">{{ t('common.apply') }}</button>
   </form>
 </template>

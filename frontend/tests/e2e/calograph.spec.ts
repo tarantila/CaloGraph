@@ -50,6 +50,7 @@ test('login, idempotent import and dashboard', async ({ page, request }) => {
     await page.locator('select[name="language"]').selectOption('de')
     await page.locator('form:has(select[name="language"]) button[type="submit"]').click()
   }
+  await page.getByRole('link', { name: /^(Übersicht|Overview)$/ }).click()
   await expect(page.getByRole('heading', { name: 'Ernährungsüberblick' })).toBeVisible()
   await page.getByRole('link', { name: 'Wochenbudget', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Wochenbudget', exact: true })).toBeVisible()
@@ -70,15 +71,15 @@ test('administrator manages a complete synthetic account lifecycle', async ({ br
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: /^(Ernährungsüberblick|Overview)$/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /^(Ernährungsüberblick|Nutrition overview|Overview)$/ })).toBeVisible()
   await page.locator('a[href="/konto"]').click()
   await expect(page.locator('select[name="language"]')).toBeVisible()
   await page.locator('select[name="language"]').selectOption('de')
   await page.locator('form:has(select[name="language"]) button[type="submit"]').click()
   await expect(page.getByRole('heading', { name: 'Konto' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Benutzerverwaltung' })).toBeVisible()
-
-  await page.getByRole('button', { name: 'Einladungslink erzeugen' }).click()
+  await page.goto('/admin/invitations')
+  await expect(page.getByRole('heading', { name: 'Einladungen' }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Einladung erstellen' }).click()
   const invitationLink = await page.locator('.invitation-result code').innerText()
 
   const userContext = await browser.newContext()
@@ -121,7 +122,7 @@ test('administrator manages a complete synthetic account lifecycle', async ({ br
   await expect(userPage).toHaveURL(/\/login$/)
   await userContext.close()
 
-  await page.reload()
+  await page.goto('/admin/users')
   let userRow = page.getByRole('row').filter({ hasText: lifecycleUsername })
   await expect(userRow).toContainText('Aktiv')
   await userRow.getByRole('button', { name: 'Deaktivieren' }).click()

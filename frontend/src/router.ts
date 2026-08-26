@@ -38,6 +38,20 @@ const router = createRouter({
       props: { section: 'account' },
     },
     {
+      path: '/admin',
+      component: () => import('./views/AdminLayout.vue'),
+      meta: { admin: true },
+      children: [
+        { path: '', name: 'admin-overview', component: () => import('./views/AdminOverviewView.vue') },
+        { path: 'users', name: 'admin-users', component: () => import('./views/AdminUsersView.vue') },
+        { path: 'invitations', name: 'admin-invitations', component: () => import('./views/AdminInvitationsView.vue') },
+        { path: 'security', name: 'admin-audit', component: () => import('./views/AdminAuditView.vue') },
+        { path: 'system', name: 'admin-system', component: () => import('./views/AdminSystemView.vue') },
+        { path: 'logs', name: 'admin-logs', component: () => import('./views/AdminLogsView.vue') },
+        { path: 'backups', name: 'admin-backups', component: () => import('./views/AdminBackupsView.vue') },
+      ],
+    },
+    {
       path: '/einstellungen',
       redirect: (to) => ({ name: to.hash === '#zielwerte' ? 'targets' : 'account' }),
     },
@@ -54,13 +68,13 @@ router.beforeEach(async (to) => {
     setLocale(PUBLIC_LOCALE)
     return true
   }
-  if (!(await auth.ensureUser(false))) {
+  if (!(await auth.ensureUser(true))) {
     if (generation !== navigationGeneration) return false
     if (auth.sessionRestoreUnavailable) return false
     return { name: 'login', query: { next: to.fullPath } }
   }
   if (generation !== navigationGeneration) return false
-  auth.applyCurrentUserLocale()
+  if (to.meta.admin && !auth.user?.is_admin) return { name: 'overview' }
   if (auth.needsTargetSetup && to.name !== 'setup') {
     return { name: 'setup' }
   }

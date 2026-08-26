@@ -47,25 +47,48 @@ Import events contain only the source type, batch reference, and aggregate
 counters. Failure reasons are fixed identifiers such as `record_limit`,
 `invalid_xml`, or `database_error`.
 
-For a quick local view, ignore non-JSON lines and select security events:
+Ausgewählte Authentifizierungs- und administrative Ereignisse werden zusätzlich
+für die konfigurierte Aufbewahrungsdauer in der Datenbank als
+`security_audit_events` gespeichert. Die persistente Historie enthält keine
+Passwörter, Tokens, MFA-/Passkey-Materialien, Gesundheitswerte oder
+Exportinhalte. Die Standardaufbewahrung beträgt 90 Tage und kann über
+`SECURITY_AUDIT_RETENTION_DAYS` begrenzt angepasst werden.
 
-```bash
-docker compose logs --no-color --no-log-prefix backend yazio-scheduler \
-  | jq -R 'fromjson? | select(.event != null)'
-```
+## Release status lookup
+
+Der Versionsvergleich mit GitHub ist standardmäßig deaktiviert
+(`RELEASE_STATUS_ENABLED=false`). Bei Aktivierung fragt der Admin-Systemstatus
+die öffentliche GitHub-Release-API mit einer kurzen, gecachten Anfrage ab.
+Dabei werden keine Benutzer- oder Gesundheitsdaten übertragen; GitHub sieht
+jedoch die ausgehende Server-IP und den CaloGraph-Versionswert. Bei Fehlern
+bleibt der Status `unknown`.
+
+## Flüchtige App-Logs
+
+Das Admin-Center zeigt unter **App-Logs** einen begrenzten In-Process-Puffer
+technischer Request-Ereignisse. Er umfasst höchstens 500 Einträge und ist nach
+einem Backend-Neustart leer. Er enthält nur Level, Zeitpunkt, Aktion,
+Status, Dauer und Request-ID. Request Bodies, Cookies, Authorization-Header,
+Passwörter, API-Tokens, YAZIO-Zugangsdaten, MFA-Secrets und Gesundheitsdaten
+werden dort nicht gespeichert. App-Logs sind keine persistente Security-Audit-
+Historie und lesen weder Docker-Logs noch Host-Journald.
 
 ## Client addresses and request correlation
 
-Application events deliberately contain only `client_ref`. The public reverse
-proxy access log is the authoritative source for the normalized client address.
-This avoids copying IP addresses into several application logs and lets the
-operator apply a shorter retention period to access logs.
+Security-Audit-Ereignisse speichern die normalisierte Client-IP nur, wenn sie
+an der vertrauenswürdigen Proxy-Grenze korrekt ermittelt wurde. `client_ref`
+bleibt eine getrennte 16-stellige HMAC-Referenz für technische Korrelation.
+Der öffentliche Reverse Proxy überschreibt `X-Real-IP` und
+`X-Forwarded-For`; beliebige Forwarding-Ketten aus dem Internet werden nicht
+übernommen.
 
-The public proxy must generate and overwrite `X-Request-ID`. The bundled Nginx
-accepts only a bounded hexadecimal value, otherwise creates a new ID, and sends
-the resulting value to the backend. Access and application events can therefore
-be joined on `request_id`. Do not accept an Internet client's forwarding chain.
-
+Eine optionale GeoIP-Anreicherung ist standardmäßig deaktiviert:
+`SECURITY_AUDIT_GEOIP_PROVIDER=disabled`. Bei
+`SECURITY_AUDIT_GEOIP_PROVIDER=ipwhois` werden externe öffentliche IP-Adressen
+bei der Anzeige im Admin-Center an ipwho.is übertragen. Ergebnisse werden
+begrenzt im Prozess gecacht; private und lokale Adressen werden nie extern
+aufgelöst. GeoIP-Ausfälle dürfen Login, Audit-Speicherung oder die Admin-Seite
+nicht blockieren.
 Fail2ban should read the public Nginx or HAProxy access log, where the validated
 client address is available, rather than trying to ban an HMAC `client_ref`.
 A concrete filter and jail matching CaloGraph's documented JSON Nginx format

@@ -25,6 +25,7 @@ from app.models import (
     PasskeyCredential,
     RateLimitBucket,
     RawImportPayload,
+    SecurityAuditEvent,
     TrackingOverride,
     TrackingQualitySettings,
     User,
@@ -409,6 +410,26 @@ def test_hard_delete_requires_inactive_target_and_cascades_owned_data(
         "admin.user.deactivated",
         "admin.user.deleted",
     ]
+
+def test_hard_delete_persists_audit_snapshot_without_deleted_target_fk(
+    user: User,
+    db: OrmSession,
+) -> None:
+    user.is_admin = True
+    target = _add_user(db, user, "delete-audit-target")
+
+    deactivate_user(db, user.id, target.id)
+    delete_user(db, user.id, target.id, target.username)
+    event = db.scalar(
+        select(SecurityAuditEvent)
+        .where(SecurityAuditEvent.event == "admin.user.deleted")
+        .order_by(SecurityAuditEvent.occurred_at.desc())
+    )
+
+    assert event is not None
+    assert event.target_user_id is None
+    assert event.target_ref is not None
+    assert event.username_snapshot == security_events.security_reference("user", target.id)
 
 
 def test_lifecycle_api_enforces_admin_self_and_active_target_contracts(

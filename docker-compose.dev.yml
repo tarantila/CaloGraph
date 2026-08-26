@@ -1,18 +1,28 @@
 services:
   backend:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.4.2}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.5.0}
     build:
       target: backend-development
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "${CALOGRAPH_FRONTEND_PROXY_IP:-172.30.0.10}/32"
     volumes:
       - ./backend:/app
     read_only: false
 
   yazio-scheduler:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.4.2}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.5.0}
 
   frontend:
-    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.4.2}
+    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.5.0}
     build:
       target: frontend-development
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

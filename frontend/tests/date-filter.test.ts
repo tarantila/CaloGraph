@@ -14,14 +14,21 @@ describe('DateFilter', () => {
     vi.useRealTimers()
   })
 
+  it('uses the shared compact apply control in the filter row', async () => {
+    const wrapper = mount(DateFilter, { props: { start: '2024-01-01', end: '2024-01-31' } })
+
+    const apply = wrapper.get('button.compact-apply')
+    expect(apply.classes()).toEqual(expect.arrayContaining(['button', 'secondary', 'compact-action']))
+  })
+
   it('emits reproducible date values', async () => {
     const wrapper = mount(DateFilter, { props: { start: '2024-01-01', end: '2024-01-31' } })
     await wrapper.find('input[type="text"]').setValue('02.01.2024')
     await wrapper.get('form').trigger('submit')
     expect(wrapper.emitted('update:start')?.[0]).toEqual(['2024-01-02'])
     expect(wrapper.emitted('apply')).toHaveLength(1)
-  })
 
+  })
   it('does not apply the previous range when manual input is invalid', async () => {
     const wrapper = mount(DateFilter, { props: { start: '2024-01-01', end: '2024-01-31' } })
     await wrapper.find('input[type="text"]').setValue('31.02.2024')

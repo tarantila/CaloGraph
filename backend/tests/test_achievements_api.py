@@ -17,6 +17,9 @@ HIDDEN_KEYS = {
     "hidden_time_machine",
     "hidden_break_day",
     "hidden_full_house",
+    "more_headroom",
+    "the_big_picture",
+    "deja_vu",
 }
 PASSWORD = "correct-horse-battery-staple"
 
@@ -46,7 +49,7 @@ def _request(client: TestClient, csrf: str) -> Request:
     )
 
 
-def test_locked_hidden_achievements_are_opaque_in_api(
+def test_locked_hidden_achievements_are_opaque_placeholders_in_api(
     client: TestClient,
     user: User,
 ) -> None:
@@ -59,12 +62,24 @@ def test_locked_hidden_achievements_are_opaque_in_api(
     payload = response.json()
     hidden = [item for item in payload["achievements"] if item["hidden"]]
     assert len(hidden) == len(HIDDEN_KEYS)
+    new_hidden = [item for item in hidden if item["sort_order"] in {240, 450, 460}]
+    assert len(new_hidden) == 3
+    assert len(hidden) >= 3
+    assert all(item["placeholder"] is True for item in hidden)
     assert all(item["unlocked"] is False for item in hidden)
+    assert all(item["category"] == "hidden" for item in hidden)
     assert all("key" not in item for item in hidden)
     assert all("kind" not in item for item in hidden)
+    assert all("icon" not in item for item in hidden)
     assert all("progress" not in item for item in hidden)
     assert all("target" not in item for item in hidden)
     assert not any(key in response.text for key in HIDDEN_KEYS)
+    assert "More Headroom" not in response.text
+    assert "Da geht noch was." not in response.text
+    assert "Manchmal lohnt sich der Blick aufs Ganze." not in response.text
+    assert "Moment mal" not in response.text
+    assert "The Big Picture" not in response.text
+    assert "Déjà Vu" not in response.text
 
 
 def test_unlocked_hidden_achievement_keeps_real_key(
@@ -90,7 +105,10 @@ def test_unlocked_hidden_achievement_keeps_real_key(
         item for item in response.json()["achievements"] if item.get("key") == "hidden_full_house"
     )
     assert item["hidden"] is True
+    assert item["placeholder"] is False
     assert item["unlocked"] is True
+    assert item["key"] == "hidden_full_house"
+    assert item["icon"] == "trophy"
     assert item["unlocked_at"].startswith("2026-08-16T10:00:00")
 
 

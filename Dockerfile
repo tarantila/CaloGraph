@@ -7,6 +7,7 @@
 FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
 FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4 AS backend-base
+RUN apk upgrade --no-cache
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -44,6 +45,7 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4 AS backend-runtime
+RUN apk upgrade --no-cache
 
 ARG APP_VERSION=development
 ARG APP_REVISION=unknown
@@ -149,6 +151,7 @@ LABEL org.opencontainers.image.title="CaloGraph Frontend" \
       org.opencontainers.image.revision="${APP_REVISION}"
 
 USER root
+RUN apk upgrade --no-cache
 
 RUN rm -f \
     /etc/nginx/conf.d/default.conf \

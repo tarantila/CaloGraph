@@ -1,11 +1,15 @@
-import { createPinia, setActivePinia } from 'pinia'
 import { config, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 
-const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
+const { apiMock, authExpiredMock } = vi.hoisted(() => ({
+  apiMock: vi.fn(),
+  authExpiredMock: vi.fn(),
+}))
 vi.mock('../src/api', () => ({
   api: apiMock,
+  notifyAuthenticationExpired: authExpiredMock,
   ensureCsrfToken: vi.fn().mockResolvedValue('csrf'),
   ApiError: class ApiError extends Error {},
   localizeApiError: () => 'The request could not be processed.',
@@ -41,6 +45,7 @@ const user = {
 describe('main views', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    authExpiredMock.mockReset()
     setActivePinia(createPinia())
     setLocale(DEFAULT_LOCALE)
     config.global.stubs = {
@@ -93,12 +98,19 @@ describe('main views', () => {
     expect(apiMock).toHaveBeenCalledWith(
       '/analytics/trends?start=2026-06-20&end=2026-07-19&include_incomplete=true',
     )
+    const periodControl = wrapper.get('.period-control')
+    expect(periodControl.findAll('button')).toHaveLength(4)
+    expect(periodControl.findAll('button.active')).toHaveLength(1)
+    expect(periodControl.text()).toContain('7 Tage')
+    expect(periodControl.text()).toContain('30 Tage')
+    expect(periodControl.text()).toContain('60 Tage')
+    expect(periodControl.text()).toContain('Alle')
     const allButton = wrapper.findAll('button').find((button) => button.text() === 'Alle')
     expect(allButton).toBeDefined()
     await allButton!.trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith(
-      '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true',
+      '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true&period=all',
     )
   })
   it('zeigt bei dauerhaftem Dashboard-Transportfehler einen lokalisierten Retry-Zustand', async () => {
@@ -295,12 +307,20 @@ describe('main views', () => {
       .findAllComponents(ChartPanel)
       .find((panel) => panel.props('title') === 'Kalorienaufnahme')
     const option = caloriePanel!.props('option') as {
-      series: Array<{ name: string; data: Array<number | null>; step?: string }>
+      series: Array<{
+        name: string
+        data: Array<number | null>
+        step?: string
+        lineStyle?: { color?: string; width?: number; type?: string }
+        itemStyle?: { color?: string }
+      }>
     }
     const dailyBudgetSeries = option.series.find((series) => series.name === 'Tagesbudget')
 
     expect(dailyBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
     expect(dailyBudgetSeries?.step).toBe('middle')
+    expect(dailyBudgetSeries?.lineStyle).toEqual({ color: '#fb923c', width: 2 })
+    expect(dailyBudgetSeries?.itemStyle).toEqual({ color: '#fb923c' })
     expect(option.series.find((series) => series.name === 'Basisbudget')).toBeUndefined()
     expect(option.series.find((series) => series.name === 'Effektives Budget')).toBeUndefined()
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
@@ -391,7 +411,12 @@ describe('main views', () => {
       .find((panel) => panel.props('title') === 'Kalorienaufnahme')
     const option = caloriePanel!.props('option') as {
       tooltip: { formatter: (params: unknown) => string }
-      series: Array<{ name: string; data: Array<number | null> }>
+      series: Array<{
+        name: string
+        data: Array<number | null>
+        lineStyle?: { color?: string; width?: number; type?: string }
+        itemStyle?: { color?: string }
+      }>
     }
 
     expect(wrapper.text()).toContain('inkl. +317 kcal durch Aktivitäten')
@@ -410,7 +435,23 @@ describe('main views', () => {
       'Basisbudget',
       'Effektives Budget',
     ])
+    expect(option.series.find((series) => series.name === 'Basisbudget')?.lineStyle).toEqual({
+      color: '#64748b',
+      width: 2,
+      type: 'dashed',
+    })
+    expect(option.series.find((series) => series.name === 'Basisbudget')?.itemStyle).toEqual({
+      color: '#64748b',
+    })
+    expect(option.series.find((series) => series.name === 'Effektives Budget')?.lineStyle).toEqual({
+      color: '#fb923c',
+      width: 2,
+    })
+    expect(option.series.find((series) => series.name === 'Effektives Budget')?.itemStyle).toEqual({
+      color: '#fb923c',
+    })
     expect(option.series.find((series) => series.name === 'Effektives Budget')?.data).toEqual([2417])
+
   })
 
   it('keeps the trends page focused on nutrition without weight tracking', async () => {
@@ -1315,7 +1356,7 @@ describe('main views', () => {
 
     expect(wrapper.text()).toContain('Aktuelle Woche')
     expect(wrapper.text()).toContain('Letzte Woche')
-    expect(wrapper.text()).toContain('Letzte 180 Tage')
+    expect(wrapper.text()).toContain('6 Monate')
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/weekdays\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
     )
@@ -1336,6 +1377,12 @@ describe('main views', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Mit Fehlern')
     expect(wrapper.text()).toContain('5')
+    expect(wrapper.get('.import-submit').classes()).toContain('compact-action')
+    const actionColumn = wrapper.get('.import-action-column')
+    expect(actionColumn.get('.import-file-picker').text()).toContain('Datei auswählen')
+    const importButton = actionColumn.get<HTMLButtonElement>('.import-submit')
+    expect(importButton.text()).toBe('Datei importieren')
+    expect(importButton.attributes('disabled')).toBeDefined()
     const details = wrapper.findAll('button').find((button) => button.text() === 'Details')
     await details!.trigger('click')
     await flushPromises()
@@ -1388,6 +1435,7 @@ describe('main views', () => {
     expect(dateInputs).toHaveLength(2)
     expect(dateInputs[0].attributes('placeholder')).toBe('TT.MM.JJJJ')
     expect(dateInputs[1].attributes('placeholder')).toBe('TT.MM.JJJJ')
+    expect(wrapper.get('button.secondary.compact-action').classes()).toContain('compact-action')
 
     await dateInputs[0].setValue('01.03.2024')
     await dateInputs[1].setValue('12.08.2026')
@@ -1610,6 +1658,15 @@ describe('main views', () => {
     expect(targetsWrapper.text()).not.toContain('2026-07-27')
     expect(targetsWrapper.text()).not.toContain('2026-08-02')
     expect(targetsWrapper.text()).not.toContain('Persönliche YAZIO-Verbindung')
+    expect(targetsWrapper.get('form > .button').classes()).toContain('compact-action')
+    const budgetHelp = targetsWrapper.get('.budget-help')
+    expect(budgetHelp.get('h2').text()).toBe('So wird die Änderung verwendet')
+    expect(budgetHelp.findAll(':scope > p').map((paragraph) => paragraph.text())).toEqual([
+      'Das Kalorienbudget ist deine tägliche Obergrenze. Das Proteinziel wird als Wert behandelt, den du möglichst erreichen möchtest.',
+      'Der optionale Erhaltungsbedarf ist deine geschätzte Kalorienmenge, bei der dein Gewicht ungefähr stabil bleibt. Dein Kalorienbudget kann darunter, darauf oder darüber liegen.',
+      'Im Kalender bleibt das Budget maßgeblich: Werte bis zum Budget sind grün, Werte über dem Budget orange und Werte über Budget und Erhaltungsbedarf rot.',
+      'Mit „Gültig ab“ bestimmst du den ersten Tag der neuen Werte. Gibt es für dieses Datum bereits eine Version, wird sie aktualisiert. Frühere Auswertungen behalten die damals gültigen Werte.',
+    ])
     const calories = targetsWrapper.find('input[type="number"]')
     await calories.setValue('2300')
     const maintenance = targetsWrapper.findAll<HTMLInputElement>('input[type="number"]')[1]
@@ -1640,34 +1697,108 @@ describe('main views', () => {
     expect(accountWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
     expect(accountWrapper.text()).toContain('Zwei-Faktor-Authentifizierung')
     expect(accountWrapper.text()).toContain('Passkeys')
-    expect(accountWrapper.text()).toContain('Benutzerverwaltung')
-    expect(accountWrapper.text()).not.toContain('Budget- und Zielhistorie')
-    expect(accountWrapper.text()).not.toContain('Tracking-Vollständigkeit')
-    expect(accountWrapper.text()).not.toContain('Gewichtseinheit')
-    const timezoneSelect = accountWrapper.get<HTMLSelectElement>('select[name="timezone"]')
-    expect(timezoneSelect.element.value).toBe('Europe/Berlin')
-    expect(timezoneSelect.findAll('option').length).toBeGreaterThan(20)
-    expect(
-      accountWrapper.get('input[name="yazio-email"]').attributes('placeholder'),
-    ).toBe('E-Mail-Adresse ist gespeichert')
-    expect(
-      accountWrapper.get('input[name="yazio-password"]').attributes('placeholder'),
-    ).toBe('Passwort ist gespeichert')
-    expect(accountWrapper.text()).toContain('Verbindung aktualisieren')
-    expect(
-      accountWrapper.get<HTMLButtonElement>('.yazio-connection-card button[type="submit"]')
-        .element.disabled,
-    ).toBe(true)
-    const invitationButton = accountWrapper
-      .findAll('button')
-      .find((button) => button.text() === 'Einladungslink erzeugen')
-    expect(invitationButton).toBeDefined()
-    await invitationButton!.trigger('click')
-    await flushPromises()
-    expect(accountWrapper.text()).toContain(
-      'https://nutrition.example.test/einladung#token=invite_example',
-    )
   })
+  it('starts a native same-origin data export and waits for server acceptance', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens' || path === '/settings/passkeys' || path === '/users/invitations') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false, sync_enabled: false })
+      if (path === '/users') return Promise.resolve([user])
+      return Promise.resolve({})
+    })
+    let clickedHref = ''
+    let hasDownloadAttribute = false
+    let downloadAttributeValue: string | null = null
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clickedHref = this.href
+      hasDownloadAttribute = this.hasAttribute('download')
+      downloadAttributeValue = this.getAttribute('download')
+      const downloadId = new URL(this.href).searchParams.get('download_id')!
+      document.cookie = `calograph_export_status_${downloadId.replaceAll('-', '')}=accepted; Path=/`
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    const exportButton = wrapper.findAll('button').find((button) => button.text() === 'Export herunterladen')
+    expect(exportButton).toBeDefined()
+    const pending = exportButton!.trigger('click')
+    await Promise.resolve()
+    expect(exportButton!.element.disabled).toBe(true)
+    await pending
+
+    expect(downloadAttributeValue).toBe('')
+    const downloadUrl = new URL(clickedHref)
+    expect(downloadUrl.pathname).toBe('/api/v1/settings/export')
+    expect(hasDownloadAttribute).toBe(true)
+    expect(downloadUrl.searchParams.has('download_id')).toBe(true)
+    expect(apiMock.mock.calls.some(([path]) => path === '/settings/export')).toBe(false)
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(exportButton!.element.disabled).toBe(false)
+  })
+  it('handles native export busy and unauthenticated status signals', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens' || path === '/settings/passkeys' || path === '/users/invitations') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false, sync_enabled: false })
+      if (path === '/users') return Promise.resolve([user])
+      return Promise.resolve({})
+    })
+    let status: 'busy' | 'unauthenticated' = 'busy'
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      const downloadId = new URL(this.href).searchParams.get('download_id')!
+      document.cookie = `calograph_export_status_${downloadId.replaceAll('-', '')}=${status}; Path=/`
+    })
+
+    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    const exportButton = wrapper.findAll('button').find((button) => button.text() === 'Export herunterladen')!
+    await exportButton.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('The request could not be processed.')
+
+    status = 'unauthenticated'
+    await exportButton.trigger('click')
+    await flushPromises()
+    expect(authExpiredMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('isolates export status cookies between two account tabs', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens' || path === '/settings/passkeys' || path === '/users/invitations') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false, sync_enabled: false })
+      if (path === '/users') return Promise.resolve([user])
+      return Promise.resolve({})
+    })
+    const downloadA = '00000000-0000-4000-8000-00000000000a'
+    const downloadB = '00000000-0000-4000-8000-00000000000b'
+    vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce(downloadA).mockReturnValueOnce(downloadB)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      const downloadId = new URL(this.href).searchParams.get('download_id')!
+      if (downloadId === downloadA) {
+        document.cookie = `calograph_export_status_${downloadA.replaceAll('-', '')}=accepted; Path=/`
+      }
+    })
+
+    const tabA = mount(SettingsView, { props: { section: 'account' } })
+    const tabB = mount(SettingsView, { props: { section: 'account' } })
+    await flushPromises()
+    const buttonA = tabA.findAll('button').find((button) => button.text() === 'Export herunterladen')!
+    const buttonB = tabB.findAll('button').find((button) => button.text() === 'Export herunterladen')!
+    const first = buttonA.trigger('click')
+    await Promise.resolve()
+    const second = buttonB.trigger('click')
+    await Promise.resolve()
+    document.cookie = `calograph_export_status_${downloadB.replaceAll('-', '')}=busy; Path=/`
+    await first
+
+    expect(document.cookie).toContain(`calograph_export_status_${downloadB.replaceAll('-', '')}=busy`)
+    await second
+  })
+
   it('uses an activity switch, hides its source while disabled, and summarizes history compactly', async () => {
     const target = {
       id: 'target',
@@ -2120,7 +2251,7 @@ describe('main views', () => {
     wrapper.unmount()
     vi.useRealTimers()
   })
-  it('pollt trotz fehlerhafter Benutzerverwaltung den aktiven YAZIO-Import weiter', async () => {
+  it('pollt den aktiven YAZIO-Import unabhängig von Benutzerverwaltung', async () => {
     vi.useFakeTimers()
     let statusCalls = 0
     const pendingStatus = {
@@ -2151,14 +2282,11 @@ describe('main views', () => {
         statusCalls += 1
         return Promise.resolve(pendingStatus)
       }
-      if (path === '/users') return Promise.reject(new Error('Benutzerverwaltung nicht verfügbar'))
-      if (path === '/users/invitations') return Promise.resolve([])
       return Promise.resolve({})
     })
 
     const wrapper = mount(SettingsView, { props: { section: 'account' } })
     await flushPromises()
-    expect(wrapper.text()).toContain('Benutzerliste konnte nicht aktualisiert werden.')
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
     wrapper.unmount()

@@ -4,10 +4,9 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { PhTrash } from '@phosphor-icons/vue'
 import { useRouter } from 'vue-router'
 
-import { api, ApiError, localizeApiError } from '../api'
+import { api, ApiError, localizeApiError, notifyAuthenticationExpired } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DateInput from '../components/DateInput.vue'
-import UserManagement from '../components/UserManagement.vue'
 import {
   formatGermanDate,
   formatGermanDateTime,
@@ -30,7 +29,6 @@ import {
 } from '../webauthn'
 
 interface Token { id: string; label: string; token_prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
-interface Invitation { id: string; created_at: string; expires_at: string; used_at: string | null; revoked_at: string | null }
 interface MfaStatus { totp_enabled: boolean; totp_setup_pending: boolean; recovery_codes_remaining: number }
 interface TotpSetup { secret: string; provisioning_uri: string; qr_svg_data_url: string }
 interface Passkey {
@@ -98,6 +96,8 @@ const tokens = ref<Token[]>([])
 const tokenLabel = ref('iPhone')
 const newToken = ref('')
 const message = ref('')
+const exportingData = ref(false)
+const dataExportError = ref('')
 const auth = useAuthStore()
 watch(
   () => auth.user?.language,
@@ -118,10 +118,11 @@ const passwordCurrent = ref('')
 const passwordNew = ref('')
 const passwordConfirmation = ref('')
 const passwordChangeError = ref('')
+const portableFile = ref<File | null>(null)
+const portablePreview = ref<Record<string, number | string> | null>(null)
+const portableImportError = ref('')
+const portableImporting = ref(false)
 const changingPassword = ref(false)
-const users = ref<User[]>([])
-const invitations = ref<Invitation[]>([])
-const invitationUrl = ref('')
 const initialSetupSaved = ref(false)
 const error = ref('')
 const loading = ref(true)
@@ -229,27 +230,6 @@ async function loadTargets() {
   target.valid_from = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 }
 
-async function loadAdmin(generation = loadGeneration) {
-  try {
-    const [usersResult, invitationsResult] = await Promise.all([
-      api<User[]>('/users'),
-      api<Invitation[]>('/users/invitations'),
-    ])
-    if (generation !== loadGeneration) return
-    users.value = usersResult
-    invitations.value = invitationsResult
-  } catch (cause) {
-    if (generation !== loadGeneration) return
-    error.value =
-      cause instanceof ApiError
-        ? localizeApiError(cause, 'settingsUi.adminLoadFailed')
-        : t('settingsUi.adminLoadFailed')
-  }
-}
-
-async function refreshAdmin() {
-  await loadAdmin(loadGeneration)
-}
 
 async function loadAccount(generation = loadGeneration) {
   const profileGeneration = auth.currentProfileUpdateGeneration()
@@ -276,7 +256,6 @@ async function loadAccount(generation = loadGeneration) {
   mfa.value = mfaResult
   passkeys.value = passkeyResult
   scheduleYazioPolling()
-  if (user.is_admin) await loadAdmin(generation)
 }
 
 function stopYazioPolling() {
@@ -455,6 +434,113 @@ async function saveTarget() {
   }
 }
 async function createToken() { const result = await api<{ token: string }>('/settings/tokens', { method: 'POST', body: JSON.stringify({ label: tokenLabel.value }) }); newToken.value = result.token; await load() }
+const exportStatusCookiePrefix = 'calograph_export_status_'
+type ExportStatus = 'accepted' | 'busy' | 'unauthenticated'
+
+function exportStatusCookieName(downloadId: string): string {
+  return `${exportStatusCookiePrefix}${downloadId.replaceAll('-', '')}`
+}
+
+function clearExportStatusCookie(downloadId: string) {
+  document.cookie = `${exportStatusCookieName(downloadId)}=; Max-Age=0; Path=/`
+}
+
+function readExportStatus(downloadId: string): ExportStatus | null {
+  const cookieName = exportStatusCookieName(downloadId)
+  const value = document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith(`${cookieName}=`))
+    ?.slice(cookieName.length + 1)
+  return value === 'accepted' || value === 'busy' || value === 'unauthenticated'
+    ? value
+    : null
+}
+
+async function waitForExportStatus(downloadId: string): Promise<ExportStatus | null> {
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const status = readExportStatus(downloadId)
+    if (status) return status
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+  }
+  return null
+}
+
+async function exportUserData() {
+  if (exportingData.value) return
+  exportingData.value = true
+  const downloadId = crypto.randomUUID()
+  clearExportStatusCookie(downloadId)
+  const link = document.createElement('a')
+  link.href = `/api/v1/settings/export?download_id=${encodeURIComponent(downloadId)}`
+  link.setAttribute('download', '')
+  document.body.append(link)
+  link.click()
+  link.remove()
+  try {
+    const status = await waitForExportStatus(downloadId)
+    if (status === 'busy') {
+      dataExportError.value = localizeApiError(new ApiError(
+        'Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.',
+        429,
+        undefined,
+        '30',
+        'urn:calograph:problem:data-export-busy',
+      ))
+    } else if (status === 'unauthenticated') {
+      notifyAuthenticationExpired()
+    } else if (status === null) {
+      dataExportError.value = t('settingsUi.dataExportFailed')
+    }
+  } finally {
+    clearExportStatusCookie(downloadId)
+    exportingData.value = false
+  }
+}
+
+function selectPortableFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  portableFile.value = input.files?.[0] ?? null
+  portablePreview.value = null
+  portableImportError.value = ''
+}
+
+async function previewPortableImport() {
+  if (!portableFile.value || portableImporting.value) return
+  portableImporting.value = true
+  portableImportError.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', portableFile.value)
+    portablePreview.value = await api<Record<string, number | string>>('/import/calo/preview', {
+      method: 'POST',
+      body: form,
+    })
+  } catch (cause) {
+    portableImportError.value = cause instanceof ApiError ? localizeApiError(cause) : t('settingsUi.portableImportFailed')
+  } finally {
+    portableImporting.value = false
+  }
+}
+
+async function applyPortableImport() {
+  if (!portableFile.value || portableImporting.value || !portablePreview.value) return
+  portableImporting.value = true
+  portableImportError.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', portableFile.value)
+    await api('/import/calo/apply', { method: 'POST', body: form })
+    await loadAccount()
+    message.value = t('settingsUi.portableImportCompleted')
+    portablePreview.value = null
+    portableFile.value = null
+  } catch (cause) {
+    portableImportError.value = cause instanceof ApiError ? localizeApiError(cause) : t('settingsUi.portableImportFailed')
+  } finally {
+    portableImporting.value = false
+  }
+}
 async function revokeToken(id: string) { await api(`/settings/tokens/${id}`, { method: 'DELETE' }); await load() }
 async function saveYazio() {
   error.value = ''
@@ -495,22 +581,6 @@ async function saveYazio() {
   } finally {
     savingYazio.value = false
   }
-}
-async function createInvitation() {
-  const result = await api<{ token: string; invitation_url: string }>('/users/invitations', {
-    method: 'POST',
-    body: JSON.stringify({ expires_in_days: 7 }),
-  })
-  invitationUrl.value = result.invitation_url
-  await load()
-}
-async function copyInvitation() {
-  await navigator.clipboard.writeText(invitationUrl.value)
-  message.value = t('settingsUi.invitationCopied')
-}
-async function revokeInvitation(id: string) {
-  await api(`/users/invitations/${id}`, { method: 'DELETE' })
-  await load()
 }
 
 async function beginTotpSetup() {
@@ -744,7 +814,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <label class="field">{{ t('settingsUi.carbsTarget') }}<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <label class="field">{{ t('settingsUi.fatTarget') }}<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             <label class="field">{{ t('settingsUi.fiberTarget') }}<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
-            <button class="button" type="submit" :disabled="savingTarget">
+            <button class="button compact-action" type="submit" :disabled="savingTarget">
               {{ savingTarget ? t('settingsUi.saving') : t('settingsUi.saveTargets') }}
             </button>
           </form>
@@ -809,7 +879,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
     <template v-else>
       <section class="card form-card">
         <h2>{{ t('settings.profile') }}</h2>
-        <form class="form-grid" @submit.prevent="saveProfile">
+        <form class="form-grid profile-form" @submit.prevent="saveProfile">
           <label class="field">
             {{ t('settings.language') }}
             <select v-model="profile.language" name="language" required>
@@ -838,8 +908,48 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <input v-model.number="profile.raw_payload_retention_days" type="number" min="0" max="3650" />
             <small>{{ t('settings.retentionHelp') }}</small>
           </label>
-          <button class="button" type="submit">{{ t('settings.saveProfile') }}</button>
+          <button class="button compact-action profile-submit" type="submit">{{ t('settings.saveProfile') }}</button>
         </form>
+      </section>
+      <section class="card form-card account-data-card" style="margin-top: 1rem">
+        <h2>{{ t('accountData.title') }}</h2>
+        <div class="account-data-section">
+          <h3>{{ t('settingsUi.dataExportTitle') }}</h3>
+          <p>{{ t('settingsUi.dataExportDescription') }}</p>
+          <p class="table-secondary">{{ t('settingsUi.dataExportPrivacy') }}</p>
+          <div v-if="dataExportError" class="error" role="alert">{{ dataExportError }}</div>
+          <button class="button account-action-button compact-action" type="button" :disabled="exportingData" @click="exportUserData">
+            {{ exportingData ? t('settingsUi.dataExportRunning') : t('settingsUi.dataExportAction') }}
+          </button>
+        </div>
+        <div class="account-data-section">
+          <h3>{{ t('settingsUi.csvExportTitle') }}</h3>
+          <p>{{ t('settingsUi.csvExportDescription') }}</p>
+          <a class="button account-action-button compact-action" href="/api/v1/settings/csv-export" download="">{{ t('settingsUi.csvExportAction') }}</a>
+        </div>
+        <div class="account-data-section">
+          <h3>{{ t('settingsUi.portableImportTitle') }}</h3>
+          <p>{{ t('settingsUi.portableImportDescription') }}</p>
+          <div class="portable-import-actions">
+            <label class="account-file-picker" for="portable-file-input">
+              <span class="button secondary compact-action">{{ t('imports.chooseFile') }}</span>
+              <span
+                v-if="portableFile"
+                class="selected-file-name"
+                :title="portableFile.name"
+              >{{ portableFile.name }}</span>
+              <input id="portable-file-input" type="file" accept=".zip,application/zip" @change="selectPortableFile" />
+            </label>
+            <button class="button account-action-button compact-action backup-validate-button" type="button" :disabled="!portableFile || portableImporting" @click="previewPortableImport">
+              {{ portableImporting ? t('settingsUi.portableImportRunning') : t('settingsUi.portableImportPreview') }}
+            </button>
+          </div>
+          <div v-if="portableImportError" class="error" role="alert">{{ portableImportError }}</div>
+          <div v-if="portablePreview" class="setup-notice" role="status">
+            {{ t('settingsUi.portableImportFound', { samples: portablePreview.health_samples, targets: portablePreview.targets, overrides: portablePreview.tracking_overrides }) }}
+            <button class="button account-action-button compact-action" type="button" :disabled="portableImporting" @click="applyPortableImport">{{ t('settingsUi.portableImportApply') }}</button>
+          </div>
+        </div>
       </section>
       <section class="card form-card password-change-card" style="margin-top: 1rem">
         <h2>{{ t('settingsUi.passwordChangeTitle') }}</h2>
@@ -859,7 +969,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <input v-model="passwordConfirmation" type="password" autocomplete="new-password" minlength="15" required />
           </label>
           <div v-if="passwordChangeError" class="error" role="alert">{{ passwordChangeError }}</div>
-          <button class="button" type="submit" :disabled="changingPassword">
+          <button class="button compact-action password-submit" type="submit" :disabled="changingPassword">
             {{ changingPassword ? t('auth.passwordChanging') : t('auth.changePassword') }}
           </button>
         </form>
@@ -876,7 +986,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
               {{ t('settingsUi.password') }}
               <input v-model="mfaCurrentPassword" type="password" autocomplete="current-password" required />
             </label>
-            <button class="button" type="submit" :disabled="managingMfa">
+            <button class="button compact-action" type="submit" :disabled="managingMfa">
               {{ managingMfa ? t('settingsUi.prepareSetup') : t('settingsUi.setupAuthenticator') }}
             </button>
           </form>
@@ -896,7 +1006,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
                 {{ t('settingsUi.code') }}
                 <input v-model="mfaCode" inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="6" required />
               </label>
-              <button class="button" type="submit" :disabled="managingMfa">
+              <button class="button compact-action" type="submit" :disabled="managingMfa">
                 {{ managingMfa ? t('settingsUi.codeChecking') : t('settingsUi.enableTotp') }}
               </button>
             </form>
@@ -916,7 +1026,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
               <input v-model="mfaCode" autocomplete="one-time-code" maxlength="64" required />
             </label>
             <div class="filters">
-              <button class="button secondary" type="button" :disabled="managingMfa" @click="regenerateRecoveryCodes">
+              <button class="button secondary compact-action" type="button" :disabled="managingMfa" @click="regenerateRecoveryCodes">
                 {{ t('settingsUi.regenerate') }}
               </button>
               <button class="text-button danger" type="button" :disabled="managingMfa" @click="disableTotp">
@@ -929,7 +1039,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
         <div v-if="recoveryCodes.length" class="recovery-codes" role="status">
           <strong>{{ t('settingsUi.storeCodes') }}</strong>
           <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
-          <button class="button secondary" type="button" @click="copyRecoveryCodes">{{ t('settingsUi.copyAll') }}</button>
+          <button class="button secondary compact-action" type="button" @click="copyRecoveryCodes">{{ t('settingsUi.copyAll') }}</button>
         </div>
       </section>
 
@@ -993,7 +1103,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
             />
           </label>
           <button
-            class="button"
+            class="button compact-action"
             type="submit"
             :disabled="!passkeySupported || managingPasskey"
           >
@@ -1062,7 +1172,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
             <p class="table-secondary">{{ t('settingsUi.historyHelp') }}</p>
           </template>
           <button
-            class="button"
+            class="button compact-action"
             type="submit"
             :disabled="savingYazio || !yazioCredentialsComplete || !yazioAvailable"
           >
@@ -1071,37 +1181,17 @@ function passkeyDeviceLabel(passkey: Passkey) {
         </form>
       </section>
 
-      <section class="card form-card" style="margin-top: 1rem">
+      <section class="card form-card token-card" style="margin-top: 1rem">
         <h2>{{ t('settingsUi.tokensTitle') }}</h2>
         <p>{{ t('settingsUi.tokensDescription') }}</p>
-        <div class="filters"><label class="field">{{ t('settingsUi.tokenLabel') }}<input v-model="tokenLabel" /></label><button class="button" type="button" @click="createToken">{{ t('settingsUi.createToken') }}</button></div>
-        <div v-if="newToken" class="card" style="padding: 1rem; margin-top: 1rem"><strong>{{ t('settingsUi.copyNow') }}</strong><code style="display: block; overflow-wrap: anywhere; margin-top: .5rem">{{ newToken }}</code></div>
-        <div class="table-scroll"><table><thead><tr><th>{{ t('settingsUi.tokenLabel') }}</th><th>{{ t('settingsUi.prefix') }}</th><th>{{ t('settingsUi.lastUsedLabel') }}</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? formatGermanDateTime(token.last_used_at) : t('settingsUi.never') }}</td><td><button v-if="!token.revoked_at" class="text-button" type="button" @click="revokeToken(token.id)">{{ t('settingsUi.revoke') }}</button><span v-else>{{ t('settingsUi.revoked') }}</span></td></tr></tbody></table></div>
+        <div class="token-create-row">
+          <label class="field">{{ t('settingsUi.tokenLabel') }}<input v-model="tokenLabel" /></label>
+          <button class="button compact-action token-create-button" type="button" @click="createToken">{{ t('settingsUi.createToken') }}</button>
+        </div>
+        <div v-if="newToken" class="card token-result"><strong>{{ t('settingsUi.copyNow') }}</strong><code>{{ newToken }}</code></div>
+        <div class="table-scroll token-table"><table><thead><tr><th>{{ t('settingsUi.tokenLabel') }}</th><th>{{ t('settingsUi.prefix') }}</th><th>{{ t('settingsUi.lastUsedLabel') }}</th><th></th></tr></thead><tbody><tr v-for="token in tokens" :key="token.id"><td>{{ token.label }}</td><td><code>{{ token.token_prefix }}…</code></td><td>{{ token.last_used_at ? formatGermanDateTime(token.last_used_at) : t('settingsUi.never') }}</td><td><button v-if="!token.revoked_at" class="text-button danger" type="button" @click="revokeToken(token.id)">{{ t('settingsUi.revoke') }}</button><span v-else>{{ t('settingsUi.revoked') }}</span></td></tr></tbody></table></div>
       </section>
 
-      <section v-if="auth.user?.is_admin" class="card form-card" style="margin-top: 1rem">
-        <h2>{{ t('settingsUi.adminTitle') }}</h2>
-        <p>{{ t('settingsUi.adminDescription') }}</p>
-        <button class="button" type="button" @click="createInvitation">{{ t('settingsUi.createInvitation') }}</button>
-        <div v-if="invitationUrl" class="invitation-result">
-          <strong>{{ t('settingsUi.shareLink') }}</strong>
-          <code>{{ invitationUrl }}</code>
-          <button class="button secondary" type="button" @click="copyInvitation">{{ t('common.copy') }}</button>
-        </div>
-        <UserManagement
-          :users="users"
-          :current-user-id="auth.user.id"
-          @refresh="refreshAdmin"
-          @message="message = $event"
-          @error="error = $event"
-        />
-        <div v-if="invitations.length" class="table-scroll" style="margin-top: 1rem">
-          <table>
-            <thead><tr><th>{{ t('settingsUi.adminCreated') }}</th><th>{{ t('settingsUi.validUntil') }}</th><th>{{ t('settingsUi.invitationStatus') }}</th><th></th></tr></thead>
-            <tbody><tr v-for="item in invitations" :key="item.id"><td>{{ formatGermanDateTime(item.created_at) }}</td><td>{{ formatGermanDateTime(item.expires_at) }}</td><td>{{ item.used_at ? t('settingsUi.used') : item.revoked_at ? t('settingsUi.revoked') : t('settingsUi.open') }}</td><td><button v-if="!item.used_at && !item.revoked_at" class="text-button" type="button" @click="revokeInvitation(item.id)">{{ t('settingsUi.revoke') }}</button></td></tr></tbody>
-          </table>
-        </div>
-      </section>
     </template>
   </template>
 </template>

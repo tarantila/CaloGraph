@@ -460,7 +460,9 @@ class AchievementResponse(BaseModel):
     key: str | None = None
     category: str
     kind: str | None = None
+    icon: str | None = None
     hidden: bool
+    placeholder: bool
     unlocked: bool
     unlocked_at: datetime | None
     progress: int | None

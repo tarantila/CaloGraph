@@ -58,6 +58,35 @@ describe('first-run target routing', () => {
     expect(useAuthStore().needsTargetSetup).toBe(false)
   })
 
+  it('applies the authenticated profile locale before rendering protected routes', async () => {
+    setLocale('en')
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+
+    await router.push('/konto')
+
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
+  })
+
+  it('restores English for an English profile before the protected route renders', async () => {
+    const englishUser = { ...user, language: 'en' }
+    setLocale('de')
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : englishUser
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+
+    await router.push('/trends')
+
+    expect(i18n.global.locale.value).toBe('en')
+    expect(document.documentElement.lang).toBe('en')
+  })
+
   it('keeps users with targets out of the setup route', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
@@ -149,6 +178,23 @@ describe('first-run target routing', () => {
     expect(auth.user?.language).toBe('en')
     expect(i18n.global.locale.value).toBe('en')
     expect(document.documentElement.lang).toBe('en')
+  })
+  it('blocks non-administrators from the backups route', async () => {
+    const auth = useAuthStore()
+    auth.user = { ...user, is_admin: false }
+    auth.needsTargetSetup = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await router.push('/admin/backups')
+
+    expect(router.currentRoute.value.name).toBe('overview')
   })
   it('leitet bei Fresh-Load-Transportfehler nicht zum Login um', async () => {
     const auth = useAuthStore()

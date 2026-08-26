@@ -7,7 +7,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://backend:8000',
+      '/api': {
+        target: 'http://backend:8000',
+        changeOrigin: false,
+        headers: {
+          'X-Real-IP': '127.0.0.1',
+          'X-Forwarded-For': '127.0.0.1',
+          'X-Forwarded-Proto': 'http',
+          'X-Forwarded-Host': '127.0.0.1:8180',
+        },
+      },
     },
   },
   test: {

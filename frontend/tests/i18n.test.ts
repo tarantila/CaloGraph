@@ -24,6 +24,33 @@ describe('interface language', () => {
     expect(parseGermanDate('07/03/2026')).toBe('2026-03-07')
   })
 
+  it('provides data export controls in German and English', () => {
+    expect(i18n.global.t('settingsUi.dataExportTitle')).toBe('Datenexport')
+    expect(i18n.global.t('settingsUi.dataExportAction')).toBe('Export herunterladen')
+
+    setLocale('en')
+    expect(i18n.global.t('settingsUi.dataExportTitle')).toBe('Data export')
+    expect(i18n.global.t('settingsUi.dataExportAction')).toBe('Download export')
+  })
+
+  it('localizes the compact custom period label', () => {
+    expect(i18n.global.t('dateFilter.individual')).toBe('Individuell')
+    setLocale('en')
+    expect(i18n.global.t('dateFilter.individual')).toBe('Custom')
+  })
+
+  it('localizes the admin center, status pages, and portable data areas', () => {
+    expect(i18n.global.t('adminNav.title')).toBe('Admin-Center')
+    expect(i18n.global.t('adminNav.overviewTitle')).toBe('Übersicht')
+    expect(i18n.global.t('adminNav.systemTitle')).toBe('Systemstatus')
+    expect(i18n.global.t('settingsUi.portableImportTitle')).toBe('CaloGraph-Datensicherung importieren')
+    setLocale('en')
+    expect(i18n.global.t('adminNav.title')).toBe('Admin Center')
+    expect(i18n.global.t('adminNav.overviewTitle')).toBe('Overview')
+    expect(i18n.global.t('adminNav.systemTitle')).toBe('System Status')
+    expect(i18n.global.t('settingsUi.portableImportTitle')).toBe('Import CaloGraph backup')
+  })
+
   it('falls back to German for unsupported locale values', () => {
     expect(setLocale('fr')).toBe('de')
     expect(i18n.global.t('navigation.overview')).toBe('Übersicht')
@@ -43,6 +70,22 @@ describe('interface language', () => {
     expect(localizeApiError(error)).toBe('Administrator reauthentication failed.')
     setLocale('de')
     expect(localizeApiError(new ApiError('Session expired', 401, undefined, undefined, 'urn:calograph:problem:session-expired'))).toBe('Sitzung ist abgelaufen.')
+    setLocale('en')
+    expect(localizeApiError(new ApiError(
+      'Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.',
+      429,
+      undefined,
+      '30',
+      'urn:calograph:problem:data-export-busy',
+    ))).toBe('Another data export is already running. Please try again shortly.')
+    setLocale('de')
+    expect(localizeApiError(new ApiError(
+      'Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.',
+      429,
+      undefined,
+      '30',
+      'urn:calograph:problem:data-export-busy',
+    ))).toBe('Ein anderer Datenexport läuft bereits. Bitte versuche es in Kürze erneut.')
     setLocale('en')
     const policyError = new ApiError(
       'Specific password policy detail',

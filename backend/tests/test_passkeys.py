@@ -12,6 +12,7 @@ from app.main import app
 from app.models import (
     PasskeyCredential,
     User,
+    UserAchievement,
     UserSession,
     WebAuthnChallenge,
     WebAuthnUserHandle,
@@ -125,7 +126,7 @@ def test_passkey_registration_is_bound_to_user_session_and_one_time(
     registered = _register_passkey(client, monkeypatch)
     assert registered["label"] == "Windows Hello"
     assert registered["device_type"] == "single_device"
-
+    assert db.query(UserAchievement).filter_by(achievement_key="password_what_password").count() == 1
     passkey = db.scalar(select(PasskeyCredential))
     identity = db.get(WebAuthnUserHandle, user.id)
     challenge = db.scalar(select(WebAuthnChallenge))

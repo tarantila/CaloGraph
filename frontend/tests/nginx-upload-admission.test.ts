@@ -21,3 +21,23 @@ describe('Apple-Health-Upload-Admission', () => {
     expect(config).toContain('proxy_set_header X-Forwarded-For $remote_addr;')
   })
 })
+
+describe('Portable import admission', () => {
+  it('uses the large-upload ceiling and connection limits', () => {
+    const importLocation = config.match(/location \/api\/v1\/import\/calo\/ \{([\s\S]*?)\n    \}/)?.[1] ?? ''
+    expect(importLocation).toContain('include /tmp/calograph-upload-limit.conf;')
+    expect(importLocation).toContain('limit_conn large_uploads_per_client 1;')
+    expect(importLocation).toContain('limit_conn large_uploads_global 2;')
+    expect(importLocation).toContain('proxy_request_buffering off;')
+  })
+})
+
+describe('Export streaming proxy', () => {
+  it('disables Nginx response buffering for the API path', () => {
+    const apiLocation = config.match(/location \/api\/ \{([\s\S]*?)\n    \}/)?.[1] ?? ''
+    expect(apiLocation).toContain('proxy_buffering off;')
+    expect(apiLocation).toContain('proxy_read_timeout 300s;')
+    expect(apiLocation).toContain('proxy_max_temp_file_size 0;')
+    expect(apiLocation).toContain('proxy_request_buffering off;')
+  })
+})

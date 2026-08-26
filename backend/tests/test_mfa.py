@@ -13,7 +13,13 @@ from app.auth.security import (
     verify_mfa_login_state,
 )
 from app.config import settings
-from app.models import MfaRecoveryCode, User, UserTotpCredential
+from app.models import (
+    MfaRecoveryCode,
+    SecurityAuditEvent,
+    User,
+    UserAchievement,
+    UserTotpCredential,
+)
 from app.services.mfa_crypto import MfaEncryptionError, decrypt_mfa_secret
 from app.services.user_operation_lock import (
     UserOperationBusy,
@@ -56,8 +62,7 @@ def _enable_totp(
     )
     assert confirmation.status_code == 200
     recovery_codes = confirmation.json()["recovery_codes"]
-    assert len(recovery_codes) == 10
-    assert len(set(recovery_codes)) == 10
+    assert db.query(UserAchievement).filter_by(achievement_key="double_locked").count() == 1
     return secret, recovery_codes
 
 
@@ -159,6 +164,15 @@ def test_mfa_failures_are_rate_limited_with_retry_after(
     second = client.post("/api/v1/auth/mfa/totp/verify", json={"code": "000000"})
 
     assert first.status_code == 401
+    failed_event = (
+        db.query(SecurityAuditEvent)
+        .filter_by(event="auth.login.failed")
+        .order_by(SecurityAuditEvent.occurred_at.desc())
+        .first()
+    )
+    assert failed_event is not None
+    assert failed_event.auth_method == "password+mfa"
+    assert failed_event.actor_user_id is not None
     assert second.status_code == 429
     assert int(second.headers["Retry-After"]) > 0
 

@@ -4,7 +4,7 @@ import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/compon
 import { init, use, type ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 
 const props = withDefaults(
@@ -18,13 +18,33 @@ use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, Canv
 let chart: ECharts | null = null
 let observer: ResizeObserver | null = null
 
-onMounted(() => {
-  if (!element.value) return
+function disposeChart() {
+  observer?.disconnect()
+  observer = null
+  chart?.dispose()
+  chart = null
+}
+
+function mountChart() {
+  if (props.empty || chart || !element.value) return
   chart = init(element.value)
   chart.setOption(props.option)
   observer = new ResizeObserver(() => chart?.resize())
   observer.observe(element.value)
-})
+}
+
+onMounted(mountChart)
+
+watch(
+  () => props.empty,
+  (empty) => {
+    if (empty) {
+      disposeChart()
+      return
+    }
+    void nextTick(mountChart)
+  },
+)
 
 watch(
   () => props.option,
@@ -32,10 +52,7 @@ watch(
   { deep: true },
 )
 
-onBeforeUnmount(() => {
-  observer?.disconnect()
-  chart?.dispose()
-})
+onBeforeUnmount(disposeChart)
 </script>
 
 <template>
