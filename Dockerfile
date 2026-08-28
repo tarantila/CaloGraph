@@ -84,6 +84,23 @@ COPY --chmod=444 THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
 COPY --from=backend-base /third-party-licenses/backend /licenses/backend
 COPY --chmod=444 THIRD_PARTY_LICENSES/yazio-exporter-MIT.txt /licenses/yazio-exporter-MIT.txt
 COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
+RUN test -d /usr/local/lib/python3.14/site-packages/pip \
+    && test -d /usr/local/lib/python3.14/ensurepip \
+    && test -L /usr/local/bin/pip \
+    && test -x /usr/local/bin/pip3 \
+    && test -x /usr/local/bin/pip3.14 \
+    && rm -rf \
+        /usr/local/lib/python3.14/site-packages/pip \
+        /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.14/ensurepip \
+        /usr/local/bin/pip \
+        /usr/local/bin/pip3 \
+        /usr/local/bin/pip3.14 \
+    && test ! -e /usr/local/lib/python3.14/site-packages/pip \
+    && test ! -e /usr/local/lib/python3.14/ensurepip \
+    && test ! -e /usr/local/bin/pip \
+    && test ! -e /usr/local/bin/pip3 \
+    && test ! -e /usr/local/bin/pip3.14
 RUN chmod 0555 /licenses
 
 USER calograph
