@@ -29,6 +29,7 @@ from app.models import (
     TrackingOverride,
     TrackingQualitySettings,
     User,
+    UserProfile,
     UserSession,
     UserTotpCredential,
 )
@@ -39,6 +40,7 @@ from app.problem_types import (
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
     TARGET_VERSION_NOT_FOUND,
+    VALIDATION_ERROR,
     ProblemHTTPException,
 )
 from app.schemas import (
@@ -50,6 +52,8 @@ from app.schemas import (
     PasskeyRegistrationCompleteRequest,
     PasskeyRegistrationOptionsRequest,
     PasskeyResponse,
+    PersonalProfilePayload,
+    PersonalProfileResponse,
     ProfileUpdate,
     RecoveryCodesResponse,
     TargetInput,
@@ -309,6 +313,43 @@ def export_user_csv(
         raise
 
 
+@router.get("/personal-profile", response_model=PersonalProfileResponse)
+def personal_profile(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> PersonalProfileResponse | UserProfile:
+    stored_profile = db.get(UserProfile, user.id)
+    if stored_profile is None:
+        return PersonalProfileResponse()
+    return stored_profile
+
+
+@router.put("/personal-profile", response_model=PersonalProfileResponse)
+def update_personal_profile(
+    payload: PersonalProfilePayload,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> UserProfile:
+    if (
+        payload.birth_date is not None
+        and payload.birth_date > datetime.now(ZoneInfo(user.timezone)).date()
+    ):
+        raise ProblemHTTPException(
+            status_code=422,
+            detail="Geburtsdatum darf nicht in der Zukunft liegen",
+            problem_type=VALIDATION_ERROR,
+        )
+    stored_profile = db.get(UserProfile, user.id)
+    if stored_profile is None:
+        stored_profile = UserProfile(user_id=user.id)
+        db.add(stored_profile)
+    for field, value in payload.model_dump().items():
+        setattr(stored_profile, field, value)
+    db.commit()
+    db.refresh(stored_profile)
+    return stored_profile
+
+
 @router.get("/profile", response_model=UserResponse)
 def profile(user: User = Depends(current_user)) -> User:
     return user
@@ -334,6 +375,8 @@ def update_profile(
         user.language = payload.language
     if payload.week_starts_on is not None:
         user.week_starts_on = payload.week_starts_on
+    if payload.preferred_weight_unit is not None:
+        user.preferred_weight_unit = payload.preferred_weight_unit
     if payload.raw_payload_retention_days is not None:
         user.raw_payload_retention_days = payload.raw_payload_retention_days
     db.commit()

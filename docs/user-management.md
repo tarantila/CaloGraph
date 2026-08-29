@@ -209,6 +209,19 @@ the credentials again resumes the personal schedule.
 Because direct YAZIO retrieval uses an undocumented interface, Apple Health
 remains the independent fallback path.
 
+## Personal profile
+
+Authenticated users can read and fully replace their own optional personal
+profile through `GET` and `PUT /api/v1/settings/personal-profile`. A read does
+not create a database row. Every omitted field in a `PUT` is cleared; trimmed,
+empty text is stored as `null`. The profile supports display name, the defined
+gender and diet values, non-future birth dates, height from more than 0 through
+300 centimetres, voluntary health notes, and intolerances. No administrator or
+user-ID variant exists, and general user responses do not include these fields.
+
+The existing `/api/v1/settings/profile` preference endpoint exposes and updates
+the separate preferred weight unit with the values `kg` and `lb`.
+
 ## Interface language
 
 The public authentication pages are always English. This includes sign-in,

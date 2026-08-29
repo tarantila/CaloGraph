@@ -62,6 +62,42 @@ class User(Base):
     )
 
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "gender IS NULL OR gender IN "
+            "('female', 'male', 'non_binary', 'other', 'prefer_not_to_say')",
+            name="ck_user_profiles_gender",
+        ),
+        CheckConstraint(
+            "height_cm IS NULL OR (height_cm > 0 AND height_cm <= 300)",
+            name="ck_user_profiles_height_cm",
+        ),
+        CheckConstraint(
+            "diet_type IS NULL OR diet_type IN "
+            "('no_special_diet', 'vegetarian', 'vegan', 'pescetarian', 'other', "
+            "'prefer_not_to_say')",
+            name="ck_user_profiles_diet_type",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    display_name: Mapped[str | None] = mapped_column(String(120))
+    gender: Mapped[str | None] = mapped_column(String(32))
+    birth_date: Mapped[date | None] = mapped_column(Date)
+    height_cm: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    diet_type: Mapped[str | None] = mapped_column(String(32))
+    health_notes: Mapped[str | None] = mapped_column(String(4000))
+    intolerances: Mapped[str | None] = mapped_column(String(2000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class YazioConnection(Base):
     __tablename__ = "yazio_connections"
     __table_args__ = (

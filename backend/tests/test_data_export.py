@@ -26,6 +26,7 @@ from app.models import (
     TrackingOverride,
     User,
     UserAchievement,
+    UserProfile,
     UserSession,
     UserTotpCredential,
     YazioConnection,
@@ -279,6 +280,21 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
                 status="complete",
                 note="Manuell bestätigt",
             ),
+            UserProfile(
+                user_id=user.id,
+                display_name="Ada Export",
+                gender="non_binary",
+                birth_date=date(1990, 4, 5),
+                height_cm=Decimal("172.25"),
+                diet_type="vegan",
+                health_notes="PRIVATE-owned-health-note",
+                intolerances="PRIVATE-owned-intolerance",
+            ),
+            UserProfile(
+                user_id=other.id,
+                display_name="PRIVATE-other-profile",
+                health_notes="PRIVATE-other-health-note",
+            ),
             UserAchievement(user_id=user.id, achievement_key="first_import"),
             YazioConnection(
                 user_id=user.id,
@@ -372,9 +388,16 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
         ) + "\n" + "\n".join(health_lines)
 
     assert manifest["format"] == "calograph-data-export"
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
     assert manifest["application"] == "CaloGraph"
     assert profile["username"] == "admin"
+    assert profile["display_name"] == "Ada Export"
+    assert profile["gender"] == "non_binary"
+    assert profile["birth_date"] == "1990-04-05"
+    assert profile["height_cm"] == "172.25"
+    assert profile["diet_type"] == "vegan"
+    assert profile["health_notes"] == "PRIVATE-owned-health-note"
+    assert profile["intolerances"] == "PRIVATE-owned-intolerance"
     assert settings_data["tracking_quality"] is not None
     assert any(item["calories_kcal"] == "2200.000" for item in targets_data)
     assert overrides_data[0]["local_date"] == "2026-08-02"
@@ -390,6 +413,8 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
     assert "other-user" not in contents
     assert "other-sample" not in contents
     assert "9999.123000" not in contents
+    assert "PRIVATE-other-profile" not in contents
+    assert "PRIVATE-other-health-note" not in contents
     for secret in (
         "PASSWORD_HASH_SECRET_MUST_NOT_EXPORT",
         "YAZIO_EMAIL_SECRET_MUST_NOT_EXPORT",
