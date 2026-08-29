@@ -30,6 +30,7 @@ from app.models import (
     TrackingQualitySettings,
     User,
     UserInvitation,
+    UserProfile,
     UserSession,
     UserTotpCredential,
     WebAuthnChallenge,
@@ -150,6 +151,11 @@ def _seed_owned_data(
                 valid_from=date(2026, 8, 1),
                 calories_kcal=Decimal("2000"),
                 protein_g=Decimal("120"),
+            ),
+            UserProfile(
+                user_id=target.id,
+                display_name="Delete target",
+                health_notes="Owned profile data",
             ),
             TrackingQualitySettings(user_id=target.id),
             TrackingOverride(
@@ -393,6 +399,7 @@ def test_hard_delete_requires_inactive_target_and_cascades_owned_data(
         UserInvitation,
         UserSession,
         UserTotpCredential,
+        UserProfile,
         WebAuthnChallenge,
         WebAuthnUserHandle,
         YazioConnection,

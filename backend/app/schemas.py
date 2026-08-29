@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProblemDetail(BaseModel):
@@ -51,6 +51,7 @@ class UserResponse(BaseModel):
     language: str
     timezone: str
     week_starts_on: int
+    preferred_weight_unit: Literal["kg", "lb"]
     raw_payload_retention_days: int
     is_admin: bool
     is_active: bool
@@ -392,10 +393,50 @@ class TargetResponse(TargetInput):
     valid_to: date | None
 
 
+Gender = Literal["female", "male", "non_binary", "other", "prefer_not_to_say"]
+DietType = Literal[
+    "no_special_diet",
+    "vegetarian",
+    "vegan",
+    "pescetarian",
+    "other",
+    "prefer_not_to_say",
+]
+
+
+class PersonalProfilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, max_length=120)
+    gender: Gender | None = None
+    birth_date: date | None = None
+    height_cm: Decimal | None = Field(
+        default=None, gt=0, le=300, max_digits=5, decimal_places=2
+    )
+    diet_type: DietType | None = None
+    health_notes: str | None = Field(default=None, max_length=4000)
+    intolerances: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("display_name", "health_notes", "intolerances", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+
+class PersonalProfileResponse(PersonalProfilePayload):
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ProfileUpdate(BaseModel):
     language: Literal["de", "en"] | None = None
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
     week_starts_on: int | None = Field(default=None, ge=0, le=6)
+    preferred_weight_unit: Literal["kg", "lb"] | None = None
     raw_payload_retention_days: int | None = Field(default=None, ge=0, le=3650)
 
 

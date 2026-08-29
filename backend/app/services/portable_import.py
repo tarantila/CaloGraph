@@ -27,15 +27,17 @@ from app.models import (
     TrackingQualitySettings,
     User,
     UserAchievement,
+    UserProfile,
 )
 from app.services.achievements import unlock_achievement_keys
 from app.services.data_export import (
     EXPORT_FORMAT,
-    EXPORT_FORMAT_VERSION,
+    SUPPORTED_EXPORT_FORMAT_VERSIONS,
     ExportAchievement,
     ExportHealthSample,
     ExportManifest,
     ExportProfile,
+    ExportProfileV1,
     ExportSettings,
     ExportTarget,
     ExportTrackingOverride,
@@ -148,9 +150,17 @@ def _validated_records(
 ]:
     try:
         manifest = ExportManifest.model_validate(_read_json(archive, "manifest.json"))
-        if manifest.format != EXPORT_FORMAT or manifest.format_version != EXPORT_FORMAT_VERSION:
+        if (
+            manifest.format != EXPORT_FORMAT
+            or manifest.format_version not in SUPPORTED_EXPORT_FORMAT_VERSIONS
+        ):
             raise PortableImportError("Unbekanntes CaloGraph-Exportformat oder Version")
-        profile = ExportProfile.model_validate(_read_json(archive, "profile.json"))
+        profile_payload = _read_json(archive, "profile.json")
+        if manifest.format_version == 1:
+            profile_v1 = ExportProfileV1.model_validate(profile_payload)
+            profile = ExportProfile(**profile_v1.model_dump(), display_name=None)
+        else:
+            profile = ExportProfile.model_validate(profile_payload)
         manifest.generated_at = _utc_datetime(manifest.generated_at)
         profile.created_at = _utc_datetime(profile.created_at)
         if (
@@ -161,9 +171,14 @@ def _validated_records(
         ):
             raise PortableImportError("Profilwerte in Sicherung sind ungültig")
         try:
-            ZoneInfo(profile.timezone)
+            profile_timezone = ZoneInfo(profile.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise PortableImportError("Zeitzone in Sicherung ist ungültig") from exc
+        if (
+            profile.birth_date is not None
+            and profile.birth_date > datetime.now(profile_timezone).date()
+        ):
+            raise PortableImportError("Geburtsdatum in Sicherung ist ungültig")
         portable_settings = ExportSettings.model_validate(_read_json(archive, "settings.json"))
         targets_raw = _read_json(archive, "targets.json")
         overrides_raw = _read_json(archive, "tracking_overrides.json")
@@ -291,7 +306,7 @@ def apply_portable_import(file: BinaryIO, user: User, db: Session) -> dict[str, 
     payload_hash = _archive_payload_hash(file)
     archive = _open_archive(file)
     try:
-        _, profile, portable_settings, targets, overrides, achievements, samples = (
+        manifest, profile, portable_settings, targets, overrides, achievements, samples = (
             _validated_records(archive)
         )
         previous_success = db.scalar(
@@ -465,6 +480,23 @@ def apply_portable_import(file: BinaryIO, user: User, db: Session) -> dict[str, 
             else:
                 for quality_key, quality_value in quality_values.items():
                     setattr(current_quality, quality_key, quality_value)
+        if manifest.format_version == 2:
+            personal_values = {
+                "display_name": profile.display_name,
+                "gender": profile.gender,
+                "birth_date": profile.birth_date,
+                "height_cm": profile.height_cm,
+                "diet_type": profile.diet_type,
+                "health_notes": profile.health_notes,
+                "intolerances": profile.intolerances,
+            }
+            personal_profile = db.get(UserProfile, user.id)
+            if personal_profile is None:
+                if any(value is not None for value in personal_values.values()):
+                    db.add(UserProfile(user_id=user.id, **personal_values))
+            else:
+                for field, value in personal_values.items():
+                    setattr(personal_profile, field, value)
         user.language = profile.language
         user.timezone = profile.timezone
         user.week_starts_on = profile.week_starts_on

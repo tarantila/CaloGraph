@@ -1,8 +1,13 @@
 # Data model
 
-- `users`: account, language, IANA time zone, first weekday, administrator
-  flag, and lifecycle state. `is_active=true` requires `deactivated_at=NULL`;
-  an inactive account requires a UTC deactivation timestamp.
+- `users`: account, language, IANA time zone, first weekday, preferred weight
+  unit, administrator flag, and lifecycle state. `is_active=true` requires
+  `deactivated_at=NULL`; an inactive account requires a UTC deactivation
+  timestamp.
+- `user_profiles`: optional one-to-one personal information for a user:
+  display name, gender, birth date, height, diet, voluntary health notes, and
+  intolerances. All content fields are nullable; the user foreign key is the
+  primary key.
 - `user_sessions`: hashed session and CSRF keys, expiration, and revocation.
 - `user_totp_credentials`: encrypted TOTP seed, activation time, and the last
   accepted time step used to reject replay.
@@ -41,6 +46,7 @@ ID. Decimal values avoid rounding errors. Timestamps are stored in UTC;
 `local_date` is calculated during import using the user's time zone.
 
 Deleting an inactive user relies on database foreign-key cascades for all
-user-owned authentication, recovery, import, nutrition, target, tracking, and
-YAZIO rows. Related rate-limit buckets use HMAC keys rather than foreign keys
-and are removed explicitly by the lifecycle service in the same transaction.
+user-owned profile, authentication, recovery, import, nutrition, target,
+tracking, and YAZIO rows. Related rate-limit buckets use HMAC keys rather than
+foreign keys and are removed explicitly by the lifecycle service in the same
+transaction.

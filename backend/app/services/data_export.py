@@ -14,7 +14,7 @@ from typing import IO, Literal, cast
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,13 +27,15 @@ from app.models import (
     TrackingQualitySettings,
     User,
     UserAchievement,
+    UserProfile,
     YazioConnection,
 )
 from app.security_events import log_security_event, security_reference
 from app.services.achievements import unlock_achievement_keys
 
 EXPORT_FORMAT = "calograph-data-export"
-EXPORT_FORMAT_VERSION = 1
+EXPORT_FORMAT_VERSION = 2
+SUPPORTED_EXPORT_FORMAT_VERSIONS = frozenset({1, 2})
 EXPORT_STATUS_COOKIE = "calograph_export_status"
 _EXPORT_CHUNK_BYTES = 64 * 1024
 _EXPORT_QUEUE_CHUNKS = 16
@@ -56,21 +58,55 @@ def export_status_cookie(
 
 class ExportManifest(BaseModel):
     format: Literal["calograph-data-export"]
-    format_version: Literal[1]
+    format_version: Literal[1, 2]
     generated_at: datetime
     application: Literal["CaloGraph"]
     application_version: str
     files: list[str]
 
 
-class ExportProfile(BaseModel):
+class ExportProfileV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str
     language: Literal["de", "en"]
     timezone: str
     week_starts_on: int
-    preferred_weight_unit: str
+    preferred_weight_unit: Literal["kg", "lb"]
     raw_payload_retention_days: int
     created_at: datetime
+
+
+class ExportProfile(ExportProfileV1):
+    display_name: str | None = Field(default=None, max_length=120)
+    gender: Literal["female", "male", "non_binary", "other", "prefer_not_to_say"] | None = None
+    birth_date: date | None = None
+    height_cm: Decimal | None = Field(
+        default=None, gt=0, le=300, max_digits=5, decimal_places=2
+    )
+    diet_type: (
+        Literal[
+            "no_special_diet",
+            "vegetarian",
+            "vegan",
+            "pescetarian",
+            "other",
+            "prefer_not_to_say",
+        ]
+        | None
+    ) = None
+    health_notes: str | None = Field(default=None, max_length=4000)
+    intolerances: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("display_name", "health_notes", "intolerances", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
 
 
 class ExportTrackingQuality(BaseModel):
@@ -510,6 +546,7 @@ def _write_export(zip_file: ZipFile, db: Session, user: User) -> None:
             files=files,
         ),
     )
+    personal_profile = db.get(UserProfile, user.id)
     _write_json(
         zip_file,
         "profile.json",
@@ -521,6 +558,13 @@ def _write_export(zip_file: ZipFile, db: Session, user: User) -> None:
             preferred_weight_unit=user.preferred_weight_unit,
             raw_payload_retention_days=user.raw_payload_retention_days,
             created_at=user.created_at,
+            display_name=personal_profile.display_name if personal_profile else None,
+            gender=personal_profile.gender if personal_profile else None,
+            birth_date=personal_profile.birth_date if personal_profile else None,
+            height_cm=personal_profile.height_cm if personal_profile else None,
+            diet_type=personal_profile.diet_type if personal_profile else None,
+            health_notes=personal_profile.health_notes if personal_profile else None,
+            intolerances=personal_profile.intolerances if personal_profile else None,
         ),
     )
     quality = db.get(TrackingQualitySettings, user.id)

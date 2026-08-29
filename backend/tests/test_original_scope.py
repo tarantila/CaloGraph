@@ -6,17 +6,54 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zipfile import ZipFile
 
+import pytest
+
 from app.auth.security import hash_password
 from app.config import settings
-from app.models import HealthSample, ImportBatch, SecurityAuditEvent, User, UserAchievement
+from app.models import (
+    HealthSample,
+    ImportBatch,
+    SecurityAuditEvent,
+    User,
+    UserAchievement,
+    UserProfile,
+)
 from app.security_events import security_reference
 from app.services.security_audit import security_audit_metrics_24h
+
+PERSONAL_PROFILE_FIELDS = (
+    "display_name",
+    "gender",
+    "birth_date",
+    "height_cm",
+    "diet_type",
+    "health_notes",
+    "intolerances",
+)
 
 
 def _login(client, username: str, password: str = "correct-horse-battery-staple") -> str:
     response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
     return response.json()["csrf_token"]
+
+
+def _as_portable_v1_archive(export_content: bytes) -> bytes:
+    v1_archive = io.BytesIO()
+    with ZipFile(io.BytesIO(export_content)) as source, ZipFile(v1_archive, "w") as target:
+        for name in source.namelist():
+            content = source.read(name)
+            if name == "manifest.json":
+                manifest = json.loads(content)
+                manifest["format_version"] = 1
+                content = json.dumps(manifest).encode()
+            elif name == "profile.json":
+                profile_data = json.loads(content)
+                for field in PERSONAL_PROFILE_FIELDS:
+                    profile_data.pop(field)
+                content = json.dumps(profile_data).encode()
+            target.writestr(name, content)
+    return v1_archive.getvalue()
 
 
 def test_admin_endpoints_are_protected_and_do_not_expose_user_secrets(client, user, db) -> None:
@@ -162,12 +199,33 @@ def test_security_audit_retention_removes_old_events(client, user, db) -> None:
 def test_portable_backup_preview_apply_is_idempotent(client, user, db) -> None:
     user.language = "en"
     user.timezone = "UTC"
+    db.add(
+        UserProfile(
+            user_id=user.id,
+            display_name="Portable Ada",
+            gender="female",
+            birth_date=date(1990, 4, 5),
+            height_cm=Decimal("171.25"),
+            diet_type="pescetarian",
+            health_notes="Portable health note",
+            intolerances="Portable intolerance",
+        )
+    )
     db.commit()
     csrf = _login(client, "admin")
     export = client.get("/api/v1/settings/export")
     assert export.status_code == 200
     user.language = "de"
     user.timezone = "Europe/Berlin"
+    profile = db.get(UserProfile, user.id)
+    assert profile is not None
+    profile.display_name = "Changed after export"
+    profile.gender = None
+    profile.birth_date = None
+    profile.height_cm = None
+    profile.diet_type = None
+    profile.health_notes = None
+    profile.intolerances = None
     db.commit()
     preview = client.post(
         "/api/v1/import/calo/preview",
@@ -196,6 +254,171 @@ def test_portable_backup_preview_apply_is_idempotent(client, user, db) -> None:
     db.refresh(user)
     assert user.language == "en"
     assert user.timezone == "UTC"
+    restored_profile = db.get(UserProfile, user.id)
+    assert restored_profile is not None
+    assert restored_profile.display_name == "Portable Ada"
+    assert restored_profile.gender == "female"
+    assert restored_profile.birth_date == date(1990, 4, 5)
+    assert restored_profile.height_cm == Decimal("171.25")
+    assert restored_profile.diet_type == "pescetarian"
+    assert restored_profile.health_notes == "Portable health note"
+    assert restored_profile.intolerances == "Portable intolerance"
+
+
+def test_portable_backup_v1_preserves_existing_personal_profile(
+    client,
+    user,
+    db,
+) -> None:
+    expected_profile = {
+        "display_name": "Existing profile",
+        "gender": "other",
+        "birth_date": date(1980, 1, 2),
+        "height_cm": Decimal("180.00"),
+        "diet_type": "vegetarian",
+        "health_notes": "Existing note",
+        "intolerances": "Existing intolerance",
+    }
+    db.add(UserProfile(user_id=user.id, **expected_profile))
+    db.commit()
+    csrf = _login(client, "admin")
+    export = client.get("/api/v1/settings/export")
+    assert export.status_code == 200
+    v1_archive = _as_portable_v1_archive(export.content)
+
+    preview = client.post(
+        "/api/v1/import/calo/preview",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("v1-backup.zip", v1_archive, "application/zip")},
+    )
+    apply = client.post(
+        "/api/v1/import/calo/apply",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("v1-backup.zip", v1_archive, "application/zip")},
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["status"] == "valid"
+    assert apply.status_code == 200
+    assert apply.json()["status"] == "completed"
+    db.expire_all()
+    stored = db.get(UserProfile, user.id)
+    assert stored is not None
+    for field, expected in expected_profile.items():
+        assert getattr(stored, field) == expected
+
+
+def test_portable_backup_v1_does_not_create_personal_profile(
+    client,
+    user,
+    db,
+) -> None:
+    assert db.get(UserProfile, user.id) is None
+    csrf = _login(client, "admin")
+    export = client.get("/api/v1/settings/export")
+    assert export.status_code == 200
+    v1_archive = _as_portable_v1_archive(export.content)
+
+    apply = client.post(
+        "/api/v1/import/calo/apply",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("v1-backup.zip", v1_archive, "application/zip")},
+    )
+
+    assert apply.status_code == 200
+    assert apply.json()["status"] == "completed"
+    db.expire_all()
+    assert db.get(UserProfile, user.id) is None
+
+
+def test_portable_backup_v2_null_profile_is_current_user_scoped(
+    client,
+    user,
+    db,
+) -> None:
+    csrf = _login(client, "admin")
+    export = client.get("/api/v1/settings/export")
+    assert export.status_code == 200
+    db.add(
+        UserProfile(
+            user_id=user.id,
+            display_name="Clear me",
+            gender="female",
+            birth_date=date(1990, 1, 1),
+            height_cm=Decimal("170.00"),
+            diet_type="vegan",
+            health_notes="Clear this note",
+            intolerances="Clear this intolerance",
+        )
+    )
+    other = User(
+        username="portable-profile-other",
+        password_hash=hash_password("correct-horse-battery-staple"),
+    )
+    db.add(other)
+    db.flush()
+    db.add(
+        UserProfile(
+            user_id=other.id,
+            display_name="Other profile remains",
+            health_notes="Other note remains",
+        )
+    )
+    db.commit()
+
+    apply = client.post(
+        "/api/v1/import/calo/apply",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("v2-backup.zip", export.content, "application/zip")},
+    )
+
+    assert apply.status_code == 200
+    assert apply.json()["status"] == "completed"
+    db.expire_all()
+    stored = db.get(UserProfile, user.id)
+    assert stored is not None
+    assert all(getattr(stored, field) is None for field in PERSONAL_PROFILE_FIELDS)
+    other_stored = db.get(UserProfile, other.id)
+    assert other_stored is not None
+    assert other_stored.display_name == "Other profile remains"
+    assert other_stored.health_notes == "Other note remains"
+
+
+@pytest.mark.parametrize(
+    "profile_patch",
+    [
+        {"gender": "PRIVATE-invalid-gender"},
+        {"birth_date": "2999-01-01"},
+        {"PRIVATE-unknown-field": "PRIVATE-unknown-value"},
+    ],
+)
+def test_portable_backup_v2_strictly_rejects_invalid_personal_profile(
+    client,
+    user,
+    profile_patch,
+) -> None:
+    del user
+    csrf = _login(client, "admin")
+    export = client.get("/api/v1/settings/export")
+    assert export.status_code == 200
+    invalid = io.BytesIO()
+    with ZipFile(io.BytesIO(export.content)) as source, ZipFile(invalid, "w") as target:
+        for name in source.namelist():
+            content = source.read(name)
+            if name == "profile.json":
+                profile_data = json.loads(content)
+                profile_data.update(profile_patch)
+                content = json.dumps(profile_data).encode()
+            target.writestr(name, content)
+
+    response = client.post(
+        "/api/v1/import/calo/preview",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("invalid-v2-profile.zip", invalid.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 422
+    assert "PRIVATE-" not in response.text
 
 
 def test_portable_preview_rejects_oversized_jsonl_line(client, user, monkeypatch) -> None:
