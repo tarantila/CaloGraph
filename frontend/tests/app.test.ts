@@ -36,11 +36,23 @@ async function mountApp(path = '/tage', isAdmin = false) {
       { path: '/kalender', name: 'calendar', component: { template: '<h1>Kalender</h1>' } },
       { path: '/trends', name: 'trends', component: { template: '<h1>Trends</h1>' } },
       { path: '/mikronaehrstoffe', name: 'micronutrients', component: { template: '<h1>Mikronährstoffe</h1>' } },
-      { path: '/datenqualitaet', name: 'quality', component: { template: '<h1>Datenstatus</h1>' } },
-      { path: '/importe', name: 'imports', component: { template: '<h1>Importe</h1>' } },
       { path: '/erfolge', name: 'achievements', component: { template: '<h1>Erfolge</h1>' } },
-      { path: '/budgets-und-ziele', name: 'targets', component: { template: '<h1>Ziele</h1>' } },
-      { path: '/konto', name: 'account', component: { template: '<h1>Konto</h1>' } },
+      {
+        path: '/konto',
+        name: 'account',
+        component: { template: '<h1>Konto</h1><RouterView />' },
+        redirect: { name: 'account-personal' },
+        children: [
+          { path: 'persoenliche-daten', name: 'account-personal', component: { template: '<h1>Persönliche Daten</h1>' } },
+          { path: 'budgets-und-ziele', name: 'account-targets', component: { template: '<h1>Ziele</h1>' } },
+          { path: 'importe', name: 'account-imports', component: { template: '<h1>Importe</h1>' } },
+          { path: 'datenstatus', name: 'account-data-status', component: { template: '<h1>Datenstatus</h1>' } },
+          { path: 'integrationen', name: 'account-integrations', component: { template: '<h1>Integrationen</h1>' } },
+          { path: 'daten-und-datenschutz', name: 'account-data-privacy', component: { template: '<h1>Daten &amp; Datenschutz</h1>' } },
+          { path: 'allgemeine-einstellungen', name: 'account-general', component: { template: '<h1>Allgemeine Einstellungen</h1>' } },
+          { path: 'sicherheit', name: 'account-security', component: { template: '<h1>Sicherheit</h1>' } },
+        ],
+      },
       { path: '/admin', name: 'admin-overview', component: { template: '<h1>Admin-Center</h1>' } },
       { path: '/admin/users', name: 'admin-users', component: { template: '<h1>Nutzer</h1>' } },
       { path: '/admin/invitations', name: 'admin-invitations', component: { template: '<h1>Einladungen</h1>' } },
@@ -75,14 +87,11 @@ describe('App-Sidebar-Navigation', () => {
       '/erfolge',
     ])
     expect(navigationGroups[1].findAll('a').map((link) => link.attributes('href'))).toEqual([
-      '/importe',
-      '/datenqualitaet',
-      '/budgets-und-ziele',
-      '/konto',
+      '/konto/persoenliche-daten',
     ])
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
     expect(navigationGroups[0].get('a[href="/erfolge"]').classes()).toContain('active')
-    expect(wrapper.findAll('aside nav a')).toHaveLength(12)
+    expect(wrapper.findAll('aside nav a')).toHaveLength(9)
     wrapper.unmount()
   })
 
@@ -119,12 +128,21 @@ describe('App-Sidebar-Navigation', () => {
     await wrapper.get('.menu-button').trigger('click')
     expect(wrapper.get('aside').classes()).toContain('open')
 
-    await wrapper.get('.sidebar-utility-navigation a[href="/konto"]').trigger('click')
+    await wrapper.get('.sidebar-utility-navigation a[href="/konto/persoenliche-daten"]').trigger('click')
     await flushPromises()
 
-    expect(router.currentRoute.value.name).toBe('account')
+    expect(router.currentRoute.value.name).toBe('account-personal')
     expect(wrapper.get('aside').classes()).not.toContain('open')
-    expect(wrapper.get('.sidebar-utility-navigation a[href="/konto"]').classes()).toContain('active')
+    expect(wrapper.get('.sidebar-utility-navigation a[href="/konto/persoenliche-daten"]').classes()).toContain('active')
+    wrapper.unmount()
+  })
+
+  it('keeps the account family active for nested pages without changing admin placement', async () => {
+    const { wrapper } = await mountApp('/konto/sicherheit', true)
+
+    expect(wrapper.find('.sidebar-utility-navigation a[href="/konto/persoenliche-daten"]').classes()).toContain('active')
+    expect(wrapper.find('.sidebar-utility-navigation a[href="/admin"]').classes()).not.toContain('active')
+    expect(wrapper.findAll('.sidebar-utility-navigation a')).toHaveLength(2)
     wrapper.unmount()
   })
 })

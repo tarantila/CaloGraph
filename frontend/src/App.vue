@@ -3,14 +3,11 @@ import {
   PhCalendarBlank,
   PhChartBar,
   PhChartLineUp,
-  PhDatabase,
-  PhDownloadSimple,
   PhInfo,
   PhList,
   PhListBullets,
   PhSignOut,
   PhSquaresFour,
-  PhTarget,
   PhTrophy,
   PhUserCircle,
   PhX,
@@ -42,12 +39,11 @@ const primaryNavigation = [
   { to: { name: 'achievements' }, label: 'navigation.achievements', icon: PhTrophy },
 ]
 
-const utilityNavigation = [
-  { to: { name: 'imports' }, label: 'navigation.imports', icon: PhDownloadSimple },
-  { to: { name: 'quality' }, label: 'navigation.quality', icon: PhDatabase },
-  { to: { name: 'targets' }, label: 'navigation.targets', icon: PhTarget },
-  { to: { name: 'account' }, label: 'navigation.account', icon: PhUserCircle },
-]
+const accountNavigation = {
+  to: { name: 'account-personal' },
+  label: 'navigation.account',
+  icon: PhUserCircle,
+}
 
 const adminConsoleNavigation = {
   to: { name: 'admin-overview' },
@@ -55,10 +51,14 @@ const adminConsoleNavigation = {
   icon: PhSquaresFour,
 }
 
-type NavigationItem = (typeof primaryNavigation)[number] | (typeof utilityNavigation)[number]
+type NavigationItem = (typeof primaryNavigation)[number]
 
 function isNavActive(item: NavigationItem) {
   return item.to.name === route.name
+}
+
+function isAccountActive() {
+  return route.path === '/konto' || route.path.startsWith('/konto/')
 }
 
 function isAdminConsoleActive() {
@@ -136,24 +136,21 @@ function dismissAchievementNotice(): void {
       <div class="sidebar-lower">
         <nav class="sidebar-utility-navigation" :aria-label="t('navigation.utilityAria')">
           <RouterLink
-            v-for="item in utilityNavigation"
-            :key="item.label"
-            :class="{ active: isNavActive(item) }"
-            :to="item.to"
-            @click="menuOpen = false"
-          >
-            <component :is="item.icon" :size="20" weight="regular" aria-hidden="true" />
-            {{ t(item.label) }}
-          </RouterLink>
-        </nav>
-        <nav v-if="auth.user?.is_admin" class="sidebar-utility-navigation admin-navigation" :aria-label="t('adminNav.title')">
-          <RouterLink
+            v-if="auth.user?.is_admin"
             :class="{ active: isAdminConsoleActive() }"
             :to="adminConsoleNavigation.to"
             @click="menuOpen = false"
           >
             <component :is="adminConsoleNavigation.icon" :size="20" weight="regular" aria-hidden="true" />
             {{ t(adminConsoleNavigation.label) }}
+          </RouterLink>
+          <RouterLink
+            :class="{ active: isAccountActive() }"
+            :to="accountNavigation.to"
+            @click="menuOpen = false"
+          >
+            <component :is="accountNavigation.icon" :size="20" weight="regular" aria-hidden="true" />
+            {{ t(accountNavigation.label) }}
           </RouterLink>
         </nav>
         <div class="sidebar-footer">

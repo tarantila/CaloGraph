@@ -42,6 +42,33 @@ describe('DateInput', () => {
     expect(textInput.element.validationMessage).toContain('TT.MM.JJJJ')
   })
 
+  it('keeps max validation after the parent accepts a manual future date', async () => {
+    const wrapper = mount(DateInput, {
+      props: { modelValue: '2026-08-11', max: '2026-12-30' },
+    })
+    const textInput = wrapper.get<HTMLInputElement>('input[type="text"]')
+
+    await textInput.setValue('31.12.2026')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['2026-12-31'])
+    await wrapper.setProps({ modelValue: '2026-12-31' })
+    await nextTick()
+
+    expect(textInput.element.validationMessage).toBe('Das Datum darf nicht in der Zukunft liegen.')
+    expect(wrapper.vm.reportValidity()).toBe(false)
+
+    await wrapper.setProps({ modelValue: '2026-12-30' })
+    await nextTick()
+
+    expect(textInput.element.validationMessage).toBe('')
+    expect(wrapper.vm.reportValidity()).toBe(true)
+
+    await wrapper.setProps({ max: '2026-12-29' })
+    await nextTick()
+
+    expect(textInput.element.validationMessage).toBe('Das Datum darf nicht in der Zukunft liegen.')
+    expect(wrapper.vm.reportValidity()).toBe(false)
+  })
+
   it('keeps the native calendar picker as an ISO boundary', async () => {
     const wrapper = mount(DateInput, { props: { modelValue: '2026-08-11' } })
 

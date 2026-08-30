@@ -44,12 +44,29 @@ export const useAuthStore = defineStore('auth', () => {
   function currentProfileUpdateGeneration(): number {
     return profileUpdateGeneration
   }
-  function enqueueProfileUpdate<T>(generation: number, operation: () => Promise<T>): Promise<T | null> {
+  function enqueueProfileRead<T>(
+    operation: () => Promise<T>,
+  ): Promise<{ generation: number; value: T }> {
+    const run = async (): Promise<{ generation: number; value: T }> => {
+      const generation = profileUpdateGeneration
+      return { generation, value: await operation() }
+    }
+    const queued = profileUpdateQueue.then(run, run)
+    profileUpdateQueue = queued.then(() => undefined, () => undefined)
+    return queued
+  }
+  function enqueueProfileUpdate<T>(
+    generation: number,
+    operation: () => Promise<T>,
+    onSuccess?: (value: T) => void,
+  ): Promise<T | null> {
     const run = async (): Promise<T | null> => {
       if (!isCurrentProfileUpdate(generation)) return null
       profileUpdatePending = true
       try {
-        return await operation()
+        const result = await operation()
+        if (isCurrentProfileUpdate(generation)) onSuccess?.(result)
+        return result
       } catch (error) {
         if (isCurrentProfileUpdate(generation)) profileUpdatePending = false
         throw error
@@ -259,6 +276,7 @@ export const useAuthStore = defineStore('auth', () => {
     completeTargetSetup,
     beginProfileUpdate,
     currentProfileUpdateGeneration,
+    enqueueProfileRead,
     enqueueProfileUpdate,
     isCurrentProfileUpdate,
     syncLoadedUser,

@@ -25,12 +25,12 @@ describe('interface language', () => {
   })
 
   it('provides data export controls in German and English', () => {
-    expect(i18n.global.t('settingsUi.dataExportTitle')).toBe('Datenexport')
-    expect(i18n.global.t('settingsUi.dataExportAction')).toBe('Export herunterladen')
+    expect(i18n.global.t('accountData.dataExportTitle')).toBe('Datenexport')
+    expect(i18n.global.t('accountData.dataExportAction')).toBe('Export herunterladen')
 
     setLocale('en')
-    expect(i18n.global.t('settingsUi.dataExportTitle')).toBe('Data export')
-    expect(i18n.global.t('settingsUi.dataExportAction')).toBe('Download export')
+    expect(i18n.global.t('accountData.dataExportTitle')).toBe('Data export')
+    expect(i18n.global.t('accountData.dataExportAction')).toBe('Download export')
   })
 
   it('localizes the compact custom period label', () => {
@@ -43,12 +43,12 @@ describe('interface language', () => {
     expect(i18n.global.t('adminNav.title')).toBe('Admin-Center')
     expect(i18n.global.t('adminNav.overviewTitle')).toBe('Übersicht')
     expect(i18n.global.t('adminNav.systemTitle')).toBe('Systemstatus')
-    expect(i18n.global.t('settingsUi.portableImportTitle')).toBe('CaloGraph-Datensicherung importieren')
+    expect(i18n.global.t('accountData.portableImportTitle')).toBe('CaloGraph-Datensicherung importieren')
     setLocale('en')
     expect(i18n.global.t('adminNav.title')).toBe('Admin Center')
     expect(i18n.global.t('adminNav.overviewTitle')).toBe('Overview')
     expect(i18n.global.t('adminNav.systemTitle')).toBe('System Status')
-    expect(i18n.global.t('settingsUi.portableImportTitle')).toBe('Import CaloGraph backup')
+    expect(i18n.global.t('accountData.portableImportTitle')).toBe('Import CaloGraph backup')
   })
 
   it('falls back to German for unsupported locale values', () => {

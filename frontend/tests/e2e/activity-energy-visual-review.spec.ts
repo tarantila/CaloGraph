@@ -61,7 +61,7 @@ test('target settings expose a source-specific activity credit', async ({ page }
   })
 
   await page.setViewportSize({ width: 1440, height: 1080 })
-  await page.goto('/budgets-und-ziele')
+  await page.goto('/konto/budgets-und-ziele')
 
   await expect(page.getByRole('heading', { name: 'Budgets & Ziele' })).toBeVisible()
   await expect(page.locator('legend', { hasText: 'Aktivitätskalorien' })).toBeVisible()

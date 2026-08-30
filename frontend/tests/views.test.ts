@@ -23,7 +23,10 @@ import ImportsView from '../src/views/ImportsView.vue'
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
 import OverviewView from '../src/views/OverviewView.vue'
 import QualityView from '../src/views/QualityView.vue'
-import SettingsView from '../src/views/SettingsView.vue'
+import AccountDataPrivacyView from '../src/views/AccountDataPrivacyView.vue'
+import AccountIntegrationsView from '../src/views/AccountIntegrationsView.vue'
+import AccountSecurityView from '../src/views/AccountSecurityView.vue'
+import AccountTargetsView from '../src/views/AccountTargetsView.vue'
 import TrendsView from '../src/views/TrendsView.vue'
 import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
@@ -1648,7 +1651,7 @@ describe('main views', () => {
 
     })
 
-    const targetsWrapper = mount(SettingsView, { props: { section: 'targets' } })
+    const targetsWrapper = mount(AccountTargetsView)
     await flushPromises()
     expect(targetsWrapper.text()).toContain('Budget- und Zielhistorie')
     expect(targetsWrapper.text()).toContain('2.100 kcal')
@@ -1692,12 +1695,18 @@ describe('main views', () => {
         activity_source_type: null,
     })
     })
+    targetsWrapper.unmount()
 
-    const accountWrapper = mount(SettingsView, { props: { section: 'account' } })
+    const integrationsWrapper = mount(AccountIntegrationsView)
     await flushPromises()
-    expect(accountWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
-    expect(accountWrapper.text()).toContain('Zwei-Faktor-Authentifizierung')
-    expect(accountWrapper.text()).toContain('Passkeys')
+    expect(integrationsWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
+    integrationsWrapper.unmount()
+
+    const securityWrapper = mount(AccountSecurityView)
+    await flushPromises()
+    expect(securityWrapper.text()).toContain('Zwei-Faktor-Authentifizierung')
+    expect(securityWrapper.text()).toContain('Passkeys')
+    securityWrapper.unmount()
   })
   it('starts a native same-origin data export and waits for server acceptance', async () => {
     apiMock.mockImplementation((path: string) => {
@@ -1719,7 +1728,7 @@ describe('main views', () => {
       document.cookie = `calograph_export_status_${downloadId.replaceAll('-', '')}=accepted; Path=/`
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountDataPrivacyView)
     await flushPromises()
     const exportButton = wrapper.findAll('button').find((button) => button.text() === 'Export herunterladen')
     expect(exportButton).toBeDefined()
@@ -1752,7 +1761,7 @@ describe('main views', () => {
       document.cookie = `calograph_export_status_${downloadId.replaceAll('-', '')}=${status}; Path=/`
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountDataPrivacyView)
     await flushPromises()
     const exportButton = wrapper.findAll('button').find((button) => button.text() === 'Export herunterladen')!
     await exportButton.trigger('click')
@@ -1784,8 +1793,8 @@ describe('main views', () => {
       }
     })
 
-    const tabA = mount(SettingsView, { props: { section: 'account' } })
-    const tabB = mount(SettingsView, { props: { section: 'account' } })
+    const tabA = mount(AccountDataPrivacyView)
+    const tabB = mount(AccountDataPrivacyView)
     await flushPromises()
     const buttonA = tabA.findAll('button').find((button) => button.text() === 'Export herunterladen')!
     const buttonB = tabB.findAll('button').find((button) => button.text() === 'Export herunterladen')!
@@ -1822,7 +1831,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'targets' } })
+    const wrapper = mount(AccountTargetsView)
     await flushPromises()
     const activitySwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
 
@@ -1850,7 +1859,7 @@ describe('main views', () => {
     })
     const auth = useAuthStore()
     auth.needsTargetSetup = true
-    const wrapper = mount(SettingsView, { props: { section: 'targets' } })
+    const wrapper = mount(AccountTargetsView)
     await flushPromises()
 
     const now = new Date()
@@ -1932,7 +1941,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     expect(wrapper.text()).toContain('Erster Datenimport von')
     const dateInputs = wrapper
@@ -1951,7 +1960,7 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('YAZIO-Verbindung gespeichert.')
     expect(wrapper.text()).toContain('Der erste Datenimport läuft im Hintergrund.')
     expect(wrapper.text()).toContain('Du kannst diese Seite verlassen.')
-    expect(wrapper.get('a[href="/importe"]').text()).toBe('Zu den Importen')
+    expect(wrapper.text()).toContain('Zu den Importen')
 
     expect(apiMock).toHaveBeenLastCalledWith('/yazio/connection', {
       method: 'PUT',
@@ -1996,11 +2005,11 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
     expect(wrapper.text()).toContain('Erster Datenimport fehlgeschlagen')
-    expect(wrapper.get('a[href="/importe"]').text()).toBe('Details unter Importe')
+    expect(wrapper.text()).toContain('Details unter Importe')
     wrapper.unmount()
   })
 
@@ -2040,7 +2049,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     expect(wrapper.find('.yazio-connection-card .date-input').exists()).toBe(false)
     await wrapper.get('input[name="yazio-email"]').setValue('owner@example.com')
@@ -2119,7 +2128,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     expect(wrapper.text()).toContain('Erster Datenimport wartet auf den Scheduler')
 
@@ -2182,7 +2191,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
@@ -2235,12 +2244,13 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
 
-    await wrapper.setProps({ section: 'targets' })
+    wrapper.unmount()
+    const targetsWrapper = mount(AccountTargetsView)
     await flushPromises()
     poll.resolve({
       ...pendingStatus,
@@ -2249,7 +2259,7 @@ describe('main views', () => {
     await flushPromises()
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
-    wrapper.unmount()
+    targetsWrapper.unmount()
     vi.useRealTimers()
   })
   it('pollt den aktiven YAZIO-Import unabhängig von Benutzerverwaltung', async () => {
@@ -2286,7 +2296,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(2)
@@ -2330,7 +2340,7 @@ describe('main views', () => {
       return Promise.resolve({})
     })
 
-    const wrapper = mount(SettingsView, { props: { section: 'account' } })
+    const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(5000)
     expect(statusCalls).toBe(1)

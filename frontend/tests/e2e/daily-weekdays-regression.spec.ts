@@ -185,8 +185,8 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   const utilityNavigation = (await page.locator('.sidebar-utility-navigation a').allTextContents()).map((label) =>
     label.trim(),
   )
-  expect(utilityNavigation).toEqual(['Importe', 'Datenstatus', 'Budgets & Ziele', 'Konto'])
-  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(12)
+  expect(utilityNavigation).toEqual(['Konto'])
+  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(9)
   expect(page.locator('.sidebar nav a.active')).toHaveCount(1)
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()
@@ -199,13 +199,13 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   await expect(rangeSelect).toContainText('6 Monate')
   await rangeSelect.selectOption('last-week')
   await expect(page).toHaveURL(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/)
-  await page.getByRole('link', { name: 'Konto' }).click()
-  await expect(page.getByRole('heading', { name: 'Konto' })).toBeVisible()
-  await expect(page.locator('.sidebar-utility-navigation a.active')).toHaveAttribute('href', '/konto')
+  await page.goto('/konto/allgemeine-einstellungen')
+  await expect(page.getByRole('heading', { name: 'Allgemeine Einstellungen' })).toBeVisible()
+  await expect(page.locator('.sidebar-utility-navigation a.active')).toHaveAttribute('href', '/konto/persoenliche-daten')
   await page.locator('select[name="language"]').selectOption('en')
   await expect(page.locator('select[name="language"]')).toHaveValue('en')
-  await page.getByRole('button', { name: 'Profil speichern' }).click()
-  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible()
+  await page.getByRole('button', { name: 'Einstellungen speichern' }).click()
+  await expect(page.getByRole('heading', { name: 'General settings' })).toBeVisible()
   await page.getByRole('link', { name: 'Weekdays' }).click()
   await expect(weekdayRows.locator('td:first-child')).toHaveText([
     'Monday',

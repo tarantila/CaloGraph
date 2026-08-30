@@ -221,4 +221,46 @@ describe('first-run target routing', () => {
     expect(auth.sessionRestoreUnavailable).toBe(false)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
+  it('maps every Account Center child and redirects /konto to personal data', async () => {
+    const accountRoutes = [
+      ['/konto/persoenliche-daten', 'account-personal'],
+      ['/konto/budgets-und-ziele', 'account-targets'],
+      ['/konto/importe', 'account-imports'],
+      ['/konto/datenstatus', 'account-data-status'],
+      ['/konto/integrationen', 'account-integrations'],
+      ['/konto/daten-und-datenschutz', 'account-data-privacy'],
+      ['/konto/allgemeine-einstellungen', 'account-general'],
+      ['/konto/sicherheit', 'account-security'],
+    ] as const
+
+    for (const [path, name] of accountRoutes) {
+      const resolved = router.resolve(path)
+      expect(resolved.name).toBe(name)
+      expect(resolved.path).toBe(path)
+    }
+
+    const auth = useAuthStore()
+    auth.user = user
+    auth.needsTargetSetup = false
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(user), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    await router.push('/konto')
+    expect(router.currentRoute.value.name).toBe('account-personal')
+    expect(router.currentRoute.value.path).toBe('/konto/persoenliche-daten')
+  })
+
+  it('does not resolve removed settings paths to former Account Center pages', async () => {
+    const auth = useAuthStore()
+    auth.user = user
+    auth.needsTargetSetup = false
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(user), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    for (const path of ['/importe', '/datenqualitaet', '/budgets-und-ziele', '/einstellungen']) {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe('overview')
+      expect(router.currentRoute.value.path).toBe('/')
+    }
+  })
 })
