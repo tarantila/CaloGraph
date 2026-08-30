@@ -45,7 +45,7 @@ test('login, idempotent import and dashboard', async ({ page, request }) => {
     await page.getByRole('button', { name: /^(Einrichtung abschließen|Complete setup)$/ }).click()
   }
   if (await page.getByRole('heading', { name: 'Nutrition overview' }).isVisible()) {
-    await page.locator('a[href="/konto"]').click()
+    await page.goto('/konto/allgemeine-einstellungen')
     await expect(page.locator('select[name="language"]')).toBeVisible()
     await page.locator('select[name="language"]').selectOption('de')
     await page.locator('form:has(select[name="language"]) button[type="submit"]').click()
@@ -72,11 +72,11 @@ test('administrator manages a complete synthetic account lifecycle', async ({ br
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('heading', { name: /^(Ernährungsüberblick|Nutrition overview|Overview)$/ })).toBeVisible()
-  await page.locator('a[href="/konto"]').click()
+  await page.goto('/konto/allgemeine-einstellungen')
   await expect(page.locator('select[name="language"]')).toBeVisible()
   await page.locator('select[name="language"]').selectOption('de')
   await page.locator('form:has(select[name="language"]) button[type="submit"]').click()
-  await expect(page.getByRole('heading', { name: 'Konto' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Allgemeine Einstellungen' })).toBeVisible()
   await page.goto('/admin/invitations')
   await expect(page.getByRole('heading', { name: 'Einladungen' }).first()).toBeVisible()
   await page.getByRole('button', { name: 'Einladung erstellen' }).click()

@@ -9,9 +9,15 @@ const props = withDefaults(defineProps<{
   modelValue: string
   required?: boolean
   disabled?: boolean
+  max?: string
+  name?: string
+  autocomplete?: string
 }>(), {
   required: false,
   disabled: false,
+  max: undefined,
+  name: undefined,
+  autocomplete: 'off',
 })
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
@@ -19,11 +25,20 @@ const textInput = ref<HTMLInputElement | null>(null)
 const nativePicker = ref<HTMLInputElement | null>(null)
 const displayValue = ref(formatGermanDate(props.modelValue))
 
+function exceedsMax(value: string): boolean {
+  return Boolean(props.max && value > props.max)
+}
+
+function setValidity(input: HTMLInputElement, value: string): void {
+  input.setCustomValidity(exceedsMax(value) ? t('dateInput.max') : '')
+}
+
+
 watch(
-  () => props.modelValue,
-  (value) => {
+  () => [props.modelValue, props.max] as const,
+  ([value]) => {
     displayValue.value = formatGermanDate(value)
-    textInput.value?.setCustomValidity('')
+    if (textInput.value) setValidity(textInput.value, value)
   },
 )
 watch(
@@ -42,8 +57,12 @@ function updateText(event: Event) {
     return
   }
   const parsed = parseGermanDate(input.value)
-  input.setCustomValidity(parsed ? '' : t('dateInput.invalid'))
-  if (parsed) emit('update:modelValue', parsed)
+  if (!parsed) {
+    input.setCustomValidity(t('dateInput.invalid'))
+    return
+  }
+  setValidity(input, parsed)
+  emit('update:modelValue', parsed)
 }
 
 function normalizeText() {
@@ -55,9 +74,10 @@ function chooseNativeDate(event: Event) {
   const value = (event.target as HTMLInputElement).value
   if (!value) return
   displayValue.value = formatGermanDate(value)
-  textInput.value?.setCustomValidity('')
+  setValidity(textInput.value ?? (event.target as HTMLInputElement), value)
   emit('update:modelValue', value)
 }
+
 
 function openPicker() {
   if (!nativePicker.value) return
@@ -81,7 +101,9 @@ defineExpose({ reportValidity })
       type="text"
       inputmode="numeric"
       :placeholder="t('dateInput.placeholder')"
-      autocomplete="off"
+      :name="name"
+      :autocomplete="autocomplete"
+      :max="max"
       :required="required"
       :disabled="disabled"
       @input="updateText"
@@ -99,6 +121,7 @@ defineExpose({ reportValidity })
       class="date-input-native-picker"
       type="date"
       :value="modelValue"
+      :max="max"
       :disabled="disabled"
       tabindex="-1"
       aria-hidden="true"

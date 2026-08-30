@@ -23,19 +23,45 @@ const router = createRouter({
     { path: '/mikronaehrstoffe', name: 'micronutrients', component: () => import('./views/MicronutrientsView.vue') },
     { path: '/erfolge', name: 'achievements', component: () => import('./views/AchievementsView.vue') },
     { path: '/kalender', name: 'calendar', component: () => import('./views/CalendarView.vue') },
-    { path: '/datenqualitaet', name: 'quality', component: () => import('./views/QualityView.vue') },
-    { path: '/importe', name: 'imports', component: () => import('./views/ImportsView.vue') },
-    {
-      path: '/budgets-und-ziele',
-      name: 'targets',
-      component: () => import('./views/SettingsView.vue'),
-      props: { section: 'targets' },
-    },
     {
       path: '/konto',
       name: 'account',
-      component: () => import('./views/SettingsView.vue'),
-      props: { section: 'account' },
+      component: () => import('./views/AccountLayout.vue'),
+      redirect: { name: 'account-personal' },
+      children: [
+        {
+          path: 'persoenliche-daten',
+          name: 'account-personal',
+          component: () => import('./views/AccountPersonalDataView.vue'),
+        },
+        {
+          path: 'budgets-und-ziele',
+          name: 'account-targets',
+          component: () => import('./views/AccountTargetsView.vue'),
+        },
+        { path: 'importe', name: 'account-imports', component: () => import('./views/ImportsView.vue') },
+        { path: 'datenstatus', name: 'account-data-status', component: () => import('./views/QualityView.vue') },
+        {
+          path: 'integrationen',
+          name: 'account-integrations',
+          component: () => import('./views/AccountIntegrationsView.vue'),
+        },
+        {
+          path: 'daten-und-datenschutz',
+          name: 'account-data-privacy',
+          component: () => import('./views/AccountDataPrivacyView.vue'),
+        },
+        {
+          path: 'allgemeine-einstellungen',
+          name: 'account-general',
+          component: () => import('./views/AccountGeneralSettingsView.vue'),
+        },
+        {
+          path: 'sicherheit',
+          name: 'account-security',
+          component: () => import('./views/AccountSecurityView.vue'),
+        },
+      ],
     },
     {
       path: '/admin',
@@ -50,10 +76,6 @@ const router = createRouter({
         { path: 'logs', name: 'admin-logs', component: () => import('./views/AdminLogsView.vue') },
         { path: 'backups', name: 'admin-backups', component: () => import('./views/AdminBackupsView.vue') },
       ],
-    },
-    {
-      path: '/einstellungen',
-      redirect: (to) => ({ name: to.hash === '#zielwerte' ? 'targets' : 'account' }),
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

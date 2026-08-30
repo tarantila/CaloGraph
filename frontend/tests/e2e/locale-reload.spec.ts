@@ -24,7 +24,7 @@ async function login(page: Page) {
 }
 
 async function setLocale(page: Page, locale: 'de' | 'en') {
-  await page.goto('/konto')
+  await page.goto('/konto/allgemeine-einstellungen')
   await page.locator('select[name="language"]').selectOption(locale)
   await page.locator('form').filter({ has: page.locator('select[name="language"]') }).getByRole('button').click()
   await expect(page.locator('html')).toHaveAttribute('lang', locale)
@@ -48,7 +48,7 @@ test('German profile stays German across protected full reloads', async ({ page 
   await setLocale(page, 'de')
   await assertReloadLocale(page, 'de', [
     { path: '/', heading: /^(Ernährungsüberblick|Übersicht)$/ },
-    { path: '/konto', heading: /^Konto$/ },
+    { path: '/konto/allgemeine-einstellungen', heading: /^Allgemeine Einstellungen$/ },
     { path: '/trends', heading: /^Trends$/ },
     { path: '/admin', heading: /^(Übersicht|Administrationsübersicht)$/ },
     { path: '/admin/security', heading: /^Anmeldeprotokoll$/ },
@@ -60,7 +60,7 @@ test('English profile stays English across protected full reloads', async ({ pag
   await setLocale(page, 'en')
   await assertReloadLocale(page, 'en', [
     { path: '/', heading: /^(Nutrition overview|Overview)$/ },
-    { path: '/konto', heading: /^Account$/ },
+    { path: '/konto/allgemeine-einstellungen', heading: /^General settings$/ },
     { path: '/trends', heading: /^Trends$/ },
     { path: '/admin', heading: /^Overview$/ },
     { path: '/admin/security', heading: /^Sign-in log$/ },
