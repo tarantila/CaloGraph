@@ -319,7 +319,7 @@ describe('main views', () => {
 
     expect(dailyBudgetSeries?.data).toEqual([2300, 2300, 2100, 2100])
     expect(dailyBudgetSeries?.step).toBe('middle')
-    expect(dailyBudgetSeries?.lineStyle).toEqual({ color: '#fb923c', width: 2 })
+    expect(dailyBudgetSeries?.lineStyle).toEqual({ color: '#fb923c', width: 2, type: 'dashed' })
     expect(dailyBudgetSeries?.itemStyle).toEqual({ color: '#fb923c' })
     expect(option.series.find((series) => series.name === 'Basisbudget')).toBeUndefined()
     expect(option.series.find((series) => series.name === 'Effektives Budget')).toBeUndefined()
@@ -446,6 +446,7 @@ describe('main views', () => {
     expect(option.series.find((series) => series.name === 'Effektives Budget')?.lineStyle).toEqual({
       color: '#fb923c',
       width: 2,
+      type: 'dashed',
     })
     expect(option.series.find((series) => series.name === 'Effektives Budget')?.itemStyle).toEqual({
       color: '#fb923c',
