@@ -467,7 +467,7 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#fb923c', width: 2 },
+          lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
           itemStyle: { color: '#fb923c' },
         },
       ]
@@ -479,7 +479,7 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#fb923c', width: 2 },
+          lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
           itemStyle: { color: '#fb923c' },
         },
       ]
