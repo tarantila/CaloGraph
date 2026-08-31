@@ -85,6 +85,20 @@ test('target settings expose a source-specific activity credit', async ({ page }
   await page.goto('/konto/budgets-und-ziele')
 
   await expect(page.getByRole('heading', { name: 'Budgets & Ziele' })).toBeVisible()
+  const targetWeightCard = page.locator('.target-weight-settings')
+  await expect(targetWeightCard).toBeVisible()
+  await expect(targetWeightCard.evaluate((element) => element.tagName)).resolves.toBe('FIELDSET')
+  await expect(targetWeightCard.locator('legend')).toHaveText('Zielgewicht')
+  await expect(page.getByRole('radiogroup', { name: 'Zielgewicht festlegen' })).toBeVisible()
+  await expect(targetWeightCard).toContainText('Kein Zielgewicht')
+  await expect(targetWeightCard).toContainText('Festes Zielgewicht')
+  await expect(targetWeightCard).toContainText('Zielbereich')
+  await page.getByRole('radio', { name: 'Zielbereich' }).check()
+  const desktopRangeColumns = await page.locator('.target-weight-range').evaluate((element) =>
+    getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  expect(desktopRangeColumns).toBe(2)
+  await expect(page.locator('.target-weight-range input')).toHaveCount(2)
   await expect(page.locator('legend', { hasText: 'Aktivitätskalorien' })).toBeVisible()
   const activityCard = page.locator('.activity-target-settings')
   const activitySwitch = page.getByRole('switch', { name: 'Aktivitätskalorien berücksichtigen' })
@@ -101,6 +115,14 @@ test('target settings expose a source-specific activity credit', async ({ page }
   await expect(page.locator('select[name="activity-source"]')).toBeHidden()
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(activityCard).toBeVisible()
+  const mobileRangeColumns = await page.locator('.target-weight-range').evaluate((element) =>
+    getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  const mobileModeColumns = await page.locator('.target-weight-mode-options').evaluate((element) =>
+    getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  expect(mobileRangeColumns).toBe(1)
+  expect(mobileModeColumns).toBe(1)
   await page.screenshot({ path: 'test-results/activity-energy-target-settings-mobile.png', fullPage: true })
   expect(browserErrors).toEqual([])
 })

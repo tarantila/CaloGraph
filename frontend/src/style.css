@@ -1023,6 +1023,62 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .account-form-card { margin-bottom: 1rem; }
 .account-form-card > h2 { margin-bottom: .45rem; }
 .account-form-card > p { margin-top: 0; }
+.account-form-card > .account-form-grid { margin-top: 1rem; }
+.target-weight-settings {
+  display: block;
+  margin: .1rem 0 0;
+  padding: .95rem 1rem 1rem;
+  border: 1px solid #2c3a53;
+  border-radius: .58rem;
+  background: #172237;
+}
+.target-weight-settings legend {
+  padding: 0 .35rem;
+  color: #e8edf5;
+  font-size: .82rem;
+  font-weight: 650;
+}
+.target-weight-description {
+  max-width: 58ch;
+  margin: .45rem 0 0;
+}
+.target-weight-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .5rem;
+  margin-top: .85rem;
+}
+.target-weight-mode-options label {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  min-width: 0;
+  padding: .55rem .65rem;
+  border: 1px solid var(--border);
+  border-radius: .45rem;
+  background: rgb(13 24 40 / 38%);
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: .72rem;
+  line-height: 1.35;
+}
+.target-weight-mode-options label:has(input:checked) {
+  border-color: rgb(167 139 250 / 55%);
+  background: rgb(167 139 250 / 12%);
+  color: var(--ink);
+}
+.target-weight-mode-options label:focus-within {
+  outline: 2px solid #a78bfa;
+  outline-offset: 2px;
+}
+.target-weight-mode-options input:focus-visible { outline: none; }
+.target-weight-settings > .field { margin-top: .85rem; }
+.target-weight-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .85rem 1rem;
+  margin-top: .85rem;
+}
 .account-form-grid { gap: .85rem 1rem; align-items: start; }
 .account-submit { grid-column: 1 / -1; margin-top: .15rem; }
 .account-form-error, .account-form-success {
@@ -2188,6 +2244,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .calendar-legend { justify-content: flex-start; }
   .calendar-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .quality-detail-grid { grid-template-columns: 1fr; }
+  .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid, .target-weight-mode-options, .target-weight-range { grid-template-columns: 1fr; }
   .micronutrient-heading { align-items: end; flex-direction: row; }
   .admin-console { grid-template-columns: 1fr; gap: .85rem; }
   .admin-sidebar { position: static; width: 100%; overflow: hidden; padding: .7rem; }

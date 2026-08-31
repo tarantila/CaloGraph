@@ -71,6 +71,9 @@ describe('AccountPersonalDataView', () => {
     expect(wrapper.find('input[name="birth_date"]').element).toBeTruthy()
     expect(wrapper.find('input[name="height_cm"]').element).toBeTruthy()
     expect(wrapper.find('select[name="diet_type"]').element).toBeTruthy()
+    const introduction = wrapper.get('.account-form-card > p')
+    const form = wrapper.get('form.account-form-grid')
+    expect(introduction.element.nextElementSibling).toBe(form.element)
     expect(wrapper.find('textarea[name="health_notes"]').element).toBeTruthy()
     expect(wrapper.findAll('form > label.field').map((field) => field.find('span').text())).toEqual([
       'Name', 'Geschlecht', 'Geburtsdatum', 'Größe (cm)', 'Ernährungsweise',

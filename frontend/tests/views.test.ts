@@ -1926,6 +1926,15 @@ describe('main views', () => {
     const wrapper = mount(AccountTargetsView)
     await flushPromises()
 
+    expect(wrapper.find('.target-weight-settings').exists()).toBe(true)
+    expect(wrapper.find('.target-weight-mode-options').exists()).toBe(true)
+    const targetWeightSettings = wrapper.get('fieldset.target-weight-settings')
+    expect(targetWeightSettings.get('legend').text()).toBe('Zielgewicht')
+    const targetWeightModes = targetWeightSettings.get('[role="radiogroup"]')
+    expect(targetWeightModes.attributes('aria-label')).toBe('Zielgewicht festlegen')
+    expect(wrapper.text()).toContain('Kein Zielgewicht')
+    expect(wrapper.text()).toContain('Festes Zielgewicht')
+    expect(wrapper.text()).toContain('Zielbereich')
     expect(wrapper.findAll<HTMLInputElement>('input[name="target-weight-mode"]')).toHaveLength(3)
     expect(wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="range"]').element.checked).toBe(true)
     expect(wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').element.value).toBe('143.3')
@@ -1934,7 +1943,7 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Bis (lb)')
     expect(wrapper.text()).toContain('Zielgewicht: 154,3 lb')
     expect(wrapper.text()).toContain('Zielgewicht: 143,3–176,4 lb')
-    expect(wrapper.text()).toContain('Kein Zielgewicht')
+    expect(wrapper.find('.target-weight-range').findAll('input')).toHaveLength(2)
   })
 
   it('submits exact, range, and none target-weight payloads across mode transitions', async () => {
@@ -1966,8 +1975,11 @@ describe('main views', () => {
     const wrapper = mount(AccountTargetsView)
     await flushPromises()
     expect(wrapper.text()).toContain('Zielgewicht (kg)')
+    expect(wrapper.findAll('input[name="target-weight-exact"]')).toHaveLength(1)
+    expect(wrapper.findAll('.target-weight-range input')).toHaveLength(0)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
+
 
     let saveCalls = apiMock.mock.calls.filter(([path, options]) =>
       path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
@@ -1977,7 +1989,9 @@ describe('main views', () => {
     })
 
     await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="range"]').setValue()
+    expect(wrapper.findAll('input[name="target-weight-exact"]')).toHaveLength(0)
     await wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').setValue('70')
+    expect(wrapper.findAll('.target-weight-range input')).toHaveLength(2)
     await wrapper.get<HTMLInputElement>('input[name="target-weight-max"]').setValue('80')
     await wrapper.get('form').trigger('submit')
     await flushPromises()

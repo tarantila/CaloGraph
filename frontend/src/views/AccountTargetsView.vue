@@ -290,8 +290,8 @@ void load()
           <label class="field">{{ t('settingsUi.maintenance') }}<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>{{ t('settingsUi.maintenanceHelp') }}</small></label>
           <fieldset class="field full target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
             <legend>{{ t('settingsUi.targetWeight') }}</legend>
-            <p class="activity-description">{{ t('settingsUi.targetWeightDescription') }}</p>
-            <div role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
+            <p class="target-weight-description">{{ t('settingsUi.targetWeightDescription') }}</p>
+            <div class="target-weight-mode-options" role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
               <label>
                 <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="none" />
                 {{ t('settingsUi.targetWeightNone') }}

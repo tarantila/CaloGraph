@@ -31,6 +31,15 @@ describe('interface language', () => {
     expect(i18n.global.te('accountPersonal.heightImperial', 'de')).toBe(true)
     expect(i18n.global.te('accountPersonal.heightImperial', 'en')).toBe(true)
   })
+  it('keeps target weight mode labels consistent in German and English', () => {
+    expect(i18n.global.t('settingsUi.targetWeightNone', {}, { locale: 'de' })).toBe('Kein Zielgewicht')
+    expect(i18n.global.t('settingsUi.targetWeightExact', {}, { locale: 'de' })).toBe('Festes Zielgewicht')
+    expect(i18n.global.t('settingsUi.targetWeightRange', {}, { locale: 'de' })).toBe('Zielbereich')
+    expect(i18n.global.t('settingsUi.targetWeightNone', {}, { locale: 'en' })).toBe('No target weight')
+    expect(i18n.global.t('settingsUi.targetWeightExact', {}, { locale: 'en' })).toBe('Fixed target weight')
+    expect(i18n.global.t('settingsUi.targetWeightRange', {}, { locale: 'en' })).toBe('Target range')
+  })
+
 
   it('provides data export controls in German and English', () => {
     expect(i18n.global.t('accountData.dataExportTitle')).toBe('Datenexport')
