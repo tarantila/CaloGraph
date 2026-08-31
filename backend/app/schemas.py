@@ -368,6 +368,12 @@ class TargetInput(BaseModel):
     maintenance_kcal: Decimal | None = Field(
         default=None, gt=0, max_digits=12, decimal_places=3
     )
+    target_weight_min_kg: Decimal | None = Field(
+        default=None, gt=0, le=1000, max_digits=7, decimal_places=3
+    )
+    target_weight_max_kg: Decimal | None = Field(
+        default=None, gt=0, le=1000, max_digits=7, decimal_places=3
+    )
     activity_mode: Literal["off", "full"] = "off"
     activity_source_type: Literal[
         "yazio_export_v1", "apple_health_xml", "health_auto_export_v2"
@@ -378,7 +384,20 @@ class TargetInput(BaseModel):
     fiber_g: Decimal | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def activity_source_matches_mode(self) -> TargetInput:
+    def target_weight_range_is_valid(self) -> TargetInput:
+        minimum = self.target_weight_min_kg
+        maximum = self.target_weight_max_kg
+        if (minimum is None) != (maximum is None):
+            raise ValueError("Das Zielgewicht muss als vollständiger Bereich angegeben werden")
+        if minimum is not None and maximum is not None:
+            if not minimum.is_finite() or not maximum.is_finite():
+                raise ValueError("Das Zielgewicht muss endlich sein")
+            if minimum <= 0 or maximum <= 0:
+                raise ValueError("Das Zielgewicht muss positiv sein")
+            if minimum > maximum:
+                raise ValueError("Das minimale Zielgewicht darf nicht über dem maximalen liegen")
+            if maximum > 1000:
+                raise ValueError("Das Zielgewicht darf höchstens 1000 kg betragen")
         if self.activity_mode == "off" and self.activity_source_type is not None:
             raise ValueError("Im deaktivierten Modus darf keine Aktivitätsquelle gesetzt sein")
         if self.activity_mode == "full" and self.activity_source_type is None:

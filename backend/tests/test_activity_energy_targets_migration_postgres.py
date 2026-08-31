@@ -1,6 +1,7 @@
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -10,7 +11,7 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import NutritionTarget, User
+from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -60,35 +61,45 @@ def test_activity_energy_target_migration_preserves_existing_targets() -> None:
             }
             assert {"activity_mode", "activity_source_type"} <= columns
             assert {MODE_CONSTRAINT, SOURCE_CONSTRAINT} <= constraints
-
         with SessionLocal() as db:
             user = User(
-                username="postgres-activity-target",
+                username=f"postgres-activity-target-{uuid4()}",
                 password_hash="test-password-hash",
             )
             db.add(user)
-            db.flush()
-            target = NutritionTarget(
-                user_id=user.id,
-                valid_from=date(2026, 8, 17),
-                calories_kcal=Decimal("2000"),
-                protein_g=Decimal("140"),
-                activity_mode="full",
-                activity_source_type="apple_health_xml",
-            )
-            db.add(target)
             db.commit()
+            user_id = user.id
 
-            target.activity_mode = "off"
-            target.activity_source_type = "apple_health_xml"
-            with pytest.raises(sa.exc.DBAPIError):
-                db.commit()
-            db.rollback()
-            target.activity_mode = "full"
-            target.activity_source_type = None
-            with pytest.raises(sa.exc.DBAPIError):
-                db.commit()
-            db.rollback()
+        target_id = uuid4()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO nutrition_targets "
+                    "(id, user_id, valid_from, calories_kcal, protein_g, activity_mode, "
+                    "activity_source_type, created_at) "
+                    "VALUES (:id, :user_id, :valid_from, :calories_kcal, :protein_g, "
+                    ":activity_mode, :activity_source_type, :created_at)"
+                ),
+                {
+                    "id": target_id,
+                    "user_id": user_id,
+                    "valid_from": date(2026, 8, 17),
+                    "calories_kcal": Decimal("2000"),
+                    "protein_g": Decimal("140"),
+                    "activity_mode": "full",
+                    "activity_source_type": "apple_health_xml",
+                    "created_at": datetime.now(UTC),
+                },
+            )
+        for mode, source in (("off", "apple_health_xml"), ("full", None)):
+            with pytest.raises(sa.exc.DBAPIError), engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE nutrition_targets SET activity_mode = :mode, "
+                        "activity_source_type = :source WHERE id = :id"
+                    ),
+                    {"id": target_id, "mode": mode, "source": source},
+                )
     finally:
         command.upgrade(alembic_config, "head")
         engine.dispose()

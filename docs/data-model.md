@@ -24,10 +24,13 @@
 - `account_recovery_tokens`: HMAC-only one-time administrator-issued recovery
   tokens with creation, expiration, consumption, and revocation timestamps.
 - `nutrition_targets`: versioned calorie budgets, independent optional
-  maintenance-calorie estimates, nutrient targets, and a versioned optional
-  activity-energy mode with exactly one selected source, using the half-open
-  interval `valid_from <= day < valid_to`. Calorie budgets and finite, positive
-  maintenance estimates have no ordering relationship.
+  maintenance-calorie estimates, nutrient targets, optional canonical target
+  weight in kg, and a versioned optional activity-energy mode with exactly one
+  selected source, using the half-open interval `valid_from <= day < valid_to`.
+  Target weight is either absent, an exact value, or an ordered range; both
+  bounds are nullable `Numeric(7,3)` and must be set together to finite values
+  greater than zero with a maximum of 1000 kg. Calorie budgets and finite,
+  positive maintenance estimates have no ordering relationship.
 - `tracking_quality_settings`: legacy settings from the former completeness
   heuristic; no longer used for new analysis.
 - `health_samples`: canonical and original values, UTC timestamps, local date,

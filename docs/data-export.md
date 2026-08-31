@@ -8,9 +8,9 @@ noch URL-Parameter erweitern diesen Umfang.
 ## Format
 
 Das Archiv verwendet das stabile Format `calograph-data-export`. Neue Exporte
-verwenden `format_version` `2`; der Import akzeptiert weiterhin Version `1`.
-`manifest.json` enthält Format, Versionsnummer, Erstellungszeitpunkt, Anwendung,
-Anwendungsversion und die enthaltenen Dateien.
+verwenden `format_version` `3`; der Import akzeptiert weiterhin die Versionen
+`1`, `2` und `3`. `manifest.json` enthält Format, Versionsnummer,
+Erstellungszeitpunkt, Anwendung, Anwendungsversion und die enthaltenen Dateien.
 
 | Datei | Inhalt |
 | --- | --- |
@@ -36,10 +36,10 @@ Der Export ist kein Datenbank-Dump. Das validierte CaloGraph-Archiv kann
 über den dokumentierten Vorschau-/Importpfad in das aktuell angemeldete eigene
 Konto eingespielt werden; dabei werden keine Authentifizierungsdaten oder
 YAZIO-Zugangsdaten übernommen.
-Version-2-Archive können freiwillige Gesundheitsnotizen, Intoleranzen und
-weitere persönliche Profilangaben enthalten. Sie sind deshalb wie andere
-vertrauliche Ernährungs- und Gesundheitsdaten vor unberechtigtem Zugriff zu
-schützen.
+Version-2- und Version-3-Archive können freiwillige Gesundheitsnotizen,
+Intoleranzen und weitere persönliche Profilangaben enthalten. Sie sind deshalb
+wie andere vertrauliche Ernährungs- und Gesundheitsdaten vor unberechtigtem
+Zugriff zu schützen.
 
 ## Streaming und Parallelität
 
@@ -69,13 +69,18 @@ Formelpräfixen werden gegen Spreadsheet-Formelausführung geschützt.
 
 Eine CaloGraph-Datensicherung kann nach vollständiger Validierung zunächst als
 Vorschau und anschließend atomar in das eigene Konto importiert werden. Das
-Importformat ist ausschließlich `calograph-data-export`; Version `2` wird
+Importformat ist ausschließlich `calograph-data-export`; Version `3` wird
 streng validiert und restauriert persönliche Profilfelder vollständig,
-einschließlich expliziter `null`-Werte. Version `1` bleibt abwärtskompatibel
-importierbar und enthält keine persönlichen Profilfelder. Beim Import von
-Version `1` bleiben eventuell bereits vorhandene neuere persönliche Profildaten
-unverändert. Profil-, Tracking-, Ziel-, Override-, Achievement- und Sample-Daten
-werden übernommen; Import-Historie und
-YAZIO-Synchronisationsmetadaten dienen nur der Dokumentation und werden nicht
-automatisch wieder aktiviert. YAZIO-Zugangsdaten und Authentifizierungsdaten
-werden niemals übernommen.
+einschließlich expliziter `null`-Werte. In `targets.json` enthält jeder
+Version-3-Eintrag die expliziten kanonischen Kilogrammfelder
+`target_weight_min_kg` und `target_weight_max_kg`; sie sind gemeinsam `null`,
+ein exakter Wert oder ein geordneter Bereich. Fehlende oder ungültige
+Zielgewichtsgrenzen machen ein Version-3-Archiv ungültig. Version `2` und
+Version `1` bleiben abwärtskompatibel importierbar, enthalten keine
+Zielgewichtsfelder und restaurieren daher Zielgewichte als `null`. Version `1`
+enthält keine persönlichen Profilfelder; beim Import bleiben eventuell bereits
+vorhandene neuere persönliche Profildaten unverändert. Profil-, Tracking-,
+Ziel-, Override-, Achievement- und Sample-Daten werden übernommen;
+Import-Historie und YAZIO-Synchronisationsmetadaten dienen nur der
+Dokumentation und werden nicht automatisch wieder aktiviert. YAZIO-Zugangsdaten
+und Authentifizierungsdaten werden niemals übernommen.

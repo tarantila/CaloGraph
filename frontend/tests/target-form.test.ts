@@ -4,10 +4,84 @@ const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({ api: apiMock }))
 
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
-import { saveTargetDraft, type TargetDraft } from '../src/target-form'
+import {
+  saveTargetDraft,
+  targetWeightFromTarget,
+  targetWeightPayload,
+  weightToKg,
+  type TargetDraft,
+} from '../src/target-form'
 
 beforeEach(() => {
   setLocale(DEFAULT_LOCALE)
+})
+
+const INVALID_REMOTE_VALUES = [
+  '',
+  'NaN',
+  'Infinity',
+  '-Infinity',
+  'abc',
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+] as const
+
+describe('target weight semantics', () => {
+  it('maps canonical pairs to none, exact, and range modes', () => {
+    expect(targetWeightFromTarget({ target_weight_min_kg: null, target_weight_max_kg: null })).toEqual({
+      mode: 'none',
+      minKg: null,
+      maxKg: null,
+    })
+    expect(targetWeightFromTarget({ target_weight_min_kg: 75, target_weight_max_kg: 75 })).toMatchObject({ mode: 'exact', minKg: 75, maxKg: 75 })
+    expect(targetWeightFromTarget({ target_weight_min_kg: 70, target_weight_max_kg: 80 })).toMatchObject({ mode: 'range', minKg: 70, maxKg: 80 })
+    expect(targetWeightFromTarget({ target_weight_min_kg: '70.000', target_weight_max_kg: '80.000' })).toMatchObject({ mode: 'range', minKg: 70, maxKg: 80 })
+  })
+
+  it.each(INVALID_REMOTE_VALUES)(
+    'rejects invalid remote minimum %s',
+    (value) => {
+      expect(() => targetWeightFromTarget({
+        target_weight_min_kg: value,
+        target_weight_max_kg: '80',
+      })).toThrow()
+    },
+  )
+
+  it.each(INVALID_REMOTE_VALUES)(
+    'rejects invalid remote maximum %s',
+    (value) => {
+      expect(() => targetWeightFromTarget({
+        target_weight_min_kg: '80',
+        target_weight_max_kg: value,
+      })).toThrow()
+    },
+  )
+
+  it('rejects invalid loaded pairs and unordered ranges', () => {
+    expect(() => targetWeightFromTarget({
+      target_weight_min_kg: undefined,
+      target_weight_max_kg: undefined,
+    } as never)).toThrow()
+    expect(() => targetWeightFromTarget({ target_weight_min_kg: 80, target_weight_max_kg: null })).toThrow()
+    expect(() => targetWeightPayload({
+      target_weight_mode: 'range',
+      target_weight_min_kg: 80,
+      target_weight_max_kg: 70,
+    })).toThrow('Das untere Zielgewicht muss kleiner als das obere sein')
+  })
+
+  it('converts lb input and rounds only the saved kg payload', () => {
+    const pounds = 165.347
+    const expected = Math.round(weightToKg(pounds, 'lb') * 1000) / 1000
+    expect(targetWeightPayload({
+      target_weight_mode: 'exact',
+      target_weight_min_kg: pounds,
+      target_weight_max_kg: pounds,
+    }, 'lb')).toEqual({ target_weight_min_kg: expected, target_weight_max_kg: expected })
+  })
+
 })
 
 function targetDraft(
@@ -24,6 +98,9 @@ function targetDraft(
     carbs_g: null,
     fat_g: null,
     fiber_g: null,
+    target_weight_mode: 'none',
+    target_weight_min_kg: null,
+    target_weight_max_kg: null,
     activity_mode: activityMode,
     activity_source_type: activitySourceType,
   }
@@ -54,6 +131,8 @@ describe('target form persistence', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        target_weight_min_kg: null,
+        target_weight_max_kg: null,
         activity_mode: 'off',
         activity_source_type: null,
       }),
@@ -83,6 +162,8 @@ describe('target form persistence', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        target_weight_min_kg: null,
+        target_weight_max_kg: null,
         activity_mode: 'full',
         activity_source_type: 'apple_health_xml',
       }),

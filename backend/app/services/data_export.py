@@ -14,7 +14,7 @@ from typing import IO, Literal, cast
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,8 +34,8 @@ from app.security_events import log_security_event, security_reference
 from app.services.achievements import unlock_achievement_keys
 
 EXPORT_FORMAT = "calograph-data-export"
-EXPORT_FORMAT_VERSION = 2
-SUPPORTED_EXPORT_FORMAT_VERSIONS = frozenset({1, 2})
+EXPORT_FORMAT_VERSION = 3
+SUPPORTED_EXPORT_FORMAT_VERSIONS = frozenset({1, 2, 3})
 EXPORT_STATUS_COOKIE = "calograph_export_status"
 _EXPORT_CHUNK_BYTES = 64 * 1024
 _EXPORT_QUEUE_CHUNKS = 16
@@ -58,7 +58,7 @@ def export_status_cookie(
 
 class ExportManifest(BaseModel):
     format: Literal["calograph-data-export"]
-    format_version: Literal[1, 2]
+    format_version: Literal[1, 2, 3]
     generated_at: datetime
     application: Literal["CaloGraph"]
     application_version: str
@@ -123,7 +123,7 @@ class ExportSettings(BaseModel):
     tracking_quality: ExportTrackingQuality | None
 
 
-class ExportTarget(BaseModel):
+class _ExportTargetBase(BaseModel):
     valid_from: date
     valid_to: date | None
     calories_kcal: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
@@ -136,6 +136,41 @@ class ExportTarget(BaseModel):
     fiber_g: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=3)
     water_ml: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=3)
     created_at: datetime
+
+
+class ExportTarget(_ExportTargetBase):
+    target_weight_min_kg: Decimal | None = Field(
+        default=None, gt=0, le=1000, max_digits=7, decimal_places=3
+    )
+    target_weight_max_kg: Decimal | None = Field(
+        default=None, gt=0, le=1000, max_digits=7, decimal_places=3
+    )
+
+    @model_validator(mode="after")
+    def target_weight_range_is_valid(self) -> ExportTarget:
+        minimum = self.target_weight_min_kg
+        maximum = self.target_weight_max_kg
+        if (minimum is None) != (maximum is None):
+            raise ValueError("Das Zielgewicht muss als vollständiger Bereich angegeben werden")
+        if minimum is not None and maximum is not None:
+            if not minimum.is_finite() or not maximum.is_finite():
+                raise ValueError("Das Zielgewicht muss aus endlichen Werten bestehen")
+            if minimum > maximum:
+                raise ValueError("Der Zielgewichtsbereich ist ungültig")
+        return self
+
+
+class ExportTargetV1V2(_ExportTargetBase):
+    pass
+
+
+class ExportTargetV3(ExportTarget):
+    target_weight_min_kg: Decimal | None = Field(
+        gt=0, le=1000, max_digits=7, decimal_places=3
+    )
+    target_weight_max_kg: Decimal | None = Field(
+        gt=0, le=1000, max_digits=7, decimal_places=3
+    )
 
 
 class ExportTrackingOverride(BaseModel):
@@ -484,6 +519,8 @@ def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
             valid_to=target.valid_to,
             calories_kcal=target.calories_kcal,
             maintenance_kcal=target.maintenance_kcal,
+            target_weight_min_kg=target.target_weight_min_kg,
+            target_weight_max_kg=target.target_weight_max_kg,
             activity_mode=target.activity_mode,
             activity_source_type=target.activity_source_type,
             protein_g=target.protein_g,

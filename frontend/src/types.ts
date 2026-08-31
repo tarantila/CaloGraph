@@ -101,6 +101,8 @@ export interface YazioStatus {
   last_error: string | null
 }
 
+export type DecimalTransport = string | number | null
+
 export interface Target {
   id: string
   valid_from: string
@@ -111,6 +113,8 @@ export interface Target {
   carbs_g: number | null
   fat_g: number | null
   fiber_g: number | null
+  target_weight_min_kg: DecimalTransport
+  target_weight_max_kg: DecimalTransport
   activity_mode: ActivityMode
   activity_source_type: ActivitySourceType | null
 }
