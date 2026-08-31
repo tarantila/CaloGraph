@@ -10,7 +10,9 @@ activity-calorie credits, trends, achievements, and data-quality views without
 moral judgment or external telemetry. Activity tracking, hydration, weight,
 and medical interpretation remain outside the product scope.
 
-![CaloGraph nutrition dashboard with calorie, macronutrient, weekly summary, and data status views](https://raw.githubusercontent.com/tarantila/CaloGraph/main/docs/assets/dashboard-overview.png)
+<p align="center">
+  <img src="docs/assets/dashboard-overview.png" alt="CaloGraph nutrition dashboard with calorie, macronutrient, weekly summary, and data status views">
+</p>
 
 > [!WARNING]
 > **Work in progress:** CaloGraph is under active development. Version `0.x`
