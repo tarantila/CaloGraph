@@ -134,6 +134,11 @@ async function save(): Promise<void> {
     })
     hydrate(result)
     message.value = t('accountPersonal.saved')
+    try {
+      await auth.reconcileAchievements(true)
+    } catch {
+      // Saving personal data remains successful when reconciliation is unavailable.
+    }
   } catch (cause) {
     error.value = cause instanceof ApiError
       ? localizeApiError(cause, 'accountPersonal.saveFailed', { preserveDetail: false })
@@ -207,7 +212,6 @@ onBeforeUnmount(() => {
             :max="birthdayMax"
             :disabled="saving"
           />
-          <small>{{ t('accountPersonal.birthDateHelp') }}</small>
         </label>
 
         <label class="field">

@@ -43,7 +43,7 @@ describe('AchievementsView', () => {
           target: 1,
           sort_order: 10,
         },
-        ...[240, 450, 460].map((sort_order) => ({
+        ...[240, 450, 460, 470].map((sort_order) => ({
           category: 'hidden',
           hidden: true,
           placeholder: true,
@@ -61,9 +61,9 @@ describe('AchievementsView', () => {
 
     expect(wrapper.text()).toContain('Lucky Seven')
     expect(wrapper.text()).toContain('First Step')
-    expect(wrapper.text().match(/Versteckter Erfolg/g)).toHaveLength(3)
-    expect(wrapper.text().match(/\?\?\?/g)).toHaveLength(3)
-    expect(wrapper.findAll('.achievement-card.hidden')).toHaveLength(3)
+    expect(wrapper.text().match(/Versteckter Erfolg/g)).toHaveLength(4)
+    expect(wrapper.text().match(/\?\?\?/g)).toHaveLength(4)
+    expect(wrapper.findAll('.achievement-card.hidden')).toHaveLength(4)
     expect(wrapper.text()).toContain('3 / 7')
     expect(wrapper.findAll('progress')).toHaveLength(1)
   })
@@ -95,5 +95,37 @@ describe('AchievementsView', () => {
     expect(wrapper.text()).not.toContain('???')
     expect(wrapper.findAll('.achievement-card.hidden')).toHaveLength(0)
     expect(wrapper.findAll('progress')).toHaveLength(0)
+  })
+
+  it('reveals make-a-wish translations consistently after unlock', async () => {
+    apiMock.mockResolvedValue({
+      achievements: [{
+        key: 'make_a_wish',
+        category: 'hidden',
+        kind: 'discovery',
+        icon: 'calendar',
+        hidden: true,
+        placeholder: false,
+        unlocked: true,
+        unlocked_at: '2026-08-31T10:00:00Z',
+        progress: null,
+        target: null,
+        sort_order: 470,
+      }],
+    })
+
+    const german = mount(AchievementsView)
+    await flushPromises()
+    expect(german.text()).toContain('Wünsch dir was!')
+    expect(german.text()).toContain('Ein bisschen Geburtstagszauber.')
+    expect(german.text()).not.toContain('Versteckter Erfolg')
+    german.unmount()
+
+    setLocale('en')
+    const english = mount(AchievementsView)
+    await flushPromises()
+    expect(english.text()).toContain('Make a Wish!')
+    expect(english.text()).toContain('A little birthday magic.')
+    expect(english.text()).not.toContain('???')
   })
 })

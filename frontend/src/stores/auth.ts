@@ -318,6 +318,7 @@ export const useAuthStore = defineStore('auth', () => {
       throw new Error('stale onboarding response')
     }
     setOnboardingStatus(status)
+    if (status.completed) await reconcileAchievements(true)
     return status
   }
 

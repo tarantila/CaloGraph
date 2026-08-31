@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import DateInput from '../components/DateInput.vue'
 import { ApiError, api, localizeApiError } from '../api'
 import { isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
@@ -34,6 +35,7 @@ const signingOut = ref(false)
 const targetSaved = ref(false)
 const step = computed<OnboardingStep>(() => auth.onboardingStatus?.current_step ?? 'targets')
 const fullFlow = computed(() => auth.onboardingStatus?.mode === 'full')
+const birthdayMax = computed(() => isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
 
 function showError(cause: unknown, key: string): void {
   error.value = cause instanceof ApiError ? localizeApiError(cause, key) : t(key)
@@ -58,6 +60,11 @@ async function savePersonal(): Promise<void> {
       intolerances: personal.intolerances.trim() || null,
     }),
   })
+  try {
+    await auth.reconcileAchievements(true)
+  } catch {
+    // Saving personal data remains successful when reconciliation is unavailable.
+  }
 }
 
 async function submitPersonal(skip = false): Promise<void> {
@@ -174,7 +181,7 @@ onMounted(() => {
           <legend>{{ t('setup.personalLegend') }}</legend>
           <label class="field">{{ t('accountPersonal.displayName') }}<input v-model="personal.display_name" name="display-name" /></label>
           <label class="field">{{ t('accountPersonal.gender') }}<select v-model="personal.gender" name="gender"><option value="">—</option><option value="female">{{ t('accountPersonal.genderOptions.female') }}</option><option value="male">{{ t('accountPersonal.genderOptions.male') }}</option><option value="non_binary">{{ t('accountPersonal.genderOptions.non_binary') }}</option><option value="other">{{ t('accountPersonal.genderOptions.other') }}</option><option value="prefer_not_to_say">{{ t('accountPersonal.genderOptions.prefer_not_to_say') }}</option></select></label>
-          <label class="field">{{ t('accountPersonal.birthDate') }}<input v-model="personal.birth_date" name="birth-date" type="date" /></label>
+          <label class="field">{{ t('accountPersonal.birthDate') }}<DateInput v-model="personal.birth_date" name="birth_date" autocomplete="bday" :max="birthdayMax" :disabled="saving" /></label>
           <label class="field">{{ t('accountPersonal.height') }}<input v-model="personal.height_cm" name="height-cm" type="number" min="0.01" max="300" step="0.01" /></label>
           <label class="field">{{ t('accountPersonal.diet') }}<select v-model="personal.diet_type" name="diet-type"><option value="">—</option><option value="no_special_diet">{{ t('accountPersonal.dietOptions.no_special_diet') }}</option><option value="vegetarian">{{ t('accountPersonal.dietOptions.vegetarian') }}</option><option value="vegan">{{ t('accountPersonal.dietOptions.vegan') }}</option><option value="pescetarian">{{ t('accountPersonal.dietOptions.pescetarian') }}</option><option value="other">{{ t('accountPersonal.dietOptions.other') }}</option><option value="prefer_not_to_say">{{ t('accountPersonal.dietOptions.prefer_not_to_say') }}</option></select></label>
           <label class="field">{{ t('accountPersonal.healthNotes') }}<textarea v-model="personal.health_notes" name="health-notes" /></label>

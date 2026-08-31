@@ -211,11 +211,13 @@ describe('SetupView', () => {
     await flushPromises()
     expect(wrapper.get('h1').text()).toBe('Sicherheit')
     expect(auth.onboardingStatus?.current_step).toBe('security')
+    expect(apiMock.mock.calls.filter(([path]) => path === '/achievements/reconcile')).toHaveLength(0)
 
     await wrapper.get('button.setup-submit').trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.name).toBe('overview')
     expect(auth.onboardingStatus?.completed).toBe(true)
+    expect(apiMock).toHaveBeenCalledWith('/achievements/reconcile', { method: 'POST' })
     wrapper.unmount()
   })
 

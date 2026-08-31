@@ -145,6 +145,19 @@ request allowlists.
 Production nevertheless requires both values to be listed explicitly in
 `TRUSTED_HOSTS` and `TRUSTED_ORIGINS`, making the deployed policy auditable.
 
+The frontend publication is loopback-only by default:
+`CALOGRAPH_BIND_ADDRESS=127.0.0.1` and `CALOGRAPH_PORT=8180` publish only the
+browser-facing frontend; the backend container remains unexposed on Docker's
+internal network. To allow clients on a private network, opt in explicitly with
+`CALOGRAPH_BIND_ADDRESS=0.0.0.0` or a concrete host IP, then apply the
+appropriate network controls and firewall rules. Keep `TRUSTED_HOSTS` and
+`TRUSTED_ORIGINS` aligned with every hostname and origin clients may use.
+For Internet-facing deployments, place the frontend behind a TLS-terminating
+reverse proxy, set `CALOGRAPH_PUBLIC_URL` to its HTTPS origin, and configure
+the trusted host/origin values for that origin. The bind address controls Docker
+port reachability; it is not an application security boundary, so use TLS,
+firewalls, and the application trust settings as defense in depth.
+
 The backend container applies pending Alembic migrations before it starts. The
 application is then available at
 [http://127.0.0.1:8180](http://127.0.0.1:8180).

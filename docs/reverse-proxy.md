@@ -4,6 +4,28 @@ CaloGraph binds to `127.0.0.1:8180` by default. The external proxy terminates
 TLS and connects locally to this port. The current application does not use
 WebSockets.
 
+## Frontend bind address and exposure
+
+Compose publishes only the frontend port on the host. The default
+`CALOGRAPH_BIND_ADDRESS=127.0.0.1` keeps that publication on loopback; the
+backend has no host port and remains reachable only on the Docker network. A
+private-network deployment must opt in deliberately, for example:
+
+```dotenv
+CALOGRAPH_BIND_ADDRESS=0.0.0.0
+# or: CALOGRAPH_BIND_ADDRESS=192.0.2.10
+CALOGRAPH_PORT=8180
+```
+
+Binding to `0.0.0.0` or a concrete host address exposes the frontend to the
+corresponding network interfaces. Apply host firewall and network controls,
+and do not treat an address bind as an application security boundary. Keep
+`TRUSTED_HOSTS` and `TRUSTED_ORIGINS` limited to the hostnames and origins
+actually served. For Internet-facing access, prefer a TLS-terminating reverse
+proxy, set `CALOGRAPH_PUBLIC_URL` to its HTTPS origin, and forward requests to
+the loopback publication. TLS, firewall policy, and the application's trusted
+host/origin checks provide defense in depth; none replaces the others.
+
 ## Development request identity
 
 The development Compose override serves Vite on

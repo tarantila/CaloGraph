@@ -202,4 +202,33 @@ describe('AccountPersonalDataView', () => {
     expect(wrapper.text()).toContain('Persönliche Daten gespeichert.')
     wrapper.unmount()
   })
+
+  it('keeps a successful profile save when achievement reconciliation fails', async () => {
+    const auth = useAuthStore()
+    auth.onboardingStatus = {
+      mode: 'legacy',
+      required: false,
+      completed: true,
+      current_step: 'completed',
+    }
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/settings/personal-profile' && options?.method === 'PUT') {
+        return Promise.resolve(JSON.parse(String(options.body)))
+      }
+      if (path === '/achievements/reconcile') {
+        return Promise.reject(new Error('reconcile unavailable'))
+      }
+      return Promise.resolve({ ...personalProfile })
+    })
+
+    const wrapper = mount(AccountPersonalDataView)
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Persönliche Daten gespeichert.')
+    expect(apiMock.mock.calls.some(([path]) => path === '/achievements/reconcile')).toBe(true)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })

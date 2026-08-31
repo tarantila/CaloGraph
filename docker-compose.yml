@@ -235,7 +235,7 @@ services:
       NGINX_MAX_UPLOAD_BYTES: ${NGINX_MAX_UPLOAD_BYTES:-536870912}
       CALOGRAPH_EDGE_GATEWAY_IP: ${CALOGRAPH_EDGE_GATEWAY_IP:-172.30.0.1}
     ports:
-      - "127.0.0.1:${CALOGRAPH_PORT:-8180}:8080"
+      - "${CALOGRAPH_BIND_ADDRESS:-127.0.0.1}:${CALOGRAPH_PORT:-8180}:8080"
     depends_on:
       backend:
         condition: service_healthy

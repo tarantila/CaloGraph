@@ -21,6 +21,7 @@ from app.models import (
     PasskeyCredential,
     User,
     UserAchievement,
+    UserProfile,
     UserTotpCredential,
     UserUsageDay,
 )
@@ -81,6 +82,7 @@ ACHIEVEMENT_DEFINITIONS: Final[tuple[AchievementDefinition, ...]] = (
     AchievementDefinition("welcome_back", "import", "import", False, 370, icon="upload"),
     AchievementDefinition("the_big_picture", "analytics", "discovery", True, 450, icon="chart"),
     AchievementDefinition("deja_vu", "import", "discovery", True, 460, icon="repeat"),
+    AchievementDefinition("make_a_wish", "hidden", "discovery", True, 470, icon="calendar"),
 )
 ACHIEVEMENT_BY_KEY: Final = {item.key: item for item in ACHIEVEMENT_DEFINITIONS}
 
@@ -89,6 +91,7 @@ ACHIEVEMENT_BY_KEY: Final = {item.key: item for item in ACHIEVEMENT_DEFINITIONS}
 class AchievementFacts:
     tracked_dates: tuple[date, ...]
     usage_dates: tuple[date, ...]
+    birth_date: date | None
     macro_complete_dates: frozenset[date]
     positive_activity_dates: frozenset[date]
     source_types: frozenset[str]
@@ -161,6 +164,9 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
             .distinct()
             .order_by(UserUsageDay.activity_date)
         )
+    )
+    birth_date = db.scalar(
+        select(UserProfile.birth_date).where(UserProfile.user_id == user.id)
     )
     targets = list(
         db.scalars(
@@ -281,6 +287,7 @@ def load_facts(db: Session, user: User) -> AchievementFacts:
     return AchievementFacts(
         tracked_dates=tracked_dates,
         usage_dates=usage_dates,
+        birth_date=birth_date,
         macro_complete_dates=macro_complete_dates,
         positive_activity_dates=positive_activity_dates,
         source_types=source_types,
@@ -356,6 +363,14 @@ def _qualifies(definition: AchievementDefinition, facts: AchievementFacts) -> bo
         return len(facts.macro_complete_dates) >= (definition.target or 0)
     if definition.key == "history_365":
         return facts.historical_span_days >= (definition.target or 0)
+    if definition.key == "make_a_wish":
+        return (
+            facts.birth_date is not None
+            and any(
+                day.month == facts.birth_date.month and day.day == facts.birth_date.day
+                for day in facts.usage_dates
+            )
+        )
     if definition.key == "hidden_leap_day":
         return facts.has_leap_day
     if definition.key == "hidden_time_machine":

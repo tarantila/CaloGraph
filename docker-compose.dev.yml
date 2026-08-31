@@ -30,7 +30,7 @@ services:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
     ports: !override
-      - "127.0.0.1:${CALOGRAPH_PORT:-8180}:5173"
+      - "${CALOGRAPH_BIND_ADDRESS:-127.0.0.1}:${CALOGRAPH_PORT:-8180}:5173"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5173/"]
     read_only: false

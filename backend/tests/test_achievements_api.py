@@ -17,6 +17,7 @@ HIDDEN_KEYS = {
     "hidden_time_machine",
     "hidden_break_day",
     "hidden_full_house",
+    "make_a_wish",
     "more_headroom",
     "the_big_picture",
     "deja_vu",
@@ -62,8 +63,8 @@ def test_locked_hidden_achievements_are_opaque_placeholders_in_api(
     payload = response.json()
     hidden = [item for item in payload["achievements"] if item["hidden"]]
     assert len(hidden) == len(HIDDEN_KEYS)
-    new_hidden = [item for item in hidden if item["sort_order"] in {240, 450, 460}]
-    assert len(new_hidden) == 3
+    new_hidden = [item for item in hidden if item["sort_order"] in {240, 450, 460, 470}]
+    assert len(new_hidden) == 4
     assert len(hidden) >= 3
     assert all(item["placeholder"] is True for item in hidden)
     assert all(item["unlocked"] is False for item in hidden)
@@ -111,6 +112,37 @@ def test_unlocked_hidden_achievement_keeps_real_key(
     assert item["icon"] == "trophy"
     assert item["unlocked_at"].startswith("2026-08-16T10:00:00")
 
+
+def test_unlocked_make_a_wish_reveals_its_definition(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    db.add(
+        UserAchievement(
+            user_id=user.id,
+            achievement_key="make_a_wish",
+            unlocked_at=datetime(2026, 8, 31, 10, tzinfo=UTC),
+        )
+    )
+    db.commit()
+    _login(client)
+    response = client.get("/api/v1/achievements")
+    assert response.status_code == 200
+    item = next(
+        item for item in response.json()["achievements"] if item.get("key") == "make_a_wish"
+    )
+    assert item["key"] == "make_a_wish"
+    assert item["category"] == "hidden"
+    assert item["kind"] == "discovery"
+    assert item["icon"] == "calendar"
+    assert "progress" not in item
+    assert "target" not in item
+    assert item["hidden"] is True
+    assert item["placeholder"] is False
+    assert item["unlocked"] is True
+    assert item["sort_order"] == 470
+    assert item["unlocked_at"].startswith("2026-08-31T10:00:00")
 
 def test_reconcile_rate_limit_preserves_session(
     client: TestClient,
