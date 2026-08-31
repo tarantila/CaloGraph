@@ -93,6 +93,8 @@ test('micronutrient analysis shows source coverage and neutral orientation', asy
           carbs_g: null,
           fat_g: null,
           fiber_g: null,
+          target_weight_min_kg: null,
+          target_weight_max_kg: null,
         }],
       })
     }

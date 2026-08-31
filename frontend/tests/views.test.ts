@@ -194,7 +194,7 @@ describe('main views', () => {
         })
       }
       if (path === '/settings/targets') {
-        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }])
+        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, target_weight_min_kg: null, target_weight_max_kg: null }])
       }
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
@@ -286,8 +286,8 @@ describe('main views', () => {
       }
       if (path === '/settings/targets') {
         return Promise.resolve([
-          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
-          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
+          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null },
+          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null },
         ])
       }
       if (path === '/imports') return Promise.resolve([])
@@ -738,7 +738,7 @@ describe('main views', () => {
         })
       }
       if (path === '/settings/targets') {
-        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null }])
+        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null }])
       }
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
@@ -1623,7 +1623,7 @@ describe('main views', () => {
     const now = new Date()
     const offset = now.getTimezoneOffset() * 60_000
     const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
-    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null }
+    const currentTarget = { id: 'target', valid_from: today, valid_to: null, calories_kcal: '2100.000', maintenance_kcal: '2600.000', protein_g: '140.000', carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, target_weight_min_kg: null, target_weight_max_kg: null, activity_mode: 'off', activity_source_type: null }
     const historicalTarget = { ...currentTarget, id: 'historical-target', valid_from: '2026-07-27', valid_to: '2026-08-02' }
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/profile') return Promise.resolve(user)
@@ -1691,6 +1691,8 @@ describe('main views', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        target_weight_min_kg: null,
+        target_weight_max_kg: null,
         activity_mode: 'off',
         activity_source_type: null,
     })
@@ -1820,6 +1822,8 @@ describe('main views', () => {
       carbs_g: null,
       fat_g: null,
       fiber_g: null,
+      target_weight_min_kg: null,
+      target_weight_max_kg: null,
       activity_mode: 'full',
       activity_source_type: 'apple_health_xml',
     }
@@ -1851,6 +1855,217 @@ describe('main views', () => {
     expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
     expect(wrapper.find('select[name="activity-source"]').exists()).toBe(true)
   })
+  it('loads target weight modes in the preferred unit and labels each history entry', async () => {
+    const now = new Date()
+    const offset = now.getTimezoneOffset() * 60_000
+    const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
+    const baseTarget = {
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      activity_mode: 'off',
+      activity_source_type: null,
+    }
+    const targets = [
+      { ...baseTarget, id: 'none', valid_from: '2026-07-01', valid_to: '2026-07-10', target_weight_min_kg: null, target_weight_max_kg: null },
+      { ...baseTarget, id: 'exact', valid_from: '2026-07-11', valid_to: '2026-07-20', target_weight_min_kg: '70.000', target_weight_max_kg: '70.000' },
+      { ...baseTarget, id: 'range', valid_from: today, target_weight_min_kg: '65.000', target_weight_max_kg: '80.000' },
+    ]
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve(targets)
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'lb' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+
+    expect(wrapper.findAll<HTMLInputElement>('input[name="target-weight-mode"]')).toHaveLength(3)
+    expect(wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="range"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').element.value).toBe('143.3')
+    expect(wrapper.get<HTMLInputElement>('input[name="target-weight-max"]').element.value).toBe('176.4')
+    expect(wrapper.text()).toContain('Von (lb)')
+    expect(wrapper.text()).toContain('Bis (lb)')
+    expect(wrapper.text()).toContain('Zielgewicht: 154,3 lb')
+    expect(wrapper.text()).toContain('Zielgewicht: 143,3–176,4 lb')
+    expect(wrapper.text()).toContain('Kein Zielgewicht')
+  })
+
+  it('submits exact, range, and none target-weight payloads across mode transitions', async () => {
+    const now = new Date()
+    const offset = now.getTimezoneOffset() * 60_000
+    const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
+    const target = {
+      id: 'target',
+      valid_from: today,
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      target_weight_min_kg: 75,
+      target_weight_max_kg: 75,
+      activity_mode: 'off',
+      activity_source_type: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'kg' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Zielgewicht (kg)')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    let saveCalls = apiMock.mock.calls.filter(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
+    expect(JSON.parse(String(saveCalls[0][1].body))).toMatchObject({
+      target_weight_min_kg: 75,
+      target_weight_max_kg: 75,
+    })
+
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="range"]').setValue()
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').setValue('70')
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-max"]').setValue('80')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    saveCalls = apiMock.mock.calls.filter(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
+    expect(JSON.parse(String(saveCalls[1][1].body))).toMatchObject({
+      target_weight_min_kg: 70,
+      target_weight_max_kg: 80,
+    })
+
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="none"]').setValue()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    saveCalls = apiMock.mock.calls.filter(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
+    expect(JSON.parse(String(saveCalls[2][1].body))).toMatchObject({
+      target_weight_min_kg: null,
+      target_weight_max_kg: null,
+    })
+
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="exact"]').setValue()
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-exact"]').setValue('77')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    saveCalls = apiMock.mock.calls.filter(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
+    expect(JSON.parse(String(saveCalls[3][1].body))).toMatchObject({
+      target_weight_min_kg: 77,
+      target_weight_max_kg: 77,
+    })
+  })
+
+  it('converts lb input once and preserves its displayed value across repeated mode changes', async () => {
+    const now = new Date()
+    const offset = now.getTimezoneOffset() * 60_000
+    const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
+    const target = {
+      id: 'target',
+      valid_from: today,
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      target_weight_min_kg: null,
+      target_weight_max_kg: null,
+      activity_mode: 'off',
+      activity_source_type: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'lb' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="exact"]').setValue()
+    const exact = wrapper.get<HTMLInputElement>('input[name="target-weight-exact"]')
+    await exact.setValue('165.3')
+    const displayed = Number(exact.element.value)
+
+    for (const mode of ['range', 'exact', 'range', 'exact'] as const) {
+      await wrapper.get<HTMLInputElement>(`input[name="target-weight-mode"][value="${mode}"]`).setValue()
+    }
+    expect(Number(wrapper.get<HTMLInputElement>('input[name="target-weight-exact"]').element.value)).toBeCloseTo(displayed, 8)
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const saveCall = apiMock.mock.calls.find(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')
+    expect(saveCall).toBeDefined()
+    const payload = JSON.parse(String(saveCall![1].body))
+    const expectedKg = Math.round((165.3 / 2.2046226218487757) * 1000) / 1000
+    expect(payload).toMatchObject({
+      target_weight_min_kg: expectedKg,
+      target_weight_max_kg: expectedKg,
+    })
+  })
+
+  it('blocks reversed and over-limit range values before making a save request', async () => {
+    const now = new Date()
+    const offset = now.getTimezoneOffset() * 60_000
+    const today = new Date(now.getTime() - offset).toISOString().slice(0, 10)
+    const target = {
+      id: 'target',
+      valid_from: today,
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      target_weight_min_kg: 75,
+      target_weight_max_kg: 75,
+      activity_mode: 'off',
+      activity_source_type: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'kg' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-mode"][value="range"]').setValue()
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').setValue('80')
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-max"]').setValue('70')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('#target-weight-error').text()).toContain('Das untere Zielgewicht muss kleiner als das obere sein')
+    expect(apiMock.mock.calls.some(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-min"]').setValue('70')
+    await wrapper.get<HTMLInputElement>('input[name="target-weight-max"]').setValue('1001')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('#target-weight-error').text()).toContain('Das Zielgewicht muss größer als 0 und höchstens 1000 kg sein')
+    expect(apiMock.mock.calls.some(([path, options]) =>
+      path === `/settings/targets/${today}` && (options as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+  })
+
 
   it('starts targetless users with empty required goals and saves only their values', async () => {
     apiMock.mockImplementation((path: string) => {
@@ -1890,6 +2105,8 @@ describe('main views', () => {
         carbs_g: null,
         fat_g: null,
         fiber_g: null,
+        target_weight_min_kg: null,
+        target_weight_max_kg: null,
         activity_mode: 'off',
         activity_source_type: null,
       }),

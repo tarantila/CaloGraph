@@ -273,6 +273,8 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
                 valid_from=date(2026, 8, 1),
                 calories_kcal=Decimal("2200"),
                 protein_g=Decimal("130"),
+                target_weight_min_kg=Decimal("70"),
+                target_weight_max_kg=Decimal("80"),
             ),
             TrackingOverride(
                 user_id=user.id,
@@ -388,7 +390,7 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
         ) + "\n" + "\n".join(health_lines)
 
     assert manifest["format"] == "calograph-data-export"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert manifest["application"] == "CaloGraph"
     assert profile["username"] == "admin"
     assert profile["display_name"] == "Ada Export"
@@ -400,6 +402,18 @@ def test_data_export_is_user_scoped_streams_samples_and_excludes_secrets(
     assert profile["intolerances"] == "PRIVATE-owned-intolerance"
     assert settings_data["tracking_quality"] is not None
     assert any(item["calories_kcal"] == "2200.000" for item in targets_data)
+    assert all(
+        {"target_weight_min_kg", "target_weight_max_kg"} <= item.keys()
+        for item in targets_data
+    )
+    assert any(
+        item["target_weight_min_kg"] == "70.000" and item["target_weight_max_kg"] == "80.000"
+        for item in targets_data
+    )
+    assert any(
+        item["target_weight_min_kg"] is None and item["target_weight_max_kg"] is None
+        for item in targets_data
+    )
     assert overrides_data[0]["local_date"] == "2026-08-02"
     assert overrides_data[0]["note"] == "Manuell bestätigt"
     assert imports_data[0]["source_type"] == "apple_health_xml"

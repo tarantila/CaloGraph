@@ -386,6 +386,144 @@ def test_password_change_has_independent_failure_limit(
 
 
 @pytest.mark.parametrize(
+    ("minimum", "maximum"),
+    [
+        (None, None),
+        (Decimal("72.000"), Decimal("72.000")),
+        (Decimal("60.125"), Decimal("80.500")),
+    ],
+)
+def test_target_weight_range_round_trips(
+    client: TestClient,
+    user: User,
+    minimum: Decimal | None,
+    maximum: Decimal | None,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    response = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={
+            "valid_from": "2024-02-01",
+            "calories_kcal": 2000,
+            "protein_g": 140,
+            "target_weight_min_kg": None if minimum is None else str(minimum),
+            "target_weight_max_kg": None if maximum is None else str(maximum),
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["target_weight_min_kg"] == (
+        None if minimum is None else f"{minimum:.3f}"
+    )
+    assert response.json()["target_weight_max_kg"] == (
+        None if maximum is None else f"{maximum:.3f}"
+    )
+
+    listed = client.get("/api/v1/settings/targets")
+    assert listed.status_code == 200
+    assert listed.json()[0]["target_weight_min_kg"] == (
+        None if minimum is None else f"{minimum:.3f}"
+    )
+    assert listed.json()[0]["target_weight_max_kg"] == (
+        None if maximum is None else f"{maximum:.3f}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum"),
+    [
+        (Decimal("70"), None),
+        (None, Decimal("80")),
+        (Decimal("0"), Decimal("80")),
+        (Decimal("-1"), Decimal("80")),
+        (Decimal("80"), Decimal("70")),
+        (Decimal("80"), Decimal("1000.001")),
+    ],
+)
+def test_target_weight_range_rejects_invalid_combinations(
+    minimum: Decimal | None,
+    maximum: Decimal | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        TargetInput(
+            valid_from=date(2026, 8, 11),
+            calories_kcal=Decimal("3000"),
+            protein_g=Decimal("140"),
+            target_weight_min_kg=minimum,
+            target_weight_max_kg=maximum,
+        )
+
+
+@pytest.mark.parametrize(
+    "weight",
+    [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")],
+)
+def test_target_weight_range_rejects_non_finite_values(weight: Decimal) -> None:
+    with pytest.raises(ValidationError):
+        TargetInput(
+            valid_from=date(2026, 8, 11),
+            calories_kcal=Decimal("3000"),
+            protein_g=Decimal("140"),
+            target_weight_min_kg=weight,
+            target_weight_max_kg=Decimal("80"),
+        )
+
+
+def test_target_weight_update_preserves_historical_version_boundaries(
+    client: TestClient,
+    user: User,
+) -> None:
+    del user
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+    created = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2024-02-01",
+            "calories_kcal": 2100,
+            "protein_g": 140,
+            "target_weight_min_kg": "75",
+            "target_weight_max_kg": "85",
+        },
+    )
+    assert created.status_code == 201
+
+    updated = client.put(
+        "/api/v1/settings/targets/2024-01-01",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2024-01-01",
+            "calories_kcal": 2000,
+            "protein_g": 140,
+            "target_weight_min_kg": "70.250",
+            "target_weight_max_kg": "80.500",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["valid_from"] == "2024-01-01"
+    assert updated.json()["valid_to"] == "2024-02-01"
+    assert updated.json()["target_weight_min_kg"] == "70.250"
+    assert updated.json()["target_weight_max_kg"] == "80.500"
+
+    listed = client.get("/api/v1/settings/targets")
+    assert listed.status_code == 200
+    assert [
+        (item["valid_from"], item["valid_to"]) for item in listed.json()
+    ] == [
+        ("2024-02-01", None),
+        ("2024-01-01", "2024-02-01"),
+    ]
+
+
+@pytest.mark.parametrize(
     ("calories_kcal", "maintenance_kcal"),
     [
         (2000, 2500),

@@ -40,6 +40,8 @@ from app.services.data_export import (
     ExportProfileV1,
     ExportSettings,
     ExportTarget,
+    ExportTargetV1V2,
+    ExportTargetV3,
     ExportTrackingOverride,
 )
 
@@ -193,7 +195,13 @@ def _validated_records(
             raise PortableImportError("Die Sicherung enthält zu viele Datensätze")
         targets: list[ExportTarget] = []
         for value in targets_raw:
-            target = ExportTarget.model_validate(value)
+            if manifest.format_version == 3:
+                target_payload = ExportTargetV3.model_validate(value).model_dump()
+            else:
+                target_payload = ExportTargetV1V2.model_validate(value).model_dump()
+                target_payload["target_weight_min_kg"] = None
+                target_payload["target_weight_max_kg"] = None
+            target = ExportTarget.model_validate(target_payload)
             target.created_at = _utc_datetime(target.created_at)
             if (
                 target.activity_mode not in ACTIVITY_MODES
@@ -397,6 +405,8 @@ def apply_portable_import(file: BinaryIO, user: User, db: Session) -> dict[str, 
                 "valid_to": target.valid_to,
                 "calories_kcal": target.calories_kcal,
                 "maintenance_kcal": target.maintenance_kcal,
+                "target_weight_min_kg": target.target_weight_min_kg,
+                "target_weight_max_kg": target.target_weight_max_kg,
                 "activity_mode": target.activity_mode,
                 "activity_source_type": target.activity_source_type,
                 "protein_g": target.protein_g,
@@ -480,7 +490,7 @@ def apply_portable_import(file: BinaryIO, user: User, db: Session) -> dict[str, 
             else:
                 for quality_key, quality_value in quality_values.items():
                     setattr(current_quality, quality_key, quality_value)
-        if manifest.format_version == 2:
+        if manifest.format_version in {2, 3}:
             personal_values = {
                 "display_name": profile.display_name,
                 "gender": profile.gender,

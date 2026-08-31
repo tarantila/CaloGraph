@@ -11,10 +11,18 @@ import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import {
   createEmptyTargetDraft,
+  displayTargetWeight,
+  formatTargetWeight,
+  kgToWeight,
   saveTargetDraft,
+  targetWeightFromTarget,
+  targetWeightPayload,
   TARGET_LIMITS,
+  TARGET_WEIGHT_LIMITS,
   TargetValidationError,
+  weightToKg,
 } from '../target-form'
+import { useProfilePreferences } from '../composables/useProfilePreferences'
 import type { ActivitySourceType, Target } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
@@ -27,9 +35,61 @@ const deletingTarget = ref(false)
 const targetDeleteError = ref('')
 const message = ref('')
 const error = ref('')
+const weightError = ref('')
 const loading = ref(true)
 const savingTarget = ref(false)
+const profilePreferences = useProfilePreferences()
 let loadGeneration = 0
+
+const preferredWeightUnit = computed(() => profilePreferences.profile.preferred_weight_unit)
+
+function weightInputToKg(value: unknown): number | null {
+  if (value === '' || value == null) return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? weightToKg(numeric, preferredWeightUnit.value) : null
+}
+
+const targetWeightMode = computed({
+  get: () => target.target_weight_mode,
+  set: (mode: 'none' | 'exact' | 'range') => {
+    target.target_weight_mode = mode
+    weightError.value = ''
+    if (mode === 'none') {
+      target.target_weight_min_kg = null
+      target.target_weight_max_kg = null
+    } else if (mode === 'exact') {
+      const value = target.target_weight_min_kg ?? target.target_weight_max_kg
+      target.target_weight_min_kg = value
+      target.target_weight_max_kg = value
+    }
+  },
+})
+
+const targetWeightExact = computed({
+  get: () => target.target_weight_min_kg == null ? null : displayTargetWeight(Number(target.target_weight_min_kg), preferredWeightUnit.value),
+  set: (value: unknown) => {
+    const kg = weightInputToKg(value)
+    target.target_weight_min_kg = kg
+    target.target_weight_max_kg = kg
+    weightError.value = ''
+  },
+})
+
+const targetWeightMin = computed({
+  get: () => target.target_weight_min_kg == null ? null : displayTargetWeight(Number(target.target_weight_min_kg), preferredWeightUnit.value),
+  set: (value: unknown) => {
+    target.target_weight_min_kg = weightInputToKg(value)
+    weightError.value = ''
+  },
+})
+
+const targetWeightMax = computed({
+  get: () => target.target_weight_max_kg == null ? null : displayTargetWeight(Number(target.target_weight_max_kg), preferredWeightUnit.value),
+  set: (value: unknown) => {
+    target.target_weight_max_kg = weightInputToKg(value)
+    weightError.value = ''
+  },
+})
 
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
 
@@ -73,6 +133,7 @@ async function loadTargets() {
     api<Target[]>('/settings/targets'),
     api<Array<{ source_type: ActivitySourceType }>>('/settings/activity-sources'),
   ])
+  targetResult.forEach((item) => targetWeightFromTarget(item))
   targets.value = targetResult
   activitySources.value = Array.isArray(sourceResult)
     ? sourceResult.map((item) => item.source_type)
@@ -87,8 +148,33 @@ async function loadTargets() {
     target.carbs_g = currentTarget.carbs_g == null ? null : Number(currentTarget.carbs_g)
     target.fat_g = currentTarget.fat_g == null ? null : Number(currentTarget.fat_g)
     target.fiber_g = currentTarget.fiber_g == null ? null : Number(currentTarget.fiber_g)
+    const weight = targetWeightFromTarget(currentTarget)
+    target.target_weight_mode = weight.mode
+    target.target_weight_min_kg = weight.minKg
+    target.target_weight_max_kg = weight.maxKg
+  } else {
+    target.target_weight_mode = 'none'
+    target.target_weight_min_kg = null
+    target.target_weight_max_kg = null
   }
   target.valid_from = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+}
+
+function targetWeightHistoryLabel(item: Target) {
+  const weight = targetWeightFromTarget(item)
+  if (weight.mode === 'none') return t('settingsUi.targetWeightHistoryNone')
+  const unit = preferredWeightUnit.value
+  if (weight.mode === 'exact') {
+    return t('settingsUi.targetWeightHistoryExact', {
+      value: formatTargetWeight(Number(weight.minKg), unit),
+      unit,
+    })
+  }
+  return t('settingsUi.targetWeightHistoryRange', {
+    min: formatTargetWeight(Number(weight.minKg), unit),
+    max: formatTargetWeight(Number(weight.maxKg), unit),
+    unit,
+  })
 }
 
 async function load() {
@@ -97,7 +183,7 @@ async function load() {
   error.value = ''
   message.value = ''
   try {
-    await loadTargets()
+    await Promise.all([loadTargets(), profilePreferences.load()])
   } catch (cause) {
     if (generation !== loadGeneration) return
     error.value = cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.loadFailed') : t('settingsUi.loadFailed')
@@ -148,13 +234,16 @@ function targetDeleteLabel(item: Target) {
 async function saveTarget() {
   error.value = ''
   message.value = ''
+  weightError.value = ''
   savingTarget.value = true
   try {
+    targetWeightPayload(target, 'kg')
     await saveTargetDraft(target, targets.value)
     message.value = t('settingsUi.targetSaved', { date: formatGermanDate(target.valid_from) })
     auth.completeTargetSetup()
     await loadTargets()
   } catch (cause) {
+    if (cause instanceof TargetValidationError) weightError.value = cause.message
     error.value =
       cause instanceof ApiError
         ? localizeApiError(cause, 'settingsUi.targetSaveFailed')
@@ -196,6 +285,39 @@ void load()
           <label class="field">{{ t('settingsUi.validFrom') }}<DateInput v-model="target.valid_from" required /></label>
           <label class="field">{{ t('settingsUi.calorieBudget') }}<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
           <label class="field">{{ t('settingsUi.maintenance') }}<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>{{ t('settingsUi.maintenanceHelp') }}</small></label>
+          <fieldset class="field full target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
+            <legend>{{ t('settingsUi.targetWeight') }}</legend>
+            <p class="activity-description">{{ t('settingsUi.targetWeightDescription') }}</p>
+            <div role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="none" />
+                {{ t('settingsUi.targetWeightNone') }}
+              </label>
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="exact" />
+                {{ t('settingsUi.targetWeightExact') }}
+              </label>
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="range" />
+                {{ t('settingsUi.targetWeightRange') }}
+              </label>
+            </div>
+            <label v-if="targetWeightMode === 'exact'" class="field">
+              {{ t('settingsUi.targetWeight') }} ({{ preferredWeightUnit }})
+              <input v-model.number="targetWeightExact" name="target-weight-exact" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+            </label>
+            <div v-if="targetWeightMode === 'range'" class="target-weight-range">
+              <label class="field">
+                {{ t('settingsUi.targetWeightFrom') }} ({{ preferredWeightUnit }})
+                <input v-model.number="targetWeightMin" name="target-weight-min" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+              </label>
+              <label class="field">
+                {{ t('settingsUi.targetWeightTo') }} ({{ preferredWeightUnit }})
+                <input v-model.number="targetWeightMax" name="target-weight-max" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+              </label>
+            </div>
+            <p v-if="weightError" id="target-weight-error" class="field-error" role="alert">{{ weightError }}</p>
+          </fieldset>
           <fieldset class="field full activity-target-settings">
             <legend class="activity-card-header">
               <span>{{ t('activity.title') }}</span>
@@ -246,7 +368,7 @@ void load()
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th>{{ t('activity.title') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th><th class="actions">{{ t('common.actions') }}</th></tr></thead>
+          <thead><tr><th>{{ t('settingsUi.validFrom') }}</th><th>{{ t('common.to') }}</th><th class="number">{{ t('settingsUi.calorieBudget') }}</th><th class="number">{{ t('settingsUi.maintenance') }}</th><th>{{ t('activity.title') }}</th><th>{{ t('settingsUi.targetWeight') }}</th><th class="number">{{ t('settingsUi.proteinTarget') }}</th><th class="actions">{{ t('common.actions') }}</th></tr></thead>
           <tbody>
             <tr v-for="item in targets" :key="item.id">
               <td>{{ formatGermanDate(item.valid_from) }}</td>
@@ -254,6 +376,7 @@ void load()
               <td class="number">{{ integer.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
               <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
               <td>{{ activityHistoryLabel(item) }}</td>
+              <td>{{ targetWeightHistoryLabel(item) }}</td>
               <td class="number">{{ integer.format(Number(item.protein_g)) }} {{ t('common.grams') }}</td>
               <td class="actions">
                 <button
@@ -268,7 +391,7 @@ void load()
                 </button>
               </td>
             </tr>
-            <tr v-if="!targets.length"><td colspan="7" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
+            <tr v-if="!targets.length"><td colspan="8" class="empty">{{ t('settingsUi.noTargets') }}</td></tr>
           </tbody>
         </table>
       </div>

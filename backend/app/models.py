@@ -324,6 +324,17 @@ class NutritionTarget(Base):
             name="ck_target_maintenance_positive_finite",
         ),
         CheckConstraint(
+            "("
+            "target_weight_min_kg IS NULL AND target_weight_max_kg IS NULL"
+            ") OR ("
+            "target_weight_min_kg IS NOT NULL AND target_weight_max_kg IS NOT NULL "
+            "AND target_weight_min_kg > 0 "
+            "AND target_weight_min_kg <= target_weight_max_kg "
+            "AND target_weight_max_kg <= 1000"
+            ")",
+            name="ck_target_weight_range",
+        ),
+        CheckConstraint(
             f"activity_mode IN ({', '.join(repr(mode) for mode in sorted(ACTIVITY_MODES))})",
             name="ck_target_activity_mode",
         ),
@@ -347,6 +358,8 @@ class NutritionTarget(Base):
     valid_to: Mapped[date | None] = mapped_column(Date)
     calories_kcal: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     maintenance_kcal: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    target_weight_min_kg: Mapped[Decimal | None] = mapped_column(Numeric(7, 3))
+    target_weight_max_kg: Mapped[Decimal | None] = mapped_column(Numeric(7, 3))
     activity_mode: Mapped[str] = mapped_column(String(16), default="off", server_default="off")
     activity_source_type: Mapped[str | None] = mapped_column(String(64))
     protein_g: Mapped[Decimal] = mapped_column(Numeric(12, 3))

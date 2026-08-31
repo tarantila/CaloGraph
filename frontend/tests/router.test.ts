@@ -45,7 +45,7 @@ describe('first-run target routing', () => {
   it('keeps the requested route for users with an existing target', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : user
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -62,7 +62,7 @@ describe('first-run target routing', () => {
     setLocale('en')
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : user
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
 
@@ -77,7 +77,7 @@ describe('first-run target routing', () => {
     setLocale('de')
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : englishUser
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : englishUser
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
 
@@ -90,7 +90,7 @@ describe('first-run target routing', () => {
   it('keeps users with targets out of the setup route', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : user
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -163,7 +163,7 @@ describe('first-run target routing', () => {
     setLocale('de')
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : user
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -185,7 +185,7 @@ describe('first-run target routing', () => {
     auth.needsTargetSetup = false
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      const body = url.endsWith('/settings/targets') ? [{ id: 'target' }] : user
+      const body = url.endsWith('/settings/targets') ? [{ id: 'target', target_weight_min_kg: null, target_weight_max_kg: null }] : user
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
