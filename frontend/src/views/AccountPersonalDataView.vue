@@ -5,36 +5,41 @@ import { api, ApiError, localizeApiError } from '../api'
 import DateInput from '../components/DateInput.vue'
 import { isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
+import {
+  normalizeDietType,
+  normalizeGender,
+  PROFILE_DIET_OPTIONS,
+  PROFILE_GENDER_OPTIONS,
+  type DietType,
+  type Gender,
+  type ProfileDietValue,
+  type ProfileGenderValue,
+} from '../profile-options'
 import { useAuthStore } from '../stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 
-type Gender = 'female' | 'male' | 'non_binary' | 'other' | 'prefer_not_to_say'
-type DietType = 'no_special_diet' | 'vegetarian' | 'vegan' | 'pescetarian' | 'other' | 'prefer_not_to_say'
-
 interface PersonalProfile {
   display_name: string | null
-  gender: Gender | null
+  gender: Gender | string | null
   birth_date: string | null
   height_cm: number | string | null
-  diet_type: DietType | null
+  diet_type: DietType | string | null
   health_notes: string | null
   intolerances: string | null
 }
 
 interface PersonalForm {
   display_name: string
-  gender: '' | Gender
+  gender: ProfileGenderValue
   birth_date: string
   height_cm: string | number
-  diet_type: '' | DietType
+  diet_type: ProfileDietValue
   health_notes: string
   intolerances: string
 }
 
-const genders: readonly Gender[] = ['female', 'male', 'non_binary', 'other', 'prefer_not_to_say']
-const dietTypes: readonly DietType[] = ['no_special_diet', 'vegetarian', 'vegan', 'pescetarian', 'other', 'prefer_not_to_say']
 const form = reactive<PersonalForm>({
   display_name: '',
   gender: '',
@@ -64,10 +69,10 @@ function refreshBirthdayMax(): void {
 
 function hydrate(value: PersonalProfile): void {
   form.display_name = value.display_name ?? ''
-  form.gender = value.gender ?? ''
+  form.gender = normalizeGender(value.gender)
   form.birth_date = value.birth_date ?? ''
   form.height_cm = value.height_cm == null ? '' : String(value.height_cm)
-  form.diet_type = value.diet_type ?? ''
+  form.diet_type = normalizeDietType(value.diet_type)
   form.health_notes = value.health_notes ?? ''
   form.intolerances = value.intolerances ?? ''
 }
@@ -112,10 +117,10 @@ function payload(): PersonalProfile {
   const height = String(form.height_cm).trim()
   return {
     display_name: form.display_name.trim() || null,
-    gender: form.gender || null,
+    gender: normalizeGender(form.gender) || null,
     birth_date: form.birth_date || null,
     height_cm: height ? Number(height) : null,
-    diet_type: form.diet_type || null,
+    diet_type: normalizeDietType(form.diet_type) || null,
     health_notes: form.health_notes.trim() || null,
     intolerances: form.intolerances.trim() || null,
   }
@@ -196,9 +201,8 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>{{ t('accountPersonal.gender') }}</span>
           <select v-model="form.gender" name="gender" :disabled="saving">
-            <option value="">{{ t('accountPersonal.notSpecified') }}</option>
-            <option v-for="value in genders" :key="value" :value="value">
-              {{ t(`accountPersonal.genderOptions.${value}`) }}
+            <option v-for="option in PROFILE_GENDER_OPTIONS" :key="option.value" :value="option.value">
+              {{ t(option.label) }}
             </option>
           </select>
         </label>
@@ -233,9 +237,8 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>{{ t('accountPersonal.diet') }}</span>
           <select v-model="form.diet_type" name="diet_type" :disabled="saving">
-            <option value="">{{ t('accountPersonal.notSpecified') }}</option>
-            <option v-for="value in dietTypes" :key="value" :value="value">
-              {{ t(`accountPersonal.dietOptions.${value}`) }}
+            <option v-for="option in PROFILE_DIET_OPTIONS" :key="option.value" :value="option.value">
+              {{ t(option.label) }}
             </option>
           </select>
         </label>

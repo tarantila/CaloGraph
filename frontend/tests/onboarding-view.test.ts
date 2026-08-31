@@ -98,6 +98,58 @@ describe('SetupView', () => {
     wrapper.unmount()
   })
 
+  it('uses the shared profile choices and clears legacy values on onboarding save', async () => {
+    const status = {
+      mode: 'full' as const,
+      required: true,
+      completed: false,
+      current_step: 'personal' as const,
+    }
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === '/settings/personal-profile' && options?.method === 'PUT') return JSON.parse(String(options.body))
+      if (path === '/settings/personal-profile') {
+        return {
+          display_name: 'Alex',
+          gender: 'prefer_not_to_say',
+          birth_date: null,
+          height_cm: null,
+          diet_type: 'other',
+          health_notes: null,
+          intolerances: null,
+        }
+      }
+      if (path === '/settings/onboarding/advance') return { ...status, current_step: 'targets' as const }
+      return {}
+    })
+
+    const { wrapper } = await mountSetup(status)
+    await flushPromises()
+    expect(wrapper.findAll<HTMLSelectElement>('select[name="gender"] option').map((option) => option.element.value)).toEqual([
+      '', 'female', 'male', 'non_binary',
+    ])
+    expect(wrapper.findAll<HTMLSelectElement>('select[name="diet-type"] option').map((option) => option.element.value)).toEqual([
+      '', 'no_special_diet', 'pescetarian', 'vegetarian', 'vegan',
+    ])
+    expect(wrapper.get<HTMLSelectElement>('select[name="gender"]').element.value).toBe('')
+    expect(wrapper.get<HTMLSelectElement>('select[name="diet-type"]').element.value).toBe('')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/settings/personal-profile', {
+      method: 'PUT',
+      body: JSON.stringify({
+        display_name: 'Alex',
+        gender: null,
+        birth_date: null,
+        height_cm: null,
+        diet_type: null,
+        health_notes: null,
+        intolerances: null,
+      }),
+    })
+    wrapper.unmount()
+  })
+
   it('saves through the target API with the account-zone date and opens the overview', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-11T00:30:00Z'))

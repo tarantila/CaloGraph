@@ -40,6 +40,7 @@ const en = {
     logout: 'Sign out', open: 'Open navigation', close: 'Close navigation',
   },
   accountNav: {
+    title: 'Account',
     aria: 'Account navigation',
     choose: 'Choose account section',
     accountGroup: 'Your account',
@@ -155,7 +156,7 @@ const en = {
     heightRange: 'Height must be greater than 0 and no more than 300 cm.',
     diet: 'Diet',
     dietOptions: {
-      no_special_diet: 'No special diet',
+      no_special_diet: 'Standard (with meat)',
       vegetarian: 'Vegetarian',
       vegan: 'Vegan',
       pescetarian: 'Pescetarian',
@@ -244,8 +245,7 @@ const en = {
     names: {
       first_day: 'First Step', tracked_7_days: 'Lucky Seven', tracked_30_days: 'The Long Game', tracked_100_days: 'Centurion', tracked_180_days: 'No Half Measures', tracked_365_days: 'Around the Sun',
       streak_7_days: 'Seven in a Row', streak_30_days: 'On a Roll', apple_health_first: 'An Apple a Day', yazio_first: 'YAZIO Warrior', multi_source: 'Data Fusion',
-      complete_macros_7: 'Macro Rookie', complete_macros_30: 'Macro Detective', complete_macros_100: 'Macro Master', history_365: 'Time Traveller',
-      hidden_leap_day: '29th Club', hidden_time_machine: 'Great Scott!', hidden_break_day: 'On a Break?', hidden_full_house: 'Full House', make_a_wish: 'Make a Wish!',
+      complete_macros_7: 'Macro Rookie', complete_macros_30: 'Macro Detective', complete_macros_100: 'Macro Master', history_365: 'Time Traveller', hidden_leap_day: '29th Club', hidden_time_machine: 'Great Scott!', hidden_break_day: 'On a Break?', hidden_full_house: 'Full House', make_a_wish: 'Make a Wish',
       one_week_in: 'One Week In', going_steady: 'Going Steady', century_club: 'Century Club', long_term_relationship: 'Long-Term Relationship',
       more_headroom: 'More Headroom', room_to_move: 'Room to Move', the_big_picture: 'The Big Picture', change_of_plans: 'Change of Plans',
       ordered_takeout: 'Ordered Takeout', spreadsheet_ready: 'Spreadsheet Ready', welcome_back: 'Welcome Back', double_locked: 'Double Locked',

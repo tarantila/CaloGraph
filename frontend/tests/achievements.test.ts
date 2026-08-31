@@ -116,7 +116,7 @@ describe('AchievementsView', () => {
 
     const german = mount(AchievementsView)
     await flushPromises()
-    expect(german.text()).toContain('Wünsch dir was!')
+    expect(german.text()).toContain('Make a Wish')
     expect(german.text()).toContain('Ein bisschen Geburtstagszauber.')
     expect(german.text()).not.toContain('Versteckter Erfolg')
     german.unmount()
@@ -124,7 +124,7 @@ describe('AchievementsView', () => {
     setLocale('en')
     const english = mount(AchievementsView)
     await flushPromises()
-    expect(english.text()).toContain('Make a Wish!')
+    expect(english.text()).toContain('Make a Wish')
     expect(english.text()).toContain('A little birthday magic.')
     expect(english.text()).not.toContain('???')
   })

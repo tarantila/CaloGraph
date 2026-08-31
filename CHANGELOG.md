@@ -5,6 +5,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-31
+
+### Changed
+
+- Refined the Account Center to match the Admin shell with grouped navigation, Phosphor icons, responsive mobile navigation, route-aware focus management, and keyboard-accessible active states.
+- Unified onboarding and Account profile choices, including exact German labels for gender and diet preferences while preserving legacy profile values during import and normalization.
+- Renamed the default diet label to `Standard (mit Fleisch)` / `Standard (with meat)` and restored the achievement title `Make a Wish` in German.
+
+### Configuration / Environment
+
+- Bumped application, package, API, and development Compose fallback versions to `0.6.0`.
+- Made bind-address and timezone values optional example overrides so Compose defaults remain authoritative.
+
 ## [0.5.0] - 2026-08-26
 
 ### Added

@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-
 import DateInput from '../components/DateInput.vue'
 import { ApiError, api, localizeApiError } from '../api'
 import { isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
+import {
+  normalizeDietType,
+  normalizeGender,
+  PROFILE_DIET_OPTIONS,
+  PROFILE_GENDER_OPTIONS,
+} from '../profile-options'
 import { useAuthStore } from '../stores/auth'
 import {
   createEmptyTargetDraft,
@@ -52,10 +57,10 @@ async function savePersonal(): Promise<void> {
     method: 'PUT',
     body: JSON.stringify({
       display_name: personal.display_name.trim() || null,
-      gender: personal.gender || null,
+      gender: normalizeGender(personal.gender) || null,
       birth_date: personal.birth_date || null,
       height_cm: height ? Number(height) : null,
-      diet_type: personal.diet_type || null,
+      diet_type: normalizeDietType(personal.diet_type) || null,
       health_notes: personal.health_notes.trim() || null,
       intolerances: personal.intolerances.trim() || null,
     }),
@@ -143,10 +148,10 @@ async function loadProfile(): Promise<void> {
       intolerances: string | null
     }>('/settings/personal-profile')
     personal.display_name = value.display_name ?? ''
-    personal.gender = value.gender ?? ''
+    personal.gender = normalizeGender(value.gender)
     personal.birth_date = value.birth_date ?? ''
     personal.height_cm = value.height_cm == null ? '' : String(value.height_cm)
-    personal.diet_type = value.diet_type ?? ''
+    personal.diet_type = normalizeDietType(value.diet_type)
     personal.health_notes = value.health_notes ?? ''
     personal.intolerances = value.intolerances ?? ''
   } catch (cause) {
@@ -180,10 +185,10 @@ onMounted(() => {
         <fieldset>
           <legend>{{ t('setup.personalLegend') }}</legend>
           <label class="field">{{ t('accountPersonal.displayName') }}<input v-model="personal.display_name" name="display-name" /></label>
-          <label class="field">{{ t('accountPersonal.gender') }}<select v-model="personal.gender" name="gender"><option value="">—</option><option value="female">{{ t('accountPersonal.genderOptions.female') }}</option><option value="male">{{ t('accountPersonal.genderOptions.male') }}</option><option value="non_binary">{{ t('accountPersonal.genderOptions.non_binary') }}</option><option value="other">{{ t('accountPersonal.genderOptions.other') }}</option><option value="prefer_not_to_say">{{ t('accountPersonal.genderOptions.prefer_not_to_say') }}</option></select></label>
+          <label class="field">{{ t('accountPersonal.gender') }}<select v-model="personal.gender" name="gender"><option v-for="option in PROFILE_GENDER_OPTIONS" :key="option.value" :value="option.value">{{ t(option.label) }}</option></select></label>
           <label class="field">{{ t('accountPersonal.birthDate') }}<DateInput v-model="personal.birth_date" name="birth_date" autocomplete="bday" :max="birthdayMax" :disabled="saving" /></label>
           <label class="field">{{ t('accountPersonal.height') }}<input v-model="personal.height_cm" name="height-cm" type="number" min="0.01" max="300" step="0.01" /></label>
-          <label class="field">{{ t('accountPersonal.diet') }}<select v-model="personal.diet_type" name="diet-type"><option value="">—</option><option value="no_special_diet">{{ t('accountPersonal.dietOptions.no_special_diet') }}</option><option value="vegetarian">{{ t('accountPersonal.dietOptions.vegetarian') }}</option><option value="vegan">{{ t('accountPersonal.dietOptions.vegan') }}</option><option value="pescetarian">{{ t('accountPersonal.dietOptions.pescetarian') }}</option><option value="other">{{ t('accountPersonal.dietOptions.other') }}</option><option value="prefer_not_to_say">{{ t('accountPersonal.dietOptions.prefer_not_to_say') }}</option></select></label>
+          <label class="field">{{ t('accountPersonal.diet') }}<select v-model="personal.diet_type" name="diet-type"><option v-for="option in PROFILE_DIET_OPTIONS" :key="option.value" :value="option.value">{{ t(option.label) }}</option></select></label>
           <label class="field">{{ t('accountPersonal.healthNotes') }}<textarea v-model="personal.health_notes" name="health-notes" /></label>
           <label class="field">{{ t('accountPersonal.intolerances') }}<textarea v-model="personal.intolerances" name="intolerances" /></label>
         </fieldset>

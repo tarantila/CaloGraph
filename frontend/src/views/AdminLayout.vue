@@ -51,7 +51,11 @@ watch(
     <aside class="admin-sidebar" :aria-label="t('adminNav.title')">
       <h1 id="admin-console-title">{{ t('adminNav.title') }}</h1>
       <nav ref="adminNavigation" class="admin-sidebar-nav" :aria-label="t('adminNav.title')" tabindex="0">
-        <RouterLink :class="{ active: isActive('admin-overview') }" :to="{ name: 'admin-overview' }">
+        <RouterLink
+          :class="{ active: isActive('admin-overview') }"
+          :to="{ name: 'admin-overview' }"
+          :aria-current="isActive('admin-overview') ? 'page' : undefined"
+        >
           <PhSquaresFour :size="18" aria-hidden="true" />
           {{ t('adminUi.overview') }}
         </RouterLink>
@@ -61,12 +65,17 @@ watch(
           :key="item.name"
           :class="{ active: isActive(item.name) }"
           :to="{ name: item.name }"
+          :aria-current="isActive(item.name) ? 'page' : undefined"
         >
           <component :is="item.icon" :size="18" aria-hidden="true" />
           {{ t(item.label) }}
         </RouterLink>
         <p class="admin-sidebar-label">{{ t('adminNav.systemGroup') }}</p>
-        <RouterLink :class="{ active: isActive('admin-system') }" :to="{ name: 'admin-system' }">
+        <RouterLink
+          :class="{ active: isActive('admin-system') }"
+          :to="{ name: 'admin-system' }"
+          :aria-current="isActive('admin-system') ? 'page' : undefined"
+        >
           <PhDatabase :size="18" aria-hidden="true" />
           {{ t('adminNav.system') }}
         </RouterLink>
@@ -75,6 +84,7 @@ watch(
           :key="item.name"
           :class="{ active: isActive(item.name) }"
           :to="{ name: item.name }"
+          :aria-current="isActive(item.name) ? 'page' : undefined"
         >
           <component :is="item.icon" :size="18" aria-hidden="true" />
           {{ t(item.label) }}

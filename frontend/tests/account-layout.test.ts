@@ -70,7 +70,10 @@ describe('AccountLayout navigation', () => {
     expect(wrapper.findAll('.account-navigation-group')[2].text()).toContain('Einstellungen')
 
     const links = wrapper.findAll('.account-navigation a')
+    expect(wrapper.get('.account-navigation-nav').attributes('tabindex')).toBe('0')
     expect(links).toHaveLength(8)
+    expect(wrapper.get('.account-navigation h1').text()).toBe('Konto')
+    expect(wrapper.findAll('.account-navigation a svg')).toHaveLength(8)
     expect(links.filter((link) => link.classes('active'))).toHaveLength(1)
     expect(wrapper.get('a[href="/konto/integrationen"]').classes()).toContain('active')
     expect(wrapper.get('a[href="/konto/integrationen"]').attributes('aria-current')).toBe('page')

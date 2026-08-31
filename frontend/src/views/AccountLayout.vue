@@ -1,35 +1,46 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, watch } from 'vue'
+import {
+  PhDatabase,
+  PhGear,
+  PhLockKey,
+  PhPlugs,
+  PhShieldCheck,
+  PhTarget,
+  PhUploadSimple,
+  PhUserCircle,
+} from '@phosphor-icons/vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { i18n } from '../i18n'
 
+const t = i18n.global.t.bind(i18n.global)
 const router = useRouter()
 const route = useRoute()
-const t = i18n.global.t.bind(i18n.global)
+const accountContent = ref<HTMLElement | null>(null)
 
 const accountNavigationGroups = [
   {
     key: 'accountGroup',
     items: [
-      { name: 'account-personal', label: 'personal' },
-      { name: 'account-targets', label: 'targets' },
+      { name: 'account-personal', label: 'personal', icon: PhUserCircle },
+      { name: 'account-targets', label: 'targets', icon: PhTarget },
     ],
   },
   {
     key: 'dataGroup',
     items: [
-      { name: 'account-imports', label: 'imports' },
-      { name: 'account-data-status', label: 'dataStatus' },
-      { name: 'account-integrations', label: 'integrations' },
-      { name: 'account-data-privacy', label: 'dataPrivacy' },
+      { name: 'account-imports', label: 'imports', icon: PhUploadSimple },
+      { name: 'account-data-status', label: 'dataStatus', icon: PhDatabase },
+      { name: 'account-integrations', label: 'integrations', icon: PhPlugs },
+      { name: 'account-data-privacy', label: 'dataPrivacy', icon: PhShieldCheck },
     ],
   },
   {
     key: 'settingsGroup',
     items: [
-      { name: 'account-general', label: 'general' },
-      { name: 'account-security', label: 'security' },
+      { name: 'account-general', label: 'general', icon: PhGear },
+      { name: 'account-security', label: 'security', icon: PhLockKey },
     ],
   },
 ] as const
@@ -51,12 +62,12 @@ function selectAccountRoute(event: Event): void {
 }
 
 async function focusAccountHeading(): Promise<void> {
-  if (typeof document === 'undefined') return
   await nextTick()
-  const heading = document.querySelector<HTMLElement>('.account-content h1')
+  const heading = accountContent.value?.querySelector<HTMLElement>('h1')
   if (!heading) return
   if (!heading.hasAttribute('tabindex')) heading.tabIndex = -1
-  heading.focus({ preventScroll: true })
+  heading.classList.add('account-heading-focus')
+  heading.focus()
 }
 
 onMounted(() => {
@@ -75,11 +86,12 @@ watch(
 </script>
 
 <template>
-  <section class="account-center">
-    <aside class="account-navigation">
-      <nav :aria-label="t('accountNav.aria')">
+  <section class="account-center" aria-labelledby="account-center-title">
+    <aside class="account-navigation admin-sidebar" :aria-label="t('accountNav.title')">
+      <h1 id="account-center-title">{{ t('accountNav.title') }}</h1>
+      <nav class="admin-sidebar-nav account-navigation-nav" :aria-label="t('accountNav.aria')" tabindex="0">
         <section v-for="(group, groupIndex) in accountNavigationGroups" :key="group.key" class="account-navigation-group">
-          <p :id="`account-navigation-group-${groupIndex}`" class="account-navigation-label">
+          <p :id="`account-navigation-group-${groupIndex}`" class="admin-sidebar-label account-navigation-label">
             {{ t(`accountNav.${group.key}`) }}
           </p>
           <ul class="account-navigation-list" :aria-labelledby="`account-navigation-group-${groupIndex}`">
@@ -89,6 +101,7 @@ watch(
                 :class="{ active: isActive(item.name) }"
                 :aria-current="isActive(item.name) ? 'page' : undefined"
               >
+                <component :is="item.icon" :size="18" aria-hidden="true" />
                 {{ t(`accountNav.${item.label}`) }}
               </RouterLink>
             </li>
@@ -108,7 +121,7 @@ watch(
         </select>
       </label>
     </nav>
-    <div class="account-content">
+    <div ref="accountContent" class="account-content">
       <RouterView />
     </div>
   </section>

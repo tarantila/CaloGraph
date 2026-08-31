@@ -16,7 +16,7 @@ const mockedApi = vi.mocked(api)
 function response(status: 'current' | 'update_available' | 'development' | 'unknown') {
   return {
     version: {
-      running: '0.5.0',
+      running: '0.6.0',
       latest: status === 'unknown' ? null : '0.4.2',
       status,
       release_url: status === 'unknown' ? null : 'https://github.com/tarantila/CaloGraph/releases/tag/v0.4.2',
@@ -62,7 +62,7 @@ describe('admin system status', () => {
     const wrapper = mount(AdminSystemView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('0.5.0')
+    expect(wrapper.text()).toContain('0.6.0')
     expect(wrapper.text()).toContain('0.4.2')
     expect(wrapper.text()).toContain('Datenbank')
     expect(wrapper.text()).toContain('Betriebsbereit')

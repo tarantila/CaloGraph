@@ -42,6 +42,7 @@ const de = {
     open: 'Navigation öffnen', close: 'Navigation schließen',
   },
   accountNav: {
+    title: 'Konto',
     aria: 'Kontonavigation',
     choose: 'Kontobereich auswählen',
     accountGroup: 'Dein Konto',
@@ -200,7 +201,7 @@ const de = {
     heightRange: 'Die Größe muss über 0 und darf höchstens 300 cm sein.',
     diet: 'Ernährungsweise',
     dietOptions: {
-      no_special_diet: 'Keine besondere Ernährungsweise',
+      no_special_diet: 'Standard (mit Fleisch)',
       vegetarian: 'Vegetarisch',
       vegan: 'Vegan',
       pescetarian: 'Pescetarisch',
@@ -290,7 +291,7 @@ const de = {
       first_day: 'First Step', tracked_7_days: 'Lucky Seven', tracked_30_days: 'The Long Game', tracked_100_days: 'Centurion', tracked_180_days: 'No Half Measures', tracked_365_days: 'Around the Sun',
       streak_7_days: 'Seven in a Row', streak_30_days: 'On a Roll', apple_health_first: 'An Apple a Day', yazio_first: 'YAZIO Warrior', multi_source: 'Data Fusion',
       complete_macros_7: 'Macro Rookie', complete_macros_30: 'Macro Detective', complete_macros_100: 'Macro Master', history_365: 'Time Traveller',
-      hidden_leap_day: '29th Club', hidden_time_machine: 'Great Scott!', hidden_break_day: 'On a Break?', hidden_full_house: 'Full House', make_a_wish: 'Wünsch dir was!',
+      hidden_leap_day: '29th Club', hidden_time_machine: 'Great Scott!', hidden_break_day: 'On a Break?', hidden_full_house: 'Full House', make_a_wish: 'Make a Wish',
       one_week_in: 'One Week In', going_steady: 'Going Steady', century_club: 'Century Club', long_term_relationship: 'Long-Term Relationship',
       more_headroom: 'More Headroom', room_to_move: 'Room to Move', the_big_picture: 'The Big Picture', change_of_plans: 'Change of Plans',
       ordered_takeout: 'Ordered Takeout', spreadsheet_ready: 'Spreadsheet Ready', welcome_back: 'Welcome Back', double_locked: 'Double Locked',

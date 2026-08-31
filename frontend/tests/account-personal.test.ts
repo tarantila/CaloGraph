@@ -72,10 +72,16 @@ describe('AccountPersonalDataView', () => {
     expect(wrapper.find('textarea[name="intolerances"]').element).toBeTruthy()
 
     expect(wrapper.findAll<HTMLSelectElement>('select[name="gender"] option').map((option) => option.element.value)).toEqual([
-      '', 'female', 'male', 'non_binary', 'other', 'prefer_not_to_say',
+      '', 'female', 'male', 'non_binary',
+    ])
+    expect(wrapper.findAll<HTMLSelectElement>('select[name="gender"] option').map((option) => option.text())).toEqual([
+      'Nicht angegeben', 'Weiblich', 'Männlich', 'Nicht-binär',
     ])
     expect(wrapper.findAll<HTMLSelectElement>('select[name="diet_type"] option').map((option) => option.element.value)).toEqual([
-      '', 'no_special_diet', 'vegetarian', 'vegan', 'pescetarian', 'other', 'prefer_not_to_say',
+      '', 'no_special_diet', 'pescetarian', 'vegetarian', 'vegan',
+    ])
+    expect(wrapper.findAll<HTMLSelectElement>('select[name="diet_type"] option').map((option) => option.text())).toEqual([
+      'Nicht angegeben', 'Standard (mit Fleisch)', 'Pescetarisch', 'Vegetarisch', 'Vegan',
     ])
 
     await wrapper.get('form').trigger('submit')
@@ -106,6 +112,36 @@ describe('AccountPersonalDataView', () => {
         diet_type: null,
         health_notes: null,
         intolerances: null,
+      }),
+    })
+    wrapper.unmount()
+  })
+
+  it('maps persisted legacy profile values to not specified and clears them on save', async () => {
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/settings/personal-profile' && options?.method === 'PUT') {
+        return Promise.resolve(JSON.parse(String(options.body)))
+      }
+      return Promise.resolve({
+        ...personalProfile,
+        gender: 'other',
+        diet_type: 'prefer_not_to_say',
+      })
+    })
+
+    const wrapper = mount(AccountPersonalDataView)
+    await flushPromises()
+    expect(wrapper.get<HTMLSelectElement>('select[name="gender"]').element.value).toBe('')
+    expect(wrapper.get<HTMLSelectElement>('select[name="diet_type"]').element.value).toBe('')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/settings/personal-profile', {
+      method: 'PUT',
+      body: JSON.stringify({
+        ...personalProfile,
+        gender: null,
+        diet_type: null,
       }),
     })
     wrapper.unmount()

@@ -135,21 +135,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 1.7rem 1.7rem 2rem; }
 .account-center {
   display: grid;
-  grid-template-columns: 185px minmax(0, 760px);
+  grid-template-columns: 185px minmax(0, 1fr);
   align-items: start;
   gap: 1.35rem;
-  max-width: 1010px;
+  max-width: none;
 }
-.account-navigation { min-width: 0; padding-top: .2rem; }
+.account-navigation { min-width: 0; }
 .account-navigation-group + .account-navigation-group { margin-top: 1.15rem; }
-.account-navigation-label {
-  margin: 0;
-  color: var(--muted);
-  font-size: .67rem;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
 .account-navigation-list {
   display: grid;
   gap: .12rem;
@@ -157,19 +149,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   padding: 0;
   list-style: none;
 }
-.account-navigation-list a {
-  display: block;
-  border-radius: .45rem;
-  padding: .36rem .42rem;
-  color: var(--muted-strong);
-  font-size: .8rem;
-  line-height: 1.3;
-  text-decoration: none;
-}
-.account-navigation-list a:hover { background: var(--surface-soft); color: var(--ink); }
-.account-navigation-list a.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.account-navigation-list a { text-decoration: none; }
+.account-navigation-list a:focus-visible { outline-offset: 2px; }
 .account-mobile-navigation { display: none; }
 .account-content { min-width: 0; max-width: 760px; }
+.account-content h1.account-heading-focus:focus { outline: none; }
 .account-page-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
