@@ -81,6 +81,9 @@ test('micronutrient analysis shows source coverage and neutral orientation', asy
         },
       })
     }
+    if (path.endsWith('/settings/onboarding')) {
+      return route.fulfill({ json: { mode: 'legacy', required: false, completed: true, current_step: 'completed' } })
+    }
     if (path.endsWith('/settings/targets')) {
       return route.fulfill({
         json: [{

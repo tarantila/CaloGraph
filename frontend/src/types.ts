@@ -119,6 +119,16 @@ export interface Target {
   activity_source_type: ActivitySourceType | null
 }
 
+export type OnboardingStep = 'personal' | 'targets' | 'security' | 'completed'
+export type OnboardingMode = 'full' | 'legacy'
+
+export interface OnboardingStatus {
+  mode: OnboardingMode
+  required: boolean
+  completed: boolean
+  current_step: OnboardingStep
+}
+
 export interface ApiProblem {
   type?: string
   title?: string

@@ -97,10 +97,15 @@ router.beforeEach(async (to) => {
   }
   if (generation !== navigationGeneration) return false
   if (to.meta.admin && !auth.user?.is_admin) return { name: 'overview' }
-  if (auth.needsTargetSetup && to.name !== 'setup') {
+  const onboardingRequired = auth.onboardingStatus?.required ?? auth.needsTargetSetup
+  const securitySetupAccess =
+    auth.onboardingStatus?.mode === 'full' &&
+    auth.onboardingStatus.current_step === 'security' &&
+    to.name === 'account-security'
+  if (onboardingRequired && to.name !== 'setup' && !securitySetupAccess) {
     return { name: 'setup' }
   }
-  if (!auth.needsTargetSetup && to.name === 'setup') {
+  if (!onboardingRequired && to.name === 'setup') {
     return { name: 'overview' }
   }
   return true

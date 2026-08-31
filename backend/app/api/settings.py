@@ -29,6 +29,7 @@ from app.models import (
     TrackingOverride,
     TrackingQualitySettings,
     User,
+    UserOnboarding,
     UserProfile,
     UserSession,
     UserTotpCredential,
@@ -48,6 +49,8 @@ from app.schemas import (
     MfaCodeRequest,
     MfaManagementRequest,
     MfaStatusResponse,
+    OnboardingAdvanceRequest,
+    OnboardingStatusResponse,
     PasskeyDeleteRequest,
     PasskeyRegistrationCompleteRequest,
     PasskeyRegistrationOptionsRequest,
@@ -311,6 +314,97 @@ def export_user_csv(
     except BaseException:
         export.close()
         raise
+
+
+_ONBOARDING_STEPS = ("personal", "targets", "security", "completed")
+_ONBOARDING_NEXT_STEP = {
+    "personal": "targets",
+    "targets": "security",
+    "security": "completed",
+}
+
+
+def _onboarding_status(db: Session, user_id: UUID) -> OnboardingStatusResponse:
+    onboarding = db.get(UserOnboarding, user_id)
+    has_target = db.scalar(
+        select(NutritionTarget.id).where(NutritionTarget.user_id == user_id).limit(1)
+    ) is not None
+    if onboarding is None:
+        return OnboardingStatusResponse(
+            mode="legacy",
+            required=not has_target,
+            completed=has_target,
+            current_step="completed" if has_target else "targets",
+        )
+    current_step = onboarding.current_step
+    return OnboardingStatusResponse(
+        mode="full",
+        required=current_step != "completed",
+        completed=current_step == "completed",
+        current_step=current_step,
+    )
+
+
+@router.get("/onboarding", response_model=OnboardingStatusResponse)
+def onboarding_status(
+    user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> OnboardingStatusResponse:
+    return _onboarding_status(db, user.id)
+
+
+@router.post("/onboarding/advance", response_model=OnboardingStatusResponse)
+def advance_onboarding(
+    payload: OnboardingAdvanceRequest,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> OnboardingStatusResponse:
+    onboarding = db.scalar(
+        select(UserOnboarding)
+        .where(UserOnboarding.user_id == user.id)
+        .with_for_update()
+    )
+    if onboarding is None:
+        status = _onboarding_status(db, user.id)
+        if payload.expected_step == "targets" and status.completed:
+            return status
+        raise HTTPException(
+            status_code=409,
+            detail="Für dieses Legacy-Konto ist kein Onboarding-Schritt verfügbar",
+        )
+
+    current = onboarding.current_step
+    if current == "completed":
+        if payload.expected_step == "security":
+            return _onboarding_status(db, user.id)
+        if payload.expected_step != "completed":
+            raise HTTPException(status_code=409, detail="Onboarding-Schritt ist veraltet")
+        return _onboarding_status(db, user.id)
+
+    next_step = _ONBOARDING_NEXT_STEP[current]
+    # A retry of a request that committed immediately before a lost response is
+    # safe: the row is already at the adjacent step.
+    if payload.expected_step == current:
+        if current == "targets":
+            has_target = db.scalar(
+                select(NutritionTarget.id)
+                .where(NutritionTarget.user_id == user.id)
+                .limit(1)
+            ) is not None
+            if not has_target:
+                raise HTTPException(status_code=422, detail="Ziel muss zuerst angelegt werden")
+        onboarding.current_step = next_step
+        if next_step == "completed":
+            onboarding.completed_at = datetime.now(UTC)
+        db.commit()
+        return _onboarding_status(db, user.id)
+    previous_step = (
+        _ONBOARDING_STEPS[_ONBOARDING_STEPS.index(current) - 1]
+        if current != "personal"
+        else None
+    )
+    if payload.expected_step == previous_step:
+        return _onboarding_status(db, user.id)
+    raise HTTPException(status_code=409, detail="Onboarding-Schritt ist ungültig oder wurde übersprungen")
 
 
 @router.get("/personal-profile", response_model=PersonalProfileResponse)

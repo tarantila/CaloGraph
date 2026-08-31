@@ -60,6 +60,32 @@ class User(Base):
     yazio_connection: Mapped[YazioConnection | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
+    onboarding: Mapped[UserOnboarding | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class UserOnboarding(Base):
+    __tablename__ = "user_onboarding"
+    __table_args__ = (
+        CheckConstraint(
+            "current_step IN ('personal', 'targets', 'security', 'completed')",
+            name="ck_user_onboarding_current_step",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    current_step: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="personal", server_default="personal"
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    user: Mapped[User] = relationship(back_populates="onboarding")
 
 
 class UserProfile(Base):

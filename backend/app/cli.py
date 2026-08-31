@@ -4,7 +4,7 @@ import logging
 import random
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,7 +22,13 @@ from app.config import ProductionConfigurationError, settings
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import NutritionTarget, TrackingQualitySettings, User, YazioConnection
+from app.models import (
+    NutritionTarget,
+    TrackingQualitySettings,
+    User,
+    UserOnboarding,
+    YazioConnection,
+)
 from app.security_events import log_security_event, security_reference
 from app.services.account_recovery import purge_account_recovery_tokens
 from app.services.admin_reauth import (
@@ -87,6 +93,16 @@ def create_user(args: argparse.Namespace) -> None:
         )
         db.add(user)
         db.flush()
+        if getattr(args, "skip_onboarding", False):
+            db.add(
+                UserOnboarding(
+                    user_id=user.id,
+                    current_step="completed",
+                    completed_at=datetime.now(UTC),
+                )
+            )
+        else:
+            db.add(UserOnboarding(user_id=user.id))
         db.add(TrackingQualitySettings(user_id=user.id))
         db.commit()
         user_id = user.id
@@ -588,6 +604,11 @@ def parser() -> argparse.ArgumentParser:
     user.add_argument("--password", help=argparse.SUPPRESS)
     user.add_argument("--timezone", default="Europe/Berlin")
     user.add_argument("--if-not-exists", action="store_true")
+    user.add_argument(
+        "--skip-onboarding",
+        action="store_true",
+        help="Mark onboarding as completed for a legacy service account.",
+    )
     user.add_argument("--admin", action="store_true")
     user.add_argument("--raw-retention-days", type=int, default=settings.raw_payload_retention_days)
     user.set_defaults(handler=create_user)

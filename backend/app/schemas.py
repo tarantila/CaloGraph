@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProblemDetail(BaseModel):
@@ -458,6 +458,21 @@ class ProfileUpdate(BaseModel):
     preferred_weight_unit: Literal["kg", "lb"] | None = None
     raw_payload_retention_days: int | None = Field(default=None, ge=0, le=3650)
 
+
+OnboardingStep = Literal["personal", "targets", "security", "completed"]
+
+
+class OnboardingStatusResponse(BaseModel):
+    mode: Literal["full", "legacy"]
+    required: bool
+    completed: bool
+    current_step: OnboardingStep
+
+
+class OnboardingAdvanceRequest(BaseModel):
+    expected_step: OnboardingStep = Field(
+        validation_alias=AliasChoices("expected_step", "current_step", "step")
+    )
 
 class TrackingQualityInput(BaseModel):
     calories_full_ratio: Decimal = Field(gt=0, le=2)
