@@ -58,6 +58,9 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
         },
       })
     }
+    if (path.endsWith('/settings/onboarding')) {
+      return route.fulfill({ json: { mode: 'legacy', required: false, completed: true, current_step: 'completed' } })
+    }
     if (path.endsWith('/settings/targets')) {
       return route.fulfill({
         json: [{

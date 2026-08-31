@@ -27,12 +27,20 @@ const user = {
   deactivated_at: null,
 }
 
-async function mountSetup() {
+async function mountSetup(
+  status: {
+    mode: 'full' | 'legacy'
+    required: boolean
+    completed: boolean
+    current_step: 'personal' | 'targets' | 'security' | 'completed'
+  } | null = null,
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const auth = useAuthStore()
   auth.user = user
-  auth.needsTargetSetup = true
+  auth.onboardingStatus = status
+  auth.needsTargetSetup = status?.required ?? true
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -117,12 +125,97 @@ describe('SetupView', () => {
         fiber_g: null,
         target_weight_min_kg: null,
         target_weight_max_kg: null,
+
         activity_mode: 'off',
         activity_source_type: null,
     })
     })
     expect(auth.needsTargetSetup).toBe(false)
     expect(router.currentRoute.value.name).toBe('overview')
+    wrapper.unmount()
+  })
+
+  it('keeps the target draft available after a failed save and retries it', async () => {
+    let attempts = 0
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') {
+        attempts += 1
+        if (attempts === 1) throw new Error('temporary failure')
+      }
+      return {}
+    })
+    const { router, wrapper } = await mountSetup()
+    const calories = wrapper.get<HTMLInputElement>('input[name="calories-kcal"]')
+    const protein = wrapper.get<HTMLInputElement>('input[name="protein-g"]')
+    await calories.setValue('2100')
+    await protein.setValue('135')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(calories.element.value).toBe('2100')
+    expect(protein.element.value).toBe('135')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(attempts).toBe(2)
+    expect(router.currentRoute.value.name).toBe('overview')
+    wrapper.unmount()
+  })
+  it('runs the full flow with optional personal and security steps', async () => {
+    const status = {
+      mode: 'full' as const,
+      required: true,
+      completed: false,
+      current_step: 'personal' as const,
+    }
+    const advanceResponses = {
+      personal: { ...status, current_step: 'targets' as const },
+      targets: { ...status, current_step: 'security' as const },
+      security: { mode: 'full' as const, required: false, completed: true, current_step: 'completed' as const },
+    }
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === '/settings/personal-profile') {
+        return {
+          display_name: null,
+          gender: null,
+          birth_date: null,
+          height_cm: null,
+          diet_type: null,
+          health_notes: null,
+          intolerances: null,
+        }
+      }
+      if (path === '/settings/targets') return {}
+      if (path === '/settings/onboarding/advance') {
+        const expected = JSON.parse(String(options?.body)).expected_step as keyof typeof advanceResponses
+        return advanceResponses[expected]
+      }
+      return {}
+    })
+    const { auth, router, wrapper } = await mountSetup(status)
+    await flushPromises()
+
+    expect(wrapper.get('h1').text()).toBe('Persönliche Angaben')
+    await wrapper.get('button.secondary').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('Ziele')
+    expect(apiMock).toHaveBeenCalledWith('/settings/onboarding/advance', {
+      method: 'POST',
+      body: JSON.stringify({ expected_step: 'personal' }),
+    })
+
+    await wrapper.get('input[name="calories-kcal"]').setValue('2100')
+    await wrapper.get('input[name="protein-g"]').setValue('135')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('Sicherheit')
+    expect(auth.onboardingStatus?.current_step).toBe('security')
+
+    await wrapper.get('button.setup-submit').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('overview')
+    expect(auth.onboardingStatus?.completed).toBe(true)
     wrapper.unmount()
   })
 

@@ -10,7 +10,7 @@ from app.api import analytics
 from app.auth import security
 from app.config import settings
 from app.main import app
-from app.models import NutritionTarget, TrackingQualitySettings, User, UserSession
+from app.models import NutritionTarget, TrackingQualitySettings, User, UserOnboarding, UserSession
 from app.schemas import TargetInput
 
 
@@ -995,6 +995,7 @@ def test_admin_invitation_creates_isolated_personal_account(
         is None
     )
     assert db.get(TrackingQualitySettings, registered_user.id) is not None
+    assert db.get(UserOnboarding, registered_user.id) is not None
 
     client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
     friend_login = client.post(

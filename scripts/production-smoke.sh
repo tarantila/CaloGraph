@@ -293,6 +293,7 @@ fi
 if ! compose exec -T backend python -m app.cli create-user \
   --username smoke-admin \
   --password smoke-password-is-long-and-unique \
+  --skip-onboarding \
   --if-not-exists >/dev/null; then
   fail "Production user creation with the password policy failed."
 fi

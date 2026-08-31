@@ -34,6 +34,7 @@ from app.models import (
     TrackingQualitySettings,
     User,
     UserInvitation,
+    UserOnboarding,
     UserSession,
     UserTotpCredential,
 )
@@ -366,6 +367,7 @@ def register(
     )
     db.add(user)
     db.flush()
+    db.add(UserOnboarding(user_id=user.id))
     db.add(TrackingQualitySettings(user_id=user.id))
     invitation.used_at = now
     db.commit()

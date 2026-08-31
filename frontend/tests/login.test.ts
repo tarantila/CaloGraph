@@ -282,7 +282,12 @@ describe('authentication store', () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify([]), {
+        new Response(JSON.stringify({
+          mode: 'legacy',
+          required: true,
+          completed: false,
+          current_step: 'targets',
+        }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -295,11 +300,49 @@ describe('authentication store', () => {
     expect(document.documentElement.lang).toBe('de')
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/v1/auth/me',
-      '/api/v1/settings/targets',
+      '/api/v1/settings/onboarding',
     ])
 
     auth.completeTargetSetup()
     expect(auth.needsTargetSetup).toBe(false)
+  })
+
+  it('ignores a delayed onboarding response after the session changes', async () => {
+    const auth = useAuthStore()
+    auth.user = {
+      id: 'first',
+      username: 'first',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: false,
+      is_active: true,
+      deactivated_at: null,
+    }
+    auth.onboardingStatus = {
+      mode: 'full',
+      required: true,
+      completed: false,
+      current_step: 'personal',
+    }
+    setCsrfToken('csrf')
+    let resolve!: (response: Response) => void
+    const pending = new Promise<Response>((promiseResolve) => { resolve = promiseResolve })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => pending)
+
+    const request = auth.advanceOnboarding('personal')
+    await Promise.resolve()
+    auth.clearSession()
+    resolve(new Response(JSON.stringify({
+      mode: 'full',
+      required: true,
+      completed: false,
+      current_step: 'targets',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await expect(request).rejects.toThrow('stale onboarding response')
+    expect(auth.onboardingStatus).toBeNull()
   })
   it('behält die Session bei einem Reconcile-Rate-Limit', async () => {
     const user = {

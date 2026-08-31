@@ -20,6 +20,21 @@ Later CLI users receive administrator rights only with `--admin`. When an
 existing single-user installation is upgraded, the oldest existing user is
 promoted once.
 
+## Onboarding
+
+New accounts created through an invitation or `create-user` start with a
+four-step setup: optional personal details, required calorie and protein
+targets, optional security factors, and completion. The authenticated status is
+available at `GET /api/v1/settings/onboarding`; step transitions use the
+CSRF-protected `POST /api/v1/settings/onboarding/advance` endpoint and require
+the expected current step.
+
+Accounts created before this state was introduced remain legacy accounts. They
+are only asked for a target when none exists and are otherwise treated as
+complete; the migration does not backfill onboarding rows. Non-interactive
+service-account setup may explicitly use `create-user --skip-onboarding`; this
+creates the account with onboarding already completed.
+
 ## Account lifecycle
 
 Administrators can manage another account through the lifecycle API:

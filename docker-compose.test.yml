@@ -60,6 +60,7 @@ services:
         tests/test_yazio_migration_postgres.py
         tests/test_target_maintenance_migration_postgres.py
         tests/test_activity_energy_targets_migration_postgres.py
+        tests/test_user_onboarding_migration_postgres.py
     networks: [data]
 
   e2e:

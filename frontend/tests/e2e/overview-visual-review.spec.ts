@@ -54,6 +54,9 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
         },
       })
     }
+    if (path.endsWith('/settings/onboarding')) {
+      return route.fulfill({ json: { mode: 'legacy', required: false, completed: true, current_step: 'completed' } })
+    }
     if (path.endsWith('/dashboard/summary')) {
       return route.fulfill({
         json: {

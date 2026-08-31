@@ -47,6 +47,9 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
         },
       })
     }
+    if (path.endsWith('/settings/onboarding')) {
+      return route.fulfill({ json: { mode: 'legacy', required: false, completed: true, current_step: 'completed' } })
+    }
     if (path.endsWith('/settings/targets')) {
       return route.fulfill({
         json: [{
