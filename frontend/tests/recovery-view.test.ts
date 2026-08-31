@@ -51,7 +51,7 @@ async function mountRecovery(): Promise<MountedRecovery> {
 describe('RecoveryView', () => {
   beforeEach(() => {
     apiMock.mockReset()
-    setLocale(PUBLIC_LOCALE)
+    setLocale('en')
     window.history.replaceState({}, '', '/recovery')
   })
 
@@ -147,4 +147,13 @@ describe('RecoveryView', () => {
     expect(wrapper.text()).toContain('The passwords do not match.')
     expect(apiMock).not.toHaveBeenCalled()
   })
+  it('uses German on the unauthenticated recovery page by default', async () => {
+    setLocale(PUBLIC_LOCALE)
+    const { wrapper } = await mountRecovery()
+    expect(document.documentElement.lang).toBe('de')
+    expect(wrapper.text()).toContain('Kontozugang wiederherstellen')
+    expect(wrapper.text()).not.toContain('Recover account access')
+    wrapper.unmount()
+  })
+
 })

@@ -1701,7 +1701,7 @@ describe('main views', () => {
 
     const integrationsWrapper = mount(AccountIntegrationsView)
     await flushPromises()
-    expect(integrationsWrapper.text()).toContain('Persönliche YAZIO-Verbindung')
+    expect(integrationsWrapper.get('h2').text()).toBe('YAZIO')
     integrationsWrapper.unmount()
 
     const securityWrapper = mount(AccountSecurityView)
@@ -1832,6 +1832,9 @@ describe('main views', () => {
       if (path === '/settings/activity-sources') {
         return Promise.resolve([{ source_type: 'apple_health_xml' }])
       }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ id: 'test-user', language: 'de', preferred_weight_unit: 'kg' })
+      }
       return Promise.resolve({})
     })
 
@@ -1854,6 +1857,44 @@ describe('main views', () => {
     await activitySwitch.setValue(true)
     expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
     expect(wrapper.find('select[name="activity-source"]').exists()).toBe(true)
+  })
+  it('places macro targets before the activity fieldset while preserving switch semantics', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'kg' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+
+    expect(wrapper.find('.macro-target-settings').exists()).toBe(true)
+    const macroInputs = wrapper.findAll('.macro-target-grid input')
+    expect(macroInputs).toHaveLength(4)
+    const controls = wrapper.get('form').findAll('input, select')
+    const firstMacroIndex = controls.findIndex((control) => control.element === macroInputs[0].element)
+    const activityIndex = controls.findIndex((control) => control.element === wrapper.get('input[role="switch"]').element)
+    expect(firstMacroIndex).toBeGreaterThanOrEqual(0)
+    expect(activityIndex).toBeGreaterThan(firstMacroIndex)
+    expect(wrapper.get<HTMLInputElement>('input[role="switch"]').element.checked).toBe(false)
+    wrapper.unmount()
+  })
+  it('does not expose editable target controls when preferences fail to load', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([])
+      if (path === '/settings/activity-sources') return Promise.resolve([])
+      if (path === '/settings/profile') return Promise.reject(new Error('preference unavailable'))
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('Einstellungen konnten nicht geladen werden.')
+    expect(wrapper.find('.content-grid').exists()).toBe(false)
+    expect(wrapper.find('form').exists()).toBe(false)
+    wrapper.unmount()
   })
   it('loads target weight modes in the preferred unit and labels each history entry', async () => {
     const now = new Date()
@@ -2070,6 +2111,9 @@ describe('main views', () => {
   it('starts targetless users with empty required goals and saves only their values', async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/settings/targets') return Promise.resolve([])
+      if (path === '/settings/profile') {
+        return Promise.resolve({ id: 'test-user', language: 'de', preferred_weight_unit: 'kg' })
+      }
       return Promise.resolve({})
     })
     const auth = useAuthStore()
@@ -2229,6 +2273,47 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('Details unter Importe')
     wrapper.unmount()
   })
+  it('uses a YAZIO header, accessible credential labels, and non-secret replacement placeholders', async () => {
+    const status = {
+      available: true,
+      configured: true,
+      sync_enabled: true,
+      sync_interval_minutes: 360,
+      sync_days: 7,
+      last_attempt_at: null,
+      last_success_at: null,
+      next_sync_at: null,
+      last_error: null,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.resolve(user)
+      if (path === '/settings/tokens') return Promise.resolve([])
+      if (path === '/settings/passkeys') return Promise.resolve([])
+      if (path === '/settings/mfa') return Promise.resolve({ totp_enabled: false, totp_setup_pending: false, recovery_codes_remaining: 0 })
+      if (path === '/yazio/status') return Promise.resolve(status)
+      if (path === '/users') return Promise.resolve([user])
+      if (path === '/users/invitations') return Promise.resolve([])
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    expect(wrapper.findAll('.yazio-credential-form label.field')[0].text()).toContain('YAZIO-E-Mail')
+    expect(wrapper.findAll('.yazio-credential-form label.field')[1].text()).toContain('YAZIO-Passwort')
+    expect(wrapper.get<HTMLInputElement>('input[name="yazio-email"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('input[name="yazio-password"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('input[name="yazio-email"]').attributes('placeholder')).toBe(
+      'Gespeichert — neu eingeben zum Ersetzen',
+    )
+    expect(wrapper.get<HTMLInputElement>('input[name="yazio-password"]').attributes('placeholder')).toBe(
+      'Gespeichert — neu eingeben zum Ersetzen',
+    )
+    expect(wrapper.findAll('.yazio-credential-form small')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('very-secret')
+    wrapper.unmount()
+  })
+
 
   it('clears a stale YAZIO error before a successful retry', async () => {
     let saveAttempts = 0

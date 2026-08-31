@@ -103,12 +103,12 @@ describe('first-run target routing', () => {
     expect(useAuthStore().needsTargetSetup).toBe(false)
   })
 
-  it('leaves public login and recovery routes in the public English locale during setup', async () => {
+  it('keeps public login and recovery routes in the default German locale during setup', async () => {
     const auth = useAuthStore()
     auth.user = user
     auth.needsTargetSetup = true
     const pendingProfileGeneration = auth.beginProfileUpdate()
-    setLocale('de')
+    setLocale('en')
     const fetchMock = vi.spyOn(globalThis, 'fetch')
 
     await router.push('/recovery')
@@ -116,8 +116,8 @@ describe('first-run target routing', () => {
     expect(auth.commitProfileUpdate(pendingProfileGeneration, user)).toBe(false)
     expect(router.currentRoute.value.name).toBe('recovery')
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(i18n.global.locale.value).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
   })
 
   it('does not let a cancelled protected restore overwrite the public locale', async () => {
@@ -135,7 +135,7 @@ describe('first-run target routing', () => {
     const protectedNavigation = router.push('/tage')
     await Promise.resolve()
     await router.push('/recovery')
-    expect(i18n.global.locale.value).toBe('en')
+    expect(i18n.global.locale.value).toBe('de')
 
     resolveAuth(new Response(JSON.stringify(user), {
       status: 200,
@@ -144,8 +144,8 @@ describe('first-run target routing', () => {
     await protectedNavigation
 
     expect(router.currentRoute.value.name).toBe('recovery')
-    expect(i18n.global.locale.value).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
   })
 
   it('preserves a pending profile update during protected navigation restore', async () => {

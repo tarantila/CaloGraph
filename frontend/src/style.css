@@ -971,6 +971,53 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .budget-help h2, .budget-help p { margin: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .form-grid .full { grid-column: 1 / -1; }
+.macro-target-settings {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.macro-target-settings legend {
+  padding: 0;
+  color: #e8edf5;
+  font-size: .82rem;
+  font-weight: 650;
+}
+.macro-target-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .85rem 1rem;
+  margin-top: .55rem;
+}
+.yazio-card-title {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .45rem;
+  color: #e8edf5;
+}
+.yazio-card-title svg { color: var(--accent); }
+.yazio-card-title h2 { margin: 0; }
+.yazio-credential-form { margin-top: .95rem; }
+.height-imperial-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.height-imperial-fields legend {
+  padding: 0;
+  color: var(--muted-strong);
+  font-size: .74rem;
+  font-weight: 600;
+}
+.height-imperial-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+  margin-top: .45rem;
+}
 
 .form-grid > .button { justify-self: start; align-self: end; }
 .account-form-card { margin-bottom: 1rem; }
@@ -2196,7 +2243,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 }
 
 @media (max-width: 620px) {
-  .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid { grid-template-columns: 1fr; }
+  .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid { grid-template-columns: 1fr; }
   .backup-status-grid { grid-template-columns: 1fr; }
   .backup-retention { grid-template-columns: 1fr; gap: .45rem; }
   .backup-doc-link { width: 100%; justify-self: stretch; }

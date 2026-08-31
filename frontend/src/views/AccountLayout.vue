@@ -24,6 +24,7 @@ const accountNavigationGroups = [
     key: 'accountGroup',
     items: [
       { name: 'account-personal', label: 'personal', icon: PhUserCircle },
+      { name: 'account-security', label: 'security', icon: PhLockKey },
       { name: 'account-targets', label: 'targets', icon: PhTarget },
     ],
   },
@@ -40,7 +41,6 @@ const accountNavigationGroups = [
     key: 'settingsGroup',
     items: [
       { name: 'account-general', label: 'general', icon: PhGear },
-      { name: 'account-security', label: 'security', icon: PhLockKey },
     ],
   },
 ] as const

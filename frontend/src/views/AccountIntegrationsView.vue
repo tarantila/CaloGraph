@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 
+import { PhPlugs } from '@phosphor-icons/vue'
+
 import { api, ApiError, localizeApiError } from '../api'
 import DateInput from '../components/DateInput.vue'
 import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { YazioStatus } from '../types'
-
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 const yazio = ref<YazioStatus | null>(null)
@@ -182,7 +183,10 @@ void load()
     </section>
 
     <section v-if="loaded" class="card form-card yazio-connection-card" :aria-busy="savingYazio">
-      <h2>{{ t('settingsUi.yazioTitle') }}</h2>
+      <div class="yazio-card-title">
+        <PhPlugs :size="20" weight="duotone" aria-hidden="true" />
+        <h2>{{ t('settingsUi.yazioTitle') }}</h2>
+      </div>
       <p>{{ t('settingsUi.yazioDescription') }}</p>
       <div v-if="yazioError" class="card error" role="alert">{{ yazioError }}</div>
       <p v-if="yazioMessage" class="setup-notice" role="status">{{ yazioMessage }}</p>
@@ -202,32 +206,30 @@ void load()
         {{ t('settingsUi.firstImportCompleted') }}
         {{ formatGermanDateTime(yazio.historical_sync.completed_at) }}
       </p>
-      <form class="form-grid" @submit.prevent="saveYazio">
+      <form class="form-grid yazio-credential-form" @submit.prevent="saveYazio">
         <label class="field">
-          {{ t('settingsUi.email') }}
+          <span>{{ t('settingsUi.email') }}</span>
           <input
             v-model="yazioEmail"
             name="yazio-email"
             type="email"
             autocomplete="email"
             :disabled="!yazioAvailable"
-            :placeholder="yazio?.configured ? t('settingsUi.emailStored') : t('settingsUi.emailPlaceholder')"
+            :placeholder="yazio?.configured ? t('settingsUi.credentialStoredPlaceholder') : t('settingsUi.emailPlaceholder')"
             required
           />
-          <small v-if="yazio?.configured">{{ t('settingsUi.storedEdit') }}</small>
         </label>
         <label class="field">
-          {{ t('settingsUi.passwordLabel') }}
+          <span>{{ t('settingsUi.passwordLabel') }}</span>
           <input
             v-model="yazioPassword"
             name="yazio-password"
             type="password"
             autocomplete="current-password"
             :disabled="!yazioAvailable"
-            :placeholder="yazio?.configured ? t('settingsUi.passwordStored') : t('settingsUi.passwordLabel')"
+            :placeholder="yazio?.configured ? t('settingsUi.credentialStoredPlaceholder') : t('settingsUi.passwordLabel')"
             required
           />
-          <small v-if="yazio?.configured">{{ t('settingsUi.storedNever') }}</small>
         </label>
         <template v-if="!yazio?.configured">
           <label class="field">

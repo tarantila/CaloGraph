@@ -16,7 +16,7 @@ import { DEFAULT_LOCALE, PUBLIC_LOCALE, setLocale } from '../src/i18n'
 describe('RegisterView', () => {
   beforeEach(() => {
     apiMock.mockReset()
-    setLocale(PUBLIC_LOCALE)
+    setLocale('en')
     window.history.replaceState({}, '', '/')
   })
 
@@ -90,6 +90,27 @@ describe('RegisterView', () => {
 
     expect(apiMock).toHaveBeenCalledWith('/auth/invitation/status')
     expect(wrapper.find('form').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  it('uses German on the unauthenticated invitation page by default', async () => {
+    apiMock.mockResolvedValue({ valid: true })
+    setLocale(PUBLIC_LOCALE)
+    window.history.replaceState({}, '', '/einladung')
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/einladung', name: 'register', component: RegisterView }],
+    })
+    await router.push('/einladung')
+    await router.isReady()
+
+    const wrapper = mount(RegisterView, {
+      global: { plugins: [createPinia(), router] },
+    })
+    await flushPromises()
+
+    expect(document.documentElement.lang).toBe('de')
+    expect(wrapper.text()).toContain('CaloGraph-Konto erstellen')
+    expect(wrapper.text()).not.toContain('Create a CaloGraph account')
     wrapper.unmount()
   })
 })

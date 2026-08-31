@@ -23,6 +23,14 @@ describe('interface language', () => {
     expect(formatGermanDayMonth('2026-07-03')).toBe('03/07')
     expect(parseGermanDate('07/03/2026')).toBe('2026-03-07')
   })
+  it('keeps account unit system translations available in both locales', () => {
+    expect(i18n.global.te('accountGeneral.unitSystem', 'de')).toBe(true)
+    expect(i18n.global.te('accountGeneral.unitSystem', 'en')).toBe(true)
+    expect(i18n.global.te('accountGeneral.unitSystemOptions.metric', 'de')).toBe(true)
+    expect(i18n.global.te('accountGeneral.unitSystemOptions.metric', 'en')).toBe(true)
+    expect(i18n.global.te('accountPersonal.heightImperial', 'de')).toBe(true)
+    expect(i18n.global.te('accountPersonal.heightImperial', 'en')).toBe(true)
+  })
 
   it('provides data export controls in German and English', () => {
     expect(i18n.global.t('accountData.dataExportTitle')).toBe('Datenexport')

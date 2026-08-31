@@ -8,7 +8,7 @@ import { PUBLIC_LOCALE, setLocale } from '../src/i18n'
 
 describe('LoginView', () => {
   beforeEach(() => {
-    setLocale(PUBLIC_LOCALE)
+    setLocale('en')
   })
 
   afterEach(() => {
@@ -66,6 +66,25 @@ describe('LoginView', () => {
     expect(wrapper.text()).toContain('Sign in with passkey')
     expect(document.documentElement.lang).toBe('en')
     expect(wrapper.find('.language-switcher').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uses German on the unauthenticated public login page by default', async () => {
+    setLocale(PUBLIC_LOCALE)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/login', component: LoginView }],
+    })
+    await router.push('/login')
+    await router.isReady()
+
+    const wrapper = mount(LoginView, {
+      global: { plugins: [createPinia(), router] },
+    })
+
+    expect(document.documentElement.lang).toBe('de')
+    expect(wrapper.text()).toContain('Mit Passwort anmelden')
+    expect(wrapper.text()).not.toContain('Sign in with password')
     wrapper.unmount()
   })
 })

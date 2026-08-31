@@ -64,25 +64,29 @@ describe('account language setting', () => {
     setLocale(DEFAULT_LOCALE)
   })
 
-  it('persists language, timezone, week start, and weight unit with a full replacement payload', async () => {
+  it('persists language, timezone, week start, and unit system through legacy storage', async () => {
     const wrapper = mount(AccountGeneralSettingsView)
     await flushPromises()
 
     const language = wrapper.get<HTMLSelectElement>('select[name="language"]')
     const timezone = wrapper.get<HTMLSelectElement>('select[name="timezone"]')
     const weekStartsOn = wrapper.get<HTMLSelectElement>('select[name="week_starts_on"]')
-    const weightUnit = wrapper.get<HTMLSelectElement>('select[name="preferred_weight_unit"]')
+    const unitSystem = wrapper.get<HTMLSelectElement>('select[name="unit_system"]')
     expect(language.element.value).toBe('de')
     expect(timezone.element.value).toBe('Europe/Berlin')
     expect(weekStartsOn.element.value).toBe('0')
-    expect(weightUnit.element.value).toBe('kg')
-    expect(wrapper.text()).toContain('Sprache')
+    expect(unitSystem.element.value).toBe('metric')
+    expect(wrapper.findAll('select[name="unit_system"] option').map((option) => option.text())).toEqual([
+      'Metrisch',
+      'Imperial',
+    ])
+    expect(wrapper.text()).toContain('Einheitensystem')
     expect(wrapper.find('.language-switcher').exists()).toBe(false)
 
     await language.setValue('en')
     await timezone.setValue('Europe/Vienna')
     await weekStartsOn.setValue('6')
-    await weightUnit.setValue('lb')
+    await unitSystem.setValue('imperial')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -99,7 +103,7 @@ describe('account language setting', () => {
     expect(useAuthStore().user?.language).toBe('en')
     expect(i18n.global.locale.value).toBe('en')
     expect(document.documentElement.lang).toBe('en')
-    expect(wrapper.text()).toContain('Language')
+    expect(wrapper.text()).toContain('Unit system')
 
     await language.setValue('de')
     await wrapper.get('form').trigger('submit')

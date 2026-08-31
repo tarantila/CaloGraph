@@ -33,6 +33,9 @@ function mockProfileApi() {
     if (path === '/settings/personal-profile' && options?.method === 'PUT') {
       return Promise.resolve(JSON.parse(String(options.body)))
     }
+    if (path === '/settings/profile') {
+      return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'kg' })
+    }
     return Promise.resolve({ ...personalProfile })
   })
 }
@@ -133,6 +136,9 @@ describe('AccountPersonalDataView', () => {
       if (path === '/settings/personal-profile' && options?.method === 'PUT') {
         return Promise.resolve(JSON.parse(String(options.body)))
       }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'kg' })
+      }
       return Promise.resolve({
         ...personalProfile,
         gender: 'other',
@@ -202,14 +208,20 @@ describe('AccountPersonalDataView', () => {
     expect(birthday.attributes('max')).toBe('2026-01-02')
 
     wrapper.unmount()
-    vi.useRealTimers()
   })
-
   it('localizes API failures without leaking details and supports retry', async () => {
     const secret = new ApiErrorMock('database password leaked')
-    apiMock
-      .mockRejectedValueOnce(secret)
-      .mockResolvedValueOnce({ ...personalProfile })
+    let failed = true
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/personal-profile' && failed) {
+        failed = false
+        return Promise.reject(secret)
+      }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'kg' })
+      }
+      return Promise.resolve({ ...personalProfile })
+    })
 
     const wrapper = mount(AccountPersonalDataView)
     await flushPromises()
@@ -220,7 +232,7 @@ describe('AccountPersonalDataView', () => {
     await wrapper.get('button').trigger('click')
     await flushPromises()
     expect(wrapper.get('input[name="display_name"]').element).toBeTruthy()
-    expect(apiMock).toHaveBeenCalledTimes(2)
+    expect(apiMock.mock.calls.filter(([path]) => path === '/settings/personal-profile').length).toBe(2)
     wrapper.unmount()
   })
 
@@ -230,6 +242,9 @@ describe('AccountPersonalDataView', () => {
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path === '/settings/personal-profile' && options?.method === 'PUT') {
         return new Promise<typeof personalProfile>((resolve) => { resolveSave = resolve })
+      }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'kg' })
       }
       return Promise.resolve({ ...personalProfile })
     })
@@ -265,6 +280,9 @@ describe('AccountPersonalDataView', () => {
       if (path === '/achievements/reconcile') {
         return Promise.reject(new Error('reconcile unavailable'))
       }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'kg' })
+      }
       return Promise.resolve({ ...personalProfile })
     })
 
@@ -276,6 +294,45 @@ describe('AccountPersonalDataView', () => {
     expect(wrapper.text()).toContain('Persönliche Daten gespeichert.')
     expect(apiMock.mock.calls.some(([path]) => path === '/achievements/reconcile')).toBe(true)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows imperial height fields from the persisted unit system and saves canonical centimeters', async () => {
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/settings/personal-profile' && options?.method === 'PUT') {
+        return Promise.resolve(JSON.parse(String(options.body)))
+      }
+      if (path === '/settings/profile') {
+        return Promise.resolve({ ...useAuthStore().user, preferred_weight_unit: 'lb' })
+      }
+      return Promise.resolve({ ...personalProfile, height_cm: 172.72 })
+    })
+
+    const wrapper = mount(AccountPersonalDataView)
+    await flushPromises()
+
+    expect(wrapper.find('input[name="height_cm"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('input[name="height_feet"]').element.value).toBe('5')
+    expect(wrapper.get<HTMLInputElement>('input[name="height_inches"]').element.value).toBe('8')
+    expect(wrapper.get('.height-imperial-fields legend').text()).toBe('Größe')
+    expect(wrapper.text()).toContain('Fuß')
+    expect(wrapper.text()).toContain('Zoll')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/settings/personal-profile', {
+      method: 'PUT',
+      body: JSON.stringify({ ...personalProfile, height_cm: 172.72 }),
+    })
+
+    await wrapper.get('input[name="height_feet"]').setValue('6')
+    await wrapper.get('input[name="height_inches"]').setValue('0')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/settings/personal-profile', {
+      method: 'PUT',
+      body: JSON.stringify({ ...personalProfile, height_cm: 182.88 }),
+    })
     wrapper.unmount()
   })
 })

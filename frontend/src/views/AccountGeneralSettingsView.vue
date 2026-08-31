@@ -5,12 +5,19 @@ import { ApiError, localizeApiError } from '../api'
 import { i18n } from '../i18n'
 import {
   useProfilePreferences,
-  type PreferredWeightUnit,
   type SupportedLanguage,
 } from '../composables/useProfilePreferences'
-
+import {
+  unitSystemToWeightUnit,
+  weightUnitToUnitSystem,
+  type UnitSystem,
+} from '../units'
 const t = i18n.global.t.bind(i18n.global)
 const { profile, loaded, load, save, invalidate } = useProfilePreferences()
+const unitSystem = computed<UnitSystem>({
+  get: () => weightUnitToUnitSystem(profile.preferred_weight_unit),
+  set: (value) => { profile.preferred_weight_unit = unitSystemToWeightUnit(value) },
+})
 const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
@@ -101,7 +108,7 @@ onMounted(() => { void loadProfile() })
 onBeforeUnmount(() => { invalidate() })
 
 const languages: readonly SupportedLanguage[] = ['de', 'en']
-const weightUnits: readonly PreferredWeightUnit[] = ['kg', 'lb']
+const unitSystems: readonly UnitSystem[] = ['metric', 'imperial']
 </script>
 
 <template>
@@ -153,10 +160,10 @@ const weightUnits: readonly PreferredWeightUnit[] = ['kg', 'lb']
         </label>
 
         <label class="field">
-          <span>{{ t('accountGeneral.weightUnit') }}</span>
-          <select v-model="profile.preferred_weight_unit" name="preferred_weight_unit" :disabled="saving">
-            <option v-for="value in weightUnits" :key="value" :value="value">
-              {{ t(`accountGeneral.weightUnitOptions.${value}`) }}
+          <span>{{ t('accountGeneral.unitSystem') }}</span>
+          <select v-model="unitSystem" name="unit_system" :disabled="saving">
+            <option v-for="value in unitSystems" :key="value" :value="value">
+              {{ t(`accountGeneral.unitSystemOptions.${value}`) }}
             </option>
           </select>
         </label>

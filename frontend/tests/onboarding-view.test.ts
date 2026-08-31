@@ -58,6 +58,9 @@ async function mountSetup(
 describe('SetupView', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    apiMock.mockImplementation((path: string) => (
+      path === '/settings/profile' ? { ...user, preferred_weight_unit: 'kg' } : {}
+    ))
     setLocale(DEFAULT_LOCALE)
   })
 
@@ -107,6 +110,7 @@ describe('SetupView', () => {
     }
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
       if (path === '/settings/personal-profile' && options?.method === 'PUT') return JSON.parse(String(options.body))
+      if (path === '/settings/profile') return { ...user, preferred_weight_unit: 'kg' }
       if (path === '/settings/personal-profile') {
         return {
           display_name: 'Alex',
@@ -153,7 +157,9 @@ describe('SetupView', () => {
   it('saves through the target API with the account-zone date and opens the overview', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-11T00:30:00Z'))
-    apiMock.mockResolvedValue({})
+    apiMock.mockImplementation((path: string) => (
+      path === '/settings/profile' ? { ...user, preferred_weight_unit: 'kg' } : {}
+    ))
     const { auth, router, wrapper } = await mountSetup()
 
     await wrapper.get('input[name="calories-kcal"]').setValue('3000')
@@ -190,6 +196,7 @@ describe('SetupView', () => {
   it('keeps the target draft available after a failed save and retries it', async () => {
     let attempts = 0
     apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return { ...user, preferred_weight_unit: 'kg' }
       if (path === '/settings/targets') {
         attempts += 1
         if (attempts === 1) throw new Error('temporary failure')
@@ -227,6 +234,7 @@ describe('SetupView', () => {
       security: { mode: 'full' as const, required: false, completed: true, current_step: 'completed' as const },
     }
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === '/settings/profile') return { ...user, preferred_weight_unit: 'kg' }
       if (path === '/settings/personal-profile') {
         return {
           display_name: null,
@@ -272,6 +280,88 @@ describe('SetupView', () => {
     expect(apiMock).toHaveBeenCalledWith('/achievements/reconcile', { method: 'POST' })
     wrapper.unmount()
   })
+
+  it('shows imperial height fields and preserves canonical centimeters in onboarding', async () => {
+    const status = {
+      mode: 'full' as const,
+      required: true,
+      completed: false,
+      current_step: 'personal' as const,
+    }
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === '/settings/profile') return { ...user, preferred_weight_unit: 'lb' }
+      if (path === '/settings/personal-profile' && options?.method === 'PUT') {
+        return JSON.parse(String(options.body))
+      }
+      if (path === '/settings/personal-profile') {
+        return {
+          display_name: 'Alex',
+          gender: null,
+          birth_date: null,
+          height_cm: 172.72,
+          diet_type: null,
+          health_notes: null,
+          intolerances: null,
+        }
+      }
+      if (path === '/settings/onboarding/advance') return { ...status, current_step: 'targets' as const }
+      return {}
+    })
+
+    const { wrapper } = await mountSetup(status)
+    await flushPromises()
+
+    expect(wrapper.find('input[name="height_cm"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('input[name="height-feet"]').element.value).toBe('5')
+    expect(wrapper.get<HTMLInputElement>('input[name="height-inches"]').element.value).toBe('8')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/settings/personal-profile', {
+      method: 'PUT',
+      body: JSON.stringify({
+        display_name: 'Alex',
+        gender: null,
+        birth_date: null,
+        height_cm: 172.72,
+        diet_type: null,
+        health_notes: null,
+        intolerances: null,
+      }),
+    })
+    wrapper.unmount()
+  })
+  it('does not expose editable personal fields when profile preferences fail to load', async () => {
+    const status = {
+      mode: 'full' as const,
+      required: true,
+      completed: false,
+      current_step: 'personal' as const,
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/profile') return Promise.reject(new Error('preference unavailable'))
+      if (path === '/settings/personal-profile') {
+        return Promise.resolve({
+          display_name: 'Alex',
+          gender: null,
+          birth_date: null,
+          height_cm: 172.72,
+          diet_type: null,
+          health_notes: null,
+          intolerances: null,
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const { wrapper } = await mountSetup(status)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('Einrichtungsdaten konnten nicht geladen werden.')
+    expect(wrapper.find('input[name="display-name"]').exists()).toBe(false)
+    expect(wrapper.get('button').text()).toBe('Erneut versuchen')
+    wrapper.unmount()
+  })
+
 
   it('keeps logout available without exposing normal navigation', async () => {
     apiMock.mockResolvedValue(undefined)

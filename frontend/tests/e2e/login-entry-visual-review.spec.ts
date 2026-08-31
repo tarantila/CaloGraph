@@ -11,7 +11,7 @@ test('login starts with a method selection and reveals credentials on demand', a
   await page.goto('/login')
 
   await expect(page.getByRole('heading', { name: 'CaloGraph' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Sign in with password' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Mit Passwort anmelden' })).toBeVisible()
   await expect(page.locator('input')).toHaveCount(0)
   await expect(page.getByText(/Gesundheitsdaten/)).toHaveCount(0)
   await expect(page.getByText(/Registrieren/)).toHaveCount(0)
@@ -21,11 +21,11 @@ test('login starts with a method selection and reveals credentials on demand', a
     fullPage: true,
   })
 
-  await page.getByRole('button', { name: 'Sign in with password' }).click()
-  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
-  await expect(page.getByLabel('Username')).toBeFocused()
-  await expect(page.getByLabel('Password')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Back to sign-in options' })).toBeVisible()
+  await page.getByRole('button', { name: 'Mit Passwort anmelden' }).click()
+  await expect(page.getByRole('heading', { name: 'Anmelden' })).toBeVisible()
+  await expect(page.getByLabel('Benutzername')).toBeFocused()
+  await expect(page.getByLabel('Passwort')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Zurück zur Anmeldeauswahl' })).toBeVisible()
   await expect(page.getByText(/Registrieren/)).toHaveCount(0)
 
   await page.setViewportSize({ width: 743, height: 683 })
@@ -42,10 +42,10 @@ test('mobile login controls keep the zoom-preventing font invariant without page
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/login')
-  await page.getByRole('button', { name: 'Sign in with password' }).click()
+  await page.getByRole('button', { name: 'Mit Passwort anmelden' }).click()
 
-  const usernameInput = page.getByLabel('Username')
-  const passwordInput = page.getByLabel('Password')
+  const usernameInput = page.getByLabel('Benutzername')
+  const passwordInput = page.getByLabel('Passwort')
   await expect(usernameInput).toBeVisible()
   await expect(passwordInput).toBeVisible()
 
@@ -59,7 +59,7 @@ test('mobile login controls keep the zoom-preventing font invariant without page
 
   await usernameInput.fill(username)
   await passwordInput.fill(password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Anmelden' }).click()
   await expect(page).not.toHaveURL(/\/login/)
 
   const overflow = await page.evaluate(() => ({

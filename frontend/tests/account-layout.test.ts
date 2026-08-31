@@ -65,14 +65,14 @@ describe('AccountLayout navigation', () => {
     const { wrapper } = await mountAccount('/konto/integrationen')
 
     expect(wrapper.findAll('.account-navigation-group')).toHaveLength(3)
-    expect(wrapper.findAll('.account-navigation-group')[0].text()).toContain('Konto')
-    expect(wrapper.findAll('.account-navigation-group')[1].text()).toContain('Daten')
-    expect(wrapper.findAll('.account-navigation-group')[2].text()).toContain('Einstellungen')
+    expect(wrapper.findAll('.account-navigation-group')[0].text()).toContain('DEIN KONTO')
+    expect(wrapper.findAll('.account-navigation-group')[1].text()).toContain('DATEN')
+    expect(wrapper.findAll('.account-navigation-group')[2].text()).toContain('APP')
 
     const links = wrapper.findAll('.account-navigation a')
     expect(wrapper.get('.account-navigation-nav').attributes('tabindex')).toBe('0')
     expect(links).toHaveLength(8)
-    expect(wrapper.get('.account-navigation h1').text()).toBe('Konto')
+    expect(wrapper.get('.account-navigation h1').text()).toBe('Einstellungen')
     expect(wrapper.findAll('.account-navigation a svg')).toHaveLength(8)
     expect(links.filter((link) => link.classes('active'))).toHaveLength(1)
     expect(wrapper.get('a[href="/konto/integrationen"]').classes()).toContain('active')
@@ -81,9 +81,9 @@ describe('AccountLayout navigation', () => {
     const groups = wrapper.findAll('select[name="account-section"] optgroup')
     expect(groups).toHaveLength(3)
     expect(groups.map((group) => group.findAll('option').map((option) => option.attributes('value')))).toEqual([
-      ['account-personal', 'account-targets'],
+      ['account-personal', 'account-security', 'account-targets'],
       ['account-imports', 'account-data-status', 'account-integrations', 'account-data-privacy'],
-      ['account-general', 'account-security'],
+      ['account-general'],
     ])
     expect(wrapper.get<HTMLSelectElement>('select[name="account-section"]').element.value).toBe('account-integrations')
     wrapper.unmount()

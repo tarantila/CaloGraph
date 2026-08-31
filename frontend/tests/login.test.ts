@@ -737,8 +737,8 @@ describe('authentication store', () => {
     expect(await auth.login('admin', 'password-password')).toBe(false)
     expect(auth.mfaRequired).toBe(true)
     expect(auth.user).toBeNull()
-    expect(i18n.global.locale.value).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
     expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
 
     await auth.verifyMfa('123456')
@@ -892,7 +892,7 @@ describe('authentication store', () => {
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has('X-CSRF-Token')).toBe(false)
   })
 
-  it('returns to the public English locale on logout', async () => {
+  it('returns to the public German locale on logout', async () => {
     const auth = useAuthStore()
     auth.user = {
       id: '1',
@@ -912,8 +912,8 @@ describe('authentication store', () => {
     await auth.logout()
 
     expect(auth.user).toBeNull()
-    expect(i18n.global.locale.value).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
+    expect(i18n.global.locale.value).toBe('de')
+    expect(document.documentElement.lang).toBe('de')
   })
 
 })

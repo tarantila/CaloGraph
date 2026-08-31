@@ -6,7 +6,7 @@ import de from './locales/de'
 export const SUPPORTED_LOCALES = ['de', 'en'] as const
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number]
 export const DEFAULT_LOCALE: SupportedLocale = 'de'
-export const PUBLIC_LOCALE: SupportedLocale = 'en'
+export const PUBLIC_LOCALE: SupportedLocale = DEFAULT_LOCALE
 export const INTL_LOCALES: Record<SupportedLocale, string> = {
   de: 'de-DE',
   en: 'en-GB',

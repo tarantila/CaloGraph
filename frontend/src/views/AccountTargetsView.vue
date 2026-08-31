@@ -37,6 +37,7 @@ const message = ref('')
 const error = ref('')
 const weightError = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const savingTarget = ref(false)
 const profilePreferences = useProfilePreferences()
 let loadGeneration = 0
@@ -183,7 +184,9 @@ async function load() {
   error.value = ''
   message.value = ''
   try {
-    await Promise.all([loadTargets(), profilePreferences.load()])
+    const [, preferencesLoaded] = await Promise.all([loadTargets(), profilePreferences.load()])
+    if (!preferencesLoaded) return
+    loaded.value = true
   } catch (cause) {
     if (generation !== loadGeneration) return
     error.value = cause instanceof ApiError ? localizeApiError(cause, 'settingsUi.loadFailed') : t('settingsUi.loadFailed')
@@ -275,7 +278,7 @@ void load()
     <div v-if="error" class="card error" role="alert" aria-live="assertive">{{ error }}</div>
     <p v-if="message" role="status" aria-live="polite">{{ message }}</p>
 
-    <div class="content-grid">
+    <div v-if="loaded" class="content-grid">
       <section class="card form-card">
         <h2>{{ t('settingsUi.targetsTitle') }}</h2>
         <p v-if="!targets.length" class="setup-notice">
@@ -318,6 +321,15 @@ void load()
             </div>
             <p v-if="weightError" id="target-weight-error" class="field-error" role="alert">{{ weightError }}</p>
           </fieldset>
+          <fieldset class="macro-target-settings full">
+            <legend>{{ t('settingsUi.macroTargets') }}</legend>
+            <div class="macro-target-grid">
+              <label class="field">{{ t('settingsUi.proteinTarget') }}<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
+              <label class="field">{{ t('settingsUi.carbsTarget') }}<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+              <label class="field">{{ t('settingsUi.fatTarget') }}<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+              <label class="field">{{ t('settingsUi.fiberTarget') }}<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
+            </div>
+          </fieldset>
           <fieldset class="field full activity-target-settings">
             <legend class="activity-card-header">
               <span>{{ t('activity.title') }}</span>
@@ -343,10 +355,6 @@ void load()
               {{ t('activity.noSources') }}
             </small>
           </fieldset>
-          <label class="field">{{ t('settingsUi.proteinTarget') }}<input v-model.number="target.protein_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" required /></label>
-          <label class="field">{{ t('settingsUi.carbsTarget') }}<input v-model.number="target.carbs_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
-          <label class="field">{{ t('settingsUi.fatTarget') }}<input v-model.number="target.fat_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
-          <label class="field">{{ t('settingsUi.fiberTarget') }}<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
           <button class="button compact-action" type="submit" :disabled="savingTarget">
             {{ savingTarget ? t('settingsUi.saving') : t('settingsUi.saveTargets') }}
           </button>
@@ -362,7 +370,7 @@ void load()
       </section>
     </div>
 
-    <section class="card table-card">
+    <section v-if="loaded" class="card table-card">
       <div class="section-card-header">
         <div><h2>{{ t('settingsUi.historyTitle') }}</h2><p>{{ t('settingsUi.historyDescription') }}</p></div>
       </div>
@@ -397,7 +405,7 @@ void load()
       </div>
     </section>
     <ConfirmDialog
-      v-if="targetToDelete !== null"
+      v-if="loaded && targetToDelete !== null"
       :open="true"
       :title="t('settingsUi.targetDeleteTitle')"
       :description="targetDeleteDescription"
