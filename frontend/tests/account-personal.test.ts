@@ -69,7 +69,18 @@ describe('AccountPersonalDataView', () => {
     expect(wrapper.find('input[name="height_cm"]').element).toBeTruthy()
     expect(wrapper.find('select[name="diet_type"]').element).toBeTruthy()
     expect(wrapper.find('textarea[name="health_notes"]').element).toBeTruthy()
-    expect(wrapper.find('textarea[name="intolerances"]').element).toBeTruthy()
+    expect(wrapper.findAll('form > label.field').map((field) => field.find('span').text())).toEqual([
+      'Name', 'Geschlecht', 'Geburtsdatum', 'Größe (cm)', 'Ernährungsweise',
+      'Unverträglichkeiten', 'Gesundheitliche Hinweise',
+    ])
+    expect(wrapper.get('input[name="display_name"]').attributes('placeholder')).toBe('Wie soll CaloGraph dich ansprechen?')
+    expect(wrapper.get('textarea[name="intolerances"]').attributes('placeholder')).toBe('z. B. Laktose, Gluten oder Nüsse')
+    expect(wrapper.get('textarea[name="health_notes"]').attributes('placeholder')).toBe(
+      'z. B. Medikamente oder gesundheitliche Besonderheiten, die bei Auswertungen berücksichtigt werden sollen',
+    )
+    expect(wrapper.findAll('form > label.field small')).toHaveLength(1)
+    expect(wrapper.find('.date-input-picker-button svg').exists()).toBe(true)
+
 
     expect(wrapper.findAll<HTMLSelectElement>('select[name="gender"] option').map((option) => option.element.value)).toEqual([
       '', 'female', 'male', 'non_binary',

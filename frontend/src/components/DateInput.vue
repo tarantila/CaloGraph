@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PhCalendar } from '@phosphor-icons/vue'
 import { ref, watch } from 'vue'
 
 import { formatGermanDate, parseGermanDate } from '../date-format'
@@ -115,7 +116,7 @@ defineExpose({ reportValidity })
       :disabled="disabled"
       :aria-label="t('dateInput.choose')"
       @click="openPicker"
-    >{{ t('dateInput.calendar') }}</button>
+    ><PhCalendar :size="18" aria-hidden="true" /></button>
     <input
       ref="nativePicker"
       class="date-input-native-picker"

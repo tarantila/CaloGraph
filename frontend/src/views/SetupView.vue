@@ -189,8 +189,8 @@ onMounted(() => {
           <label class="field">{{ t('accountPersonal.birthDate') }}<DateInput v-model="personal.birth_date" name="birth_date" autocomplete="bday" :max="birthdayMax" :disabled="saving" /></label>
           <label class="field">{{ t('accountPersonal.height') }}<input v-model="personal.height_cm" name="height-cm" type="number" min="0.01" max="300" step="0.01" /></label>
           <label class="field">{{ t('accountPersonal.diet') }}<select v-model="personal.diet_type" name="diet-type"><option v-for="option in PROFILE_DIET_OPTIONS" :key="option.value" :value="option.value">{{ t(option.label) }}</option></select></label>
-          <label class="field">{{ t('accountPersonal.healthNotes') }}<textarea v-model="personal.health_notes" name="health-notes" /></label>
           <label class="field">{{ t('accountPersonal.intolerances') }}<textarea v-model="personal.intolerances" name="intolerances" /></label>
+          <label class="field">{{ t('accountPersonal.healthNotes') }}<textarea v-model="personal.health_notes" name="health-notes" /></label>
         </fieldset>
         <button class="button setup-submit" type="submit" :disabled="saving || signingOut">
           {{ saving ? t('setup.saving') : t('setup.continue') }}

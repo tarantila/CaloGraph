@@ -23,6 +23,15 @@ describe('DateInput', () => {
     expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['2026-07-03'])
     expect(textInput.element.validationMessage).toBe('')
   })
+
+  it('renders the calendar trigger as a compact icon control', () => {
+    const wrapper = mount(DateInput, { props: { modelValue: '2026-08-11' } })
+    const button = wrapper.get('.date-input-picker-button')
+
+    expect(button.text()).toBe('')
+    expect(button.get('svg').attributes('aria-hidden')).toBe('true')
+    expect(button.attributes('aria-label')).toBe('Kalender öffnen')
+  })
   it('reformats the current value when the locale changes', async () => {
     const wrapper = mount(DateInput, { props: { modelValue: '2026-08-11' } })
 

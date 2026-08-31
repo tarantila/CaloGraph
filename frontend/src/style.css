@@ -152,7 +152,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .account-navigation-list a { text-decoration: none; }
 .account-navigation-list a:focus-visible { outline-offset: 2px; }
 .account-mobile-navigation { display: none; }
-.account-content { min-width: 0; max-width: 760px; }
+.account-content { min-width: 0; }
+
 .account-content h1.account-heading-focus:focus { outline: none; }
 .account-page-stack {
   display: grid;
@@ -810,7 +811,13 @@ td strong { color: #f0f4f9; font-weight: 600; }
   gap: .65rem;
   align-items: end;
 }
-.field { display: grid; gap: .32rem; color: var(--muted); font-size: .72rem; }
+.field {
+  display: grid;
+  align-content: start;
+  gap: .32rem;
+  color: var(--muted);
+  font-size: .72rem;
+}
 .field input, .field select, .field textarea {
   min-height: var(--control-height);
   border: 1px solid var(--border);
@@ -824,18 +831,47 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .date-input {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(9rem, 1fr) auto;
-  gap: .4rem;
-}
-.date-input-picker-button {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
   min-height: var(--control-height);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: .55rem;
+  background: #0d1828;
+  overflow: hidden;
+}
+.date-input:focus-within {
+  outline: 3px solid color-mix(in srgb, var(--accent), transparent 48%);
+  outline-offset: 2px;
+}
+.date-input > input[type="text"]:focus-visible,
+.date-input-picker-button:focus-visible {
+  outline: none;
+}
+.date-input > input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  height: calc(var(--control-height) - 2px);
+  min-height: calc(var(--control-height) - 2px);
+  border: 0;
+  border-radius: 0;
   padding: .5rem .68rem;
   background: transparent;
-  color: #b69aff;
+}
+.date-input-picker-button {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: calc(var(--control-height) - 2px);
+  min-height: calc(var(--control-height) - 2px);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted-strong);
   cursor: pointer;
 }
+.date-input-picker-button:hover { background: var(--surface-soft); color: var(--ink); }
 .date-input-picker-button:disabled { opacity: .55; cursor: wait; }
 .field .date-input-native-picker {
   position: absolute;
@@ -849,6 +885,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   opacity: 0;
   pointer-events: none;
 }
+
 .button {
   min-height: var(--control-height);
   border: 1px solid var(--accent);
@@ -929,10 +966,10 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .form-grid .full { grid-column: 1 / -1; }
 
 .form-grid > .button { justify-self: start; align-self: end; }
-.account-form-card { margin-bottom: 1rem; }
+.account-form-card { max-width: none; margin-bottom: 1rem; }
 .account-form-card > h2 { margin-bottom: .45rem; }
 .account-form-card > p { margin-top: 0; }
-.account-form-grid { gap: .85rem 1rem; }
+.account-form-grid { gap: .85rem 1rem; align-items: start; }
 .account-submit { grid-column: 1 / -1; margin-top: .15rem; }
 .account-form-error, .account-form-success {
   grid-column: 1 / -1;

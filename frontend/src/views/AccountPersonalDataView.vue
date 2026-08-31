@@ -231,7 +231,6 @@ onBeforeUnmount(() => {
             :placeholder="t('accountPersonal.heightPlaceholder')"
             :disabled="saving"
           />
-          <small>{{ t('accountPersonal.heightHelp') }}</small>
         </label>
 
         <label class="field">
@@ -244,6 +243,18 @@ onBeforeUnmount(() => {
         </label>
 
         <label class="field full">
+          <span>{{ t('accountPersonal.intolerances') }}</span>
+          <textarea
+            v-model="form.intolerances"
+            name="intolerances"
+            maxlength="2000"
+            rows="5"
+            :placeholder="t('accountPersonal.intolerancesPlaceholder')"
+            :disabled="saving"
+          />
+        </label>
+
+        <label class="field full">
           <span>{{ t('accountPersonal.healthNotes') }}</span>
           <textarea
             v-model="form.health_notes"
@@ -253,20 +264,6 @@ onBeforeUnmount(() => {
             :placeholder="t('accountPersonal.healthNotesPlaceholder')"
             :disabled="saving"
           />
-          <small>{{ t('accountPersonal.healthNotesHelp') }}</small>
-        </label>
-
-        <label class="field full">
-          <span>{{ t('accountPersonal.intolerances') }}</span>
-          <textarea
-            v-model="form.intolerances"
-            name="intolerances"
-            maxlength="2000"
-            rows="4"
-            :placeholder="t('accountPersonal.intolerancesPlaceholder')"
-            :disabled="saving"
-          />
-          <small>{{ t('accountPersonal.intolerancesHelp') }}</small>
         </label>
 
         <div v-if="error && !loading" class="account-form-error" role="alert" aria-live="assertive">{{ error }}</div>
