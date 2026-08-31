@@ -194,7 +194,7 @@ describe('main views', () => {
         })
       }
       if (path === '/settings/targets') {
-        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null }])
+        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, target_weight_min_kg: null, target_weight_max_kg: null }])
       }
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {
@@ -286,8 +286,8 @@ describe('main views', () => {
       }
       if (path === '/settings/targets') {
         return Promise.resolve([
-          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
-          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null },
+          { id: 'new', valid_from: '2026-07-22', valid_to: null, calories_kcal: 2100, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null },
+          { id: 'old', valid_from: '2026-01-01', valid_to: '2026-07-22', calories_kcal: 2300, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null },
         ])
       }
       if (path === '/imports') return Promise.resolve([])
@@ -738,7 +738,7 @@ describe('main views', () => {
         })
       }
       if (path === '/settings/targets') {
-        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null }])
+        return Promise.resolve([{ id: 'target', valid_from: '2026-07-23', valid_to: null, calories_kcal: 2200, maintenance_kcal: null, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, activity_mode: 'off', activity_source_type: null, target_weight_min_kg: null, target_weight_max_kg: null }])
       }
       if (path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') {

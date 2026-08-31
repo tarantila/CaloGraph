@@ -24,7 +24,7 @@ async function mockAnalyticsApi(page: Page) {
       })
     }
     if (path.endsWith('/settings/targets')) {
-      return route.fulfill({ json: [{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2000, maintenance_kcal: null, protein_g: 120, carbs_g: null, fat_g: null, fiber_g: null }] })
+      return route.fulfill({ json: [{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2000, maintenance_kcal: null, protein_g: 120, carbs_g: null, fat_g: null, fiber_g: null, target_weight_min_kg: null, target_weight_max_kg: null }] })
     }
     if (path.endsWith('/achievements/reconcile')) {
       return route.fulfill({ json: { achievements: [], newly_unlocked: [] } })

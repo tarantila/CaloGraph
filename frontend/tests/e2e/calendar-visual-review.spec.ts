@@ -70,6 +70,8 @@ test('calendar explains budget and maintenance thresholds by month', async ({ pa
           carbs_g: null,
           fat_g: null,
           fiber_g: null,
+          target_weight_min_kg: null,
+          target_weight_max_kg: null,
           activity_mode: 'off',
           activity_source_type: null,
         }],

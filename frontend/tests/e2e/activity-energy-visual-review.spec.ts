@@ -24,6 +24,22 @@ test('target settings expose a source-specific activity credit', async ({ page }
         },
       })
     }
+    if (path.endsWith('/settings/profile')) {
+      return route.fulfill({
+        json: {
+          id: 'activity-review',
+          username: 'design-review',
+          language: 'de',
+          timezone: 'Europe/Berlin',
+          week_starts_on: 0,
+          preferred_weight_unit: 'kg',
+          raw_payload_retention_days: 0,
+          is_admin: false,
+          is_active: true,
+          deactivated_at: null,
+        },
+      })
+    }
     if (path.endsWith('/settings/targets')) {
       return route.fulfill({
         json: [
@@ -37,6 +53,8 @@ test('target settings expose a source-specific activity credit', async ({ page }
             carbs_g: 220,
             fat_g: 70,
             fiber_g: 30,
+            target_weight_min_kg: null,
+            target_weight_max_kg: null,
             activity_mode: 'full',
             activity_source_type: 'apple_health_xml',
           },
