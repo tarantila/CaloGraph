@@ -89,6 +89,27 @@ describe('AccountLayout navigation', () => {
     wrapper.unmount()
   })
 
+  it('assigns Account content widths by page type', async () => {
+    const { router, wrapper } = await mountAccount()
+    const expectedWidths = [
+      ['/konto/persoenliche-daten', 'account-content--comfortable'],
+      ['/konto/budgets-und-ziele', 'account-content--wide'],
+      ['/konto/importe', 'account-content--wide'],
+      ['/konto/datenstatus', 'account-content--wide'],
+      ['/konto/integrationen', 'account-content--comfortable'],
+      ['/konto/daten-und-datenschutz', 'account-content--comfortable'],
+      ['/konto/allgemeine-einstellungen', 'account-content--comfortable'],
+      ['/konto/sicherheit', 'account-content--compact'],
+    ] as const
+
+    for (const [path, widthClass] of expectedWidths) {
+      await router.push(path)
+      await flushPromises()
+      expect(wrapper.get('.account-content').classes()).toContain(widthClass)
+    }
+    wrapper.unmount()
+  })
+
   it('focuses the child heading after entering the account center', async () => {
     const { router, wrapper } = await mountAccountFromOutside()
 

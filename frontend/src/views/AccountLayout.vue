@@ -49,6 +49,20 @@ const accountRouteNames = new Set<string>(
   accountNavigationGroups.flatMap((group) => group.items.map((item) => item.name)),
 )
 const selectedRouteName = computed(() => (typeof route.name === 'string' ? route.name : ''))
+const accountContentWidthClasses: Record<string, string> = {
+  'account-personal': 'account-content--comfortable',
+  'account-targets': 'account-content--wide',
+  'account-imports': 'account-content--wide',
+  'account-data-status': 'account-content--wide',
+  'account-integrations': 'account-content--comfortable',
+  'account-data-privacy': 'account-content--comfortable',
+  'account-general': 'account-content--comfortable',
+  'account-security': 'account-content--compact',
+}
+const accountContentClass = computed(() => (
+  accountContentWidthClasses[selectedRouteName.value] ?? 'account-content--comfortable'
+))
+
 let layoutMounted = false
 
 function isActive(name: string): boolean {
@@ -121,7 +135,7 @@ watch(
         </select>
       </label>
     </nav>
-    <div ref="accountContent" class="account-content">
+    <div ref="accountContent" :class="['account-content', accountContentClass]">
       <RouterView />
     </div>
   </section>

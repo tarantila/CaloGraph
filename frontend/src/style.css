@@ -152,7 +152,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .account-navigation-list a { text-decoration: none; }
 .account-navigation-list a:focus-visible { outline-offset: 2px; }
 .account-mobile-navigation { display: none; }
-.account-content { min-width: 0; }
+.account-content {
+  width: 100%;
+  min-width: 0;
+}
+.account-content--compact { max-width: 800px; }
+.account-content--comfortable { max-width: 960px; }
+.account-content--wide { max-width: none; }
+.account-content .form-card { max-width: none; }
 
 .account-content h1.account-heading-focus:focus { outline: none; }
 .account-page-stack {
@@ -966,7 +973,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .form-grid .full { grid-column: 1 / -1; }
 
 .form-grid > .button { justify-self: start; align-self: end; }
-.account-form-card { max-width: none; margin-bottom: 1rem; }
+.account-form-card { margin-bottom: 1rem; }
 .account-form-card > h2 { margin-bottom: .45rem; }
 .account-form-card > p { margin-top: 0; }
 .account-form-grid { gap: .85rem 1rem; align-items: start; }
@@ -1821,6 +1828,14 @@ td strong { color: #f0f4f9; font-weight: 600; }
   color: var(--muted);
   font-size: .69rem;
 }
+.security-section > p { margin: 0; }
+.security-section > p + p { margin-top: .35rem; }
+.security-section > .form-grid,
+.security-section > .mfa-setup,
+.security-section > .passkey-list,
+.security-section > .token-create-row {
+  margin-top: .95rem;
+}
 
 .admin-console {
   display: grid;
@@ -2111,6 +2126,12 @@ td strong { color: #f0f4f9; font-weight: 600; }
     max-width: 100%;
   }
   .account-content { max-width: none; }
+  .account-content--compact,
+  .account-content--comfortable,
+  .account-content--wide {
+    width: 100%;
+    max-width: 100%;
+  }
   .dashboard-heading { align-items: flex-start; flex-direction: column; }
   .dashboard-heading-actions { align-items: flex-start; width: 100%; }
   .content-grid { grid-template-columns: 1fr; }

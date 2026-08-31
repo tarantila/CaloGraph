@@ -412,10 +412,10 @@ function passkeyDeviceLabel(passkey: Passkey) {
       <div class="account-page-stack">
         <p v-if="message" class="account-form-success" role="status" aria-live="polite">{{ message }}</p>
 
-        <section class="card form-card password-change-card" :aria-busy="changingPassword" aria-labelledby="account-security-password-title">
+        <section class="card form-card security-section password-change-card" :aria-busy="changingPassword" aria-labelledby="account-security-password-title">
           <h2 id="account-security-password-title">{{ t('settingsUi.passwordChangeTitle') }}</h2>
-          <p>{{ t('settingsUi.passwordChangeDescription') }}</p>
-          <p class="table-secondary">{{ t('auth.passwordHint') }}</p>
+          <p class="security-description">{{ t('settingsUi.passwordChangeDescription') }}</p>
+          <p class="table-secondary security-description">{{ t('auth.passwordHint') }}</p>
           <form class="form-grid" @submit.prevent="changePassword">
             <label class="field">
               {{ t('settingsUi.currentPassword') }}
@@ -436,9 +436,9 @@ function passkeyDeviceLabel(passkey: Passkey) {
           </form>
         </section>
 
-        <section class="card form-card mfa-card" :aria-busy="managingMfa" aria-labelledby="account-security-mfa-title">
+        <section class="card form-card security-section mfa-card" :aria-busy="managingMfa" aria-labelledby="account-security-mfa-title">
           <h2 id="account-security-mfa-title">{{ t('settingsUi.mfaTitle') }}</h2>
-          <p>{{ t('settingsUi.mfaDescription') }}</p>
+          <p class="security-description">{{ t('settingsUi.mfaDescription') }}</p>
 
           <template v-if="!mfa?.totp_enabled">
             <p v-if="mfa?.totp_setup_pending && !totpSetup">{{ t('settingsUi.mfaPending') }}</p>
@@ -504,9 +504,9 @@ function passkeyDeviceLabel(passkey: Passkey) {
           </div>
         </section>
 
-        <section class="card form-card passkey-card" :aria-busy="managingPasskey" aria-labelledby="account-security-passkeys-title">
+        <section class="card form-card security-section passkey-card" :aria-busy="managingPasskey" aria-labelledby="account-security-passkeys-title">
           <h2 id="account-security-passkeys-title">{{ t('settingsUi.passkeysTitle') }}</h2>
-          <p>{{ t('settingsUi.passkeysDescription') }}</p>
+          <p class="security-description">{{ t('settingsUi.passkeysDescription') }}</p>
           <p v-if="!passkeySupported" class="passkey-unavailable">{{ t('settingsUi.passkeysUnavailable') }}</p>
 
           <div v-if="passkeys.length" class="passkey-list">
@@ -573,9 +573,9 @@ function passkeyDeviceLabel(passkey: Passkey) {
           </form>
         </section>
 
-        <section class="card form-card token-card" :aria-busy="managingToken" aria-labelledby="account-security-tokens-title">
+        <section class="card form-card security-section token-card" :aria-busy="managingToken" aria-labelledby="account-security-tokens-title">
           <h2 id="account-security-tokens-title">{{ t('settingsUi.tokensTitle') }}</h2>
-          <p>{{ t('settingsUi.tokensDescription') }}</p>
+          <p class="security-description">{{ t('settingsUi.tokensDescription') }}</p>
           <div class="token-create-row">
             <label class="field">
               {{ t('settingsUi.tokenLabel') }}
