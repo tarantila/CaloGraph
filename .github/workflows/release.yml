@@ -298,12 +298,14 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           BACKEND_DIGEST: ${{ steps.validate.outputs.backend_digest }}
           FRONTEND_DIGEST: ${{ steps.validate.outputs.frontend_digest }}
+          BACKUP_AGENT_DIGEST: ${{ steps.validate.outputs.backup_agent_digest }}
         run: |
           scripts/release/promote-images.sh \
             "$RELEASE_COMMIT" \
             "$RELEASE_VERSION" \
             "$BACKEND_DIGEST" \
-            "$FRONTEND_DIGEST"
+            "$FRONTEND_DIGEST" \
+            "$BACKUP_AGENT_DIGEST"
 
       - name: Create or verify GitHub Release
         shell: bash

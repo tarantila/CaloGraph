@@ -200,6 +200,7 @@ jobs:
     env:
       CALOGRAPH_BACKEND_IMAGE: calograph-backend
       CALOGRAPH_FRONTEND_IMAGE: calograph-frontend
+      CALOGRAPH_BACKUP_AGENT_IMAGE: calograph-backup-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify project versions
@@ -287,6 +288,13 @@ jobs:
           format: spdx-json
           output: sbom/calograph-frontend.spdx.json
           vuln-type: os,library
+      - name: Create backup-agent SPDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: calograph-backup-agent:ci
+          format: spdx-json
+          output: sbom/calograph-backup-agent.spdx.json
+          vuln-type: os,library
           scanners: vuln
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -313,7 +321,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p image-bundle
-          docker save calograph-backend:ci calograph-frontend:ci \
+          docker save calograph-backend:ci calograph-frontend:ci calograph-backup-agent:ci \
             | gzip > image-bundle/runtime-images.tar.gz
       - name: Upload verified runtime images for main publication
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -346,6 +354,7 @@ jobs:
     env:
       CALOGRAPH_BACKEND_IMAGE: calograph-backend
       CALOGRAPH_FRONTEND_IMAGE: calograph-frontend
+      CALOGRAPH_BACKUP_AGENT_IMAGE: calograph-backup-agent
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -356,7 +365,7 @@ jobs:
         run: |
           gzip -dc image-bundle/runtime-images.tar.gz | docker load
           docker image inspect \
-            calograph-backend:ci calograph-frontend:ci >/dev/null
+            calograph-backend:ci calograph-frontend:ci calograph-backup-agent:ci >/dev/null
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: runtime-sboms-${{ github.run_id }}
@@ -368,6 +377,7 @@ jobs:
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           printf 'backend=ghcr.io/%s/calograph-backend\n' "$owner" >>"$GITHUB_OUTPUT"
           printf 'frontend=ghcr.io/%s/calograph-frontend\n' "$owner" >>"$GITHUB_OUTPUT"
+          printf 'backup_agent=ghcr.io/%s/calograph-backup-agent\n' "$owner" >>"$GITHUB_OUTPUT"
       - name: Sign in to GitHub Container Registry
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -378,6 +388,7 @@ jobs:
         env:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.images.outputs.frontend }}
+          BACKUP_AGENT_IMAGE: ${{ steps.images.outputs.backup_agent }}
         run: |
           set -Eeuo pipefail
           immutable_tag="sha-${GITHUB_SHA}"
@@ -421,10 +432,14 @@ jobs:
           docker tag calograph-backend:ci "${BACKEND_IMAGE}:${immutable_tag}"
           docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:${run_tag}"
           docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:${immutable_tag}"
+          docker tag calograph-backup-agent:ci "${BACKUP_AGENT_IMAGE}:${run_tag}"
+          docker tag calograph-backup-agent:ci "${BACKUP_AGENT_IMAGE}:${immutable_tag}"
           backend_digest=$(publish_or_reuse "$BACKEND_IMAGE")
           frontend_digest=$(publish_or_reuse "$FRONTEND_IMAGE")
+          backup_agent_digest=$(publish_or_reuse "$BACKUP_AGENT_IMAGE")
           printf 'backend_digest=%s\n' "$backend_digest" >>"$GITHUB_OUTPUT"
           printf 'frontend_digest=%s\n' "$frontend_digest" >>"$GITHUB_OUTPUT"
+          printf 'backup_agent_digest=%s\n' "$backup_agent_digest" >>"$GITHUB_OUTPUT"
 
       - name: Attest backend build provenance
         if: github.event.repository.private == false
@@ -439,6 +454,13 @@ jobs:
         with:
           subject-name: ${{ steps.images.outputs.frontend }}
           subject-digest: ${{ steps.publish.outputs.frontend_digest }}
+          push-to-registry: true
+      - name: Attest backup-agent build provenance
+        if: github.event.repository.private == false
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.backup_agent }}
+          subject-digest: ${{ steps.publish.outputs.backup_agent_digest }}
           push-to-registry: true
       - name: Attest backend SPDX SBOM
         if: github.event.repository.private == false
@@ -456,19 +478,31 @@ jobs:
           subject-digest: ${{ steps.publish.outputs.frontend_digest }}
           sbom-path: sbom/calograph-frontend.spdx.json
           push-to-registry: true
+      - name: Attest backup-agent SPDX SBOM
+        if: github.event.repository.private == false
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.images.outputs.backup_agent }}
+          subject-digest: ${{ steps.publish.outputs.backup_agent_digest }}
+          sbom-path: sbom/calograph-backup-agent.spdx.json
+          push-to-registry: true
       - name: Promote verified digest to edge
         shell: bash
         env:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.images.outputs.frontend }}
+          BACKUP_AGENT_IMAGE: ${{ steps.images.outputs.backup_agent }}
           BACKEND_DIGEST: ${{ steps.publish.outputs.backend_digest }}
           FRONTEND_DIGEST: ${{ steps.publish.outputs.frontend_digest }}
+          BACKUP_AGENT_DIGEST: ${{ steps.publish.outputs.backup_agent_digest }}
         run: |
           set -Eeuo pipefail
           docker tag calograph-backend:ci "${BACKEND_IMAGE}:edge"
           docker tag calograph-frontend:ci "${FRONTEND_IMAGE}:edge"
+          docker tag calograph-backup-agent:ci "${BACKUP_AGENT_IMAGE}:edge"
           docker push "${BACKEND_IMAGE}:edge"
           docker push "${FRONTEND_IMAGE}:edge"
+          docker push "${BACKUP_AGENT_IMAGE}:edge"
 
           backend_edge_digest=$(docker buildx imagetools inspect \
             "${BACKEND_IMAGE}:edge" |
@@ -476,9 +510,14 @@ jobs:
           frontend_edge_digest=$(docker buildx imagetools inspect \
             "${FRONTEND_IMAGE}:edge" |
             awk '$1 == "Digest:" {print $2; exit}')
+          backup_agent_edge_digest=$(docker buildx imagetools inspect \
+            "${BACKUP_AGENT_IMAGE}:edge" |
+            awk '$1 == "Digest:" {print $2; exit}')
           [[ "$backend_edge_digest" == "$BACKEND_DIGEST" ]]
           [[ "$frontend_edge_digest" == "$FRONTEND_DIGEST" ]]
+          [[ "$backup_agent_edge_digest" == "$BACKUP_AGENT_DIGEST" ]]
           printf 'backend_edge_digest=%s\n' "$backend_edge_digest" >>"$GITHUB_OUTPUT"
           printf 'frontend_edge_digest=%s\n' "$frontend_edge_digest" >>"$GITHUB_OUTPUT"
+          printf 'backup_agent_edge_digest=%s\n' "$backup_agent_edge_digest" >>"$GITHUB_OUTPUT"
       - if: always()
         run: docker logout ghcr.io

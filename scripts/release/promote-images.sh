@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ $# -ne 4 ]]; then
-  printf 'Verwendung: %s RELEASE_COMMIT RELEASE_TAG BACKEND_DIGEST FRONTEND_DIGEST\n' "$0" >&2
+if [[ $# -ne 5 ]]; then
+  printf 'Verwendung: %s RELEASE_COMMIT RELEASE_TAG BACKEND_DIGEST FRONTEND_DIGEST BACKUP_AGENT_DIGEST\n' "$0" >&2
   exit 2
 fi
 
@@ -10,6 +10,7 @@ release_commit=$1
 release_tag=$2
 expected_backend_digest=$3
 expected_frontend_digest=$4
+expected_backup_agent_digest=$5
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY fehlt}
 owner=${repository%%/*}
 owner=${owner,,}
@@ -41,13 +42,15 @@ inspect_digest() {
     esac
   fi
 }
-images=(calograph-backend calograph-frontend)
+
+images=(calograph-backend calograph-frontend calograph-backup-agent)
 declare -A source_digests
 
 for image in "${images[@]}"; do
   case "$image" in
     calograph-backend) expected_digest=$expected_backend_digest ;;
     calograph-frontend) expected_digest=$expected_frontend_digest ;;
+    calograph-backup-agent) expected_digest=$expected_backup_agent_digest ;;
     *) fail "Unbekanntes Image: $image" ;;
   esac
   valid_digest "$expected_digest" || fail "Ungültiger validierter Digest: $image"
@@ -102,7 +105,12 @@ for image in "${images[@]}"; do
   printf '%s: sha=%s release=%s latest=%s\n' \
     "$image" "$source_digest" "$release_digest" "$latest_digest"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    output_name=${image#calograph-}
+    case "$image" in
+      calograph-backend) output_name=backend ;;
+      calograph-frontend) output_name=frontend ;;
+      calograph-backup-agent) output_name=backup_agent ;;
+      *) fail "Unbekanntes Image: $image" ;;
+    esac
     printf '%s_digest=%s\n' "$output_name" "$source_digest" >>"$GITHUB_OUTPUT"
   fi
 done

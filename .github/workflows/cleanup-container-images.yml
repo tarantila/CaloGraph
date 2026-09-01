@@ -48,7 +48,7 @@ jobs:
           fi
 
           cutoff_epoch=$(date --utc --date="-${GRACE_PERIOD_HOURS} hours" +%s)
-          for package in calograph-backend calograph-frontend; do
+          for package in calograph-backend calograph-frontend calograph-backup-agent; do
             pages_file="${RUNNER_TEMP}/${package}-pages.json"
             versions_file="${RUNNER_TEMP}/${package}-versions.json"
             api_base="/${owner_scope}/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions"

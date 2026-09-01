@@ -87,7 +87,7 @@ inspect_digest() {
   fi
 }
 
-for image in calograph-backend calograph-frontend; do
+for image in calograph-backend calograph-frontend calograph-backup-agent; do
   image_ref="ghcr.io/$owner/$image:sha-$release_commit"
   digest=$(inspect_digest "$image_ref" || true)
   valid_digest "$digest" || fail "Immutable Image fehlt oder hat ungültigen Digest: $image_ref"
@@ -110,6 +110,7 @@ for image in calograph-backend calograph-frontend; do
   case "$image" in
     calograph-backend) output_name=backend_digest ;;
     calograph-frontend) output_name=frontend_digest ;;
+    calograph-backup-agent) output_name=backup_agent_digest ;;
     *) fail "Unbekanntes Image: $image" ;;
   esac
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then

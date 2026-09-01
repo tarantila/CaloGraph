@@ -53,9 +53,9 @@ Published names and tags are:
 
 - `ghcr.io/tarantila/calograph-backend:sha-COMMIT`
 - `ghcr.io/tarantila/calograph-frontend:sha-COMMIT`
-- `edge` for the current successful `main` image
-- the exact `vX.Y.Z` tag plus `latest` for a successful release tag
-
+- `ghcr.io/tarantila/calograph-backup-agent:sha-COMMIT`
+- `edge` for the current successful `main` images
+- the exact `vX.Y.Z` tag plus `latest` for a successful release
 The workflow first publishes a run-scoped staging tag and then creates or
 reuses the immutable `sha-COMMIT` tag only when the digests match exactly.
 GitHub's Sigstore-backed artifact attestation service then signs build
@@ -104,6 +104,9 @@ Verify a published image with the GitHub CLI:
 gh attestation verify \
   oci://ghcr.io/tarantila/calograph-backend:vX.Y.Z \
   --repo tarantila/CaloGraph
+gh attestation verify \
+  oci://ghcr.io/tarantila/calograph-backup-agent:vX.Y.Z \
+  --repo tarantila/CaloGraph
 ```
 
 ## Running release images
@@ -126,8 +129,8 @@ docker compose up -d --no-build --wait backend frontend yazio-scheduler
 The backend and scheduler deliberately use the same backend image.
 
 The first GHCR publication creates private packages. Before documenting an
-anonymous installation, make both `calograph-backend` and
-`calograph-frontend` public in their package settings. Repository visibility
+anonymous installation, make `calograph-backend`, `calograph-frontend`, and
+`calograph-backup-agent` public in their package settings. Repository visibility
 and package visibility are separate controls.
 
 ## GHCR retention
