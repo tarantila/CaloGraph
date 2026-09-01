@@ -1,6 +1,7 @@
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -8,9 +9,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -44,15 +43,20 @@ def test_user_profiles_migration_constraints_and_user_cascade() -> None:
             assert "user_profiles" not in inspector.get_table_names()
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == PREVIOUS_REVISION
 
-        with SessionLocal() as db:
-            existing_user = User(
-                username="postgres-existing-profile-user",
-                password_hash="test-password-hash",
+        existing_user_id = uuid4()
+        now = datetime.now(UTC)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, username, password_hash, language, timezone, week_starts_on, "
+                    "preferred_weight_unit, raw_payload_retention_days, is_active, "
+                    "is_admin, created_at, updated_at) "
+                    "VALUES (:id, 'postgres-existing-profile-user', 'test-password-hash', "
+                    "'de', 'Europe/Berlin', 1, 'kg', 0, true, false, :created_at, :updated_at)"
+                ),
+                {"id": existing_user_id, "created_at": now, "updated_at": now},
             )
-            db.add(existing_user)
-            db.commit()
-            existing_user_id = existing_user.id
-
         command.upgrade(alembic_config, TARGET_REVISION)
         with engine.connect() as connection:
             inspector = sa.inspect(connection)
