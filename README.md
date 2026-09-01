@@ -18,6 +18,8 @@
   <a href="#operations-and-development">Documentation</a>
 </p>
 
+---
+
 CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
 YAZIO data. It combines daily nutrition, versioned budgets and targets, optional
 activity-calorie credits, trends, achievements, and data-quality views without
