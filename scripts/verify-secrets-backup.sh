@@ -12,6 +12,7 @@ if [[ "$(stat -c '%h' -- "$backup_file" 2>/dev/null || printf 2)" != 1 ]]; then
   printf 'Backup file must not be a hard link.\n' >&2
   exit 1
 fi
+identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
 identity_mode=
 if [[ -n "$identity_file" && -r "$identity_file" && ! -L "$identity_file" ]]; then
   identity_mode=$(stat -c '%a' -- "$identity_file" 2>/dev/null || true)
