@@ -1,5 +1,3 @@
-# CaloGraph
-
 <p align="center">
   <img
     src="frontend/public/branding/calograph-readme-banner.png"
@@ -8,14 +6,27 @@
   >
 </p>
 
+<p align="center">
+  <strong>Self-hosted, multi-user nutrition analytics for Apple Health and YAZIO</strong>
+</p>
+
+<p align="center">
+  <a href="#quick-start-localprivate">Quick start</a> |
+  <a href="docs/apple-health-setup.md">Apple Health</a> |
+  <a href="docs/yazio-sync.md">YAZIO sync</a> |
+  <a href="docs/production.md">Production</a> |
+  <a href="#operations-and-development">Documentation</a>
+</p>
+
 CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
 YAZIO data. It combines daily nutrition, versioned budgets and targets, optional
 activity-calorie credits, trends, achievements, and data-quality views without
 moral judgment or external telemetry.
 
-CaloGraph is 0.x work in progress. It is not medical software and does not
-diagnose, treat or prescribe. Do not use it as a substitute for professional
-medical advice.
+> [!WARNING]
+> **CaloGraph is 0.x work in progress.** It is **not medical software** and does
+> not diagnose, treat or prescribe. Do not use it as a substitute for
+> professional medical advice.
 
 <p align="center">
   <img
@@ -29,14 +40,16 @@ medical advice.
 
 - **Multi-user by design:** each account has isolated imports, samples, targets,
   achievements, tokens and personal integrations.
-- Historically effective calorie and macro budgets, trends, calendar and data
-  quality views.
-- Optional imported activity-energy credit; it does not create a workout,
-  hydration or body-weight-history tracker.
-- Portable ZIP export/import and separate CSV archive export (there is no CSV
-  importer).
-- Invitation-only account creation after the first administrator, with
-  password, MFA and passkey options.
+- **Versioned nutrition analytics:** daily calories and macros, historically
+  effective budgets and targets, trends, calendar and data-quality views.
+- **Activity-aware budgets:** optional imported activity-calorie credits can
+  increase the effective daily calorie budget without turning CaloGraph into a
+  workout tracker.
+- **Portable data:** ZIP export/import and separate CSV archive export are
+  available; CSV import is not currently supported.
+- **Managed account lifecycle:** the first administrator can be created through
+  the browser, then further accounts are invitation-only with password, MFA and
+  passkey options.
 
 ## Multi-user by design
 
