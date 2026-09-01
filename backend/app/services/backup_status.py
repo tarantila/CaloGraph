@@ -148,12 +148,11 @@ def _read_verification(path: Path, component: str) -> dict[str, str] | None:
         return None
     return {"artifact": artifact, "sha256": checksum.lower(), "verified_at": verified_at}
 
-
 def _apply_external_verification(status: dict[str, Any], status_path: Path, now: datetime) -> None:
     components = status["components"]
     verification_files = {
-        "database": status_path.with_name("database-verification.json"),
-        "environment_secrets": status_path.with_name("secrets-verification.json"),
+        "database": Path(settings.backup_database_verification_status_file),
+        "environment_secrets": Path(settings.backup_secrets_verification_status_file),
     }
     for component_name, verification_path in verification_files.items():
         component = components.get(component_name)

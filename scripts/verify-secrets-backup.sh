@@ -4,7 +4,14 @@ umask 077
 
 backup_file=${1:-}
 age_bin=${AGE_BIN:-age}
-identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
+if [[ -z "$backup_file" || ! -f "$backup_file" || -L "$backup_file" || "${backup_file##*.}" != age ]]; then
+  printf 'Usage: %s /path/to/encrypted-secrets-backup.tar.age\n' "$0" >&2
+  exit 64
+fi
+if [[ "$(stat -c '%h' -- "$backup_file" 2>/dev/null || printf 2)" != 1 ]]; then
+  printf 'Backup file must not be a hard link.\n' >&2
+  exit 1
+fi
 identity_mode=
 if [[ -n "$identity_file" && -r "$identity_file" && ! -L "$identity_file" ]]; then
   identity_mode=$(stat -c '%a' -- "$identity_file" 2>/dev/null || true)

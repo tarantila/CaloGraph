@@ -228,6 +228,16 @@ class Settings(BaseSettings):
         min_length=1,
         max_length=4096,
     )
+    backup_database_verification_status_file: str = Field(
+        default="/var/lib/calograph-backups/status/database-verification.json",
+        min_length=1,
+        max_length=4096,
+    )
+    backup_secrets_verification_status_file: str = Field(
+        default="/var/lib/calograph-backups/status/secrets-verification.json",
+        min_length=1,
+        max_length=4096,
+    )
     backup_status_max_age_seconds: int = Field(default=172800, ge=60, le=31_536_000)
     backup_freshness_threshold_seconds: int = Field(
         default=172800,

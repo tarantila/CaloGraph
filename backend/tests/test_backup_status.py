@@ -79,6 +79,8 @@ def test_backup_status_requires_matching_external_verification_record(client, us
     }))
     monkeypatch.setattr(settings, 'backup_agent_enabled', True)
     monkeypatch.setattr(settings, 'backup_status_file', str(status_file))
+    monkeypatch.setattr(settings, 'backup_database_verification_status_file', str(tmp_path / 'database-verification.json'))
+    monkeypatch.setattr(settings, 'backup_secrets_verification_status_file', str(tmp_path / 'secrets-verification.json'))
     user.is_admin = True
     db.commit()
 

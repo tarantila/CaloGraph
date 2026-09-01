@@ -58,6 +58,8 @@ services:
       MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
       BACKUP_AGENT_ENABLED: ${BACKUP_AGENT_ENABLED:-false}
       BACKUP_STATUS_FILE: /var/lib/calograph-backups/status/status.json
+      BACKUP_DATABASE_VERIFICATION_STATUS_FILE: ${BACKUP_DATABASE_VERIFICATION_STATUS_FILE:-/var/lib/calograph-backups/status/database-verification.json}
+      BACKUP_SECRETS_VERIFICATION_STATUS_FILE: ${BACKUP_SECRETS_VERIFICATION_STATUS_FILE:-/var/lib/calograph-backups/status/secrets-verification.json}
       BACKUP_STATUS_MAX_AGE_SECONDS: ${BACKUP_STATUS_MAX_AGE_SECONDS:-172800}
       BACKUP_FRESHNESS_THRESHOLD_SECONDS: ${BACKUP_FRESHNESS_THRESHOLD_SECONDS:-172800}
       BACKUP_SCHEDULE_TIME: ${BACKUP_SCHEDULE_TIME:-02:30}
@@ -253,6 +255,8 @@ services:
       BACKUP_AGE_RECIPIENTS_FILE: /run/backup-config/recipients
       BACKUP_DIR: /var/lib/calograph-backups/artifacts
       BACKUP_STATUS_FILE: /var/lib/calograph-backups/status/status.json
+      BACKUP_DATABASE_VERIFICATION_STATUS_FILE: ${BACKUP_DATABASE_VERIFICATION_STATUS_FILE:-/var/lib/calograph-backups/status/database-verification.json}
+      BACKUP_SECRETS_VERIFICATION_STATUS_FILE: ${BACKUP_SECRETS_VERIFICATION_STATUS_FILE:-/var/lib/calograph-backups/status/secrets-verification.json}
       BACKUP_INCLUDE_SECRETS: "false"
       BACKUP_SCHEDULE_TIME: ${BACKUP_SCHEDULE_TIME:-02:30}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
