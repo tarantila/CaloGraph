@@ -207,6 +207,9 @@ describe('account language setting', () => {
     expect(wrapper.findAll('.account-data-card')).toHaveLength(1)
     expect(wrapper.findAll('.account-action-button')).not.toHaveLength(0)
     expect(wrapper.find('.portable-import-actions').exists()).toBe(true)
+    const portableActions = wrapper.get('.portable-import-actions')
+    expect(portableActions.element.children[0]).toBe(wrapper.get('.account-file-picker').element)
+    expect(portableActions.element.children[1]).toBe(wrapper.get('.backup-validate-button').element)
     expect(wrapper.get('input[type="file"]').element.getAttribute('aria-label')).toBeNull()
     expect(wrapper.get('.account-file-picker').text()).toContain('Datei auswählen')
     expect(wrapper.get('.backup-validate-button').attributes('disabled')).toBeDefined()
@@ -242,7 +245,7 @@ describe('account language setting', () => {
     await flushPromises()
     expect(securityWrapper.get('.password-submit').classes()).toContain('compact-action')
     expect(securityWrapper.get('.mfa-card button[type="submit"]').classes()).toContain('compact-action')
-    expect(securityWrapper.get('.passkey-card button[type="submit"]').classes()).toContain('compact-action')
+    expect(securityWrapper.get('.passkey-card button[type="submit"]').classes()).toEqual(expect.arrayContaining(['compact-action', 'passkey-submit']))
     expect(securityWrapper.get('.token-create-button').classes()).toContain('compact-action')
     securityWrapper.unmount()
 

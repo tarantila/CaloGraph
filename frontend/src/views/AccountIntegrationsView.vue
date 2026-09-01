@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 
-import { PhPlugs } from '@phosphor-icons/vue'
-
 import { api, ApiError, localizeApiError } from '../api'
 import DateInput from '../components/DateInput.vue'
 import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
@@ -184,7 +182,7 @@ void load()
 
     <section v-if="loaded" class="card form-card yazio-connection-card" :aria-busy="savingYazio">
       <div class="yazio-card-title">
-        <PhPlugs :size="20" weight="duotone" aria-hidden="true" />
+        <span class="yazio-icon" aria-hidden="true"></span>
         <h2>{{ t('settingsUi.yazioTitle') }}</h2>
       </div>
       <p>{{ t('settingsUi.yazioDescription') }}</p>

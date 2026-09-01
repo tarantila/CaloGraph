@@ -564,7 +564,7 @@ function passkeyDeviceLabel(passkey: Passkey) {
               />
             </label>
             <button
-              class="button compact-action"
+              class="button compact-action passkey-submit"
               type="submit"
               :disabled="!passkeySupported || managingPasskey"
             >

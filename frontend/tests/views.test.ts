@@ -1858,7 +1858,7 @@ describe('main views', () => {
     expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
     expect(wrapper.find('select[name="activity-source"]').exists()).toBe(true)
   })
-  it('places macro targets before the activity fieldset while preserving switch semantics', async () => {
+  it('places macro targets, activity, and target weight before saving', async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/settings/targets') return Promise.resolve([])
       if (path === '/settings/activity-sources') return Promise.resolve([])
@@ -1872,11 +1872,15 @@ describe('main views', () => {
     expect(wrapper.find('.macro-target-settings').exists()).toBe(true)
     const macroInputs = wrapper.findAll('.macro-target-grid input')
     expect(macroInputs).toHaveLength(4)
-    const controls = wrapper.get('form').findAll('input, select')
-    const firstMacroIndex = controls.findIndex((control) => control.element === macroInputs[0].element)
-    const activityIndex = controls.findIndex((control) => control.element === wrapper.get('input[role="switch"]').element)
-    expect(firstMacroIndex).toBeGreaterThanOrEqual(0)
-    expect(activityIndex).toBeGreaterThan(firstMacroIndex)
+    const form = wrapper.get('form')
+    const formChildren = [...form.element.children]
+    const macroIndex = formChildren.indexOf(wrapper.get('.macro-target-settings').element)
+    const activityIndex = formChildren.indexOf(wrapper.get('.activity-target-settings').element)
+    const targetWeightIndex = formChildren.indexOf(wrapper.get('.target-weight-settings').element)
+    const saveIndex = formChildren.indexOf(wrapper.get('button[type="submit"]').element)
+    expect(activityIndex).toBeGreaterThan(macroIndex)
+    expect(targetWeightIndex).toBeGreaterThan(activityIndex)
+    expect(saveIndex).toBeGreaterThan(targetWeightIndex)
     expect(wrapper.get<HTMLInputElement>('input[role="switch"]').element.checked).toBe(false)
     wrapper.unmount()
   })
@@ -2219,6 +2223,8 @@ describe('main views', () => {
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
     expect(wrapper.text()).toContain('Erster Datenimport von')
+    expect(wrapper.get('.yazio-icon').attributes('aria-hidden')).toBe('true')
+    expect(wrapper.find('.yazio-card-title svg').exists()).toBe(false)
     const dateInputs = wrapper
       .findAllComponents(DateInput)
       .map((component) => component.get<HTMLInputElement>('input[type="text"]'))

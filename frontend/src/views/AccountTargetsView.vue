@@ -288,39 +288,6 @@ void load()
           <label class="field">{{ t('settingsUi.validFrom') }}<DateInput v-model="target.valid_from" required /></label>
           <label class="field">{{ t('settingsUi.calorieBudget') }}<input v-model.number="target.calories_kcal" type="number" :min="TARGET_LIMITS.caloriesMin" step="1" required /></label>
           <label class="field">{{ t('settingsUi.maintenance') }}<input v-model.number="target.maintenance_kcal" type="number" :min="TARGET_LIMITS.maintenanceMin" step="0.001" /><small>{{ t('settingsUi.maintenanceHelp') }}</small></label>
-          <fieldset class="field full target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
-            <legend>{{ t('settingsUi.targetWeight') }}</legend>
-            <p class="target-weight-description">{{ t('settingsUi.targetWeightDescription') }}</p>
-            <div class="target-weight-mode-options" role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
-              <label>
-                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="none" />
-                {{ t('settingsUi.targetWeightNone') }}
-              </label>
-              <label>
-                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="exact" />
-                {{ t('settingsUi.targetWeightExact') }}
-              </label>
-              <label>
-                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="range" />
-                {{ t('settingsUi.targetWeightRange') }}
-              </label>
-            </div>
-            <label v-if="targetWeightMode === 'exact'" class="field">
-              {{ t('settingsUi.targetWeight') }} ({{ preferredWeightUnit }})
-              <input v-model.number="targetWeightExact" name="target-weight-exact" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
-            </label>
-            <div v-if="targetWeightMode === 'range'" class="target-weight-range">
-              <label class="field">
-                {{ t('settingsUi.targetWeightFrom') }} ({{ preferredWeightUnit }})
-                <input v-model.number="targetWeightMin" name="target-weight-min" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
-              </label>
-              <label class="field">
-                {{ t('settingsUi.targetWeightTo') }} ({{ preferredWeightUnit }})
-                <input v-model.number="targetWeightMax" name="target-weight-max" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
-              </label>
-            </div>
-            <p v-if="weightError" id="target-weight-error" class="field-error" role="alert">{{ weightError }}</p>
-          </fieldset>
           <fieldset class="macro-target-settings full">
             <legend>{{ t('settingsUi.macroTargets') }}</legend>
             <div class="macro-target-grid">
@@ -354,6 +321,39 @@ void load()
             <small v-if="!selectableActivitySources.length" class="activity-source-unavailable">
               {{ t('activity.noSources') }}
             </small>
+          </fieldset>
+          <fieldset class="field full target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
+            <legend>{{ t('settingsUi.targetWeight') }}</legend>
+            <p class="target-weight-description">{{ t('settingsUi.targetWeightDescription') }}</p>
+            <div class="target-weight-mode-options" role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="none" />
+                {{ t('settingsUi.targetWeightNone') }}
+              </label>
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="exact" />
+                {{ t('settingsUi.targetWeightExact') }}
+              </label>
+              <label>
+                <input v-model="targetWeightMode" type="radio" name="target-weight-mode" value="range" />
+                {{ t('settingsUi.targetWeightRange') }}
+              </label>
+            </div>
+            <label v-if="targetWeightMode === 'exact'" class="field">
+              {{ t('settingsUi.targetWeight') }} ({{ preferredWeightUnit }})
+              <input v-model.number="targetWeightExact" name="target-weight-exact" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+            </label>
+            <div v-if="targetWeightMode === 'range'" class="target-weight-range">
+              <label class="field">
+                {{ t('settingsUi.targetWeightFrom') }} ({{ preferredWeightUnit }})
+                <input v-model.number="targetWeightMin" name="target-weight-min" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+              </label>
+              <label class="field">
+                {{ t('settingsUi.targetWeightTo') }} ({{ preferredWeightUnit }})
+                <input v-model.number="targetWeightMax" name="target-weight-max" type="number" min="0" :max="kgToWeight(TARGET_WEIGHT_LIMITS.maxKg, preferredWeightUnit)" :step="preferredWeightUnit === 'lb' ? 0.1 : 0.001" required />
+              </label>
+            </div>
+            <p v-if="weightError" id="target-weight-error" class="field-error" role="alert">{{ weightError }}</p>
           </fieldset>
           <button class="button compact-action" type="submit" :disabled="savingTarget">
             {{ savingTarget ? t('settingsUi.saving') : t('settingsUi.saveTargets') }}

@@ -997,7 +997,14 @@ td strong { color: #f0f4f9; font-weight: 600; }
   margin-bottom: .45rem;
   color: #e8edf5;
 }
-.yazio-card-title svg { color: var(--accent); }
+.yazio-card-title .yazio-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  mask: url('./assets/integrations/yazio.svg') center / contain no-repeat;
+  -webkit-mask: url('./assets/integrations/yazio.svg') center / contain no-repeat;
+}
 .yazio-card-title h2 { margin: 0; }
 .yazio-credential-form { margin-top: .95rem; }
 .height-imperial-fields {
@@ -1111,16 +1118,18 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .account-data-section p { margin: 0; }
 .account-action-button { width: fit-content; }
 .portable-import-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: .75rem;
   margin-top: .15rem;
 }
 .account-file-picker {
   display: flex;
   align-items: center;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   gap: .7rem;
   cursor: pointer;
 }
@@ -1140,7 +1149,6 @@ td strong { color: #f0f4f9; font-weight: 600; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.backup-validate-button { justify-self: end; }
 .password-submit { align-self: end; }
 .token-create-row {
   display: grid;
@@ -1939,6 +1947,10 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .security-section > .token-create-row {
   margin-top: .95rem;
 }
+.form-grid > .passkey-submit {
+  grid-column: 2;
+  justify-self: end;
+}
 
 .admin-console {
   display: grid;
@@ -2245,6 +2257,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .calendar-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .quality-detail-grid { grid-template-columns: 1fr; }
   .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid, .target-weight-mode-options, .target-weight-range { grid-template-columns: 1fr; }
+  .form-grid > .passkey-submit { grid-column: auto; justify-self: stretch; }
   .micronutrient-heading { align-items: end; flex-direction: row; }
   .admin-console { grid-template-columns: 1fr; gap: .85rem; }
   .admin-sidebar { position: static; width: 100%; overflow: hidden; padding: .7rem; }
@@ -2305,8 +2318,9 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .backup-retention { grid-template-columns: 1fr; gap: .45rem; }
   .backup-doc-link { width: 100%; justify-self: stretch; }
   .form-grid > .button, .account-action-button { width: 100%; justify-self: stretch; }
-  .portable-import-actions, .token-create-row { grid-template-columns: 1fr; }
-  .backup-validate-button { justify-self: stretch; }
+  .portable-import-actions { display: grid; grid-template-columns: 1fr; }
+  .portable-import-actions .backup-validate-button { width: 100%; }
+  .token-create-row { grid-template-columns: 1fr; }
   .button.token-create-button { width: 100%; }
   .account-file-picker { display: grid; align-items: stretch; gap: .55rem; }
   .account-file-picker .button { width: 100%; text-align: center; }
