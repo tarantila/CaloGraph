@@ -124,11 +124,14 @@ LABEL org.opencontainers.image.title="CaloGraph Backup Agent" \
       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
-RUN apk add --no-cache age bash coreutils tzdata \
+RUN apk update \
+    && apk add --no-cache age bash coreutils postgresql18-client tzdata \
+    && apk upgrade --no-cache \
     && addgroup -S -g "${APP_GID}" calograph-backup \
     && adduser -S -D -H -u "${APP_UID}" -G calograph-backup calograph-backup \
     && mkdir -p /var/lib/calograph-backups/artifacts /var/lib/calograph-backups/status \
-    && chown -R "${APP_UID}:${APP_GID}" /var/lib/calograph-backups
+    && chown -R "${APP_UID}:${APP_GID}" /var/lib/calograph-backups \
+    && rm -rf /var/cache/apk/*
 WORKDIR /app
 COPY --chmod=755 scripts/backup-agent.sh scripts/backup-postgres.sh \
   scripts/backup-secrets.sh scripts/backup-retention.sh /app/scripts/
