@@ -53,10 +53,23 @@ class UserResponse(BaseModel):
     week_starts_on: int
     preferred_weight_unit: Literal["kg", "lb"]
     raw_payload_retention_days: int
+    highlight_over_budget: bool
     is_admin: bool
     is_active: bool
     deactivated_at: datetime | None
 
+
+class BootstrapStatusResponse(BaseModel):
+    setup_required: bool
+
+
+class BootstrapRequest(BaseModel):
+    username: str = Field(
+        min_length=1,
+        max_length=190,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,189}$",
+    )
+    password: str = Field(min_length=1, max_length=1024)
 
 class CsrfResponse(BaseModel):
     csrf_token: str
@@ -457,22 +470,23 @@ class ProfileUpdate(BaseModel):
     week_starts_on: int | None = Field(default=None, ge=0, le=6)
     preferred_weight_unit: Literal["kg", "lb"] | None = None
     raw_payload_retention_days: int | None = Field(default=None, ge=0, le=3650)
+    highlight_over_budget: bool | None = None
 
 
 OnboardingStep = Literal["personal", "targets", "security", "completed"]
-
-
-class OnboardingStatusResponse(BaseModel):
-    mode: Literal["full", "legacy"]
-    required: bool
-    completed: bool
-    current_step: OnboardingStep
 
 
 class OnboardingAdvanceRequest(BaseModel):
     expected_step: OnboardingStep = Field(
         validation_alias=AliasChoices("expected_step", "current_step", "step")
     )
+
+class OnboardingStatusResponse(BaseModel):
+    mode: Literal["legacy", "full"]
+    required: bool
+    completed: bool
+    current_step: OnboardingStep
+
 
 class TrackingQualityInput(BaseModel):
     calories_full_ratio: Decimal = Field(gt=0, le=2)

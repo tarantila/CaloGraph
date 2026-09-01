@@ -132,16 +132,22 @@ and package visibility are separate controls.
 
 ## GHCR retention
 
-The weekly cleanup workflow:
+The weekly cleanup workflow uses a 24-hour grace period. It classifies every
+package version and prints the package, version ID, creation time, tags and one
+of `PROTECTED`, `DELETE CANDIDATE`, `UNTAGGED REFERRER` or `SKIP`.
 
-- never deletes an image version carrying a SemVer-style release tag,
-- keeps the ten newest non-release image versions,
-- deletes older tagged non-release versions only after 30 days,
-- leaves tagless OCI records untouched because they can be provenance or SBOM
-  referrers rather than runnable images, and
-- defaults to a dry run when started manually.
+- Exact stable tags matching `vX.Y.Z`, and the mutable `latest` and `edge` tags,
+  are protected.
+- Any version sharing a protected release digest is protected, including its
+  `sha-` and `run-` tags.
+- Untagged records are never deleted: they may be OCI referrers for provenance
+  or SBOM data.
+- Tagged non-release versions younger than 24 hours are skipped; older tagged
+  versions are deletion candidates.
+- Manual dispatch defaults to `dry_run=true`; scheduled runs explicitly delete
+  only candidates.
 
-Scheduled runs perform the deletion. GitHub retains deleted package versions
-for a limited restoration window, but release-tag protection is the primary
-safety control. The package must inherit repository Actions access so its
-`GITHUB_TOKEN` has package administration permission.
+Cleanup, main-branch publication, and release promotion share the
+`container-image-promotions` concurrency group, so a retention decision cannot
+race publication or release-tag promotion. The workflow does not execute real
+cleanup from this repository session.

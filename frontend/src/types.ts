@@ -4,7 +4,9 @@ export interface User {
   language: string
   timezone: string
   week_starts_on: number
+  preferred_weight_unit?: string
   raw_payload_retention_days: number
+  highlight_over_budget?: boolean
   is_admin: boolean
   is_active: boolean
   deactivated_at: string | null

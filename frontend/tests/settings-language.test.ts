@@ -23,6 +23,7 @@ const user = {
   week_starts_on: 0,
   preferred_weight_unit: 'kg' as const,
   raw_payload_retention_days: 30,
+  highlight_over_budget: false,
   is_admin: true,
   is_active: true,
   deactivated_at: null,
@@ -98,6 +99,7 @@ describe('account language setting', () => {
         week_starts_on: 6,
         preferred_weight_unit: 'lb',
         raw_payload_retention_days: 30,
+        highlight_over_budget: false,
       }),
     })
     expect(useAuthStore().user?.language).toBe('en')
@@ -117,6 +119,7 @@ describe('account language setting', () => {
         week_starts_on: 6,
         preferred_weight_unit: 'lb',
         raw_payload_retention_days: 30,
+        highlight_over_budget: false,
       }),
     })
     expect(useAuthStore().user?.language).toBe('de')
@@ -192,6 +195,7 @@ describe('account language setting', () => {
         week_starts_on: 0,
         preferred_weight_unit: 'kg',
         raw_payload_retention_days: 60,
+        highlight_over_budget: false,
       }),
     })
     privacyWrapper.unmount()
@@ -225,6 +229,7 @@ describe('account language setting', () => {
         week_starts_on: 0,
         preferred_weight_unit: 'kg',
         raw_payload_retention_days: 60,
+        highlight_over_budget: false,
       }),
     })
 

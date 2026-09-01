@@ -14,6 +14,7 @@ const publicAuthenticationPaths: Record<string, true> = {
   '/auth/register': true,
   '/auth/invitation/exchange': true,
   '/auth/recovery/complete': true,
+  '/auth/bootstrap': true,
 }
 
 const SESSION_EXPIRED_PROBLEM = 'urn:calograph:problem:session-expired'
@@ -27,6 +28,7 @@ const apiProblemMessages: Record<string, string> = {
   'urn:calograph:problem:validation-error': 'errors.validation',
   'urn:calograph:problem:invalid-timezone': 'errors.invalidTimezone',
   'urn:calograph:problem:rate-limited': 'errors.rateLimited',
+  'urn:calograph:problem:bootstrap-already-initialized': 'auth.bootstrapRace',
   'urn:calograph:problem:data-export-busy': 'errors.dataExportBusy',
   'urn:calograph:problem:admin-reauthentication-failed': 'errors.adminReauthFailed',
   'urn:calograph:problem:admin-required': 'errors.adminRequired',
@@ -226,7 +228,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     path === '/auth/passkey/verify' ||
     path === '/auth/register' ||
     path === '/auth/invitation/exchange' ||
-    path === '/auth/recovery/complete'
+    path === '/auth/recovery/complete' ||
+    path === '/auth/bootstrap'
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (mutating && !publicMutation) {

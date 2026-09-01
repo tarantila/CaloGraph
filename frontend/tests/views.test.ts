@@ -43,6 +43,7 @@ const user = {
   is_admin: true,
   is_active: true,
   deactivated_at: null,
+  highlight_over_budget: false,
 }
 
 describe('main views', () => {
@@ -348,6 +349,80 @@ describe('main views', () => {
       itemStyle: { color: '#fb7185' },
     })
   })
+  it('rolls back the dashboard preference and exposes retry after a failed save', async () => {
+    const auth = useAuthStore()
+    auth.user = { ...user }
+    const point = {
+      date: '2026-07-23',
+      calories_kcal: 2000,
+      target_kcal: 1800,
+      maintenance_kcal: null,
+      deviation_kcal: 200,
+      activity_mode: 'off',
+      activity_source_type: null,
+      active_energy_kcal: null,
+      activity_credit_kcal: 0,
+      activity_data_status: 'disabled',
+      effective_budget_kcal: 1800,
+      effective_maintenance_kcal: null,
+      effective_deviation_kcal: 200,
+      protein_g: 130,
+      carbs_g: 220,
+      fat_g: 70,
+      tracking_status: 'complete',
+      tracking_score: 8,
+      tracking_reasons: [],
+    }
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/dashboard/summary') {
+        return Promise.resolve({
+          today: point,
+          week: {
+            consumed_kcal: 2000,
+            budget_kcal: 1800,
+            deviation_kcal: 200,
+            remaining_kcal: -200,
+            activity_credit_kcal: 0,
+            effective_budget_kcal: 1800,
+            effective_deviation_kcal: 200,
+            effective_remaining_kcal: -200,
+          },
+          protein_7d_average_g: 130,
+          last_import_at: null,
+          data_start_date: point.date,
+          data_end_date: point.date,
+          data_day_count: 1,
+        })
+      }
+      if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') return Promise.resolve({ available: true, configured: false })
+      if (path === '/settings/profile' && options?.method === 'PUT') {
+        return Promise.reject(new Error('save failed'))
+      }
+      return Promise.resolve({ points: [point] })
+    })
+
+    const wrapper = mount(OverviewView, {
+      global: {
+        stubs: {
+          ChartPanel: {
+            props: ['title', 'option', 'empty', 'height'],
+            template: '<section><slot name="header-actions" /></section>',
+          },
+        },
+      },
+    })
+    await flushPromises()
+    const highlightSwitch = wrapper.get<HTMLInputElement>('input[role="switch"]')
+    await highlightSwitch.setValue(true)
+    await flushPromises()
+
+    expect(highlightSwitch.element.checked).toBe(false)
+    expect(wrapper.text()).toContain('Einstellung konnte nicht gespeichert werden.')
+    expect(wrapper.find('.chart-preference-retry').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
 
   it('shows credited activity below the remaining budget and in the calorie tooltip', async () => {
     const point = {

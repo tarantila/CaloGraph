@@ -382,8 +382,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: inline-flex;
   align-items: center;
   gap: .42rem;
+  min-height: 2.75rem;
+  padding: .2rem .3rem;
   color: var(--muted);
-  font-size: .65rem;
+  font-size: .75rem;
   cursor: pointer;
   user-select: none;
 }
@@ -393,9 +395,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   height: 1.05rem;
   margin: 0;
   flex: 0 0 auto;
-  border: 1px solid #40506a;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: #273449;
+  background: var(--surface-soft);
   appearance: none;
   cursor: pointer;
   transition: border-color .18s ease, background-color .18s ease;
@@ -407,21 +409,34 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   width: .68rem;
   height: .68rem;
   border-radius: 50%;
-  background: #98a5b9;
+  background: var(--muted);
   content: '';
   transition: transform .18s ease, background-color .18s ease;
 }
 .chart-highlight-toggle input:checked {
-  border-color: #fb7185;
-  background: rgb(251 113 133 / 18%);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger), transparent 82%);
 }
 .chart-highlight-toggle input:checked::after {
-  background: #fb7185;
+  background: var(--danger);
   transform: translateX(.78rem);
 }
 .chart-highlight-toggle input:focus-visible {
-  outline: 2px solid #a78bfa;
+  outline: 2px solid color-mix(in srgb, var(--accent), transparent 48%);
   outline-offset: 2px;
+}
+.chart-preference-status, .chart-preference-error {
+  font-size: .7rem;
+  color: var(--muted);
+}
+.chart-preference-error { color: var(--danger); }
+.chart-preference-retry {
+  border: 0;
+  padding: .25rem;
+  color: inherit;
+  background: transparent;
+  text-decoration: underline;
+  cursor: pointer;
 }
 .chart-range {
   border: 1px solid var(--border);
@@ -1525,7 +1540,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .import-detail-loading { padding: 1rem 1.2rem; color: var(--muted); font-size: .7rem; }
 
 .login-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 1.5rem;
@@ -1599,6 +1614,25 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .login-card form { display: grid; gap: 1rem; }
 .login-submit { width: 100%; margin-top: .15rem; }
 .login-success { margin-bottom: 1rem; border: 1px solid #276b5b; border-radius: .6rem; padding: .7rem; background: #102b29; color: #76dfbd; font-size: .75rem; }
+.login-admin-note {
+  margin: 0 0 1rem;
+  border-left: 3px solid var(--accent);
+  padding: .65rem .75rem;
+  color: var(--muted-strong);
+  font-size: .78rem;
+}
+.field-hint { margin: -.6rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .setup-page {
   min-height: 100vh;
@@ -2333,6 +2367,8 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .metric-card { min-height: 128px; }
   .chart-card { padding-inline: .7rem; }
   .chart-card-header { align-items: flex-start; flex-direction: column; }
+  .chart-header-actions { justify-content: flex-start; width: 100%; }
+  .chart-highlight-toggle { width: 100%; justify-content: flex-start; }
   .average-grid { grid-template-columns: 1fr; }
   .calendar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-heading > .analytics-period-filter { flex: 0 1 auto; width: 100%; }
@@ -2353,6 +2389,8 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .nutrient-row-meta > span:last-child { text-align: left; }
   .recovery-codes { grid-template-columns: 1fr; }
   .login-card .field input { font-size: 1rem; }
+  .login-page { place-items: start center; padding: 1rem .75rem; }
+  .login-card { padding: 1.35rem; }
   .admin-sidebar { padding: .6rem; }
   .admin-sidebar-nav a { padding-inline: .6rem; }
   .admin-metric-grid, .system-version-details, .system-status-grid { grid-template-columns: 1fr; }

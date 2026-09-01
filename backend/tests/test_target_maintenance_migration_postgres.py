@@ -11,7 +11,6 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -60,15 +59,28 @@ def test_maintenance_migration_removes_budget_ordering_constraint() -> None:
             assert OLD_CONSTRAINT_NAME not in constraints
             assert NEW_CONSTRAINT_NAME in constraints
 
-        with SessionLocal() as db:
-            user = User(
-                username="postgres-independent-maintenance",
-                password_hash="test-password-hash",
+        user_id = uuid4()
+        target_id = uuid4()
+        now = datetime.now(UTC)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, username, password_hash, language, timezone, week_starts_on, "
+                    "preferred_weight_unit, raw_payload_retention_days, is_active, "
+                    "is_admin, created_at, updated_at) "
+                    "VALUES (:id, :username, :password_hash, 'de', 'Europe/Berlin', "
+                    "1, 'kg', 0, true, true, :created_at, :updated_at)"
+                ),
+                {
+                    "id": user_id,
+                    "username": "postgres-independent-maintenance",
+                    "password_hash": "test-password-hash",
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            db.add(user)
-            db.flush()
-            target_id = uuid4()
-            db.execute(
+            connection.execute(
                 text(
                     "INSERT INTO nutrition_targets "
                     "(id, user_id, valid_from, calories_kcal, maintenance_kcal, protein_g, created_at) "
@@ -77,15 +89,14 @@ def test_maintenance_migration_removes_budget_ordering_constraint() -> None:
                 ),
                 {
                     "id": target_id,
-                    "user_id": user.id,
+                    "user_id": user_id,
                     "valid_from": date(2026, 8, 11),
                     "calories_kcal": Decimal("3000"),
                     "maintenance_kcal": Decimal("2500"),
                     "protein_g": Decimal("140"),
-                    "created_at": datetime.now(UTC),
+                    "created_at": now,
                 },
             )
-            db.commit()
 
         for invalid_maintenance in (
             Decimal("0"),

@@ -473,6 +473,8 @@ def update_profile(
         user.preferred_weight_unit = payload.preferred_weight_unit
     if payload.raw_payload_retention_days is not None:
         user.raw_payload_retention_days = payload.raw_payload_retention_days
+    if payload.highlight_over_budget is not None:
+        user.highlight_over_budget = payload.highlight_over_budget
     db.commit()
     db.refresh(user)
     return user

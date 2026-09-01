@@ -8,9 +8,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -47,19 +45,30 @@ def test_user_onboarding_migration_constraints_cascade_and_no_backfill() -> None
             assert "user_onboarding" not in inspector.get_table_names()
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == PREVIOUS_REVISION
 
-        with SessionLocal() as db:
-            existing_user = User(
-                username=f"postgres-onboarding-{uuid4()}",
-                password_hash="test-password-hash",
-            )
-            cascade_user = User(
-                username=f"postgres-onboarding-cascade-{uuid4()}",
-                password_hash="test-password-hash",
-            )
-            db.add_all([existing_user, cascade_user])
-            db.commit()
-            existing_user_id = existing_user.id
-            cascade_user_id = cascade_user.id
+        existing_user_id = uuid4()
+        cascade_user_id = uuid4()
+        now = datetime.now(UTC)
+        with engine.begin() as connection:
+            for user_id, username in (
+                (existing_user_id, f"postgres-onboarding-{uuid4()}"),
+                (cascade_user_id, f"postgres-onboarding-cascade-{uuid4()}"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO users "
+                        "(id, username, password_hash, language, timezone, week_starts_on, "
+                        "preferred_weight_unit, raw_payload_retention_days, is_active, "
+                        "is_admin, created_at, updated_at) "
+                        "VALUES (:id, :username, 'test-password-hash', 'de', 'Europe/Berlin', "
+                        "1, 'kg', 0, true, false, :created_at, :updated_at)"
+                    ),
+                    {
+                        "id": user_id,
+                        "username": username,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
 
         command.upgrade(alembic_config, TARGET_REVISION)
         with engine.connect() as connection:

@@ -52,6 +52,7 @@ class User(Base):
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    highlight_over_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -64,6 +65,14 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
 
+
+
+class InstanceBootstrap(Base):
+    __tablename__ = "instance_bootstrap"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    initialized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    initialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 class UserOnboarding(Base):
     __tablename__ = "user_onboarding"

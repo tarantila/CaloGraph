@@ -15,28 +15,31 @@ permissions:
   contents: read
   packages: write
 
+# Cleanup cannot race any image publication or promotion.
 concurrency:
-  group: cleanup-container-images
+  group: container-image-promotions
   cancel-in-progress: false
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
     env:
-      RETENTION_DAYS: "30"
-      KEEP_RECENT_UNRELEASED: "10"
+      GRACE_PERIOD_HOURS: "24"
       MANUAL_DRY_RUN: ${{ inputs.dry_run }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Delete old non-release image versions
+      - name: Classify and delete eligible image versions
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             dry_run="${MANUAL_DRY_RUN:-true}"
-          else
+          elif [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             dry_run=false
+          else
+            printf 'Unsupported event: %s\n' "$GITHUB_EVENT_NAME" >&2
+            exit 1
           fi
           if [[ "${{ github.event.repository.owner.type }}" == "Organization" ]]; then
             owner_scope=orgs
@@ -44,60 +47,44 @@ jobs:
             owner_scope=users
           fi
 
-          cutoff_epoch=$(date --utc --date="-${RETENTION_DAYS} days" +%s)
+          cutoff_epoch=$(date --utc --date="-${GRACE_PERIOD_HOURS} hours" +%s)
           for package in calograph-backend calograph-frontend; do
             pages_file="${RUNNER_TEMP}/${package}-pages.json"
             versions_file="${RUNNER_TEMP}/${package}-versions.json"
-            candidates_file="${RUNNER_TEMP}/${package}-candidates.tsv"
             api_base="/${owner_scope}/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions"
 
             if ! gh api --paginate "${api_base}?per_page=100" >"$pages_file"; then
-              printf '%s: package not available or not manageable; skipping\n' "$package"
+              printf '%s: SKIP package unavailable or not manageable\n' "$package"
               continue
             fi
             jq -s 'add // []' "$pages_file" >"$versions_file"
-            jq --raw-output \
-              --argjson cutoff "$cutoff_epoch" \
-              --argjson keep "$KEEP_RECENT_UNRELEASED" '
-                [
-                  .[]
-                  | select((.metadata.container.tags // []) | length > 0)
-                  | select(
-                      (
-                        (.metadata.container.tags // [])
-                        | any(
-                            test(
-                              "^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$"
-                            )
-                          )
-                      )
-                      | not
-                    )
-                ]
-                | sort_by(.created_at)
-                | reverse
-                | .[$keep:][]
-                | select((.created_at | fromdateiso8601) < $cutoff)
-                | [
-                    (.id | tostring),
-                    .created_at,
-                    ((.metadata.container.tags // []) | join(","))
-                  ]
-                | @tsv
-              ' "$versions_file" >"$candidates_file"
 
-            if [[ ! -s "$candidates_file" ]]; then
-              printf '%s: no eligible versions\n' "$package"
-              continue
-            fi
-
-            while IFS=$'\t' read -r version_id created_at tags; do
-              printf '%s: %s created %s tags=%s\n' \
-                "$package" "$version_id" "$created_at" "$tags"
-              if [[ "$dry_run" != "true" ]]; then
+            jq -r --argjson cutoff "$cutoff_epoch" '
+              (map(select((.metadata.container.tags // []) | any(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))
+                | map(.metadata.container.digest // .name // ("id:" + (.id|tostring)))
+                | unique) as $stable_digests
+              | .[]
+              | ((.metadata.container.tags // []) | map(tostring)) as $tags
+              | (.metadata.container.digest // .name // ("id:" + (.id|tostring))) as $digest
+              | if ($tags | length) == 0 then
+                  ["UNTAGGED REFERRER", .id, .created_at, ""]
+                elif ($tags | any(. == "latest" or . == "edge" or test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) then
+                  ["PROTECTED", .id, .created_at, ($tags | join(","))]
+                elif ($stable_digests | index($digest)) != null then
+                  ["PROTECTED", .id, .created_at, ($tags | join(","))]
+                elif ((.created_at | fromdateiso8601) >= $cutoff) then
+                  ["SKIP", .id, .created_at, ($tags | join(","))]
+                else
+                  ["DELETE CANDIDATE", .id, .created_at, ($tags | join(","))]
+                end
+              | @tsv
+            ' "$versions_file" | while IFS=$'\t' read -r classification version_id created_at tags; do
+              printf '%s version=%s created_at=%s tags=%s\n' \
+                "$package $classification" "$version_id" "$created_at" "${tags:-<none>}"
+              if [[ "$classification" == "DELETE CANDIDATE" && "$dry_run" != "true" ]]; then
                 gh api --method DELETE "${api_base}/${version_id}"
               fi
-            done <"$candidates_file"
+            done
           done
 
           if [[ "$dry_run" == "true" ]]; then

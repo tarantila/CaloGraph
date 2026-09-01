@@ -10,15 +10,19 @@ nutrition values.
 
 ## First administrator
 
-The first user created through the CLI becomes an administrator automatically:
+On a local installation with `INITIAL_ADMIN_SETUP_ENABLED=true`, an empty
+instance offers one-time administrator creation directly on `/login`. The
+endpoint creates the account, onboarding and tracking-quality rows atomically;
+it never creates a session. Sign in afterward to continue through normal
+onboarding. The setting defaults to `false`, and production examples keep it
+disabled.
+
+The CLI remains supported and shares the first-user serialization boundary:
 
 ```bash
 docker compose exec backend python -m app.cli create-user
 ```
 
-Later CLI users receive administrator rights only with `--admin`. When an
-existing single-user installation is upgraded, the oldest existing user is
-promoted once.
 
 ## Onboarding
 

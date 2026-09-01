@@ -18,6 +18,7 @@ import { computed, onMounted, ref } from 'vue'
 import { hasActivityCredit, hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import { useAuthStore } from '../stores/auth'
 import {
   formatGermanDate,
   formatGermanDateTime,
@@ -26,9 +27,10 @@ import {
   shiftIsoDate,
 } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
-import type { DailyPoint, ImportBatch, ImportSummary, Target, YazioStatus } from '../types'
+import type { DailyPoint, ImportBatch, ImportSummary, Target, User, YazioStatus } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
+const auth = useAuthStore()
 
 interface Summary {
   today: DailyPoint
@@ -69,6 +71,9 @@ const syncingYazio = ref(false)
 const syncFeedback = ref('')
 const syncFailed = ref(false)
 const highlightOverBudget = ref(false)
+const highlightSaving = ref(false)
+const highlightError = ref(false)
+const highlightRetryValue = ref(false)
 
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
 const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
@@ -135,7 +140,42 @@ async function reloadDashboard() {
   }
 }
 
+
+async function saveHighlightOverBudget(value: boolean): Promise<void> {
+  if (highlightSaving.value) return
+  const confirmed = auth.user?.highlight_over_budget ?? false
+  const generation = auth.beginProfileUpdate()
+  highlightOverBudget.value = value
+  highlightRetryValue.value = value
+  highlightSaving.value = true
+  highlightError.value = false
+  try {
+    await auth.enqueueProfileUpdate(
+      generation,
+      () => api<User>('/settings/profile', {
+        method: 'PUT',
+        body: JSON.stringify({ highlight_over_budget: value }),
+      }),
+      (updated) => {
+        auth.commitProfileUpdate(generation, updated)
+      },
+    )
+  } catch {
+    if (auth.isCurrentProfileUpdate(generation)) {
+      highlightOverBudget.value = confirmed
+      highlightError.value = true
+    }
+  } finally {
+    highlightSaving.value = false
+  }
+}
+
+function retryHighlightOverBudget(): void {
+  void saveHighlightOverBudget(highlightRetryValue.value)
+}
 onMounted(() => {
+  highlightOverBudget.value = auth.user?.highlight_over_budget ?? false
+  highlightRetryValue.value = highlightOverBudget.value
   void reloadDashboard()
 })
 
@@ -689,14 +729,28 @@ const macroChart = computed<EChartsOption>(() => ({
       >
         <template #header-actions>
           <div class="chart-header-actions">
-            <label class="chart-highlight-toggle">
+            <label class="chart-highlight-toggle" :aria-busy="highlightSaving">
               <input
-                v-model="highlightOverBudget"
+                :checked="highlightOverBudget"
                 type="checkbox"
                 role="switch"
+                :disabled="highlightSaving"
+                :aria-describedby="highlightSaving || highlightError ? 'highlight-over-budget-status' : undefined"
+                @change="saveHighlightOverBudget(($event.target as HTMLInputElement).checked)"
               />
               <span>{{ t('overviewUi.highlightBudget') }}</span>
             </label>
+            <span
+              v-if="highlightSaving"
+              id="highlight-over-budget-status"
+              class="chart-preference-status"
+              role="status"
+              aria-live="polite"
+            >{{ t('overviewUi.highlightSaving') }}</span>
+            <span v-else-if="highlightError" id="highlight-over-budget-status" class="chart-preference-error" role="alert">
+              {{ t('overviewUi.highlightSaveFailed') }}
+              <button type="button" class="chart-preference-retry" @click="retryHighlightOverBudget">{{ t('common.tryAgain') }}</button>
+            </span>
           </div>
         </template>
       </ChartPanel>

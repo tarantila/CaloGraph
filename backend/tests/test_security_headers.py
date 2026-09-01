@@ -67,7 +67,7 @@ def test_api_docs_can_be_enabled(client: TestClient, monkeypatch) -> None:
     assert docs.status_code == 200
     assert schema.status_code == 200
     assert schema.json()["info"]["title"] == "CaloGraph API"
-    assert schema.json()["info"]["version"] == "0.6.0"
+    assert schema.json()["info"]["version"] == "0.6.1"
 
 
 def test_request_ids_are_bounded_and_invalid_client_values_are_replaced(

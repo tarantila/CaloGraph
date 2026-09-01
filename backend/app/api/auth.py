@@ -39,6 +39,7 @@ from app.models import (
     UserTotpCredential,
 )
 from app.problem_types import (
+    BOOTSTRAP_ALREADY_INITIALIZED,
     INVALID_CREDENTIALS,
     INVALID_CURRENT_PASSWORD,
     INVALID_INVITATION,
@@ -50,6 +51,8 @@ from app.problem_types import (
 )
 from app.schemas import (
     AccountRecoveryCompleteRequest,
+    BootstrapRequest,
+    BootstrapStatusResponse,
     CsrfResponse,
     InvitationExchangeRequest,
     InvitationStateResponse,
@@ -65,6 +68,11 @@ from app.security_events import log_security_event, security_reference
 from app.services.account_recovery import (
     AccountRecoveryRejected,
     complete_account_recovery,
+)
+from app.services.bootstrap import (
+    BootstrapAlreadyInitialized,
+    bootstrap_status,
+    create_initial_admin,
 )
 from app.services.mfa import consume_mfa_factor
 from app.services.passkeys import (
@@ -86,12 +94,23 @@ from app.services.rate_limit import (
 )
 from app.services.user_operation_lock import (
     InactiveUserOperation,
+    exclusive_initial_user_operation,
     shared_user_operation,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
 REGISTRATION_COOKIE_NAME = "calograph_registration"
 REGISTRATION_COOKIE_PATH = "/api/v1/auth"
+
+
+def _validate_public_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in settings.trusted_origin_list:
+        raise ProblemHTTPException(
+            status_code=403,
+            detail="Unzulässiger Request-Ursprung",
+            problem_type="urn:calograph:problem:invalid-request-origin",
+        )
 
 
 def _audit_client_ip(request: Request) -> str | None:
@@ -219,6 +238,51 @@ def _set_registration_cookie(response: Response, invitation: UserInvitation) -> 
         samesite="strict",
         path=REGISTRATION_COOKIE_PATH,
     )
+
+
+@router.get("/bootstrap/status", response_model=BootstrapStatusResponse)
+def bootstrap_setup_status(db: Session = Depends(get_db)) -> BootstrapStatusResponse:
+    return BootstrapStatusResponse(
+        setup_required=bool(settings.initial_admin_setup_enabled and bootstrap_status(db))
+    )
+
+
+@router.post("/bootstrap", response_model=UserResponse, status_code=201)
+def bootstrap(
+    payload: BootstrapRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> User:
+    _validate_public_origin(request)
+    if not settings.initial_admin_setup_enabled:
+        raise ProblemHTTPException(
+            status_code=404,
+            detail="Nicht gefunden",
+            problem_type=BOOTSTRAP_ALREADY_INITIALIZED,
+        )
+    client = normalize_client_ip(request.client.host if request.client else None)
+    with exclusive_initial_user_operation(db):
+        check_rate_limit(db, "bootstrap", f"ip:{client}", 5, 15 * 60)
+    try:
+        result = create_initial_admin(db, payload.username, payload.password)
+    except PasswordPolicyError as exc:
+        raise ProblemHTTPException(
+            status_code=422,
+            detail=str(exc),
+            problem_type=PASSWORD_POLICY,
+        ) from None
+    except BootstrapAlreadyInitialized:
+        raise ProblemHTTPException(
+            status_code=409,
+            detail="Die Ersteinrichtung wurde bereits abgeschlossen.",
+            problem_type=BOOTSTRAP_ALREADY_INITIALIZED,
+        ) from None
+    log_security_event(
+        "admin.user.created",
+        actor_ref=security_reference("user", result.user.id),
+        target_ref=security_reference("user", result.user.id),
+    )
+    return result.user
 
 
 @router.post("/invitation/exchange", status_code=204)

@@ -120,6 +120,7 @@ class Settings(BaseSettings):
         repr=False,
     )
     calograph_timezone: str = "Europe/Berlin"
+    initial_admin_setup_enabled: bool = False
     calograph_public_url: str = "http://localhost:8180"
     cookie_secure: bool = False
     trusted_hosts: str = "localhost,127.0.0.1,testserver"

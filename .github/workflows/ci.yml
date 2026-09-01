@@ -319,8 +319,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [containers-and-e2e]
     concurrency:
-      # edge is shared across all successful main publications.
-      group: ci-publish-edge
+      # All image publication and cleanup operations share this lock.
+      group: container-image-promotions
       cancel-in-progress: false
     permissions:
       contents: read

@@ -41,6 +41,12 @@ Intoleranzen und weitere persönliche Profilangaben enthalten. Sie sind deshalb
 wie andere vertrauliche Ernährungs- und Gesundheitsdaten vor unberechtigtem
 Zugriff zu schützen.
 
+Die persönliche Dashboard-Anzeige **„Über Budget hervorheben“** ist eine
+präsentationsbezogene Einstellung und wird bewusst nicht exportiert. Portable
+Archive bleiben dadurch im stabilen Format 3; beim Import älterer oder neuerer
+Archive bleibt diese Einstellung unverändert und fällt für neue Konten auf
+`false` zurück.
+
 ## Streaming und Parallelität
 
 Das ZIP-Archiv wird während des Downloads gestreamt. Eine begrenzte

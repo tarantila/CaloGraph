@@ -21,20 +21,20 @@ class InactiveUserOperation(RuntimeError):
 
 class _LocalOperationLock:
     def __init__(self) -> None:
-        self._guard = threading.Lock()
+        self._guard = threading.Condition()
         self._shared_count = 0
         self._exclusive = False
 
-    def acquire(self, *, shared: bool) -> bool:
+    def acquire(self, *, shared: bool, wait: bool = False) -> bool:
         with self._guard:
-            if shared:
-                if self._exclusive:
+            while self._exclusive or (not shared and self._shared_count):
+                if not wait:
                     return False
+                self._guard.wait()
+            if shared:
                 self._shared_count += 1
-                return True
-            if self._exclusive or self._shared_count:
-                return False
-            self._exclusive = True
+            else:
+                self._exclusive = True
             return True
 
     def release(self, *, shared: bool) -> None:
@@ -43,10 +43,11 @@ class _LocalOperationLock:
                 if self._shared_count <= 0:
                     raise RuntimeError("shared local user-operation lock is not held")
                 self._shared_count -= 1
-                return
-            if not self._exclusive:
-                raise RuntimeError("exclusive local user-operation lock is not held")
-            self._exclusive = False
+            else:
+                if not self._exclusive:
+                    raise RuntimeError("exclusive local user-operation lock is not held")
+                self._exclusive = False
+            self._guard.notify_all()
 
 
 _LOCAL_LOCKS: dict[int, _LocalOperationLock] = {}
@@ -79,10 +80,10 @@ def _engine_for(db: Session) -> Engine:
 
 
 @contextmanager
-def _local_lock(lock_id: int, *, shared: bool) -> Iterator[None]:
+def _local_lock(lock_id: int, *, shared: bool, wait: bool = False) -> Iterator[None]:
     with _LOCAL_LOCKS_GUARD:
         lock = _LOCAL_LOCKS.setdefault(lock_id, _LocalOperationLock())
-    if not lock.acquire(shared=shared):
+    if not lock.acquire(shared=shared, wait=wait):
         raise UserOperationBusy
     try:
         yield
@@ -91,7 +92,23 @@ def _local_lock(lock_id: int, *, shared: bool) -> Iterator[None]:
 
 
 @contextmanager
-def _postgres_lock(engine: Engine, lock_id: int, *, shared: bool) -> Iterator[None]:
+def _postgres_lock(
+    engine: Engine, lock_id: int, *, shared: bool, wait: bool = False
+) -> Iterator[None]:
+    if wait:
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT pg_advisory_lock(:lock_id)"),
+                {"lock_id": lock_id},
+            )
+            try:
+                yield
+            finally:
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": lock_id},
+                )
+        return
     acquire_function = "pg_try_advisory_lock_shared" if shared else "pg_try_advisory_lock"
     release_function = "pg_advisory_unlock_shared" if shared else "pg_advisory_unlock"
     with engine.connect() as connection:
@@ -110,7 +127,6 @@ def _postgres_lock(engine: Engine, lock_id: int, *, shared: bool) -> Iterator[No
                 text(f"SELECT {release_function}(:lock_id)"),
                 {"lock_id": lock_id},
             )
-
 
 @contextmanager
 def _operation_lock(db: Session, lock_id: int, *, shared: bool) -> Iterator[None]:
@@ -149,4 +165,20 @@ def exclusive_user_lifecycle_operation(db: Session, user_id: UUID) -> Iterator[N
 @contextmanager
 def exclusive_admin_invariant_operation(db: Session) -> Iterator[None]:
     with _operation_lock(db, _admin_invariant_lock_id(), shared=False):
+        yield
+
+
+@contextmanager
+def exclusive_initial_user_operation(db: Session) -> Iterator[None]:
+    """Serialize every first-user creator across API workers and the CLI."""
+    lock_id = advisory_lock_id("initial-user", "singleton")
+    engine = _engine_for(db)
+    if engine.dialect.name == "postgresql":
+        with _postgres_lock(engine, lock_id, shared=False, wait=True):
+            yield
+        return
+    with _local_lock(lock_id, shared=False, wait=True):
+        if engine.dialect.name == "sqlite":
+            # BEGIN IMMEDIATE serializes writers for file-backed SQLite too.
+            db.execute(text("BEGIN IMMEDIATE"))
         yield

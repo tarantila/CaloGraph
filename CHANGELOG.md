@@ -5,6 +5,53 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-01
+
+### Added
+
+- Added fail-closed, invitation-preserving browser first-run administrator setup
+  at the login entry point, sharing atomic initialization semantics with CLI
+  `create-user`.
+- Added the per-user `highlight_over_budget` dashboard preference with
+  serialized partial profile updates and accessible rollback/retry feedback.
+- Kept portable export format version 3 stable; the presentation-only dashboard
+  preference is intentionally excluded from portable archives.
+- Hardened GHCR cleanup with a 24-hour grace period, exact release-tag/digest
+  protection, untagged-referrer skipping and release-promotion concurrency.
+- Reworked the README around the multi-user product model, browser-first local
+  setup, production deployment, and source-available licensing.
+- Clarified Apple Health import, experimental YAZIO synchronization, data
+  boundaries, and the operator-facing documentation links.
+
+### Upgrade notes
+
+#### Required configuration changes
+
+Existing installations must run the migration to `20260901_0022` before using
+the 0.6.1 application. Keep browser bootstrap disabled for production unless a
+controlled first-run window is explicitly intended.
+
+#### New environment variables
+
+`INITIAL_ADMIN_SETUP_ENABLED` defaults to `false`. `.env.example` enables it
+for local browser setup; `.env.production.example` keeps it disabled.
+
+#### Database migrations
+
+Migration `20260901_0022` adds the non-null, default-false
+`users.highlight_over_budget` preference and the instance bootstrap marker.
+Existing users retain the default `false`; existing installations with users
+are treated as initialized.
+
+#### Operator action required
+
+Apply migrations, review the environment setting, and verify trusted hosts and
+origins before exposing the login page. After the first administrator exists,
+leave bootstrap disabled and create later accounts only through invitations.
+Review the GHCR cleanup dry-run output before enabling scheduled deletion; the
+policy now uses a 24-hour grace period and never deletes untagged records.
+
+
 ## [0.6.0] - 2026-08-31
 
 ### Changed

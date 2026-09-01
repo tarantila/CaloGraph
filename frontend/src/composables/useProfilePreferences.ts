@@ -18,6 +18,7 @@ export interface ProfilePreferencesPayload {
   week_starts_on: number
   preferred_weight_unit: PreferredWeightUnit
   raw_payload_retention_days: number
+  highlight_over_budget: boolean
 }
 
 const emptyProfile: ProfilePreferences = {
@@ -28,6 +29,7 @@ const emptyProfile: ProfilePreferences = {
   week_starts_on: 0,
   preferred_weight_unit: 'kg',
   raw_payload_retention_days: 0,
+  highlight_over_budget: false,
   is_admin: false,
   is_active: true,
   deactivated_at: null,
@@ -38,6 +40,7 @@ function normalizeProfile(value: ProfilePreferences): ProfilePreferences {
     ...value,
     language: value.language === 'en' ? 'en' : 'de',
     preferred_weight_unit: value.preferred_weight_unit === 'lb' ? 'lb' : 'kg',
+    highlight_over_budget: value.highlight_over_budget ?? false,
   }
 }
 
@@ -76,6 +79,7 @@ export function useProfilePreferences() {
       week_starts_on: profile.week_starts_on,
       preferred_weight_unit: profile.preferred_weight_unit,
       raw_payload_retention_days: profile.raw_payload_retention_days,
+      highlight_over_budget: profile.highlight_over_budget ?? false,
     }
     let committed = false
     const result = await auth.enqueueProfileUpdate(

@@ -1089,6 +1089,14 @@ def test_profile_language_is_validated_and_persisted(
     assert partial.json()["timezone"] == "Europe/Berlin"
     assert partial.json()["week_starts_on"] == 0
     assert partial.json()["raw_payload_retention_days"] == 0
+    highlighted = client.put(
+        "/api/v1/settings/profile",
+        headers={"X-CSRF-Token": csrf},
+        json={"highlight_over_budget": True},
+    )
+    assert highlighted.status_code == 200
+    assert highlighted.json()["highlight_over_budget"] is True
+    assert client.get("/api/v1/settings/profile").json()["highlight_over_budget"] is True
 
 
     invalid = client.put(

@@ -9,9 +9,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from app.database import SessionLocal
 from app.database import engine as application_engine
-from app.models import User
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -61,14 +59,26 @@ def test_activity_energy_target_migration_preserves_existing_targets() -> None:
             }
             assert {"activity_mode", "activity_source_type"} <= columns
             assert {MODE_CONSTRAINT, SOURCE_CONSTRAINT} <= constraints
-        with SessionLocal() as db:
-            user = User(
-                username=f"postgres-activity-target-{uuid4()}",
-                password_hash="test-password-hash",
+        user_id = uuid4()
+        now = datetime.now(UTC)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, username, password_hash, language, timezone, week_starts_on, "
+                    "preferred_weight_unit, raw_payload_retention_days, is_active, "
+                    "is_admin, created_at, updated_at) "
+                    "VALUES (:id, :username, :password_hash, 'de', 'Europe/Berlin', "
+                    "1, 'kg', 0, true, true, :created_at, :updated_at)"
+                ),
+                {
+                    "id": user_id,
+                    "username": f"postgres-activity-target-{uuid4()}",
+                    "password_hash": "test-password-hash",
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            db.add(user)
-            db.commit()
-            user_id = user.id
 
         target_id = uuid4()
         with engine.begin() as connection:

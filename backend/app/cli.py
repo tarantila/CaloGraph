@@ -23,6 +23,7 @@ from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
 from app.models import (
+    InstanceBootstrap,
     NutritionTarget,
     TrackingQualitySettings,
     User,
@@ -51,6 +52,7 @@ from app.services.user_lifecycle import (
 from app.services.user_operation_lock import (
     InactiveUserOperation,
     UserOperationBusy,
+    exclusive_initial_user_operation,
     shared_user_operation,
 )
 from app.services.yazio_sync import (
@@ -77,13 +79,15 @@ def create_user(args: argparse.Namespace) -> None:
         validate_new_password(password, username)
     except PasswordPolicyError as exc:
         raise SystemExit(str(exc)) from None
-    with SessionLocal() as db:
+    with SessionLocal() as db, exclusive_initial_user_operation(db):
         if db.scalar(select(User).where(User.username == username)):
             if args.if_not_exists:
                 print(f"Benutzer '{username}' existiert bereits.")
                 return
             raise SystemExit("Benutzer existiert bereits.")
-        is_first_user = (db.scalar(select(func.count(User.id))) or 0) == 0
+        state = db.get(InstanceBootstrap, 1)
+        user_count = db.scalar(select(func.count(User.id))) or 0
+        is_first_user = user_count == 0 and not (state and state.initialized)
         user = User(
             username=username,
             password_hash=hash_password(password),
@@ -104,6 +108,14 @@ def create_user(args: argparse.Namespace) -> None:
         else:
             db.add(UserOnboarding(user_id=user.id))
         db.add(TrackingQualitySettings(user_id=user.id))
+        if state is None:
+            state = InstanceBootstrap(id=1)
+            db.add(state)
+        if is_first_user:
+            state.initialized = True
+            state.initialized_at = datetime.now(UTC)
+        elif user_count:
+            state.initialized = True
         db.commit()
         user_id = user.id
     log_security_event(
