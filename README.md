@@ -26,9 +26,10 @@ activity-calorie credits, trends, achievements, and data-quality views without
 moral judgment or external telemetry.
 
 > [!WARNING]
-> **CaloGraph is 0.x work in progress.** It is **not medical software** and does
-> not diagnose, treat or prescribe. Do not use it as a substitute for
-> professional medical advice.
+> **CaloGraph is under active development.** Version `0.x` releases may contain
+> incomplete features, breaking changes, or migrations that require attention.
+> Features and behavior may change between releases. Keep tested backups and
+> review the changelog before updating.
 
 <p align="center">
   <img
