@@ -51,6 +51,54 @@ def test_backup_status_sanitizes_report_and_aggregates_health(client, user, db, 
     assert '/should/not/escape' not in serialized
 
 
+def test_backup_status_requires_matching_external_verification_record(client, user, db, tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    artifact = 'calograph-20260901T080000Z.dump.age'
+    checksum = 'a' * 64
+    report = {
+        'schema_version': 1,
+        'reported_at': now.isoformat(),
+        'target': 'calograph',
+        'freshness_threshold_seconds': 172800,
+        'automation': {'enabled': True, 'last_success_at': now.isoformat()},
+        'components': {
+            'database': {
+                'state': 'healthy', 'verification': 'not_verified', 'encryption': 'age',
+                'matching_backup': True, 'artifact': artifact, 'sha256': checksum,
+                'last_success_at': now.isoformat(),
+            },
+            'environment_secrets': {'state': 'disabled', 'verification': 'not_reported'},
+        },
+    }
+    status_file = tmp_path / 'status.json'
+    status_file.write_text(json.dumps(report))
+    (tmp_path / 'database-verification.json').write_text(json.dumps({
+        'schema_version': 1, 'target': 'calograph', 'result': 'RESTORE_VERIFIED',
+        'component': 'database', 'artifact': artifact, 'sha256': checksum,
+        'verified_at': now.isoformat(),
+    }))
+    monkeypatch.setattr(settings, 'backup_agent_enabled', True)
+    monkeypatch.setattr(settings, 'backup_status_file', str(status_file))
+    user.is_admin = True
+    db.commit()
+
+    _login(client)
+    payload = client.get('/api/v1/admin/backup-status').json()
+    assert payload['overall_state'] == 'healthy'
+    assert payload['components']['database']['verification'] == 'full'
+    assert payload['components']['database']['last_verified_at'] == now.isoformat().replace('+00:00', 'Z')
+    assert 'artifact' not in json.dumps(payload)
+    assert 'sha256' not in json.dumps(payload)
+
+    (tmp_path / 'database-verification.json').write_text(json.dumps({
+        'schema_version': 1, 'target': 'calograph', 'result': 'RESTORE_VERIFIED',
+        'component': 'database', 'artifact': 'other.dump.age', 'sha256': checksum,
+        'verified_at': now.isoformat(),
+    }))
+    payload = client.get('/api/v1/admin/backup-status').json()
+    assert payload['overall_state'] == 'attention'
+    assert 'verification_missing' in payload['reason_codes']
+
 def test_backup_status_does_not_require_disabled_optional_secrets(client, user, db, tmp_path, monkeypatch) -> None:
     now = datetime.now(UTC)
     report = {

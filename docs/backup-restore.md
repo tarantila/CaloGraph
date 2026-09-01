@@ -134,6 +134,30 @@ It writes no decrypted dump. Verify the matching secrets archive with `age
 A checksum-only check is not a full verification, and a successful backup
 command is not proof of recoverability.
 
+When the agent should reflect a successful external verification, configure
+`BACKUP_DATABASE_VERIFICATION_STATUS_FILE` and, when the optional secrets
+archive is enabled, `BACKUP_SECRETS_VERIFICATION_STATUS_FILE` to files in the
+agent's writable status volume. `verify-backup.sh` writes the database
+`RESTORE_VERIFIED` record there only after the external identity and archive
+processing succeed; `verify-secrets-backup.sh` does the same for the secrets
+archive. Each record contains the verified artifact basename and SHA-256
+digest. The next agent status write upgrades only that exact artifact to
+`verification: "full"` and propagates `last_verified_at`; a later backup
+automatically returns the component to unverified until it is checked again.
+With the Compose named volume, create the record on the host as a temporary,
+non-secret file and write it through the running agent as its non-root user:
+
+```bash
+docker compose exec -T --user calograph-backup backup-agent \
+  sh -c 'cat > /var/lib/calograph-backups/status/database-verification.json' \
+  < /tmp/database-verification.json
+```
+
+Use the corresponding secrets filename for the optional archive. Never use
+`docker compose cp` for this handoff unless ownership and mode are corrected
+before the next agent run, and never mount the private identity into the
+backup-agent.
+
 Restore is destructive and requires explicit confirmation:
 
 ```bash

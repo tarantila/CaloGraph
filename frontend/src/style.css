@@ -2040,7 +2040,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .backup-component h3 { display: flex; align-items: center; gap: .5rem; }
 .backup-health-header h2 { margin: 0; font-size: .95rem; }
 .backup-health-header p { margin: .35rem 0 0; color: var(--muted); font-size: .78rem; line-height: 1.5; }
-.backup-health-reason { color: var(--warning) !important; }
+.backup-health-reasons { margin: .35rem 0 0; padding-left: 1.1rem; color: var(--warning); font-size: .78rem; line-height: 1.5; }
 .backup-health-badge {
   display: inline-flex; align-items: center; gap: .35rem; flex: 0 0 auto;
   padding: .28rem .55rem; border: 1px solid color-mix(in srgb, var(--muted-strong) 45%, transparent);

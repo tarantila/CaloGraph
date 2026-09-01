@@ -47,6 +47,12 @@ def _component(value: Any) -> dict[str, Any] | None:
                 result[key] = item
         elif isinstance(item, str) and len(item) <= 32 and item in {"age", "full", "checksum", "not_verified", "not_reported"}:
             result[key] = item
+    artifact = value.get("artifact")
+    if isinstance(artifact, str) and len(artifact) <= 255 and "/" not in artifact and "\\" not in artifact:
+        result["_artifact"] = artifact
+    checksum = value.get("sha256")
+    if isinstance(checksum, str) and len(checksum) == 64 and all(char in "0123456789abcdefABCDEF" for char in checksum):
+        result["_sha256"] = checksum.lower()
     for key in ("last_success_at", "last_attempt_at", "last_verified_at", "artifact_created_at", "last_restore_test_at"):
         value_timestamp = _timestamp(value.get(key))
         if value_timestamp is not None:
@@ -113,6 +119,63 @@ def _safe_status(raw: Any) -> dict[str, Any]:
         "automation": automation,
         "components": components,
     }
+
+def _read_verification(path: Path, component: str) -> dict[str, str] | None:
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+            return None
+        with path.open("rb") as handle:
+            raw = json.loads(handle.read(4097))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("schema_version") != STATUS_SCHEMA_VERSION:
+        return None
+    if raw.get("result") != "RESTORE_VERIFIED" or raw.get("component") != component:
+        return None
+    artifact = raw.get("artifact")
+    checksum = raw.get("sha256")
+    verified_at = _timestamp(raw.get("verified_at"))
+    if (
+        not isinstance(artifact, str)
+        or len(artifact) > 255
+        or "/" in artifact
+        or "\\" in artifact
+        or not isinstance(checksum, str)
+        or len(checksum) != 64
+        or not all(char in "0123456789abcdefABCDEF" for char in checksum)
+        or verified_at is None
+    ):
+        return None
+    return {"artifact": artifact, "sha256": checksum.lower(), "verified_at": verified_at}
+
+
+def _apply_external_verification(status: dict[str, Any], status_path: Path, now: datetime) -> None:
+    components = status["components"]
+    verification_files = {
+        "database": status_path.with_name("database-verification.json"),
+        "environment_secrets": status_path.with_name("secrets-verification.json"),
+    }
+    for component_name, verification_path in verification_files.items():
+        component = components.get(component_name)
+        if not component or component.get("state") != "healthy":
+            continue
+        proof = _read_verification(verification_path, component_name)
+        if not proof or proof["artifact"] != component.get("_artifact") or proof["sha256"] != component.get("_sha256"):
+            continue
+        verified_at = datetime.fromisoformat(proof["verified_at"].replace("Z", "+00:00"))
+        successful_at = component.get("last_success_at")
+        if successful_at is None or verified_at < datetime.fromisoformat(successful_at.replace("Z", "+00:00")) or verified_at > now:
+            continue
+        component["verification"] = "full"
+        component["last_verified_at"] = proof["verified_at"]
+
+
+def _public_status(status: dict[str, Any]) -> dict[str, Any]:
+    public = {**status, "components": {}}
+    for name, component in status["components"].items():
+        public["components"][name] = {key: value for key, value in component.items() if not key.startswith("_")}
+    return public
+
 
 
 
@@ -190,16 +253,15 @@ def read_backup_status(now: datetime | None = None) -> dict[str, Any]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         reported = datetime.fromisoformat(status["reported_at"].replace("Z", "+00:00"))
         if (current - reported).total_seconds() > settings.backup_status_max_age_seconds:
+            public = _public_status(status)
             return {
-                "schema_version": STATUS_SCHEMA_VERSION,
+                **public,
                 "overall_state": "unknown",
                 "reason_codes": ["report_expired"],
-                "reported_at": status["reported_at"],
-                "freshness_threshold_seconds": status["freshness_threshold_seconds"],
-                "automation": status["automation"],
             }
+        _apply_external_verification(status, path, current)
         state, reasons = _aggregate(status, current)
-        return {**status, "overall_state": state, "reason_codes": reasons}
+        return _public_status({**status, "overall_state": state, "reason_codes": reasons})
     except OSError:
         return {
             "schema_version": STATUS_SCHEMA_VERSION,

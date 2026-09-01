@@ -61,13 +61,13 @@ if ! "$age_bin" --decrypt --identity "$identity_file" "$absolute_backup" 2>/dev/
   printf 'Encrypted backup authentication or PostgreSQL archive processing failed.\n' >&2
   exit 1
 fi
-if [[ -n "${BACKUP_VERIFICATION_STATUS_FILE:-}" ]]; then
-  verification_dir=$(dirname -- "$BACKUP_VERIFICATION_STATUS_FILE")
+if [[ -n "${BACKUP_DATABASE_VERIFICATION_STATUS_FILE:-}" ]]; then
+  verification_dir=$(dirname -- "$BACKUP_DATABASE_VERIFICATION_STATUS_FILE")
   mkdir -p -- "$verification_dir"
   verification_tmp=$(mktemp "$verification_dir/.restore-verification.XXXXXX.partial")
   chmod 600 "$verification_tmp"
-  printf '{"schema_version":1,"target":"calograph","result":"RESTORE_VERIFIED","verified_at":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$verification_tmp"
-  mv -f -- "$verification_tmp" "$BACKUP_VERIFICATION_STATUS_FILE"
+  printf '{"schema_version":1,"target":"calograph","result":"RESTORE_VERIFIED","component":"database","artifact":"%s","sha256":"%s","verified_at":"%s"}\n' \
+    "$backup_name" "$expected_checksum" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$verification_tmp"
+  mv -f -- "$verification_tmp" "$BACKUP_DATABASE_VERIFICATION_STATUS_FILE"
 fi
 printf 'Encrypted backup authenticated and fully processed.\n'

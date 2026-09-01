@@ -30,4 +30,13 @@ if ! command -v "$age_bin" >/dev/null 2>&1 \
   printf 'Encrypted secrets archive authentication or processing failed.\n' >&2
   exit 1
 fi
+if [[ -n "${BACKUP_SECRETS_VERIFICATION_STATUS_FILE:-}" ]]; then
+  verification_dir=$(dirname -- "$BACKUP_SECRETS_VERIFICATION_STATUS_FILE")
+  mkdir -p -- "$verification_dir"
+  verification_tmp=$(mktemp "$verification_dir/.restore-verification.XXXXXX.partial")
+  chmod 600 "$verification_tmp"
+  printf '{"schema_version":1,"target":"calograph","result":"RESTORE_VERIFIED","component":"environment_secrets","artifact":"%s","sha256":"%s","verified_at":"%s"}\n' \
+    "$(basename -- "$backup_file")" "$expected_checksum" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$verification_tmp"
+  mv -f -- "$verification_tmp" "$BACKUP_SECRETS_VERIFICATION_STATUS_FILE"
+fi
 printf 'Encrypted secrets archive authenticated and fully processed.\n'
