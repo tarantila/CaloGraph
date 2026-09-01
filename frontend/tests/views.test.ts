@@ -1870,6 +1870,7 @@ describe('main views', () => {
     await flushPromises()
 
     expect(wrapper.find('.macro-target-settings').exists()).toBe(true)
+    expect(wrapper.findAll('.settings-subsection')).toHaveLength(2)
     const macroInputs = wrapper.findAll('.macro-target-grid input')
     expect(macroInputs).toHaveLength(4)
     const form = wrapper.get('form')

@@ -1031,19 +1031,28 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .account-form-card > h2 { margin-bottom: .45rem; }
 .account-form-card > p { margin-top: 0; }
 .account-form-card > .account-form-grid { margin-top: 1rem; }
-.target-weight-settings {
+.settings-subsection {
+  --settings-subsection-background: var(--surface-soft);
+  --settings-subsection-border: var(--border);
+  --settings-subsection-radius: .58rem;
+  --settings-subsection-padding: .95rem 1rem 1rem;
   display: block;
-  margin: .1rem 0 0;
-  padding: .95rem 1rem 1rem;
-  border: 1px solid #2c3a53;
-  border-radius: .58rem;
-  background: #172237;
+  min-width: 0;
+  margin: 0;
+  padding: var(--settings-subsection-padding);
+  border: 1px solid var(--settings-subsection-border);
+  border-radius: var(--settings-subsection-radius);
+  background: var(--settings-subsection-background);
 }
-.target-weight-settings legend {
+.settings-subsection > legend {
   padding: 0 .35rem;
   color: #e8edf5;
   font-size: .82rem;
   font-weight: 650;
+  line-height: 1.35;
+}
+.target-weight-settings {
+  min-width: 0;
 }
 .target-weight-description {
   max-width: 58ch;
@@ -1161,23 +1170,11 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .token-result { display: grid; gap: .45rem; margin-top: 1rem; padding: .85rem 1rem; }
 .token-result code { overflow-wrap: anywhere; }
 .token-table { margin-top: 1.15rem; border-top: 1px solid var(--border); padding-top: .35rem; }
-.activity-target-settings {
-  display: block;
-  margin: 0;
-  padding: .95rem 1rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: .58rem;
-  background: var(--surface-soft);
-}
 .activity-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 0;
-  color: #e8edf5;
-  font-size: .82rem;
-  font-weight: 650;
 }
 .activity-status-badge {
   display: inline-flex;

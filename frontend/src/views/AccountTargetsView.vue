@@ -297,7 +297,7 @@ void load()
               <label class="field">{{ t('settingsUi.fiberTarget') }}<input v-model.number="target.fiber_g" type="number" :min="TARGET_LIMITS.nutrientMin" step="1" /></label>
             </div>
           </fieldset>
-          <fieldset class="field full activity-target-settings">
+          <fieldset class="field full settings-subsection activity-target-settings">
             <legend class="activity-card-header">
               <span>{{ t('activity.title') }}</span>
               <span :class="['activity-status-badge', { active: activityEnabled }]">{{ activityEnabled ? t('activity.statusActive') : t('activity.statusDisabled') }}</span>
@@ -322,7 +322,7 @@ void load()
               {{ t('activity.noSources') }}
             </small>
           </fieldset>
-          <fieldset class="field full target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
+          <fieldset class="field full settings-subsection target-weight-settings" :aria-describedby="weightError ? 'target-weight-error' : undefined">
             <legend>{{ t('settingsUi.targetWeight') }}</legend>
             <p class="target-weight-description">{{ t('settingsUi.targetWeightDescription') }}</p>
             <div class="target-weight-mode-options" role="radiogroup" :aria-label="t('settingsUi.targetWeightMode')">
