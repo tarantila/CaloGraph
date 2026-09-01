@@ -96,7 +96,7 @@ onMounted(() => { void loadStatus() })
           <h2 id="backup-health-heading"><component :is="stateIcon" :size="20" aria-hidden="true" /> {{ t('backupHealth.overall') }}</h2>
           <p v-if="loading" class="backup-health-loading">{{ t('backupHealth.loading') }}</p>
           <p v-else aria-live="polite">{{ stateMessage }}</p>
-          <ul v-if="!loading && state !== 'healthy' && reasonLabels.length" class="backup-health-reasons">
+          <ul v-if="!loading && state !== 'healthy' && state !== 'disabled' && reasonLabels.length" class="backup-health-reasons">
             <li v-for="(label, index) in reasonLabels" :key="`${status.reason_codes[index]}-${index}`">{{ label }}</li>
           </ul>
         </div>
