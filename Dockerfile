@@ -113,7 +113,7 @@ EXPOSE 8000
 ENTRYPOINT ["backend-entrypoint"]
 CMD ["serve"]
 
-FROM postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15 AS backup-agent-runtime
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS backup-agent-runtime
 
 ARG APP_VERSION=development
 ARG APP_UID=10001
