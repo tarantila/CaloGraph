@@ -89,7 +89,7 @@ onMounted(() => { void loadStatus() })
         <span class="backup-health-badge" :class="`is-${state}`"><component :is="stateIcon" :size="15" aria-hidden="true" /> {{ stateLabel }}</span>
       </div>
       <dl class="backup-health-summary">
-        <div><dt>{{ t('backupHealth.automation') }}</dt><dd>{{ status.automation?.enabled === false ? t('backupHealth.disabled') : status.automation?.enabled === true ? t('backupHealth.enabled') : t('backupHealth.notReported') }}</dd></div>
+        <div><dt>{{ t('backupHealth.automation') }}</dt><dd>{{ status.automation?.enabled === false ? t('backupHealth.states.disabled') : status.automation?.enabled === true ? t('backupHealth.enabled') : t('backupHealth.notReported') }}</dd></div>
         <div><dt>{{ t('backupHealth.lastAttempt') }}</dt><dd>{{ displayDate(status.automation?.last_attempt_at) }}</dd></div>
         <div><dt>{{ t('backupHealth.lastComplete') }}</dt><dd>{{ displayDate(status.automation?.last_success_at) }}</dd></div>
         <div><dt>{{ t('backupHealth.nextRun') }}</dt><dd>{{ displayDate(status.automation?.next_run_at) }}</dd></div>
