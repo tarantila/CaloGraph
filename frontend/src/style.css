@@ -2067,19 +2067,19 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .backup-component { display: grid; gap: .8rem; }
 .backup-component h3 { margin: 0; color: var(--ink); font-size: .84rem; }
 .backup-component dl { display: grid; gap: .7rem; margin: 0; }
+.backup-protection { margin-top: .9rem; }
 .backup-protection h2 { margin: 0 0 .9rem; font-size: .95rem; }
 .backup-protection dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .backup-health-error { padding: .65rem .75rem; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: .55rem; color: var(--warning); font-size: .78rem; }
 .backup-boundary-note {
   display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: .7rem; align-items: start;
-  max-width: 1040px; padding: .8rem .9rem; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  max-width: 1040px; margin-top: .9rem; padding: .8rem .9rem; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: .65rem; background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 .backup-boundary-note > svg { margin-top: .05rem; color: var(--accent-hover); }
 .backup-boundary-note strong { display: block; font-size: .78rem; }
 .backup-boundary-note p { margin: .3rem 0 0; color: var(--muted-strong); font-size: .72rem; line-height: 1.5; }
-.backup-doc-link { justify-self: start; }
-.admin-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .9rem; }
+.backup-doc-link { justify-self: start; margin-top: .9rem; }
 .admin-panel-header h2 { margin: 0; font-size: .95rem; }
 .admin-panel-header p { margin: .2rem 0 0; color: var(--muted); font-size: .75rem; }
 .technical-value { display: block; margin-top: .15rem; color: var(--muted); font-size: .65rem; overflow-wrap: anywhere; }
@@ -2334,7 +2334,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 
   .backup-component-grid, .backup-health-summary, .backup-protection dl { grid-template-columns: 1fr; }
   .backup-health-header { flex-direction: column; }
-  .backup-doc-link { width: 100%; justify-self: stretch; }
+  .button.backup-doc-link { width: 100%; justify-self: stretch; }
   .form-grid > .button, .account-action-button { width: 100%; justify-self: stretch; }
   .portable-import-actions { display: grid; grid-template-columns: 1fr; }
   .portable-import-actions .backup-validate-button { width: 100%; }
