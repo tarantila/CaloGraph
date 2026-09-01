@@ -75,7 +75,7 @@ async function loadStatus(): Promise<void> {
     status.value = await getBackupStatus()
   } catch (cause) {
     error.value = cause instanceof ApiError ? localizeApiError(cause, 'backupHealth.loadFailed') : t('backupHealth.loadFailed')
-    status.value = { schema_version: 1, overall_state: 'unknown', reason_codes: ['report_missing'] }
+    status.value = { schema_version: 1, overall_state: 'unknown', reason_codes: [] }
   } finally {
     loading.value = false
   }
