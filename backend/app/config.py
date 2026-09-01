@@ -220,6 +220,20 @@ class Settings(BaseSettings):
     yazio_circuit_window_seconds: int = Field(default=600, ge=60, le=86_400)
     yazio_scheduler_poll_seconds: int = 60
     yazio_scheduler_jitter_minutes: int = 30
+    # Backup automation is opt-in. The web application only reads a
+    # sanitized report from this path; it never receives an age identity.
+    backup_agent_enabled: bool = False
+    backup_status_file: str = Field(
+        default="/var/lib/calograph-backups/status.json",
+        min_length=1,
+        max_length=4096,
+    )
+    backup_status_max_age_seconds: int = Field(default=172800, ge=60, le=31_536_000)
+    backup_freshness_threshold_seconds: int = Field(
+        default=172800,
+        ge=60,
+        le=31_536_000,
+    )
 
     @model_validator(mode="before")
     @classmethod

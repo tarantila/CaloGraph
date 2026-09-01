@@ -160,3 +160,45 @@ export interface AchievementListResponse {
 export interface AchievementReconcileResponse extends AchievementListResponse {
   newly_unlocked: Achievement[]
 }
+export type BackupHealthState = 'healthy' | 'attention' | 'failed' | 'unknown' | 'disabled'
+
+export interface BackupComponentStatus {
+  state?: BackupHealthState
+  verification?: 'full' | 'checksum' | 'not_verified' | 'not_reported'
+  encryption?: 'age'
+  matching_backup?: boolean
+  off_host_copy?: boolean
+  immutable_copy?: boolean
+  last_success_at?: string
+  last_attempt_at?: string
+  last_verified_at?: string
+  artifact_created_at?: string
+  last_restore_test_at?: string
+  age_seconds?: number
+}
+
+export interface BackupAutomationStatus {
+  enabled?: boolean
+  last_attempt_at?: string
+  last_success_at?: string
+  next_run_at?: string
+  last_error_code?: string | null
+  schedule_timezone?: string
+  schedule_time?: string
+  retention_days?: number
+}
+
+export interface BackupStatus {
+  schema_version: 1
+  reported_at?: string
+  target?: string
+  freshness_threshold_seconds?: number
+  overall_state: BackupHealthState
+  reason_codes: string[]
+  automation?: BackupAutomationStatus
+  components?: {
+    database?: BackupComponentStatus
+    environment_secrets?: BackupComponentStatus
+    restore_test?: BackupComponentStatus
+  }
+}

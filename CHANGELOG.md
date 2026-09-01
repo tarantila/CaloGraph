@@ -4,6 +4,25 @@ All notable changes to CaloGraph are documented in this file. The project
 follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+## [0.6.2] - 2026-09-01
+
+### Added
+
+- Added opt-in, least-privilege automated encrypted PostgreSQL and optional
+  environment/secrets backups with atomic publication, checksums, managed-only
+  retention, and sanitized health reporting.
+- Added admin-only read-only backup health status with localized DE/EN states
+  and explicit separation between artifact creation and external verification.
+- Documented public-recipient host operation, external private-key recovery,
+  rotation, restore testing, off-host copies, and PostgreSQL upgrade recovery.
+
+### Upgrade notes
+
+Automated backups remain disabled by default. Configure a public age recipients
+file and deliberately enable the Compose `backup` profile after reviewing the
+new backup settings in `.env.production.example`. Keep private age identities
+outside the Docker host and never add them to production Compose.
+
 
 ## [0.6.1] - 2026-09-01
 

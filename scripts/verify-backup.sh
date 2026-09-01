@@ -1,60 +1,69 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 backup_file=${1:-}
 age_bin=${AGE_BIN:-age}
 
-if [[ -z "$backup_file" || ! -f "$backup_file" ]]; then
-  printf 'Usage: %s /path/to/calograph.dump[.age]\n' "$0" >&2
+if [[ -z "$backup_file" || ! -f "$backup_file" || -L "$backup_file" ]]; then
+  printf 'Usage: %s /path/to/encrypted-backup.age\n' "$0" >&2
+  exit 64
+fi
+if [[ "$(stat -c '%h' -- "$backup_file" 2>/dev/null || printf 2)" != 1 ]]; then
+  printf 'Backup file must not be a hard link.\n' >&2
   exit 1
 fi
-
 backup_dir=$(CDPATH= cd -- "$(dirname -- "$backup_file")" && pwd)
-backup_name=$(basename "$backup_file")
+backup_name=$(basename -- "$backup_file")
 absolute_backup="$backup_dir/$backup_name"
 checksum_file="$absolute_backup.sha256"
 
-if [[ -f "$checksum_file" ]]; then
-  expected_checksum=$(awk 'NR == 1 { print $1 }' "$checksum_file")
+if [[ -f "$checksum_file" && ! -L "$checksum_file" ]]; then
+  expected_checksum=$(cut -d ' ' -f1 <"$checksum_file")
   if [[ ! "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]]; then
     printf 'Backup checksum file has an invalid format.\n' >&2
     exit 1
   fi
-  actual_checksum=$(sha256sum -- "$absolute_backup" | awk '{print $1}')
+  actual_checksum=$(sha256sum -- "$absolute_backup" | cut -d ' ' -f1)
   if [[ "$actual_checksum" != "$expected_checksum" ]]; then
     printf 'Backup checksum verification failed.\n' >&2
     exit 1
   fi
   printf 'Ciphertext checksum verified.\n'
 else
-  printf 'Warning: no SHA-256 file found; only format/authentication will be checked.\n' >&2
+  printf 'Backup checksum file is missing.\n' >&2
+  exit 1
 fi
 
-cd "$project_root"
-if [[ "$absolute_backup" == *.age ]] \
-  || head -c 64 "$absolute_backup" | grep -q 'age-encryption.org/v1'; then
-  identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
-  if ! command -v "$age_bin" >/dev/null 2>&1; then
-    printf 'age is required to verify encrypted backups.\n' >&2
-    exit 1
-  fi
-  if [[ -z "$identity_file" || ! -r "$identity_file" ]]; then
-    printf 'BACKUP_AGE_IDENTITY_FILE must name a readable age identity.\n' >&2
-    exit 1
-  fi
-  "$age_bin" --decrypt --identity "$identity_file" "$absolute_backup" \
-    | docker compose exec -T postgres pg_restore \
-      --file=/dev/null \
-      --no-owner
-  printf 'Backup is authenticated and fully readable: %s\n' \
-    "$absolute_backup"
-else
-  printf 'Warning: verifying a legacy unencrypted database dump.\n' >&2
-  docker compose exec -T postgres pg_restore \
-    --file=/dev/null \
-    --no-owner \
-    <"$absolute_backup"
-  printf 'Legacy backup is fully readable but unencrypted: %s\n' \
-    "$absolute_backup"
+identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
+if [[ -z "$identity_file" || ! -r "$identity_file" || -L "$identity_file" ]]; then
+  printf 'BACKUP_AGE_IDENTITY_FILE must name a readable external age identity.\n' >&2
+  exit 1
 fi
+if [[ ! -f "$absolute_backup" || "${absolute_backup##*.}" != age ]]; then
+  printf 'Only encrypted .age backups can be verified.\n' >&2
+  exit 1
+fi
+if ! command -v "$age_bin" >/dev/null 2>&1; then
+  printf 'age is required to verify encrypted backups.\n' >&2
+  exit 1
+fi
+cd "$project_root"
+# Authentication and complete archive processing happen only in this
+# externally-keyed workflow; the backup agent has no identity key.
+if ! "$age_bin" --decrypt --identity "$identity_file" "$absolute_backup" 2>/dev/null \
+  | docker compose exec -T postgres pg_restore --file=/dev/null --no-owner 2>/dev/null; then
+  printf 'Encrypted backup authentication or PostgreSQL archive processing failed.\n' >&2
+  exit 1
+fi
+if [[ -n "${BACKUP_VERIFICATION_STATUS_FILE:-}" ]]; then
+  verification_dir=$(dirname -- "$BACKUP_VERIFICATION_STATUS_FILE")
+  mkdir -p -- "$verification_dir"
+  verification_tmp=$(mktemp "$verification_dir/.restore-verification.XXXXXX.partial")
+  chmod 600 "$verification_tmp"
+  printf '{"schema_version":1,"target":"calograph","result":"RESTORE_VERIFIED","verified_at":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$verification_tmp"
+  mv -f -- "$verification_tmp" "$BACKUP_VERIFICATION_STATUS_FILE"
+fi
+printf 'Encrypted backup authenticated and fully processed.\n'

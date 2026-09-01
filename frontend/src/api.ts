@@ -1,4 +1,4 @@
-import type { ApiProblem } from './types'
+import type { ApiProblem, BackupStatus } from './types'
 import { i18n } from './i18n'
 
 let csrfToken: string | null =
@@ -268,4 +268,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+export function getBackupStatus(): Promise<BackupStatus> {
+  return api<BackupStatus>('/admin/backup-status')
 }

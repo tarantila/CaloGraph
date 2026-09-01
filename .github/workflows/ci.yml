@@ -238,6 +238,12 @@ jobs:
             --build-arg "APP_REVISION=$GITHUB_SHA" \
             --tag calograph-frontend:ci \
             .
+          docker build \
+            --target backup-agent-runtime \
+            --build-arg "APP_VERSION=$project_version" \
+            --build-arg "APP_REVISION=$GITHUB_SHA" \
+            --tag calograph-backup-agent:ci \
+            .
       - name: Scan backend runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -251,6 +257,15 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: calograph-frontend:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          scanners: vuln
+      - name: Scan backup-agent runtime image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: calograph-backup-agent:ci
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL

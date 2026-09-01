@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models import SecurityAuditEvent, User, UserInvitation, UserSession
 from app.schemas import InvitationResponse, UserResponse
 from app.services.app_logs import get_app_logs
+from app.services.backup_status import read_backup_status
 from app.services.geoip import lookup_client_ip
 from app.services.release_status import get_release_status
 from app.services.security_audit import security_audit_metrics_24h
@@ -99,6 +100,11 @@ def system_status(_: User = Depends(require_admin), db: Session = Depends(get_db
         "yazio_scheduler_enabled": settings.yazio_enabled,
         "yazio_scheduler_available": scheduler_available,
     }
+
+@router.get("/backup-status")
+def backup_status(_: User = Depends(require_admin)) -> dict[str, object]:
+    """Read the host-produced safe status; never expose artifacts or paths."""
+    return read_backup_status()
 
 
 @router.get("/users", response_model=list[UserResponse])

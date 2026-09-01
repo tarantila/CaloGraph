@@ -56,6 +56,10 @@ services:
       RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
       CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
       MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
+      BACKUP_AGENT_ENABLED: ${BACKUP_AGENT_ENABLED:-false}
+      BACKUP_STATUS_FILE: /var/lib/calograph-backups/status.json
+      BACKUP_STATUS_MAX_AGE_SECONDS: ${BACKUP_STATUS_MAX_AGE_SECONDS:-172800}
+      BACKUP_FRESHNESS_THRESHOLD_SECONDS: ${BACKUP_FRESHNESS_THRESHOLD_SECONDS:-172800}
       CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
       INITIAL_ADMIN_SETUP_ENABLED: ${INITIAL_ADMIN_SETUP_ENABLED:-false}
       CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:?Set CALOGRAPH_PUBLIC_URL in .env}
@@ -157,6 +161,8 @@ services:
     pids_limit: ${BACKEND_PIDS_LIMIT:--1}
     tmpfs:
       - /tmp:size=${BACKEND_TMPFS_BYTES:-1090519040},mode=1777
+    volumes:
+      - backup-status:/var/lib/calograph-backups:ro
 
   yazio-scheduler:
     image: ${CALOGRAPH_BACKEND_IMAGE:-ghcr.io/tarantila/calograph-backend}:${CALOGRAPH_VERSION:-latest}
@@ -220,6 +226,57 @@ services:
     pids_limit: ${YAZIO_SCHEDULER_PIDS_LIMIT:--1}
     tmpfs:
       - /tmp:size=64m,mode=1777
+  backup-agent:
+    profiles: ["backup"]
+    image: ${CALOGRAPH_BACKUP_AGENT_IMAGE:-ghcr.io/tarantila/calograph-backup-agent}:${CALOGRAPH_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backup-agent-runtime
+      args:
+        APP_VERSION: ${CALOGRAPH_VERSION:-latest}
+    user: "${CALOGRAPH_UID:-10001}:${CALOGRAPH_GID:-10001}"
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-calograph}
+      BACKUP_PGHOST: postgres
+      PGPORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-calograph}
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_AGENT_ENABLED: ${BACKUP_AGENT_ENABLED:-false}
+      BACKUP_AGE_RECIPIENTS_FILE: /run/backup-config/recipients
+      BACKUP_DIR: /var/lib/calograph-backups/artifacts
+      BACKUP_STATUS_FILE: /var/lib/calograph-backups/status.json
+      SECRETS_SOURCE_FILE: /backup-input/environment.env
+      SECRETS_SOURCE_DIR: /backup-input/secrets
+      BACKUP_INCLUDE_SECRETS: ${BACKUP_INCLUDE_SECRETS:-false}
+      BACKUP_SCHEDULE_TIME: ${BACKUP_SCHEDULE_TIME:-02:30}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
+    secrets:
+      - postgres_password
+    volumes:
+      - backup-artifacts:/var/lib/calograph-backups/artifacts
+      - backup-status:/var/lib/calograph-backups
+      - ${BACKUP_AGE_RECIPIENTS_FILE:-./backup-recipients.txt}:/run/backup-config/recipients:ro
+      - ${BACKUP_SECRETS_SOURCE_FILE:-./.env}:/backup-input/environment.env:ro
+      - ${BACKUP_SECRETS_SOURCE_DIR:-./secrets}:/backup-input/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    init: true
+    read_only: true
+    mem_limit: ${BACKUP_AGENT_MEMORY_LIMIT:-512m}
+    cpus: ${BACKUP_AGENT_CPU_LIMIT:-1.0}
+    pids_limit: ${BACKUP_AGENT_PIDS_LIMIT:-128}
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+
 
   frontend:
     image: ${CALOGRAPH_FRONTEND_IMAGE:-ghcr.io/tarantila/calograph-frontend}:${CALOGRAPH_VERSION:-latest}
@@ -275,6 +332,8 @@ networks:
 
 volumes:
   postgres-data:
+  backup-artifacts:
+  backup-status:
 
 secrets:
   postgres_password:

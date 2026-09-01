@@ -1,32 +1,48 @@
 # Backup, restore, and updates
 
-## Protection model
+## 1. Protection model and trust boundary
 
-A complete CaloGraph backup consists of two encrypted parts:
+A complete CaloGraph backup set has two matching encrypted artifacts:
 
-1. a PostgreSQL dump containing health data, accounts, and encrypted YAZIO
-   credentials;
-2. a matching archive containing `.env` plus the database, session, rate-limit,
-   credential-encryption, and MFA-encryption secret files.
+1. a PostgreSQL custom-format dump containing health data, accounts, and encrypted
+   YAZIO credentials; and
+2. an optional environment-and-secrets archive containing `.env` and the
+   database, session, rate-limit, credential-encryption, and MFA key files.
 
-The scripts encrypt both parts with
-[`age`](https://github.com/FiloSottile/age) before writing them to their final
-location. A PostgreSQL dump is streamed directly from the container into
-`age`; no plaintext temporary dump is created.
+Both are encrypted with [`age`](https://github.com/FiloSottile/age) for one or
+more public recipients. The dedicated backup agent is opt-in and disabled by
+default. It has no age identity/private key, Docker socket, application runtime
+access, frontend access, or backend secrets. It connects only to PostgreSQL on
+the internal data network and writes only encrypted artifacts and a sanitized
+status report to dedicated mounts. `read_only`, `cap_drop: ALL`,
+`no-new-privileges`, `init`, and resource limits are enabled in Compose.
 
-Stored YAZIO credentials cannot be decrypted without the original
-credential-encryption key file. Anyone who obtains both the database and that
-file can decrypt them, so both artifacts must use the same operational
-protection.
+The host must still provide full-disk/volume encryption for live PostgreSQL and
+recovery systems. `age` protects exported artifacts, not a running database or
+an exposed host.
 
-Stored TOTP seeds likewise require the matching MFA-encryption key. Losing that
-key requires an administrative MFA reset for every enrolled user; exposing it
-together with the database compromises those TOTP seeds.
+## 2. Health reporting and status interpretation
 
-## Create a backup identity
+The agent atomically publishes a versioned `status.json` containing only state
+and reason codes, timestamps, schedule/retention metadata, component status, the
+logical target, and the configured freshness threshold. It never contains
+recipient strings, paths, filenames, command output, or secret values. The
+read-only admin endpoint `/api/v1/admin/backup-status` exposes that contract to
+administrators only.
 
-Install `age` on a trusted administration system and create a dedicated
-identity:
+`Healthy` means the database and required environment/secrets components are
+reported successful, fresh, matching, and fully verified. `Attention required`
+means a valid report says stale, incomplete, mismatched, or not fully verified.
+`Failed` means the latest attempt or verification explicitly failed and outranks
+other states. `Unknown` means no report, a malformed report, or a report too old
+to trust; an API transport failure is also unavailable, not a failed backup.
+`Disabled` means the agent is deactivated. A `CREATED` artifact is never called
+`RESTORE_VERIFIED`: only an external identity and a complete `pg_restore`
+processing or isolated restore test can establish verification.
+
+## 3. Create recipients and schedule automation
+
+Install `age` on a trusted administration system and create a dedicated key:
 
 ```bash
 install -d -m 700 /secure/calograph-keys
@@ -37,176 +53,119 @@ chmod 600 /secure/calograph-keys/backup-identity.txt
 chmod 644 /etc/calograph/backup-recipients.txt
 ```
 
-`backup-recipients.txt` contains only the public recipient and may remain on
-the Docker host. Keep `backup-identity.txt` outside the Docker host, ideally
-offline except during a controlled backup, verification, or restore. Losing
-the identity makes the encrypted backups unrecoverable.
+The recipients file contains public data and may be mounted read-only by the
+agent. Keep every private identity outside the Docker host, ideally offline
+except during controlled verification or restore. Add multiple recipients for
+independent recovery custodians; each recipient can decrypt the same artifact.
+Losing every private identity makes the artifacts unrecoverable. A compromised
+identity permits decryption, so revoke/rotate recipients by creating a new
+recipient set and a fresh backup set; old artifacts remain recoverable only by
+old authorized identities.
 
-## Create an encrypted database backup
+Set `BACKUP_AGE_RECIPIENTS_FILE` to the public file, choose
+`BACKUP_SCHEDULE_TIME` (local `HH:MM`), `CALOGRAPH_TIMEZONE`, and
+`BACKUP_RETENTION_DAYS`. Start the dedicated Compose profile deliberately:
+
+```bash
+BACKUP_AGENT_ENABLED=true docker compose --profile backup up -d backup-agent
+```
+
+Scheduling is internal to the restart-tolerant agent; no host cron is needed.
+`BACKUP_INCLUDE_SECRETS=false` is the secure default. If enabled, the source
+`.env` and `secrets/` mounts are read-only and tar data streams directly into
+`age`; values are never logged or written as plaintext. The agent performs
+managed-only retention: it removes only its exact artifact/checksum pairs and
+randomized partials, with symlink, hardlink, and path checks. Unrelated files
+are never selected by broad deletion.
+
+## 4. Manual database and secrets creation
+
+For a host-side database backup, only the public recipients file is needed:
 
 ```bash
 export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
-export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
 BACKUP_DIR=/srv/calograph-backups scripts/backup-postgres.sh
 ```
 
-The script:
+`pg_dump --format custom` streams directly to `age`; only a randomized
+ciphertext partial exists before atomic publication. Modes are `0700` for the
+directory and `0600` for artifacts/checksums. A SHA-256 checksum detects
+accidental transfer corruption, while authenticated age decryption detects
+ciphertext tampering. A separately modifiable checksum is not authenticity.
 
-- creates one custom-format dump and streams it directly into `age`;
-- writes only to a randomized encrypted temporary file;
-- fully decrypts, authenticates, and processes the PostgreSQL archive before
-  publishing the final backup name atomically;
-- applies directory mode `0700` and file mode `0600`;
-- creates a SHA-256 checksum only after successful archive verification.
-
-The output is named `calograph-TIMESTAMP.dump.age`. The SHA-256 file detects
-accidental transfer corruption. Authenticity and tamper detection come from
-successful `age` decryption, not from the separately modifiable checksum.
-
-Verify the backup on a trusted system that has the private identity and access
-to a running CaloGraph PostgreSQL container:
+The optional environment archive is separate and explicitly paired by its
+backup timestamp:
 
 ```bash
-export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
-scripts/verify-backup.sh \
-  /srv/calograph-backups/calograph-TIMESTAMP.dump.age
-```
-
-Verification decrypts the complete archive into a pipe and makes
-`pg_restore` process it fully while discarding generated restore SQL. It does
-not write a decrypted dump.
-
-## Back up secrets separately
-
-```bash
-export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
+BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt \
 BACKUP_DIR=/srv/calograph-backups scripts/backup-secrets.sh
 ```
 
-The result is `calograph-secrets-TIMESTAMP.tar.age`. The script streams a tar
-archive containing `.env` and `secrets/` directly into `age`. No plaintext
-archive is written. For tests or deliberately different locations, set
-`SECRETS_SOURCE_FILE` and `SECRETS_SOURCE_DIR` explicitly.
+## 5. Verify and restore with an external private identity
 
-To verify and recover it on a trusted system:
-
-```bash
-install -d -m 700 /secure/recovery/calograph
-age --decrypt \
-  --identity /secure/calograph-keys/backup-identity.txt \
-  /srv/calograph-backups/calograph-secrets-TIMESTAMP.tar.age \
-  | tar --extract --directory /secure/recovery/calograph
-chmod 600 /secure/recovery/calograph/.env
-chmod 700 /secure/recovery/calograph/secrets
-chmod 444 /secure/recovery/calograph/secrets/*
-```
-
-Do not leave recovered files on a shared system.
-
-## Migrate existing plaintext dumps
-
-Existing dumps are never changed automatically. To create an encrypted copy:
-
-```bash
-export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
-scripts/encrypt-existing-backup.sh \
-  /srv/calograph-backups/calograph-LEGACY.dump
-```
-
-The helper first checks that PostgreSQL can read the legacy dump, refuses to
-overwrite an existing encrypted destination, and leaves the plaintext source
-untouched. After a successful independent restore test, remove or archive the
-legacy plaintext according to the operator's retention policy.
-
-Legacy installations that still contain direct secrets in `.env` should move
-them into source files before their next backup:
-
-```bash
-CONFIRM_SECRET_MIGRATION=calograph scripts/migrate-env-secrets.sh
-```
-
-The migration preserves the database password and credential-encryption key,
-removes the password-bearing `DATABASE_URL`, atomically replaces `.env` with
-path-only settings, never prints secret values, and refuses to overwrite an
-existing destination. It does not migrate or delete old backup files.
-
-An installation that already completed this migration but does not yet have a
-dedicated MFA key uses:
-
-```bash
-CONFIRM_MFA_SECRET_MIGRATION=calograph scripts/migrate-mfa-secret.sh
-```
-
-This helper generates an independent Fernet key, adds only its path to `.env`,
-and refuses to overwrite an existing MFA setting or key file.
-
-## Restore
-
-Restore replaces the current CaloGraph database, so the script requires an
-explicit confirmation:
+Private-key operations are deliberately separate from automated creation. On a
+trusted administration system:
 
 ```bash
 export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
-CONFIRM_RESTORE=calograph \
-  scripts/restore-postgres.sh \
+scripts/verify-backup.sh /srv/calograph-backups/calograph-TIMESTAMP.dump.age
+```
+
+Verification checks the checksum, decrypts the ciphertext, and makes
+`pg_restore` process the complete custom archive while discarding generated SQL.
+It writes no decrypted dump. Verify the matching secrets archive with `age
+--decrypt ... | tar --list --file -`; do not extract it onto a shared system.
+A checksum-only check is not a full verification, and a successful backup
+command is not proof of recoverability.
+
+Restore is destructive and requires explicit confirmation:
+
+```bash
+export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
+CONFIRM_RESTORE=calograph scripts/restore-postgres.sh \
   /srv/calograph-backups/calograph-TIMESTAMP.dump.age
 ```
 
-The script verifies the checksum, authenticated decryption, and dump
-structure; stops the frontend, backend, and YAZIO scheduler; streams the
-decrypted dump directly into `pg_restore --clean --if-exists --no-owner`;
-applies pending Alembic migrations; and starts all services. It deliberately
-does not overwrite `.env` or the secret source directory.
+The workflow verifies before stopping services, streams decryption directly to
+`pg_restore --clean --if-exists --no-owner`, applies migrations, and starts
+services. It does not overwrite `.env` or secret sources. Keep `CREATED`,
+external `RESTORE_VERIFIED`, and isolated restore-test evidence as separate
+operational records.
 
-Before restoring to a new host:
+## 6. New-host recovery, versions, and restore tests
 
-1. Install the repository, Docker, and `age`.
-2. Recover the matching environment/secret archive in the repository root and
-   verify modes `0600` for files and `0700` for `secrets/`.
-3. Start the same PostgreSQL major version.
-4. Run the restore script with the private identity.
-5. Verify login, data status, the last YAZIO sync, and one manual sync.
+Before a new-host recovery:
 
-PostgreSQL 18 stores its version-specific cluster below the mounted
-`/var/lib/postgresql` volume. Changing the PostgreSQL major version requires
-dump/restore or `pg_upgrade`; changing only the image tag is insufficient.
+1. Install Docker, the repository, and `age`; recover the matching environment
+   archive using the private identity and set files to `0600` and the secrets
+   directory to `0700`.
+2. Use the same PostgreSQL major version and test the complete pair in an
+   isolated environment.
+3. Run the restore workflow, then verify login, data status, MFA, encrypted
+   YAZIO credentials, and one manual synchronization.
 
-## Test restoration and retention
+PostgreSQL major upgrades require dump/restore or `pg_upgrade`; changing only an
+image tag is insufficient. Restore a current set to an isolated test system at
+least quarterly. Keep at least one off-host copy and one immutable or offline
+copy. Define retention/deletion according to health-data obligations and ensure
+full-disk encryption for every live or temporary recovery system.
 
-Restore a current backup to an isolated test system at least quarterly. A
-successful backup command alone does not prove that the database, `.env`,
-secret files, age identity, and application can be recovered together.
+## 7. Legacy migration and updates
 
-Keep at least one encrypted copy outside the Docker host and one immutable or
-offline copy. Define retention and deletion periods appropriate for health
-data. Full-disk or volume encryption remains required for live PostgreSQL
-storage and any temporary recovery system; `age` protects backup artifacts,
-not a running database.
-
-## Update containers
-
-After selecting a tested release through `CALOGRAPH_VERSION` in `.env`:
+Existing plaintext dumps are not changed automatically. Encrypt one explicitly,
+verify it independently, and then remove the plaintext according to policy:
 
 ```bash
-export BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt
-export BACKUP_AGE_IDENTITY_FILE=/secure/calograph-keys/backup-identity.txt
-BACKUP_DIR=/srv/calograph-backups \
-  BACKUP_SECRETS=1 \
-  scripts/update-containers.sh
+BACKUP_AGE_RECIPIENTS_FILE=/etc/calograph/backup-recipients.txt \
+ scripts/encrypt-existing-backup.sh /srv/calograph-backups/calograph-LEGACY.dump
 ```
 
-The script validates Compose, creates encrypted backups first, pulls
-PostgreSQL plus the selected backend and frontend release images, and starts
-them with `--no-build` before waiting for healthy services. It intentionally
-does not run `git pull` or build source; source updates and image selection
-remain separate, controlled actions.
+Legacy direct secrets can be moved into source files with
+`CONFIRM_SECRET_MIGRATION=calograph scripts/migrate-env-secrets.sh`; this never
+prints values. An independent MFA key can be created with
+`CONFIRM_MFA_SECRET_MIGRATION=calograph scripts/migrate-mfa-secret.sh`.
 
-After every update:
-
-```bash
-docker compose ps
-docker compose logs --no-color --tail=100 backend yazio-scheduler
-docker compose exec backend python -m app.cli yazio-status --username YOUR_USER
-```
-
-An Alembic downgrade is not a substitute for a tested backup.
+After selecting a tested application version through `CALOGRAPH_VERSION`, run
+the existing controlled update workflow. Back up and verify first, update
+PostgreSQL/backend/frontend together, wait for health, and inspect logs. Never
+place a private identity in production Compose or the backup-agent container.

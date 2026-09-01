@@ -26,7 +26,7 @@ const managementNavigation = [
 
 const operationsNavigation = [
   { name: 'admin-logs', label: 'adminUi.logs', icon: PhFileText },
-  { name: 'admin-backups', label: 'adminUi.backups', icon: PhArchive },
+  { name: 'admin-backups', label: 'backupHealth.nav', icon: PhArchive },
 ] as const
 
 function isActive(name: string) {
