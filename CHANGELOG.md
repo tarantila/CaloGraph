@@ -10,7 +10,11 @@ follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Refined the Account Center to match the Admin shell with grouped navigation, Phosphor icons, responsive mobile navigation, route-aware focus management, and keyboard-accessible active states.
-- Unified onboarding and Account profile choices, including exact German labels for gender and diet preferences while preserving legacy profile values during import and normalization.
+- Added personal profile data and account-scoped profile settings while preserving legacy profile values during import and normalization.
+- Added target-weight goals with no target, a fixed target, or an ordered target range, including target history support.
+- Added guided multi-stage onboarding for personal details, required targets, optional security factors, and completion.
+- Added Metric/Imperial unit-system selection for height and weight preferences.
+- Polished the Account and Settings UX with consistent navigation, forms, responsive layouts, and account actions.
 - Renamed the default diet label to `Standard (mit Fleisch)` / `Standard (with meat)` and restored the achievement title `Make a Wish` in German.
 
 ### Configuration / Environment
