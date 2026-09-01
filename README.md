@@ -9,9 +9,9 @@
 </p>
 
 CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
-YAZIO data. It combines historically versioned budgets and targets, optional
-activity-energy credits, trends, achievements and data-quality views without
-moral judgment or telemetry.
+YAZIO data. It combines daily nutrition, versioned budgets and targets, optional
+activity-calorie credits, trends, achievements, and data-quality views without
+moral judgment or external telemetry.
 
 CaloGraph is 0.x work in progress. It is not medical software and does not
 diagnose, treat or prescribe. Do not use it as a substitute for professional
@@ -75,10 +75,11 @@ MIT-licensed dependency. See [YAZIO sync](docs/yazio-sync.md) and
 
 ## Quick start (local/private)
 
-Prerequisites: Docker Compose and a local checkout. This example is for a
+Prerequisites: Docker Compose, Git and a local checkout. This example is for a
 loopback/private development instance, not an Internet-facing deployment.
 
 ```sh
+git pull --ff-only
 cp .env.example .env
 ./scripts/init-secrets.sh
 # Review .env; keep CALOGRAPH_PUBLIC_URL on the address you use
@@ -89,8 +90,9 @@ docker compose ps
 
 Open <http://localhost:8180>. On an empty instance, the sign-in page offers
 one-time creation of the first administrator. The browser setup creates only
-the account; sign in to continue through the normal onboarding. The CLI remains
-available when needed:
+the account; sign in to continue through the normal onboarding.
+
+There is a CLI alternative available when needed:
 
 ```sh
 docker compose exec backend python -m app.cli create-user
@@ -168,10 +170,9 @@ supported checks. Do not use development defaults for a public deployment.
 - There is no native iOS app and no server-side Apple Health/HealthKit iCloud
   retrieval. An authorized iPhone exporter is required for ongoing data, and
   iOS can delay background delivery.
-- No medical diagnosis, treatment or automated nutrition advice is provided.
-- Meal or recipe analysis is unavailable where a source does not provide
-  reliable detail.
-- There is no CSV importer; CSV is an export format only.
+- CaloGraph is not medical software and does not provide medical diagnosis or
+  treatment.
+- There is no CSV importer yet; CSV is currently an export format only.
 - Overlapping Apple Health and YAZIO days are intentionally not cross-source
   deduplicated; provenance remains distinct.
 - The undocumented YAZIO interface is experimental and may break.
