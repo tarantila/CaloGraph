@@ -71,12 +71,28 @@ BACKUP_AGENT_ENABLED=true docker compose --profile backup up -d backup-agent
 ```
 
 Scheduling is internal to the restart-tolerant agent; no host cron is needed.
-`BACKUP_INCLUDE_SECRETS=false` is the secure default. If enabled, the source
-`.env` and `secrets/` mounts are read-only and tar data streams directly into
-`age`; values are never logged or written as plaintext. The agent performs
-managed-only retention: it removes only its exact artifact/checksum pairs and
-randomized partials, with symlink, hardlink, and path checks. Unrelated files
-are never selected by broad deletion.
+`BACKUP_INCLUDE_SECRETS=false` is the secure default. To include the optional
+environment archive, set both source paths and start the separate secrets
+profile; it is not enabled by the generic backup profile:
+
+```bash
+BACKUP_INCLUDE_SECRETS=true \
+BACKUP_SECRETS_SOURCE_FILE=/secure/calograph/.env \
+BACKUP_SECRETS_SOURCE_DIR=/secure/calograph/secrets \
+docker compose --profile backup-secrets up -d backup-agent-secrets
+```
+
+Secret-source mounts are absent from the generic agent and fail closed unless
+the secrets profile is explicitly selected. Values are never logged or written
+as plaintext. The agent performs managed-only retention: it removes only its
+exact artifact/checksum pairs and randomized partials, with symlink, hardlink,
+and path checks. Unrelated files are never selected by broad deletion.
+
+The agent runs as the configured non-root `CALOGRAPH_UID`/`CALOGRAPH_GID`
+(default `10001:10001`). Ensure the public recipients file and, when enabled,
+the read-only `.env`/`secrets/` sources are readable by that account; never
+solve permission errors by running the agent as root or mounting the private
+identity.
 
 ## 4. Manual database and secrets creation
 

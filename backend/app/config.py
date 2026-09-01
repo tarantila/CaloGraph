@@ -224,7 +224,7 @@ class Settings(BaseSettings):
     # sanitized report from this path; it never receives an age identity.
     backup_agent_enabled: bool = False
     backup_status_file: str = Field(
-        default="/var/lib/calograph-backups/status.json",
+        default="/var/lib/calograph-backups/status/status.json",
         min_length=1,
         max_length=4096,
     )
@@ -234,6 +234,9 @@ class Settings(BaseSettings):
         ge=60,
         le=31_536_000,
     )
+    backup_schedule_time: str = Field(default="02:30", pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+    backup_retention_days: int = Field(default=30, ge=1, le=3650)
+    backup_include_secrets: bool = False
 
     @model_validator(mode="before")
     @classmethod

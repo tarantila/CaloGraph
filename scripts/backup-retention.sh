@@ -37,5 +37,8 @@ done
 for partial in "$backup_dir"/.calograph-*.partial; do
   [[ -f "$partial" && ! -L "$partial" ]] || continue
   [[ "$(stat -c '%h' -- "$partial" 2>/dev/null || printf 2)" == 1 ]] || continue
+  partial_mtime=$(stat -c '%Y' -- "$partial" 2>/dev/null || printf 0)
+  [[ "$partial_mtime" =~ ^[0-9]+$ ]] || continue
+  (( now - partial_mtime >= 86400 )) || continue
   rm -f -- "$partial"
 done

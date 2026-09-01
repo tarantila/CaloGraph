@@ -116,19 +116,26 @@ CMD ["serve"]
 FROM postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15 AS backup-agent-runtime
 
 ARG APP_VERSION=development
+ARG APP_UID=10001
+ARG APP_GID=10001
 LABEL org.opencontainers.image.title="CaloGraph Backup Agent" \
       org.opencontainers.image.description="Opt-in encrypted backup scheduler with public-key-only access" \
       org.opencontainers.image.source="https://github.com/tarantila/CaloGraph" \
       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
-RUN apk add --no-cache age bash coreutils tzdata
+RUN apk add --no-cache age bash coreutils tzdata \
+    && addgroup -S -g "${APP_GID}" calograph-backup \
+    && adduser -S -D -H -u "${APP_UID}" -G calograph-backup calograph-backup \
+    && mkdir -p /var/lib/calograph-backups/artifacts /var/lib/calograph-backups/status \
+    && chown -R "${APP_UID}:${APP_GID}" /var/lib/calograph-backups
 WORKDIR /app
 COPY --chmod=755 scripts/backup-agent.sh scripts/backup-postgres.sh \
   scripts/backup-secrets.sh scripts/backup-retention.sh /app/scripts/
 ENV BACKUP_AGENT_ENABLED=false \
     BACKUP_DIR=/var/lib/calograph-backups/artifacts \
-    BACKUP_STATUS_FILE=/var/lib/calograph-backups/status.json
+    BACKUP_STATUS_FILE=/var/lib/calograph-backups/status/status.json
+USER calograph-backup
 ENTRYPOINT ["/app/scripts/backup-agent.sh"]
 
 # -----------------------------------------------------------------------------

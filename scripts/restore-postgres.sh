@@ -17,8 +17,13 @@ if [[ "${CONFIRM_RESTORE:-}" != "calograph" ]]; then
 fi
 
 cd "$project_root"
+running_services=$(docker compose --profile backup --profile backup-secrets ps --status running --services 2>/dev/null || true)
+backup_agent_running=false
+backup_agent_secrets_running=false
+case $'\n'"$running_services"$'\n' in *$'\nbackup-agent\n'*) backup_agent_running=true ;; esac
+case $'\n'"$running_services"$'\n' in *$'\nbackup-agent-secrets\n'*) backup_agent_secrets_running=true ;; esac
 scripts/verify-backup.sh "$backup_file"
-docker compose stop frontend backend yazio-scheduler
+docker compose --profile backup --profile backup-secrets stop frontend backend yazio-scheduler backup-agent backup-agent-secrets
 
 if [[ "$backup_file" == *.age ]]; then
   "$age_bin" --decrypt --identity "$BACKUP_AGE_IDENTITY_FILE" "$backup_file" \
@@ -41,5 +46,11 @@ fi
 
 docker compose run --rm --no-deps backend alembic upgrade head
 docker compose up -d --wait
+if [[ "$backup_agent_running" == true ]]; then
+  docker compose --profile backup up -d --wait backup-agent
+fi
+if [[ "$backup_agent_secrets_running" == true ]]; then
+  docker compose --profile backup-secrets up -d --wait backup-agent-secrets
+fi
 docker compose ps
 printf 'Restore completed. Verify login, data status, and the YAZIO connection.\n'

@@ -45,7 +45,7 @@ write_status() {
   if [[ "$db_state" == "healthy" ]]; then db_success_json="\"$attempt\""; else db_success_json=null; fi
   if [[ "$secrets_state" == "healthy" ]]; then secrets_success_json=$success_json; else secrets_success_json=null; fi
   if [[ -n "$reason" ]]; then reason_json="\"$reason\""; else reason_json=null; fi
-  printf '{"schema_version":1,"reported_at":"%s","target":"calograph","freshness_threshold_seconds":%s,"automation":{"enabled":true,"last_attempt_at":"%s","last_success_at":%s,"next_run_at":"%s","last_error_code":%s,"schedule_timezone":"%s","schedule_time":"%s","retention_days":%s},"components":{"database":{"state":"%s","last_attempt_at":"%s","last_success_at":%s,"artifact_created_at":%s,"verification":"not_verified","encryption":"age"},"environment_secrets":{"state":"%s","last_attempt_at":"%s","last_success_at":%s,"artifact_created_at":%s,"verification":"not_verified","encryption":"age"}}}\n' \
+  printf '{"schema_version":1,"reported_at":"%s","target":"calograph","freshness_threshold_seconds":%s,"automation":{"enabled":true,"last_attempt_at":"%s","last_success_at":%s,"next_run_at":"%s","last_error_code":%s,"schedule_timezone":"%s","schedule_time":"%s","retention_days":%s},"components":{"database":{"state":"%s","last_attempt_at":"%s","last_success_at":%s,"artifact_created_at":%s,"matching_backup":true,"verification":"not_verified","encryption":"age"},"environment_secrets":{"state":"%s","last_attempt_at":"%s","last_success_at":%s,"artifact_created_at":%s,"matching_backup":true,"verification":"not_verified","encryption":"age"}}}\n' \
     "$(iso_now)" "$threshold" "$attempt" "$success_json" "$next" "$reason_json" "$timezone" "$schedule_time" "$retention_days" \
     "$db_state" "$attempt" "$db_success_json" "$db_success_json" "$secrets_state" "$attempt" "$secrets_success_json" "$secrets_success_json" >"$status_tmp"
   mv -f -- "$status_tmp" "$status_file"
@@ -82,15 +82,20 @@ run_once() {
 if [[ "$run_once" == "true" ]]; then run_once; exit $?; fi
 while :; do
   today=$(TZ="$timezone" date +%Y-%m-%d)
+  now_epoch=$(date +%s)
+  today_schedule_epoch=$(TZ="$timezone" date -d "today $schedule_time" +%s 2>/dev/null || printf '%s' "$((now_epoch + 86400))")
   scheduled=
   [[ -r "$schedule_state_file" ]] && scheduled=$(cat -- "$schedule_state_file" 2>/dev/null || true)
-  if [[ "$scheduled" != "$today" ]]; then
+  if [[ "$scheduled" != "$today" && "$now_epoch" -ge "$today_schedule_epoch" ]]; then
     # Persist the day before work so supervisor restarts cannot duplicate it.
     mark_scheduled_today
     run_once || true
   fi
-  now_epoch=$(date +%s)
-  tomorrow_epoch=$(TZ="$timezone" date -d "tomorrow $schedule_time" +%s 2>/dev/null || printf '%s' "$((now_epoch + 86400))")
-  sleep_seconds=$((tomorrow_epoch - now_epoch)); (( sleep_seconds > 0 )) || sleep_seconds=60
+  if [[ "$scheduled" == "$today" || "$now_epoch" -ge "$today_schedule_epoch" ]]; then
+    next_schedule_epoch=$(TZ="$timezone" date -d "tomorrow $schedule_time" +%s 2>/dev/null || printf '%s' "$((now_epoch + 86400))")
+  else
+    next_schedule_epoch=$today_schedule_epoch
+  fi
+  sleep_seconds=$((next_schedule_epoch - now_epoch)); (( sleep_seconds > 0 )) || sleep_seconds=60
   sleep "$sleep_seconds"
 done

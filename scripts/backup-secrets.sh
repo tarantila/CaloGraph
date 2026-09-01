@@ -13,11 +13,15 @@ final_path="$backup_dir/calograph-secrets-$timestamp.tar.age"
 checksum_path="$final_path.sha256"
 temporary_path=
 checksum_temporary_path=
+final_published=false
 
 cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
   rm -f -- "${temporary_path:-}" "${checksum_temporary_path:-}"
+  if [[ "$final_published" == true ]]; then
+    rm -f -- "$final_path" "$checksum_path"
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -70,14 +74,25 @@ if ! dd if="$temporary_path" bs=1 count=64 2>/dev/null | LC_ALL=C grep -q 'age-e
   printf 'Encrypted secrets backup did not have a valid age header.\n' >&2
   exit 1
 fi
-mv --no-target-directory -- "$temporary_path" "$final_path"
+if ! ln -- "$temporary_path" "$final_path"; then
+  printf 'A backup already exists for this timestamp.\n' >&2
+  exit 1
+fi
+rm -f -- "$temporary_path"
 temporary_path=
+final_published=true
+
 checksum=$(sha256sum -- "$final_path" | cut -d ' ' -f1)
 checksum_temporary_path=$(mktemp "$backup_dir/.calograph-secrets-$timestamp.sha256.XXXXXX.partial")
 printf '%s  %s\n' "$checksum" "$(basename "$final_path")" >"$checksum_temporary_path"
 chmod 600 "$checksum_temporary_path"
-mv --no-target-directory -- "$checksum_temporary_path" "$checksum_path"
+if ! ln -- "$checksum_temporary_path" "$checksum_path"; then
+  printf 'A checksum already exists for this timestamp.\n' >&2
+  exit 1
+fi
+rm -f -- "$checksum_temporary_path"
 checksum_temporary_path=
+final_published=false
 trap - EXIT HUP INT TERM
 printf 'Encrypted environment and secret-file backup created.\n'
 printf 'Ciphertext checksum created.\n'

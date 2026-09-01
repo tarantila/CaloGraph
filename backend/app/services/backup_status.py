@@ -8,7 +8,6 @@ from typing import Any
 
 from app.config import settings
 
-
 _ALLOWED_ERROR_CODES = {
     "latest_attempt_failed",
     "verification_failed",
@@ -43,10 +42,7 @@ def _component(value: Any) -> dict[str, Any] | None:
         if key == "state":
             if isinstance(item, str) and item in _ALLOWED_STATES:
                 result[key] = item
-        elif key == "matching_backup":
-            if isinstance(item, bool):
-                result[key] = item
-        elif key in {"off_host_copy", "immutable_copy"}:
+        elif key == "matching_backup" or key in {"off_host_copy", "immutable_copy"}:
             if isinstance(item, bool):
                 result[key] = item
         elif isinstance(item, str) and len(item) <= 32 and item in {"age", "full", "checksum", "not_verified", "not_reported"}:
@@ -74,35 +70,33 @@ def _safe_status(raw: Any) -> dict[str, Any]:
     if not isinstance(freshness, int) or isinstance(freshness, bool) or not 60 <= freshness <= 31_536_000:
         raise ValueError("invalid_freshness_threshold")
     automation_raw = raw.get("automation")
-    automation: dict[str, Any] = {}
-    if isinstance(automation_raw, dict):
-        for key in ("enabled",):
-            if isinstance(automation_raw.get(key), bool):
-                automation[key] = automation_raw[key]
-        for key in ("last_attempt_at", "last_success_at", "next_run_at"):
-            value = _timestamp(automation_raw.get(key))
-            if value is not None:
-                automation[key] = value
-        value = automation_raw.get("last_error_code")
-        if value is None:
-            automation["last_error_code"] = None
-        elif isinstance(value, str) and value in _ALLOWED_ERROR_CODES:
-            automation["last_error_code"] = value
-        else:
-            raise ValueError("invalid_error_code")
-        for key in ("schedule_timezone", "schedule_time"):
-            value = automation_raw.get(key)
-            if (
-                isinstance(value, str)
-                and len(value) <= 64
-                and all(char not in value for char in "\r\n")
-                and not value.startswith("/")
-                and ".." not in value
-            ):
-                automation[key] = value
-        retention = automation_raw.get("retention_days")
-        if isinstance(retention, int) and not isinstance(retention, bool) and 1 <= retention <= 3650:
-            automation["retention_days"] = retention
+    if not isinstance(automation_raw, dict) or not isinstance(automation_raw.get("enabled"), bool):
+        raise ValueError("invalid_automation")
+    automation: dict[str, Any] = {"enabled": automation_raw["enabled"]}
+    for key in ("last_attempt_at", "last_success_at", "next_run_at"):
+        value = _timestamp(automation_raw.get(key))
+        if value is not None:
+            automation[key] = value
+    value = automation_raw.get("last_error_code")
+    if value is None:
+        automation["last_error_code"] = None
+    elif isinstance(value, str) and value in _ALLOWED_ERROR_CODES:
+        automation["last_error_code"] = value
+    else:
+        raise ValueError("invalid_error_code")
+    for key in ("schedule_timezone", "schedule_time"):
+        value = automation_raw.get(key)
+        if (
+            isinstance(value, str)
+            and len(value) <= 64
+            and all(char not in value for char in "\r\n")
+            and not value.startswith("/")
+            and ".." not in value
+        ):
+            automation[key] = value
+    retention = automation_raw.get("retention_days")
+    if isinstance(retention, int) and not isinstance(retention, bool) and 1 <= retention <= 3650:
+        automation["retention_days"] = retention
     components_raw = raw.get("components")
     if not isinstance(components_raw, dict):
         raise ValueError("missing_components")
@@ -138,12 +132,12 @@ def _aggregate(status: dict[str, Any], now: datetime) -> tuple[str, list[str]]:
     secrets_required = secrets is None or secrets.get("state") != "disabled"
     if secrets is None and secrets_required:
         return "unknown", ["secrets_missing"]
-    if database.get("state") not in {"healthy"}:
-        reasons.append("database_missing")
-    if secrets_required and secrets is not None and secrets.get("state") not in {"healthy"}:
+    if secrets_required and secrets is not None and (
+        secrets.get("state") != "healthy" or not secrets.get("last_success_at")
+    ):
         reasons.append("secrets_missing")
-    if database.get("matching_backup") is False or (
-        secrets_required and secrets is not None and secrets.get("matching_backup") is False
+    if database.get("matching_backup") is not True or (
+        secrets_required and secrets is not None and secrets.get("matching_backup") is not True
     ):
         reasons.append("components_mismatched")
     if database.get("verification") != "full":
@@ -151,10 +145,13 @@ def _aggregate(status: dict[str, Any], now: datetime) -> tuple[str, list[str]]:
     if secrets_required and secrets is not None and secrets.get("verification") != "full":
         reasons.append("verification_missing")
     last_success = automation.get("last_success_at")
-    if last_success:
+    if not last_success:
+        reasons.append("backup_missing")
+    else:
         parsed = datetime.fromisoformat(last_success.replace("Z", "+00:00"))
-        age = max(0, int((now - parsed).total_seconds()))
-        if age > status["freshness_threshold_seconds"]:
+        if parsed > now:
+            reasons.append("future_timestamp")
+        elif (now - parsed).total_seconds() > status["freshness_threshold_seconds"]:
             reasons.append("stale")
     restore_test = components.get("restore_test")
     if restore_test and restore_test.get("state") == "attention":
@@ -164,10 +161,25 @@ def _aggregate(status: dict[str, Any], now: datetime) -> tuple[str, list[str]]:
     return "healthy", []
 
 
+def _configured_automation(enabled: bool) -> dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "schedule_timezone": settings.calograph_timezone,
+        "schedule_time": settings.backup_schedule_time,
+        "retention_days": settings.backup_retention_days,
+    }
+
+
 def read_backup_status(now: datetime | None = None) -> dict[str, Any]:
     """Return only the versioned, public-safe backup status contract."""
     if not settings.backup_agent_enabled:
-        return {"schema_version": STATUS_SCHEMA_VERSION, "overall_state": "disabled", "reason_codes": ["deactivated"]}
+        return {
+            "schema_version": STATUS_SCHEMA_VERSION,
+            "overall_state": "disabled",
+            "reason_codes": ["deactivated"],
+            "freshness_threshold_seconds": settings.backup_freshness_threshold_seconds,
+            "automation": _configured_automation(False),
+        }
     try:
         path = Path(settings.backup_status_file)
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_STATUS_BYTES:
@@ -184,11 +196,24 @@ def read_backup_status(now: datetime | None = None) -> dict[str, Any]:
                 "reason_codes": ["report_expired"],
                 "reported_at": status["reported_at"],
                 "freshness_threshold_seconds": status["freshness_threshold_seconds"],
+                "automation": status["automation"],
             }
         state, reasons = _aggregate(status, current)
         return {**status, "overall_state": state, "reason_codes": reasons}
     except OSError:
-        return {"schema_version": STATUS_SCHEMA_VERSION, "overall_state": "unknown", "reason_codes": ["report_missing"]}
+        return {
+            "schema_version": STATUS_SCHEMA_VERSION,
+            "overall_state": "unknown",
+            "reason_codes": ["report_missing"],
+            "freshness_threshold_seconds": settings.backup_freshness_threshold_seconds,
+            "automation": _configured_automation(True),
+        }
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.warning("Backup status malformed: %s", type(exc).__name__)
-        return {"schema_version": STATUS_SCHEMA_VERSION, "overall_state": "unknown", "reason_codes": ["report_malformed"]}
+        return {
+            "schema_version": STATUS_SCHEMA_VERSION,
+            "overall_state": "unknown",
+            "reason_codes": ["report_malformed"],
+            "freshness_threshold_seconds": settings.backup_freshness_threshold_seconds,
+            "automation": _configured_automation(True),
+        }

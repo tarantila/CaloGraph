@@ -37,7 +37,11 @@ const stateIcon = computed(() => ({
   disabled: PhInfo,
 }[state.value]))
 const reason = computed(() => status.value.reason_codes[0] ?? 'report_missing')
-const reasonLabel = computed(() => t(`backupHealth.reasons.${reason.value}`))
+const reasonLabel = computed(() => {
+  const key = `backupHealth.reasons.${reason.value}`
+  const translated = t(key)
+  return translated === key ? t('backupHealth.notReported') : translated
+})
 
 function displayDate(value: string | undefined): string {
   return value ? formatDateTime(value) : t('backupHealth.notAvailable')
@@ -85,7 +89,12 @@ onMounted(() => { void loadStatus() })
         <span class="backup-health-badge" :class="`is-${state}`"><component :is="stateIcon" :size="15" aria-hidden="true" /> {{ stateLabel }}</span>
       </div>
       <dl class="backup-health-summary">
+        <div><dt>{{ t('backupHealth.automation') }}</dt><dd>{{ status.automation?.enabled === false ? t('backupHealth.disabled') : status.automation?.enabled === true ? t('backupHealth.enabled') : t('backupHealth.notReported') }}</dd></div>
+        <div><dt>{{ t('backupHealth.lastAttempt') }}</dt><dd>{{ displayDate(status.automation?.last_attempt_at) }}</dd></div>
         <div><dt>{{ t('backupHealth.lastComplete') }}</dt><dd>{{ displayDate(status.automation?.last_success_at) }}</dd></div>
+        <div><dt>{{ t('backupHealth.nextRun') }}</dt><dd>{{ displayDate(status.automation?.next_run_at) }}</dd></div>
+        <div><dt>{{ t('backupHealth.schedule') }}</dt><dd>{{ status.automation?.schedule_time && status.automation.schedule_timezone ? `${status.automation.schedule_time} · ${status.automation.schedule_timezone}` : t('backupHealth.notReported') }}</dd></div>
+        <div><dt>{{ t('backupHealth.retention') }}</dt><dd>{{ status.automation?.retention_days ? `${status.automation.retention_days} ${t('backupHealth.days')}` : t('backupHealth.notReported') }}</dd></div>
         <div><dt>{{ t('backupHealth.lastVerified') }}</dt><dd>{{ displayDate(status.components?.database?.last_verified_at) }}</dd></div>
         <div><dt>{{ t('backupHealth.freshnessThreshold') }}</dt><dd>{{ status.freshness_threshold_seconds ? `${Math.round(status.freshness_threshold_seconds / 86400)} ${t('backupHealth.days')}` : t('backupHealth.notAvailable') }}</dd></div>
       </dl>
@@ -100,7 +109,7 @@ onMounted(() => { void loadStatus() })
             <div><dt>{{ t('backupHealth.lastSuccessful') }}</dt><dd>{{ displayDate(status.components?.database?.last_success_at) }}</dd></div>
             <div><dt>{{ t('backupHealth.fullVerificationLabel') }}</dt><dd>{{ displayVerification(status.components?.database) }}</dd></div>
             <div><dt>{{ t('backupHealth.age') }}</dt><dd>{{ status.components?.database?.age_seconds !== undefined ? `${Math.round(status.components.database.age_seconds / 3600)} ${t('backupHealth.hours')}` : t('backupHealth.notAvailable') }}</dd></div>
-            <div><dt>{{ t('backupHealth.encryption') }}</dt><dd>{{ status.components?.database?.encryption === 'age' ? 'age' : t('backupHealth.notReported') }}</dd></div>
+            <div><dt>{{ t('backupHealth.encryption') }}</dt><dd>{{ status.components?.database?.encryption === 'age' ? t('backupHealth.ageMethod') : t('backupHealth.notReported') }}</dd></div>
           </dl>
         </section>
         <section class="card admin-panel backup-component" aria-labelledby="backup-secrets-heading">
@@ -109,7 +118,7 @@ onMounted(() => { void loadStatus() })
             <div><dt>{{ t('backupHealth.lastSuccessful') }}</dt><dd>{{ displayDate(status.components?.environment_secrets?.last_success_at) }}</dd></div>
             <div><dt>{{ t('backupHealth.fullVerificationLabel') }}</dt><dd>{{ displayVerification(status.components?.environment_secrets) }}</dd></div>
             <div><dt>{{ t('backupHealth.matchesDatabase') }}</dt><dd>{{ displayMatch(status.components?.environment_secrets) }}</dd></div>
-            <div><dt>{{ t('backupHealth.encryption') }}</dt><dd>{{ status.components?.environment_secrets?.encryption === 'age' ? 'age' : t('backupHealth.notReported') }}</dd></div>
+            <div><dt>{{ t('backupHealth.encryption') }}</dt><dd>{{ status.components?.environment_secrets?.encryption === 'age' ? t('backupHealth.ageMethod') : t('backupHealth.notReported') }}</dd></div>
           </dl>
         </section>
         <section v-if="status.components?.restore_test" class="card admin-panel backup-component" aria-labelledby="backup-restore-heading">
@@ -137,7 +146,7 @@ onMounted(() => { void loadStatus() })
       <PhInfo :size="20" aria-hidden="true" />
       <div><strong>{{ t('backupHealth.boundaryTitle') }}</strong><p>{{ t('backupHealth.boundaryDescription') }}</p></div>
     </div>
-    <a class="button secondary compact-action backup-doc-link" href="https://github.com/tarantila/CaloGraph/blob/v0.6.2/docs/backup-restore.md" target="_blank" rel="noopener noreferrer">
+    <a class="button secondary compact-action backup-doc-link" href="https://github.com/tarantila/CaloGraph/blob/main/docs/backup-restore.md" target="_blank" rel="noopener noreferrer">
       {{ t('backupHealth.docs') }} <span class="sr-only">{{ t('backupHealth.opensNewTab') }}</span><PhArrowSquareOut :size="17" aria-hidden="true" />
     </a>
   </section>

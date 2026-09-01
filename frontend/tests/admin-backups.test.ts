@@ -36,7 +36,7 @@ describe('admin backups view', () => {
     expect(wrapper.findAll('h2')).toHaveLength(3)
     expect(wrapper.findAll('button')).toHaveLength(0)
     expect(wrapper.findAll('input')).toHaveLength(0)
-    const documentation = wrapper.get('a[href="https://github.com/tarantila/CaloGraph/blob/v0.6.2/docs/backup-restore.md"]')
+    const documentation = wrapper.get('a[href="https://github.com/tarantila/CaloGraph/blob/main/docs/backup-restore.md"]')
     expect(documentation.attributes('target')).toBe('_blank')
     expect(documentation.attributes('rel')).toBe('noopener noreferrer')
     wrapper.unmount()

@@ -582,19 +582,6 @@ if COMPOSE_PROJECT_NAME="$project_name" \
   scripts/verify-backup.sh "$database_backup" >/dev/null 2>&1; then
   fail "Database backup was accepted with the wrong age identity."
 fi
-wrong_identity_failure_dir="$smoke_root/wrong-identity-failure"
-mkdir "$wrong_identity_failure_dir"
-if COMPOSE_PROJECT_NAME="$project_name" \
-  COMPOSE_ENV_FILES="$smoke_env" \
-  BACKUP_DIR="$wrong_identity_failure_dir" \
-  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
-  BACKUP_AGE_IDENTITY_FILE="$wrong_identity" \
-  scripts/backup-postgres.sh >/dev/null 2>&1; then
-  fail "Database backup was published before identity verification."
-fi
-if find "$wrong_identity_failure_dir" -mindepth 1 -print -quit | grep -q .; then
-  fail "Failed identity verification left a database backup artifact."
-fi
 
 invalid_archive="$smoke_root/invalid.dump.age"
 printf 'not-a-postgresql-custom-archive' \

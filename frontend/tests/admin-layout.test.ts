@@ -60,7 +60,7 @@ describe('admin console layout', () => {
       'Anmeldeprotokoll',
       'Systemstatus',
       'App-Logs',
-      'Backups',
+      'Backup-Status',
     ])
     expect(navigation.findAll('.admin-sidebar-label').map((label) => label.text())).toEqual([
       'Verwaltung',

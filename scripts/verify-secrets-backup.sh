@@ -5,12 +5,12 @@ umask 077
 backup_file=${1:-}
 age_bin=${AGE_BIN:-age}
 identity_file=${BACKUP_AGE_IDENTITY_FILE:-}
-if [[ -z "$backup_file" || ! -f "$backup_file" || -L "$backup_file" ]]; then
-  printf 'Usage: %s /path/to/calograph-secrets-TIMESTAMP.tar.age\n' "$0" >&2
-  exit 64
+identity_mode=
+if [[ -n "$identity_file" && -r "$identity_file" && ! -L "$identity_file" ]]; then
+  identity_mode=$(stat -c '%a' -- "$identity_file" 2>/dev/null || true)
 fi
-if [[ -z "$identity_file" || ! -r "$identity_file" || -L "$identity_file" ]]; then
-  printf 'BACKUP_AGE_IDENTITY_FILE must name a readable external age identity.\n' >&2
+if [[ -z "$identity_file" || ! -r "$identity_file" || -L "$identity_file" || ! "$identity_mode" =~ ^[0-7]00$ ]]; then
+  printf 'BACKUP_AGE_IDENTITY_FILE must be readable only by its owner (no group/other permissions).\n' >&2
   exit 1
 fi
 checksum_file="$backup_file.sha256"

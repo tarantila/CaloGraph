@@ -2177,7 +2177,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 
 @media (max-width: 1220px) {
   .admin-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .system-status-grid, .backup-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .backup-component-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -2331,8 +2331,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 
 @media (max-width: 620px) {
   .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid { grid-template-columns: 1fr; }
-  .backup-status-grid { grid-template-columns: 1fr; }
-  .backup-retention { grid-template-columns: 1fr; gap: .45rem; }
+
   .backup-component-grid, .backup-health-summary, .backup-protection dl { grid-template-columns: 1fr; }
   .backup-health-header { flex-direction: column; }
   .backup-doc-link { width: 100%; justify-self: stretch; }
