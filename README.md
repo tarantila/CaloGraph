@@ -1,5 +1,12 @@
 # CaloGraph
 
+<p align="center">
+  <img
+    src="frontend/public/branding/calograph-readme-banner.png"
+    alt="CaloGraph logo and wordmark"
+    width="720"
+  >
+</p>
 
 CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
 YAZIO data. It combines historically versioned budgets and targets, optional
@@ -9,6 +16,14 @@ moral judgment or telemetry.
 CaloGraph is 0.x work in progress. It is not medical software and does not
 diagnose, treat or prescribe. Do not use it as a substitute for professional
 medical advice.
+
+<p align="center">
+  <img
+    src="docs/assets/dashboard-overview.png"
+    alt="CaloGraph nutrition dashboard showing calorie intake, remaining budget, macronutrient trends, weekly summary, and data status"
+    width="1000"
+  >
+</p>
 
 ## Highlights
 
