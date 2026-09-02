@@ -2417,7 +2417,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .admin-panel-header .filters .field { flex: 1 1 100%; }
   .mobile-invitation-card dl, .mobile-audit-card dl { grid-template-columns: 1fr; }
 }
-@media (max-width: 360px) {
+@media (max-width: 390px) {
   .backup-overview-grid > .backup-metric:last-child { grid-column: 1 / -1; }
   .backup-overview-grid > .backup-metric:last-child .backup-metric-value {
     font-size: .86rem;
