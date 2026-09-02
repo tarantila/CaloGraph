@@ -346,7 +346,7 @@ def _archive_summary(status: dict[str, Any], now: datetime) -> dict[str, Any]:
             and proof["sha256"] == component.get("_sha256")
             and (successful_at is None or _parsed_timestamp(proof["verified_at"]) >= _parsed_timestamp(successful_at))
         )
-        if matching:
+        if matching and proof is not None:
             summaries[component_name] = {
                 "state": "verified", "verified_at": proof["verified_at"], "latest_artifact_verified": True
             }
