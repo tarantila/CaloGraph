@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import AdminBackupsView from '../src/views/AdminBackupsView.vue'
 import { getBackupStatus } from '../src/api'
 import { setLocale } from '../src/i18n'
-import type { BackupStatus, RestoreTestState } from '../src/types'
+import type { BackupHealthState, BackupStatus, RestoreTestState } from '../src/types'
 
 const healthyStatus: BackupStatus = {
   schema_version: 1,
@@ -51,6 +51,24 @@ function statusWithRestore(state: RestoreTestState): BackupStatus {
     },
   }
 }
+function statusWithChecks(archiveState: BackupHealthState, restoreState: RestoreTestState, operationState: BackupHealthState = 'healthy'): BackupStatus {
+  const restoreStatus = statusWithRestore(restoreState)
+  return {
+    ...restoreStatus,
+    overall_state: operationState,
+    recovery: {
+      ...healthyStatus.recovery!,
+      overall_state: archiveState === 'disabled' && restoreState === 'current' ? 'disabled' : operationState === 'disabled' ? 'disabled' : 'attention',
+      archive_verification: {
+        ...healthyStatus.recovery!.archive_verification,
+        overall_state: archiveState,
+      },
+      restore_test: {
+        ...restoreStatus.recovery!.restore_test,
+      },
+    },
+  }
+}
 
 describe('admin backups view', () => {
   it('separates healthy backup operation from unverified newest archive', async () => {
@@ -62,12 +80,42 @@ describe('admin backups view', () => {
     expect(wrapper.text()).toContain('Last successful backup')
     expect(wrapper.text()).toContain('Next scheduled backup')
     expect(wrapper.text()).toContain('Recovery checks')
+    expect(wrapper.text()).toContain('Archive verification: Needs attention · Isolated restore test: Never tested')
     expect(wrapper.text()).toContain('A previous archive was externally verified')
     expect(wrapper.text()).toContain('the latest artifact is not verified')
     expect(wrapper.text()).not.toContain('Latest required components are complete, fresh, matching, and externally verified')
+    const databaseCard = wrapper.find('[aria-labelledby="backup-database-heading"]')
+    expect(databaseCard.text()).toContain('Encryption')
+    expect(databaseCard.text()).toContain('age')
+    expect(databaseCard.text()).not.toContain('Matches database backup')
     expect(wrapper.findAll('.backup-metric')).toHaveLength(4)
     expect(wrapper.findAll('.backup-component')).toHaveLength(4)
     expect(wrapper.findAll('button')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('uses the secure-default detail for a disabled archive component', async () => {
+    vi.mocked(getBackupStatus).mockResolvedValueOnce({
+      ...healthyStatus,
+      recovery: {
+        ...healthyStatus.recovery!,
+        archive_verification: {
+          ...healthyStatus.recovery!.archive_verification,
+          components: {
+            database: healthyStatus.recovery!.archive_verification.components.database,
+            environment_secrets: { state: 'disabled', latest_artifact_verified: false },
+          },
+        },
+      },
+    })
+    setLocale('en')
+    const wrapper = mount(AdminBackupsView)
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Disabled (secure default)'))
+    const archiveCard = wrapper.find('[aria-labelledby="backup-archive-heading"]')
+    const secretsRow = archiveCard.findAll('dl > div')[1]
+    expect(secretsRow.text()).toContain('Environment & secrets')
+    expect(secretsRow.text()).toContain('Disabled (secure default)')
+    expect(secretsRow.text()).not.toContain('No successful external archive verification for this artifact.')
     wrapper.unmount()
   })
 
@@ -77,10 +125,40 @@ describe('admin backups view', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('Externe Archivprüfung'))
 
     expect(wrapper.text()).toContain('Nie getestet')
-    expect(wrapper.text()).toContain('Vom Betreiber ausgeführt')
+    expect(wrapper.text()).toContain('Der Betreiber führt diesen Test')
     expect(wrapper.text()).toContain('keine Datenbank wurde wiederhergestellt')
+    expect(wrapper.text()).toContain('Archivprüfung: Handlungsbedarf · Isolierter Wiederherstellungstest: Nie getestet')
     expect(wrapper.find('a[href$="docs/backup-restore.md#5"]').exists()).toBe(true)
     expect(wrapper.find('a[href$="docs/backup-restore.md#6"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  it('renders verified archive and current restore helper in German', async () => {
+    vi.mocked(getBackupStatus).mockResolvedValueOnce(statusWithChecks('healthy', 'current'))
+    setLocale('de')
+    const wrapper = mount(AdminBackupsView)
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Beide Wiederherstellungsprüfungen sind in Ordnung'))
+    const recoveryMetric = wrapper.findAll('.backup-metric')[3]
+    expect(recoveryMetric.find('.backup-metric-helper').text()).toBe('Archivprüfung: Verifiziert · Isolierter Wiederherstellungstest: Aktuell')
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['healthy', 'current', 'Both recovery checks healthy', undefined],
+    ['healthy', 'due', 'Recovery checks need attention', undefined],
+    ['healthy', 'unknown', 'Recovery-check status unavailable', undefined],
+    ['healthy', 'failed', 'A recovery check failed', undefined],
+    ['disabled', 'current', 'Recovery checks partly disabled', undefined],
+    ['disabled', 'never_tested', 'Recovery checks disabled', 'disabled'],
+  ] as const)('summarizes archive %s and restore %s independently', async (archiveState, restoreState, headline, operationState) => {
+    vi.mocked(getBackupStatus).mockResolvedValueOnce(statusWithChecks(archiveState, restoreState, operationState))
+    setLocale('en')
+    const wrapper = mount(AdminBackupsView)
+    await vi.waitFor(() => expect(wrapper.text()).toContain(headline))
+    const recoveryMetric = wrapper.findAll('.backup-metric')[3]
+    expect(recoveryMetric.text()).toContain(`Archive verification:`)
+    expect(recoveryMetric.text()).toContain(`Isolated restore test:`)
+    if (archiveState === 'healthy' && restoreState === 'current') expect(recoveryMetric.find('.backup-metric-helper').text()).toBe('Archive verification: Verified · Isolated restore test: Current')
+    if (archiveState === 'disabled' && restoreState === 'current') expect(recoveryMetric.text()).toContain('Current')
     wrapper.unmount()
   })
 
@@ -96,9 +174,19 @@ describe('admin backups view', () => {
     const wrapper = mount(AdminBackupsView)
     await vi.waitFor(() => expect(wrapper.text()).toContain(label))
     const restoreCard = wrapper.find('[aria-labelledby="backup-restore-heading"]')
-    expect(restoreCard.text()).toContain('separate disposable PostgreSQL')
+    expect(restoreCard.text()).toContain('separate, disposable PostgreSQL instance')
+    expect(restoreCard.text()).not.toContain('08:00')
+    if (state === 'current') {
+      expect(restoreCard.text()).toContain('01/08/2026')
+      expect(restoreCard.text()).toContain('30/10/2026')
+    }
+    if (state === 'due') expect(restoreCard.text()).toContain('01/08/2026')
     expect(restoreCard.find('a[href$="docs/backup-restore.md#6"]').exists()).toBe(needsAction)
     expect(restoreCard.text()).toContain(needsAction ? 'Diagnosis and action' : 'Last successful isolated test')
+    if (state === 'failed') {
+      expect(restoreCard.text()).toContain('Inspect the isolated test failure and rerun it for a selected artifact.')
+      expect(restoreCard.text()).not.toContain('Provide a valid sanitized restore-test record')
+    }
     wrapper.unmount()
   })
 
@@ -138,6 +226,8 @@ describe('admin backups view', () => {
     await vi.waitFor(() => expect(wrapper.find('[role="alert"]').exists()).toBe(true))
     expect(wrapper.findAll('[role="alert"]')).toHaveLength(1)
     expect(wrapper.text()).toContain('Backup status could not be loaded. This does not mean a backup failed.')
+    expect(wrapper.text()).toContain('Recovery checks unavailable')
+    expect(wrapper.text()).toContain('Archive verification: Unavailable · Isolated restore test: Unavailable')
     expect(wrapper.find('a[href$="docs/backup-restore.md#5"]').exists()).toBe(false)
     expect(wrapper.find('a[href$="docs/backup-restore.md#6"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Select the newest artifact')
@@ -153,7 +243,6 @@ describe('admin backups view', () => {
     expect(wrapper.findAll('.backup-metric-skeleton')).toHaveLength(4)
     wrapper.unmount()
   })
-
   it('does not treat malformed recovery evidence as never tested', async () => {
     vi.mocked(getBackupStatus).mockResolvedValueOnce({
       ...healthyStatus,
@@ -171,4 +260,5 @@ describe('admin backups view', () => {
     expect(restoreCard.find('a[href$="docs/backup-restore.md#6"]').exists()).toBe(true)
     wrapper.unmount()
   })
+
 })

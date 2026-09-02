@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { PhArrowSquareOut, PhCheckCircle, PhDatabase, PhInfo, PhLockKey, PhQuestion, PhWarningCircle, PhXCircle } from '@phosphor-icons/vue'
 import { ApiError, getBackupStatus, localizeApiError } from '../api'
-import { formatDateTime } from '../date-format'
+import { formatDateTime, formatInstantDate } from '../date-format'
 import { i18n } from '../i18n'
 import type { ArchiveVerificationStatus, BackupHealthState, BackupStatus, RestoreTestState } from '../types'
 
@@ -16,16 +16,32 @@ const stateLabel = computed(() => t(`backupHealth.states.${statusKind.value}`))
 const stateIcon = computed(() => ({ healthy: PhCheckCircle, stale: PhWarningCircle, attention: PhWarningCircle, failed: PhXCircle, unknown: PhQuestion, disabled: PhInfo }[statusKind.value]))
 const automationDisabled = computed(() => status.value.automation?.enabled === false || state.value === 'disabled')
 const recovery = computed(() => status.value.recovery)
-const recoveryState = computed<BackupHealthState>(() => recovery.value?.overall_state || 'unknown')
 const restoreTest = computed(() => recovery.value?.restore_test)
 const restoreState = computed<RestoreTestState>(() => restoreTest.value?.state || 'unknown')
 const restoreLabel = computed(() => t(`backupHealth.recoveryStates.${restoreState.value}`))
 const archive = computed(() => recovery.value?.archive_verification.components || {})
 const archiveOverallState = computed<BackupHealthState>(() => recovery.value?.archive_verification.overall_state || 'unknown')
-const recoveryDisabled = computed(() => !error.value && (state.value === 'disabled' || recoveryState.value === 'disabled'))
+const recoveryDisabled = computed(() => !error.value && state.value === 'disabled')
 const archiveDisabled = computed(() => !error.value && (recoveryDisabled.value || archiveOverallState.value === 'disabled'))
 const archiveNeedsAction = computed(() => !error.value && !archiveDisabled.value && ['attention', 'unknown', 'failed'].includes(archiveOverallState.value))
 const restoreNeedsAction = computed(() => !error.value && !recoveryDisabled.value && ['due', 'never_tested', 'unknown', 'failed'].includes(restoreState.value))
+type RecoveryOverviewKind = 'healthy' | 'due' | 'unknown' | 'failed' | 'disabled' | 'partial' | 'unavailable'
+const recoveryOverviewKind = computed<RecoveryOverviewKind>(() => {
+  if (error.value) return 'unavailable'
+  if (recoveryDisabled.value) return 'disabled'
+  const restoreOverviewState = restoreState.value
+  if (archiveOverallState.value === 'failed' || restoreOverviewState === 'failed') return 'failed'
+  if (archiveOverallState.value === 'unknown' || restoreOverviewState === 'unknown') return 'unknown'
+  if (archiveOverallState.value === 'attention' || restoreOverviewState === 'due' || restoreOverviewState === 'never_tested') return 'due'
+  if (archiveOverallState.value === 'disabled') return restoreOverviewState === 'current' ? 'partial' : 'disabled'
+  return archiveOverallState.value === 'healthy' && restoreOverviewState === 'current' ? 'healthy' : 'unknown'
+})
+const recoveryOverviewClass = computed(() => recoveryOverviewKind.value === 'partial' || recoveryOverviewKind.value === 'unavailable' ? 'unknown' : recoveryOverviewKind.value)
+const recoveryOverviewLabel = computed(() => t(`backupHealth.recoveryOverview.${recoveryOverviewKind.value}`))
+const recoveryOverviewHelper = computed(() => t('backupHealth.recoveryOverviewHelper', {
+  archive: error.value ? t('backupHealth.unavailable') : archiveOverviewText(archiveOverallState.value),
+  restore: error.value ? t('backupHealth.unavailable') : recoveryDisabled.value ? t('backupHealth.states.disabled') : restoreLabel.value,
+}))
 const secretsComponent = computed(() => status.value.components?.environment_secrets)
 const secretsDisabled = computed(() => automationDisabled.value || secretsComponent.value?.state === 'disabled')
 const databaseDisabled = computed(() => automationDisabled.value || status.value.components?.database?.state === 'disabled')
@@ -34,6 +50,16 @@ const secretsState = computed<BackupHealthState>(() => secretsComponent.value?.s
 
 function stateText(value: BackupHealthState): string {
   return t(`backupHealth.states.${value}`)
+}
+const archiveOverviewStateKeys: Record<BackupHealthState, string> = {
+  healthy: 'backupHealth.verification.verified',
+  attention: 'backupHealth.states.attention',
+  failed: 'backupHealth.states.failed',
+  unknown: 'backupHealth.states.unknown',
+  disabled: 'backupHealth.states.disabled',
+}
+function archiveOverviewText(value: BackupHealthState): string {
+  return t(archiveOverviewStateKeys[value])
 }
 function operationCardLabel(value: BackupHealthState): string {
   return error.value ? t('backupHealth.unavailable') : stateText(value)
@@ -55,6 +81,7 @@ const statusMessage = computed(() => {
   return t(`backupHealth.messages.${statusKind.value === 'stale' ? 'attention' : statusKind.value}`)
 })
 function displayDate(value: string | undefined): string { return value ? formatDateTime(value) : t('backupHealth.notReported') }
+function displayRestoreDate(value: string | undefined): string { return value ? formatInstantDate(value) : t('backupHealth.notReported') }
 function displaySchedule(): string {
   const automation = status.value.automation
   return automation?.schedule_time && automation.schedule_timezone ? t('backupHealth.dailyAt', { time: automation.schedule_time, timezone: automation.schedule_timezone }) : t('backupHealth.notReported')
@@ -77,15 +104,17 @@ function archiveDetail(value: ArchiveVerificationStatus | undefined, component: 
     const key = component === 'database' ? 'backupHealth.verificationDetails.fullDatabase' : 'backupHealth.verificationDetails.fullEnvironmentSecrets'
     return t(key, { date: displayDate(value.verified_at) })
   }
+  if (value?.state === 'disabled') return t('backupHealth.disabledSecureDefault')
   if (value?.state === 'unknown') return t('backupHealth.verificationDetails.unknown')
   if (value?.verified_at) return t('backupHealth.verificationDetails.previous', { date: displayDate(value.verified_at) })
   if (!value) return t('backupHealth.verificationDetails.notReported')
   return t('backupHealth.verificationDetails.notVerified')
 }
 function restoreAction(): string {
-  if (restoreState.value === 'current') return t('backupHealth.restoreTestCurrent', { date: displayDate(restoreTest.value?.last_success_at), next: displayDate(restoreTest.value?.next_due_at) })
-  if (restoreState.value === 'due') return t('backupHealth.restoreTestDue', { date: displayDate(restoreTest.value?.last_success_at) })
+  if (restoreState.value === 'current') return t('backupHealth.restoreTestCurrent', { date: displayRestoreDate(restoreTest.value?.last_success_at), next: displayRestoreDate(restoreTest.value?.next_due_at) })
+  if (restoreState.value === 'due') return t('backupHealth.restoreTestDue', { date: displayRestoreDate(restoreTest.value?.last_success_at) })
   if (restoreState.value === 'never_tested') return t('backupHealth.restoreTestNever')
+  if (restoreState.value === 'failed') return t('backupHealth.restoreTestFailedAction')
   return t('backupHealth.restoreTestUnknownAction')
 }
 function loadStatus(): void {
@@ -111,12 +140,12 @@ onMounted(loadStatus)
         <article class="card backup-metric" :class="`is-${statusKind}`"><span class="backup-metric-label">{{ t('backupHealth.operationTitle') }}</span><strong class="backup-metric-value" aria-live="polite"><component :is="stateIcon" :size="17" aria-hidden="true" /> {{ error ? t('backupHealth.unavailable') : stateLabel }}</strong><span class="backup-metric-helper">{{ statusMessage }}</span></article>
         <article class="card backup-metric"><span class="backup-metric-label">{{ t('backupHealth.lastComplete') }}</span><strong class="backup-metric-value">{{ error ? t('backupHealth.unavailable') : displayDate(status.automation?.last_success_at) }}</strong></article>
         <article class="card backup-metric"><span class="backup-metric-label">{{ t('backupHealth.nextScheduled') }}</span><strong class="backup-metric-value">{{ error ? t('backupHealth.unavailable') : automationDisabled ? t('backupHealth.notScheduled') : displayDate(status.automation?.next_run_at) }}</strong><span class="backup-metric-helper">{{ error ? t('backupHealth.reportUnavailable') : displaySchedule() }}</span></article>
-        <article class="card backup-metric" :class="`is-${error ? 'unknown' : recoveryDisabled ? 'disabled' : recoveryState}`"><span class="backup-metric-label">{{ t('backupHealth.recoveryTitle') }}</span><strong class="backup-metric-value">{{ error ? t('backupHealth.unavailable') : recoveryDisabled ? t('backupHealth.states.disabled') : restoreLabel }}</strong><span class="backup-metric-helper">{{ error ? t('backupHealth.reportUnavailable') : recoveryDisabled ? t('backupHealth.states.disabled') : t('backupHealth.archiveVerificationTitle') + ' · ' + stateText(archiveOverallState) }}</span></article>
+        <article class="card backup-metric" :class="`is-${recoveryOverviewClass}`"><span class="backup-metric-label">{{ t('backupHealth.recoveryTitle') }}</span><strong class="backup-metric-value">{{ recoveryOverviewLabel }}</strong><span class="backup-metric-helper">{{ recoveryOverviewHelper }}</span></article>
       </div>
     </section>
 
     <section v-if="!loading" class="backup-health-section" aria-labelledby="backup-operation-heading"><div class="admin-panel-header"><h2 id="backup-operation-heading">{{ t('backupHealth.operationTitle') }}</h2></div><div class="backup-component-grid">
-      <section class="card admin-panel backup-component" :class="{ 'is-unavailable': error }" aria-labelledby="backup-database-heading"><div class="backup-component-header"><h3 id="backup-database-heading"><PhDatabase :size="20" aria-hidden="true" /> {{ t('backupHealth.database') }}</h3><span class="backup-health-badge" :class="`is-${error ? 'unknown' : databaseDisabled ? 'disabled' : databaseState}`">{{ operationCardLabel(databaseDisabled ? 'disabled' : databaseState) }}</span></div><p v-if="error" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><p v-else-if="databaseDisabled" class="backup-component-empty">{{ t('backupHealth.databaseDisabled') }}</p><p v-else-if="!status.components?.database" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><dl v-else><div><dt>{{ t('backupHealth.latestArtifact') }}</dt><dd>{{ displayDate(status.components.database.last_success_at) }}</dd></div><div><dt>{{ t('backupHealth.matchesDatabase') }}</dt><dd>{{ status.components.database.matching_backup ? t('backupHealth.matches') : t('backupHealth.doesNotMatch') }}</dd></div></dl></section>
+      <section class="card admin-panel backup-component" :class="{ 'is-unavailable': error }" aria-labelledby="backup-database-heading"><div class="backup-component-header"><h3 id="backup-database-heading"><PhDatabase :size="20" aria-hidden="true" /> {{ t('backupHealth.database') }}</h3><span class="backup-health-badge" :class="`is-${error ? 'unknown' : databaseDisabled ? 'disabled' : databaseState}`">{{ operationCardLabel(databaseDisabled ? 'disabled' : databaseState) }}</span></div><p v-if="error" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><p v-else-if="databaseDisabled" class="backup-component-empty">{{ t('backupHealth.databaseDisabled') }}</p><p v-else-if="!status.components?.database" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><dl v-else><div><dt>{{ t('backupHealth.latestArtifact') }}</dt><dd>{{ displayDate(status.components.database.last_success_at) }}</dd></div><div><dt>{{ t('backupHealth.encryption') }}</dt><dd>{{ status.components.database.encryption === 'age' ? t('backupHealth.ageMethod') : t('backupHealth.notReported') }}</dd></div></dl></section>
       <section class="card admin-panel backup-component" :class="{ 'is-unavailable': error }" aria-labelledby="backup-secrets-heading"><div class="backup-component-header"><h3 id="backup-secrets-heading"><PhLockKey :size="20" aria-hidden="true" /> {{ t('backupHealth.secrets') }}</h3><span class="backup-health-badge" :class="`is-${error ? 'unknown' : secretsDisabled ? 'disabled' : secretsState}`">{{ operationCardLabel(secretsDisabled ? 'disabled' : secretsState) }}</span></div><p v-if="error" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><p v-else-if="secretsDisabled" class="backup-component-empty">{{ t('backupHealth.secretsDisabled') }} <small>{{ t('backupHealth.secretsDisabledHelper') }}</small></p><p v-else-if="!status.components?.environment_secrets" class="backup-component-empty">{{ t('backupHealth.reportUnavailable') }}</p><dl v-else><div><dt>{{ t('backupHealth.latestArchive') }}</dt><dd>{{ displayDate(status.components.environment_secrets.last_success_at) }}</dd></div><div><dt>{{ t('backupHealth.matchesDatabase') }}</dt><dd>{{ status.components.environment_secrets.matching_backup ? t('backupHealth.matches') : t('backupHealth.doesNotMatch') }}</dd></div></dl></section>
     </div></section>
 

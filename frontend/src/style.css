@@ -2410,6 +2410,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .login-card { padding: 1.35rem; }
   .admin-sidebar { padding: .6rem; }
   .admin-sidebar-nav a { padding-inline: .6rem; }
+  .admin-sidebar-nav { padding-inline-end: max(.5rem, calc(100% - 8rem)); }
   .admin-metric-grid, .system-version-details, .system-status-grid { grid-template-columns: 1fr; }
   .admin-panel { padding: .8rem; }
   .admin-panel-header .filters .field { flex: 1 1 100%; }

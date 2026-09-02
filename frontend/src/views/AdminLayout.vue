@@ -39,7 +39,7 @@ watch(
     await nextTick()
     const activeLink = adminNavigation.value?.querySelector<HTMLElement>('a.active')
     if (activeLink && typeof activeLink.scrollIntoView === 'function') {
-      activeLink.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      activeLink.scrollIntoView({ block: 'nearest', inline: 'start' })
     }
   },
   { immediate: true },
