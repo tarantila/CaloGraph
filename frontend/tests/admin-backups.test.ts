@@ -136,14 +136,14 @@ describe('admin backups view', () => {
     vi.mocked(getBackupStatus).mockResolvedValueOnce(statusWithChecks('healthy', 'current'))
     setLocale('de')
     const wrapper = mount(AdminBackupsView)
-    await vi.waitFor(() => expect(wrapper.text()).toContain('Beide Wiederherstellungsprüfungen sind in Ordnung'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Beide Prüfungen in Ordnung'))
     const recoveryMetric = wrapper.findAll('.backup-metric')[3]
     expect(recoveryMetric.find('.backup-metric-helper').text()).toBe('Archivprüfung: Verifiziert · Isolierter Wiederherstellungstest: Aktuell')
     wrapper.unmount()
   })
 
   it.each([
-    ['healthy', 'current', 'Both recovery checks healthy', undefined],
+    ['healthy', 'current', 'Both checks healthy', undefined],
     ['healthy', 'due', 'Recovery checks need attention', undefined],
     ['healthy', 'unknown', 'Recovery-check status unavailable', undefined],
     ['healthy', 'failed', 'A recovery check failed', undefined],

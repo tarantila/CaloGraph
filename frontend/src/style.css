@@ -2362,6 +2362,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid { grid-template-columns: 1fr; }
 
   .backup-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .backup-overview-grid > .backup-metric:last-child .backup-metric-value { font-size: .7rem; letter-spacing: -.02em; white-space: nowrap; }
   .backup-component-grid { grid-template-columns: 1fr; }
   .backup-component dl, .backup-protection dl { grid-template-columns: 1fr; }
   .button.backup-doc-link { width: auto; justify-self: start; }
@@ -2415,4 +2416,12 @@ td strong { color: #f0f4f9; font-weight: 600; }
   .admin-panel { padding: .8rem; }
   .admin-panel-header .filters .field { flex: 1 1 100%; }
   .mobile-invitation-card dl, .mobile-audit-card dl { grid-template-columns: 1fr; }
+}
+@media (max-width: 360px) {
+  .backup-overview-grid > .backup-metric:last-child { grid-column: 1 / -1; }
+  .backup-overview-grid > .backup-metric:last-child .backup-metric-value {
+    font-size: .86rem;
+    letter-spacing: normal;
+    white-space: normal;
+  }
 }
