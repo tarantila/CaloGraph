@@ -90,8 +90,9 @@ def test_backup_status_requires_matching_external_verification_record(client, us
     assert payload['recovery']['archive_verification']['components']['database']['state'] == 'verified'
     assert payload['recovery']['archive_verification']['components']['database']['latest_artifact_verified'] is True
     assert payload['recovery']['restore_test']['state'] == 'unknown'
-    assert 'artifact' not in json.dumps(payload)
-    assert 'sha256' not in json.dumps(payload)
+    serialized = json.dumps(payload)
+    assert artifact not in serialized
+    assert checksum not in serialized
 
     (tmp_path / 'database-verification.json').write_text(json.dumps({
         'schema_version': 1, 'target': 'calograph', 'result': 'ARCHIVE_VERIFIED',
