@@ -2041,24 +2041,31 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .backup-health-header p { margin: .25rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.4; }
 .backup-health-reasons { margin: .3rem 0 0; padding-left: 1rem; color: var(--warning); font-size: .72rem; line-height: 1.4; }
 .backup-health-badge {
-  display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 1 auto; min-width: 0; max-width: 46%;
   padding: .22rem .48rem; border: 1px solid color-mix(in srgb, var(--muted-strong) 45%, transparent);
-  border-radius: 999px; color: var(--muted-strong); font-size: .68rem; font-weight: 700;
+  border-radius: 999px; color: var(--muted-strong); font-size: .68rem; font-weight: 700; line-height: 1.2;
+  overflow-wrap: anywhere; white-space: normal; text-align: center;
 }
-.backup-health-badge.is-healthy { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+.backup-health-badge.is-healthy,
+.backup-health-badge.is-verified,
+.backup-health-badge.is-current { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
 .backup-health-badge.is-stale,
-.backup-health-badge.is-attention { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.backup-health-badge.is-attention,
+.backup-health-badge.is-due { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
 .backup-health-badge.is-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .backup-health-badge.is-disabled,
 .backup-health-badge.is-unknown,
-.backup-health-badge.is-reported { color: var(--muted-strong); background: var(--surface-soft); }
+.backup-health-badge.is-never_tested,
+.backup-health-badge.is-not_verified { color: var(--muted-strong); background: var(--surface-soft); }
 .backup-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
 .backup-metric {
   display: grid; align-content: start; gap: .28rem; min-width: 0; min-height: 104px; padding: .8rem .9rem;
 }
-.backup-metric.is-healthy { background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+.backup-metric.is-healthy,
+.backup-metric.is-current { background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
 .backup-metric.is-stale,
-.backup-metric.is-attention { background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
+.backup-metric.is-attention,
+.backup-metric.is-due { background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
 .backup-metric.is-failed { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .backup-metric-label { color: var(--muted); font-size: .68rem; line-height: 1.2; }
 .backup-metric-value {
@@ -2068,10 +2075,11 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .backup-metric-helper { color: var(--muted); font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
 .backup-metric-skeleton { min-height: 104px; padding: .8rem .9rem; }
 .backup-health-section > .admin-panel-header { margin: 0 0 .75rem; }
-.backup-component-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; align-items: stretch; }
+.backup-component-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; align-items: stretch; }
 .backup-component { display: grid; align-content: start; gap: .7rem; min-width: 0; height: 100%; margin-top: 0; }
-.backup-component-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
-.backup-component h3 { display: flex; align-items: center; gap: .45rem; margin: 0; color: var(--ink); font-size: .84rem; }
+.backup-component-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; min-width: 0; }
+.backup-component.is-unavailable { background: var(--surface-soft); }
+.backup-component h3 { display: flex; align-items: center; gap: .45rem; min-width: 0; margin: 0; color: var(--ink); font-size: .84rem; overflow-wrap: anywhere; }
 .backup-component dl { display: grid; grid-template-columns: 1fr; gap: .7rem; margin: 0; }
 .backup-protection dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; margin: 0; }
 .backup-component dl div,
@@ -2082,6 +2090,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 .backup-protection dd { margin: .2rem 0 0; color: var(--ink); font-size: .76rem; line-height: 1.4; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .backup-component dd small { display: block; margin-top: .15rem; color: var(--muted); font-size: .68rem; line-height: 1.35; }
 .backup-component-empty { margin: 0; color: var(--muted-strong); font-size: .74rem; line-height: 1.45; }
+.backup-component-evidence { margin: 0; color: var(--muted); font-size: .74rem; line-height: 1.45; }
 .backup-component-empty small { display: block; margin-top: .35rem; color: var(--muted); font-size: .68rem; line-height: 1.4; }
 .backup-protection { display: grid; gap: .75rem; margin-top: .9rem; padding: .9rem 1rem; }
 .backup-protection h2 { margin: 0; font-size: .95rem; }
@@ -2194,7 +2203,6 @@ td strong { color: #f0f4f9; font-weight: 600; }
 @media (max-width: 1220px) {
   .admin-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .system-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .backup-component-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 1220px) {

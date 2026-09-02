@@ -426,6 +426,19 @@ if find "$backup_dir" -maxdepth 1 -type f \
   ! -name '*.age' ! -name '*.sha256' -print -quit | grep -q .; then
   fail "Database backup left a plaintext or partial artifact."
 fi
+restore_test_status="$smoke_root/restore-test.json"
+if ! BACKUP_AGE_IDENTITY_FILE="$age_identity" \
+  BACKUP_RESTORE_TEST_STATUS_FILE="$restore_test_status" \
+  BACKUP_RESTORE_TEST_HOST_MODE=true \
+  BACKUP_RESTORE_POSTGRES_IMAGE=postgres:18.4-alpine \
+  BACKUP_RESTORE_POSTGRES_MAJOR=18 \
+  scripts/isolated-restore-test.sh "$database_backup"; then
+  fail "Selected encrypted backup failed the isolated restore test."
+fi
+if ! grep -q '"result":"RESTORE_TESTED"' "$restore_test_status"; then
+  fail "Isolated restore test did not publish successful sanitized evidence."
+fi
+
 
 docker_bin=$(command -v docker)
 docker_wrapper_dir="$smoke_root/docker-wrapper"

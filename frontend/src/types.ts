@@ -161,6 +161,7 @@ export interface AchievementReconcileResponse extends AchievementListResponse {
   newly_unlocked: Achievement[]
 }
 export type BackupHealthState = 'healthy' | 'attention' | 'failed' | 'unknown' | 'disabled'
+export type RestoreTestState = 'never_tested' | 'current' | 'due' | 'unknown' | 'failed'
 
 export interface BackupComponentStatus {
   state?: BackupHealthState
@@ -175,6 +176,37 @@ export interface BackupComponentStatus {
   artifact_created_at?: string
   last_restore_test_at?: string
   age_seconds?: number
+}
+
+export interface ArchiveVerificationStatus {
+  state: 'verified' | 'not_verified' | 'unknown' | 'disabled'
+  verified_at?: string
+  latest_artifact_verified?: boolean
+}
+
+export interface RestoreTestStatus {
+  state: RestoreTestState
+  result?: 'NEVER_TESTED' | 'RESTORE_TESTED' | 'RESTORE_TEST_FAILED'
+  tested_at?: string
+  last_success_at?: string
+  next_due_at?: string
+  postgres_major?: number
+  off_host_copy?: boolean
+  immutable_copy?: boolean
+  failure_code?: string
+  reason?: string
+}
+
+export interface BackupRecoveryStatus {
+  overall_state: BackupHealthState
+  archive_verification: {
+    overall_state: BackupHealthState
+    components: {
+      database?: ArchiveVerificationStatus
+      environment_secrets?: ArchiveVerificationStatus
+    }
+  }
+  restore_test: RestoreTestStatus
 }
 
 export interface BackupAutomationStatus {
@@ -199,6 +231,6 @@ export interface BackupStatus {
   components?: {
     database?: BackupComponentStatus
     environment_secrets?: BackupComponentStatus
-    restore_test?: BackupComponentStatus
   }
+  recovery?: BackupRecoveryStatus
 }

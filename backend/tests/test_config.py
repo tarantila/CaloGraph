@@ -31,6 +31,15 @@ def valid_production_settings(**overrides) -> Settings:
     values.update(overrides)
     return Settings(_env_file=None, **values)
 
+def test_restore_test_settings_default_and_bounds() -> None:
+    configured = Settings(_env_file=None, environment="development")
+    assert configured.backup_restore_test_status_file == "/var/lib/calograph-backups/status/restore-test.json"
+    assert configured.backup_restore_test_interval_days == 90
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, environment="development", backup_restore_test_interval_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, environment="development", backup_restore_test_interval_days=366)
+
 
 def test_public_url_is_canonical_and_extends_request_allowlists() -> None:
     configured = Settings(
