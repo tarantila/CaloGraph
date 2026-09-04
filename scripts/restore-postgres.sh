@@ -17,17 +17,35 @@ if [[ "${CONFIRM_RESTORE:-}" != "calograph" ]]; then
 fi
 
 cd "$project_root"
-running_services=$(docker compose --profile backup --profile backup-secrets ps --status running --services 2>/dev/null || true)
+
+compose_files=(-f docker-compose.yml)
+backup_agent_container=$(docker compose --profile backup ps -aq backup-agent 2>/dev/null || true)
+backup_agent_environment=
+if [[ -n "$backup_agent_container" ]]; then
+  backup_agent_environment=$(docker inspect \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    "$backup_agent_container" 2>/dev/null || true)
+fi
+if [[ -n "$backup_agent_container" ]] \
+  && grep -Fqx 'BACKUP_INCLUDE_SECRETS=true' <<<"$backup_agent_environment"; then
+  compose_files+=(-f docker-compose.backup-secrets.yml)
+fi
+compose() {
+  docker compose "${compose_files[@]}" "$@"
+}
+
+running_services=$(compose --profile backup ps --status running --services 2>/dev/null || true)
 backup_agent_running=false
-backup_agent_secrets_running=false
 case $'\n'"$running_services"$'\n' in *$'\nbackup-agent\n'*) backup_agent_running=true ;; esac
-case $'\n'"$running_services"$'\n' in *$'\nbackup-agent-secrets\n'*) backup_agent_secrets_running=true ;; esac
+
 scripts/verify-backup.sh "$backup_file"
-docker compose --profile backup --profile backup-secrets stop frontend backend yazio-scheduler backup-agent backup-agent-secrets
+# Remove legacy orphans before the destructive restore so they cannot run during it.
+compose up -d --no-recreate --remove-orphans postgres
+compose --profile backup stop frontend backend yazio-scheduler backup-agent
 
 if [[ "$backup_file" == *.age ]]; then
   "$age_bin" --decrypt --identity "$BACKUP_AGE_IDENTITY_FILE" "$backup_file" \
-    | docker compose exec -T postgres pg_restore \
+    | compose exec -T postgres pg_restore \
       --clean \
       --if-exists \
       --no-owner \
@@ -35,7 +53,7 @@ if [[ "$backup_file" == *.age ]]; then
       --username="$database_user" \
       --dbname="$database_name"
 else
-  docker compose exec -T postgres pg_restore \
+  compose exec -T postgres pg_restore \
     --clean \
     --if-exists \
     --no-owner \
@@ -44,13 +62,10 @@ else
     --dbname="$database_name" <"$backup_file"
 fi
 
-docker compose run --rm --no-deps backend alembic upgrade head
-docker compose up -d --wait
+compose run --rm --no-deps backend alembic upgrade head
+compose up -d --wait --remove-orphans
 if [[ "$backup_agent_running" == true ]]; then
-  docker compose --profile backup up -d --wait backup-agent
+  compose --profile backup up -d --wait backup-agent
 fi
-if [[ "$backup_agent_secrets_running" == true ]]; then
-  docker compose --profile backup-secrets up -d --wait backup-agent-secrets
-fi
-docker compose ps
+compose ps
 printf 'Restore completed. Verify login, data status, and the YAZIO connection.\n'

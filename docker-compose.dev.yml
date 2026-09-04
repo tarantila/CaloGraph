@@ -1,6 +1,6 @@
 services:
   backend:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.2}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.3}
     build:
       target: backend-development
     command:
@@ -19,10 +19,10 @@ services:
     read_only: false
 
   yazio-scheduler:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.2}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.3}
 
   frontend:
-    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.2}
+    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.3}
     build:
       target: frontend-development
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

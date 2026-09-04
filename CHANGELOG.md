@@ -4,6 +4,19 @@ All notable changes to CaloGraph are documented in this file. The project
 follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.6.3] - 2026-09-04
+
+### Fixed
+
+- Consolidated database and optional environment/secrets backup into one
+  `backup-agent`, so scheduling and status writing run exactly once.
+- Added an explicit `docker-compose.backup-secrets.yml` override for the
+  opt-in secrets source mounts while keeping the base agent disabled for
+  secrets by default.
+- No database migration is included; backup artifact and status formats,
+  retention behavior, and the age encryption pipeline remain unchanged.
+
 ## [0.6.2] - 2026-09-04
 
 ### Added

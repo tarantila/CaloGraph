@@ -81,12 +81,11 @@ old authorized identities.
 
 Set `BACKUP_AGE_RECIPIENTS_FILE` to the public file, choose
 `BACKUP_SCHEDULE_TIME` (local `HH:MM`), `CALOGRAPH_TIMEZONE`, and
-`BACKUP_RETENTION_DAYS`. Start the dedicated Compose profile deliberately:
+`BACKUP_RETENTION_DAYS`. Start the single dedicated Compose agent deliberately:
 
 ```bash
 BACKUP_AGENT_ENABLED=true docker compose --profile backup up -d backup-agent
 ```
-
 
 The backend reads the status volume read-only. The restore-test status path
 defaults to `/var/lib/calograph-backups/status/restore-test.json`, and the
@@ -94,20 +93,27 @@ restore-test interval defaults to 90 days (bounded to 1–365 days). The
 backup-agent receives these values for the shared-volume boundary but never
 writes restore-test success or receives a private identity.
 Scheduling is internal to the restart-tolerant agent; no host cron is needed.
-`BACKUP_INCLUDE_SECRETS=false` is the secure default. To include the optional
-environment archive, set both source paths and start the separate secrets
-profile; it is not enabled by the generic backup profile:
+The base Compose service has `BACKUP_INCLUDE_SECRETS=false` and no mounts for
+secret sources. To include the optional environment archive, use the explicit
+override with the same `backup-agent` service and configure both source paths:
 
 ```bash
-BACKUP_INCLUDE_SECRETS=true \
+BACKUP_AGENT_ENABLED=true \
 BACKUP_SECRETS_SOURCE_FILE=/example/config/calograph.env \
 BACKUP_SECRETS_SOURCE_DIR=/example/config/secrets \
-docker compose --profile backup-secrets up -d backup-agent-secrets
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.backup-secrets.yml \
+  --profile backup up -d backup-agent
 ```
 
+The override sets `BACKUP_INCLUDE_SECRETS=true`,
+`SECRETS_SOURCE_FILE=/backup-input/environment.env`, and
+`SECRETS_SOURCE_DIR=/backup-input/secrets`, and adds only read-only source
+mounts. It does not create a second service or scheduler/status writer.
 Secret-source mounts are absent from the generic agent and fail closed unless
-the secrets profile is explicitly selected. Values are never logged or written
-as plaintext. The agent performs managed-only retention: it removes only its
+the override is explicitly selected. Values are never logged or written as
+plaintext. The agent performs managed-only retention: it removes only its
 exact artifact/checksum pairs and randomized partials, with symlink, hardlink,
 and path checks. Unrelated files are never selected by broad deletion.
 
@@ -226,6 +232,10 @@ and starts services. It does not overwrite `.env` or secret sources. Keep
 `CREATED`, external `ARCHIVE_VERIFIED`, and isolated restore-test evidence as
 separate operational records. The production smoke test remains a separate
 regression test and does not replace checking a selected user artifact.
+
+If the running backup agent uses the explicit secrets override, the restore
+workflow detects that same service configuration and preserves it when
+restarting the single agent.
 
 Before a new-host recovery:
 

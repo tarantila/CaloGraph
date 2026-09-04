@@ -28,8 +28,17 @@ compose() {
     "$@"
 }
 
+backup_compose() {
+  docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.backup-secrets.yml \
+    --project-name "$project_name" \
+    --env-file "$smoke_env" \
+    "$@"
+}
+
 cleanup() {
-  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  compose --profile backup down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$smoke_root"
 }
 
@@ -80,6 +89,8 @@ if ! grep -q '^MFA_ENCRYPTION_KEY_FILE=' "$legacy_env" \
   || [ ! -s "$legacy_secrets/mfa_encryption_key" ]; then
   fail "MFA secret migration did not create a path-only configuration."
 fi
+chmod 755 "$legacy_secrets"
+chmod 444 "$legacy_secrets"/*
 
 cp "$project_root/.env.production.example" "$smoke_env"
 printf '%s\n' 'ci-production-database-password' >"$postgres_password"
@@ -108,6 +119,7 @@ sed -i \
   -e "s|CREDENTIAL_ENCRYPTION_KEY_FILE=.*|CREDENTIAL_ENCRYPTION_KEY_FILE=$credential_key|" \
   -e "s|MFA_ENCRYPTION_KEY_FILE=.*|MFA_ENCRYPTION_KEY_FILE=$mfa_key|" \
   "$smoke_env"
+chmod 644 "$smoke_env"
 
 if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
   printf 'age and age-keygen are required for the production smoke test.\n' >&2
@@ -115,6 +127,7 @@ if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; 
 fi
 age-keygen -o "$age_identity" >/dev/null 2>&1
 age-keygen -y "$age_identity" >"$age_recipients"
+chmod 444 "$age_recipients"
 
 cd "$project_root"
 if [ "${PRODUCTION_SMOKE_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
@@ -486,6 +499,7 @@ if AGE_BIN="$age_failure" \
 fi
 if find "$age_failure_dir" -mindepth 1 -print -quit | grep -q .; then
   fail "Failed age encryption left a database backup artifact."
+fi
 publish_wrapper_dir="$smoke_root/publish-wrapper"
 mkdir "$publish_wrapper_dir"
 ln_bin=$(command -v ln)
@@ -493,7 +507,7 @@ date_bin=$(command -v date)
 cat >"$publish_wrapper_dir/ln" <<EOF
 #!/usr/bin/env sh
 case " \$* " in
-  *".sha256")
+  *".sha256 ")
     if [ "\${CALOGRAPH_TEST_FAIL_CHECKSUM_LINK:-0}" = "1" ]; then
       exit 75
     fi
@@ -547,7 +561,6 @@ if [ "$(cat "$collision_backup")" != "preexisting-synthetic-sentinel" ] \
   fail "Final-name collision damaged the existing file or left an artifact."
 fi
 
-fi
 
 truncated_backup="$smoke_root/truncated.dump.age"
 backup_size=$(stat -c '%s' "$database_backup")
@@ -609,29 +622,127 @@ if COMPOSE_PROJECT_NAME="$project_name" \
   fail "Authenticated non-PostgreSQL archive was accepted."
 fi
 
-if ! BACKUP_DIR="$backup_dir" \
-  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+if ! grep -q '^BACKUP_AGENT_ENABLED=false$' "$smoke_env" \
+  || ! sed -i \
+    's/^BACKUP_AGENT_ENABLED=false$/BACKUP_AGENT_ENABLED=true/' \
+    "$smoke_env" \
+  || ! grep -q '^BACKUP_AGENT_ENABLED=true$' "$smoke_env"; then
+  fail "Synthetic backup-agent override could not be enabled."
+fi
+printf '%s\n' \
+  "BACKUP_AGE_RECIPIENTS_FILE=$age_recipients" \
+  "BACKUP_SECRETS_SOURCE_FILE=$smoke_env" \
+  "BACKUP_SECRETS_SOURCE_DIR=$legacy_secrets" \
+  >>"$smoke_env"
+
+agent_container="${project_name}-backup-agent-check"
+agent_backup_dir="$smoke_root/agent-backups"
+agent_status_dir="$smoke_root/agent-status"
+mkdir -p "$agent_backup_dir" "$agent_status_dir"
+if ! (
+  export \
+    BACKUP_AGENT_ENABLED=true \
+    BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+    BACKUP_SECRETS_SOURCE_FILE="$smoke_env" \
+    BACKUP_SECRETS_SOURCE_DIR="$legacy_secrets"
+  backup_compose --profile backup run \
+    --name "$agent_container" \
+    --no-deps \
+    -e BACKUP_AGENT_RUN_ONCE=true \
+    backup-agent
+); then
+  fail "Single backup-agent secrets-mode run failed."
+fi
+if ! docker cp \
+  "$agent_container:/var/lib/calograph-backups/artifacts/." \
+  "$agent_backup_dir/"; then
+  fail "Single backup-agent artifacts could not be collected."
+fi
+if ! docker cp \
+  "$agent_container:/var/lib/calograph-backups/status/." \
+  "$agent_status_dir/"; then
+  fail "Single backup-agent status could not be collected."
+fi
+agent_environment=$(docker inspect \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' "$agent_container")
+agent_mounts=$(docker inspect \
+  --format '{{range .Mounts}}{{println .Destination "|" .RW}}{{end}}' "$agent_container")
+agent_cap_drop=$(docker inspect \
+  --format '{{json .HostConfig.CapDrop}}' "$agent_container")
+agent_security_options=$(docker inspect \
+  --format '{{json .HostConfig.SecurityOpt}}' "$agent_container")
+if printf '%s\n' "$agent_environment" \
+  | grep -Eiq 'BACKUP_AGE_IDENTITY_FILE|private.*key|docker\.sock'; then
+  fail "Backup agent received a private identity or Docker socket."
+fi
+if printf '%s\n' "$agent_mounts" \
+  | grep -Eiq 'docker\.sock|identity|private'; then
+  fail "Backup agent has an unsafe private or Docker socket mount."
+fi
+if [ "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$agent_container")" != true ] \
+  || ! printf '%s' "$agent_cap_drop" | grep -q '"ALL"' \
+  || ! printf '%s' "$agent_security_options" \
+    | grep -q 'no-new-privileges:true'; then
+  fail "Backup agent lost its read-only or capability security boundary."
+fi
+if ! printf '%s\n' "$agent_mounts" \
+  | grep -Eq '^/var/lib/calograph-backups/artifacts \| true$' \
+  || ! printf '%s\n' "$agent_mounts" \
+    | grep -Eq '^/var/lib/calograph-backups/status \| true$'; then
+  fail "Backup agent artifact/status mounts are not writable."
+fi
+if ! docker rm "$agent_container" >/dev/null; then
+  fail "Backup-agent test container could not be removed."
+fi
+agent_database_backup=$(find "$agent_backup_dir" -maxdepth 1 -name '*.dump.age' -print -quit)
+agent_secrets_backup=$(find "$agent_backup_dir" -maxdepth 1 -name '*.tar.age' -print -quit)
+if [ -z "$agent_database_backup" ] \
+  || [ -z "$agent_secrets_backup" ] \
+  || [ "$(find "$agent_backup_dir" -maxdepth 1 -name '*.dump.age' | wc -l)" -ne 1 ] \
+  || [ "$(find "$agent_backup_dir" -maxdepth 1 -name '*.tar.age' | wc -l)" -ne 1 ]; then
+  fail "Single backup-agent run did not create exactly one of each encrypted artifact type."
+fi
+for agent_artifact in "$agent_database_backup" "$agent_secrets_backup"; do
+  if ! (
+    cd "$agent_backup_dir"
+    sha256sum --check --status "$(basename "$agent_artifact").sha256"
+  ); then
+    fail "Single backup-agent artifact checksum failed."
+  fi
+done
+if ! COMPOSE_PROJECT_NAME="$project_name" \
+  COMPOSE_ENV_FILES="$smoke_env" \
   BACKUP_AGE_IDENTITY_FILE="$age_identity" \
-  SECRETS_SOURCE_FILE="$smoke_env" \
-  SECRETS_SOURCE_DIR="$legacy_secrets" \
-  scripts/backup-secrets.sh; then
-  fail "Encrypted secret backup failed."
+  scripts/verify-backup.sh "$agent_database_backup" >/dev/null 2>&1; then
+  fail "Single backup-agent database artifact failed external age verification."
 fi
-secret_backup=$(find "$backup_dir" -maxdepth 1 -name '*.tar.age' -print -quit)
-if [ -z "$secret_backup" ]; then
-  fail "Encrypted secret backup was not created."
+agent_recovered_secrets="$smoke_root/agent-recovered-secrets"
+mkdir "$agent_recovered_secrets"
+if ! age --decrypt --identity "$age_identity" "$agent_secrets_backup" \
+  | tar --extract --directory "$agent_recovered_secrets"; then
+  fail "Single backup-agent secrets artifact could not be recovered."
 fi
-recovered_secrets="$smoke_root/recovered-secrets"
-mkdir "$recovered_secrets"
-if ! age --decrypt --identity "$age_identity" "$secret_backup" \
-  | tar --extract --directory "$recovered_secrets"; then
-  fail "Encrypted secret backup could not be recovered."
-fi
-if ! cmp --silent "$smoke_env" "$recovered_secrets/$(basename "$smoke_env")" \
+if ! cmp --silent "$smoke_env" \
+  "$agent_recovered_secrets/environment.env" \
   || ! cmp --silent \
     "$legacy_secrets/postgres_password" \
-    "$recovered_secrets/$(basename "$legacy_secrets")/postgres_password"; then
-  fail "Encrypted secret backup did not reproduce its synthetic sources."
+    "$agent_recovered_secrets/secrets/postgres_password"; then
+  fail "Single backup-agent secrets artifact changed its synthetic sources."
+fi
+agent_status_file="$agent_status_dir/status.json"
+if ! grep -q '"database":{"state":"healthy"' "$agent_status_file" \
+  || ! grep -q '"environment_secrets":{"state":"healthy"' "$agent_status_file" \
+  || [ "$(grep -o '"automation":' "$agent_status_file" | wc -l)" -ne 1 ]; then
+  fail "Single backup-agent run wrote incomplete or duplicate status."
+fi
+if ! (
+  BACKUP_AGENT_ENABLED=true \
+  BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+  BACKUP_SECRETS_SOURCE_FILE="$smoke_env" \
+  BACKUP_SECRETS_SOURCE_DIR="$legacy_secrets" \
+  backup_compose --profile backup up -d --wait backup-agent
+); then
+  fail "Long-running backup-agent secrets-mode service failed to start."
 fi
 
 if ! COMPOSE_PROJECT_NAME="$project_name" \
@@ -641,6 +752,37 @@ if ! COMPOSE_PROJECT_NAME="$project_name" \
   scripts/restore-postgres.sh "$database_backup"; then
   fail "Encrypted database restore failed."
 fi
+if ! backup_agent_running_services=$( \
+  export \
+    BACKUP_AGENT_ENABLED=true \
+    BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+    BACKUP_SECRETS_SOURCE_FILE="$smoke_env" \
+    BACKUP_SECRETS_SOURCE_DIR="$legacy_secrets"
+  backup_compose --profile backup ps --status running --services
+); then
+  fail "Long-running backup-agent service status could not be inspected."
+fi
+if [ "$(printf '%s\n' "$backup_agent_running_services" \
+  | grep -Fx 'backup-agent' | wc -l)" -ne 1 ]; then
+  fail "Long-running backup-agent service is not running exactly once."
+fi
+if ! backup_agent_container=$( \
+  export \
+    BACKUP_AGENT_ENABLED=true \
+    BACKUP_AGE_RECIPIENTS_FILE="$age_recipients" \
+    BACKUP_SECRETS_SOURCE_FILE="$smoke_env" \
+    BACKUP_SECRETS_SOURCE_DIR="$legacy_secrets"
+  backup_compose --profile backup ps -q backup-agent
+); then
+  fail "Long-running backup-agent container could not be inspected."
+fi
+backup_agent_environment=$(docker inspect \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' "$backup_agent_container")
+if ! printf '%s\n' "$backup_agent_environment" \
+  | grep -Fqx 'BACKUP_INCLUDE_SECRETS=true'; then
+  fail "Restore did not preserve the backup-agent secrets override."
+fi
+
 restored_probe_count=$(
   compose exec -T postgres psql \
     --username calograph \

@@ -285,19 +285,6 @@ services:
     tmpfs:
       - /tmp:size=32m,mode=1777
 
-
-  backup-agent-secrets:
-    extends:
-      service: backup-agent
-    profiles: ["backup-secrets"]
-    environment:
-      BACKUP_INCLUDE_SECRETS: "true"
-      SECRETS_SOURCE_FILE: /backup-input/environment.env
-      SECRETS_SOURCE_DIR: /backup-input/secrets
-    volumes:
-      - ${BACKUP_SECRETS_SOURCE_FILE:-./.env}:/backup-input/environment.env:ro
-      - ${BACKUP_SECRETS_SOURCE_DIR:-./secrets}:/backup-input/secrets:ro
-
   frontend:
     image: ${CALOGRAPH_FRONTEND_IMAGE:-ghcr.io/tarantila/calograph-frontend}:${CALOGRAPH_VERSION:-latest}
     build:
