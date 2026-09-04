@@ -4,25 +4,52 @@ All notable changes to CaloGraph are documented in this file. The project
 follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
-## [0.6.2] - 2026-09-01
+## [0.6.2] - 2026-09-04
 
 ### Added
 
-- Added opt-in, least-privilege automated encrypted PostgreSQL and optional
-  environment/secrets backups with atomic publication, checksums, managed-only
-  retention, and sanitized health reporting.
-- Added admin-only read-only backup health status with localized DE/EN states
-  and explicit separation between artifact creation and external verification.
-- Documented public-recipient host operation, external private-key recovery,
-  rotation, restore testing, off-host copies, and PostgreSQL upgrade recovery.
+- Added automated encrypted PostgreSQL backups through an opt-in,
+  least-privilege backup agent.
+- Streams `pg_dump` directly into `age` encryption; plaintext dumps are never
+  written to disk. Backup artifacts and SHA-256 checksums are published
+  atomically, with configurable schedule and retention.
+- Added an optional encrypted environment/secrets archive. It is disabled by
+  default.
+- Added sanitized backup-health status and the read-only Admin Backup Status UI.
+- Separated backup operation status from recovery checks: external archive
+  verification processes an encrypted archive without restoring it, while the
+  operator-run restore test performs a real restore in a disposable PostgreSQL
+  container and volume. Restore testing is recommended after setup and every
+  90 days. Backup creation alone does not prove a restore.
+- The backup agent receives no private age identity. Keep private identities
+  outside CaloGraph runtime services and the backup agent.
 
 ### Upgrade notes
 
-Automated backups remain disabled by default. Configure a public age recipients
-file and deliberately enable the Compose `backup` profile after reviewing the
-new backup settings in `.env.production.example`. Keep private age identities
-outside the Docker host and never add them to production Compose.
+For v0.6.1 operators, production automatic backups remain disabled by default:
+`BACKUP_AGENT_ENABLED=false`. Before activation, set
+`BACKUP_AGE_RECIPIENTS_FILE` to a readable public age recipients file (for
+example `/etc/calograph/backup-recipients.txt`), keep private age identities
+outside the production host and never mount them into CaloGraph runtime
+services or `backup-agent`, then deliberately enable the Compose `backup`
+profile.
 
+Keep `BACKUP_INCLUDE_SECRETS=false`. The production example documents
+`BACKUP_SCHEDULE_TIME=02:30`, `BACKUP_RETENTION_DAYS=30`,
+`BACKUP_STATUS_MAX_AGE_SECONDS=172800`,
+`BACKUP_FRESHNESS_THRESHOLD_SECONDS=172800`, and the
+`CALOGRAPH_TIMEZONE=Europe/Berlin` default. It also documents
+`BACKUP_RESTORE_TEST_STATUS_FILE=/var/lib/calograph-backups/status/restore-test.json`
+and `BACKUP_RESTORE_TEST_INTERVAL_DAYS=90`; the optional
+`BACKUP_DATABASE_VERIFICATION_STATUS_FILE=/var/lib/calograph-backups/status/database-verification.json`
+and
+`BACKUP_SECRETS_VERIFICATION_STATUS_FILE=/var/lib/calograph-backups/status/secrets-verification.json`
+are kept in the shared status volume. Optional backup-agent limits are
+`BACKUP_AGENT_MEMORY_LIMIT=512m`, `BACKUP_AGENT_CPU_LIMIT=1`, and
+`BACKUP_AGENT_PIDS_LIMIT=128`.
+
+v0.6.2 adds no database migration. The existing Alembic head
+`20260901_0022` remains current, so no new migration is required.
 
 ## [0.6.1] - 2026-09-01
 
