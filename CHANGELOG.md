@@ -17,6 +17,11 @@ follows [Semantic Versioning](https://semver.org/).
 - No database migration is included; backup artifact and status formats,
   retention behavior, and the age encryption pipeline remain unchanged.
 
+### Dependencies
+
+- Updated the uv container image to 0.12.9, cryptography to 50.0.1, and Ruff to 0.16.6.
+- Updated frontend dev-only dependencies `@intlify/devtools-types` to 11.4.10 and `@vue/test-utils` to 2.5.0.
+
 ## [0.6.2] - 2026-09-04
 
 ### Added
