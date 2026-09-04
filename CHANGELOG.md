@@ -21,6 +21,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 - Updated the uv container image to 0.12.9, cryptography to 50.0.1, and Ruff to 0.16.6.
 - Updated frontend dev-only dependencies `@intlify/devtools-types` to 11.4.10 and `@vue/test-utils` to 2.5.0.
+- Updated backend psycopg to 3.3.5, Pydantic to 2.13.5, and Hypothesis to 6.167.1.
+- Updated frontend dev-only `typescript-eslint` to 8.69.0.
 
 ## [0.6.2] - 2026-09-04
 
