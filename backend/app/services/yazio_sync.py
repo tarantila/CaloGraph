@@ -37,6 +37,11 @@ from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,
     YazioTransportError,
+    YazioTransportInvalidResponseError,
+    YazioTransportNetworkTimeoutError,
+    YazioTransportRateLimitedError,
+    YazioTransportUnavailableError,
+    YazioTransportVersionBlockedError,
     fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
@@ -67,6 +72,28 @@ class YazioAuthenticationError(YazioSyncError):
     pass
 
 
+class YazioVersionBlockedError(YazioSyncError):
+    pass
+
+
+class YazioRateLimitedError(YazioSyncError):
+    def __init__(self, retry_after: int | None = None) -> None:
+        self.retry_after = retry_after
+        super().__init__("YAZIO-Anbieter begrenzt die Anfragen vorübergehend.")
+
+
+class YazioUnavailableError(YazioSyncError):
+    pass
+
+
+class YazioNetworkTimeoutError(YazioSyncError):
+    pass
+
+
+class YazioInvalidResponseError(YazioSyncError):
+    pass
+
+
 class YazioOperationDeadlineExceeded(YazioSyncError):
     pass
 
@@ -92,11 +119,19 @@ def _active_yazio_user_operation(db: Session, user_id: UUID) -> Iterator[User]:
         raise YazioOperationCapacityExceeded(
             "Für dieses Konto läuft gerade eine administrative Operation."
         ) from exc
-
-
 def yazio_failure_reason(error: Exception) -> str:
     if isinstance(error, YazioAuthenticationError):
         return "authentication_error"
+    if isinstance(error, YazioVersionBlockedError):
+        return "version_blocked"
+    if isinstance(error, YazioRateLimitedError):
+        return "rate_limited"
+    if isinstance(error, YazioNetworkTimeoutError):
+        return "network_timeout"
+    if isinstance(error, YazioInvalidResponseError):
+        return "invalid_response"
+    if isinstance(error, YazioUnavailableError):
+        return "unavailable"
     if isinstance(error, YazioOperationDeadlineExceeded):
         return "deadline_exceeded"
     if isinstance(error, YazioOperationCapacityExceeded):
@@ -263,6 +298,29 @@ def validate_yazio_credentials(
         raise YazioAuthenticationError(
             "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
         ) from exc
+    except YazioTransportVersionBlockedError as exc:
+        _record_yazio_provider_failure()
+        raise YazioVersionBlockedError(
+            "Die konfigurierte YAZIO-API-Clientversion ist gesperrt."
+        ) from exc
+    except YazioTransportRateLimitedError as exc:
+        _record_yazio_provider_failure()
+        raise YazioRateLimitedError(exc.retry_after) from exc
+    except YazioTransportNetworkTimeoutError as exc:
+        _record_yazio_provider_failure()
+        raise YazioNetworkTimeoutError(
+            "YAZIO hat nicht rechtzeitig geantwortet."
+        ) from exc
+    except YazioTransportInvalidResponseError as exc:
+        _record_yazio_provider_failure()
+        raise YazioInvalidResponseError(
+            "YAZIO hat eine ungültige Antwort geliefert."
+        ) from exc
+    except YazioTransportUnavailableError as exc:
+        _record_yazio_provider_failure()
+        raise YazioUnavailableError(
+            "YAZIO ist vorübergehend nicht erreichbar."
+        ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
         raise YazioOperationDeadlineExceeded(
@@ -270,7 +328,7 @@ def validate_yazio_credentials(
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioSyncError(
+        raise YazioUnavailableError(
             "YAZIO ist vorübergehend nicht erreichbar."
         ) from exc
     _clear_yazio_provider_failures()
@@ -321,6 +379,29 @@ def _fetch_yazio_payload_unlocked(
         raise YazioAuthenticationError(
             "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
         ) from exc
+    except YazioTransportVersionBlockedError as exc:
+        _record_yazio_provider_failure()
+        raise YazioVersionBlockedError(
+            "Die konfigurierte YAZIO-API-Clientversion ist gesperrt."
+        ) from exc
+    except YazioTransportRateLimitedError as exc:
+        _record_yazio_provider_failure()
+        raise YazioRateLimitedError(exc.retry_after) from exc
+    except YazioTransportNetworkTimeoutError as exc:
+        _record_yazio_provider_failure()
+        raise YazioNetworkTimeoutError(
+            "YAZIO-Abruf hat die maximale Wartezeit überschritten."
+        ) from exc
+    except YazioTransportInvalidResponseError as exc:
+        _record_yazio_provider_failure()
+        raise YazioInvalidResponseError(
+            "YAZIO hat eine ungültige Antwort geliefert."
+        ) from exc
+    except YazioTransportUnavailableError as exc:
+        _record_yazio_provider_failure()
+        raise YazioUnavailableError(
+            "YAZIO ist vorübergehend nicht erreichbar."
+        ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
         raise YazioOperationDeadlineExceeded(
@@ -328,7 +409,9 @@ def _fetch_yazio_payload_unlocked(
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioSyncError("YAZIO ist vorübergehend nicht erreichbar.") from exc
+        raise YazioUnavailableError(
+            "YAZIO ist vorübergehend nicht erreichbar."
+        ) from exc
     _clear_yazio_provider_failures()
     return result
 
@@ -696,7 +779,8 @@ def _run_historical_yazio_sync_locked(
         connection = db.get(YazioConnection, connection_id)
         if connection is not None:
             connection.last_success_at = completed_at
-            connection.last_micronutrient_sync_at = completed_at
+            if fetcher is not None or settings.yazio_provider == "legacy":
+                connection.last_micronutrient_sync_at = completed_at
             connection.last_error = None
             connection.historical_sync_cursor_date = next_cursor
             if completed:
@@ -829,7 +913,9 @@ def _run_yazio_connection_sync_locked(
         connection = db.get(YazioConnection, connection_id)
         if connection is not None:
             connection.last_success_at = completed_at
-            if include_micronutrients:
+            if include_micronutrients and (
+                fetcher is not None or settings.yazio_provider == "legacy"
+            ):
                 connection.last_micronutrient_sync_at = completed_at
             connection.last_error = None
             connection.next_sync_at = _next_sync_at(

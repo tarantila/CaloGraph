@@ -25,9 +25,14 @@ from app.services.yazio_sync import (
     YazioConnectionDisabled,
     YazioConnectionNotConfigured,
     YazioDisabled,
+    YazioInvalidResponseError,
+    YazioNetworkTimeoutError,
     YazioOperationCapacityExceeded,
     YazioOperationDeadlineExceeded,
+    YazioRateLimitedError,
     YazioSyncError,
+    YazioUnavailableError,
+    YazioVersionBlockedError,
     configure_yazio_connection,
     effective_sync_days,
     effective_sync_interval_minutes,
@@ -68,7 +73,14 @@ def _raise_yazio_http_error(exc: YazioSyncError) -> NoReturn:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if isinstance(exc, YazioConnectionDisabled):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if isinstance(exc, YazioOperationDeadlineExceeded):
+    if isinstance(exc, YazioRateLimitedError):
+        headers = (
+            {"Retry-After": str(exc.retry_after)}
+            if exc.retry_after is not None
+            else {}
+        )
+        raise HTTPException(status_code=429, detail=str(exc), headers=headers) from exc
+    if isinstance(exc, YazioOperationDeadlineExceeded | YazioNetworkTimeoutError):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     if isinstance(exc, YazioOperationCapacityExceeded):
         raise HTTPException(
@@ -83,6 +95,11 @@ def _raise_yazio_http_error(exc: YazioSyncError) -> NoReturn:
             headers={"Retry-After": str(exc.retry_after)},
         ) from exc
     if isinstance(exc, YazioDisabled):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(
+        exc,
+        YazioVersionBlockedError | YazioUnavailableError | YazioInvalidResponseError,
+    ):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     raise HTTPException(status_code=502, detail=str(exc)) from exc
 

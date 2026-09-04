@@ -26,6 +26,7 @@ dependencies = [
   "uvicorn[standard]==0.52.4",
   "webauthn==3.0.0",
   "yazio-exporter==0.2.0",
+  "yazio-sdk==0.4.0",
   "zstandard==0.25.0",
 ]
 

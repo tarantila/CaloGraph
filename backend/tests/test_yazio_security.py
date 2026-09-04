@@ -9,12 +9,14 @@ from app.config import settings
 from app.schemas import ImportSummary
 from app.services import yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+from app.services.yazio_provider import YazioProviderMetadata, YazioProviderResult
 from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,
     YazioTransportError,
     _BoundedYazioClient,
+    _execute_worker,
     _login,
     _run_worker,
     _TransportOptions,
@@ -133,6 +135,41 @@ def test_transport_stops_reading_worker_output_at_the_configured_limit(
 def test_isolated_transport_worker_can_be_started() -> None:
     with pytest.raises(YazioTransportError):
         _run_worker({"operation": "invalid"}, deadline_seconds=5)
+
+
+
+def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _Provider:
+        def fetch(self, email, password, start_day, end_day, include_micronutrients):
+            calls.append((email, include_micronutrients))
+            return YazioProviderResult(
+                payload={"days": [{"local_date": start_day.isoformat()}]},
+                metadata=YazioProviderMetadata(
+                    micronutrient_complete=False,
+                    provider_mode="sdk",
+                ),
+            )
+
+    monkeypatch.setattr(yazio_transport, "get_yazio_provider", lambda mode: _Provider())
+    result = _execute_worker(
+        {
+            "operation": "fetch",
+            "provider_mode": "sdk",
+            "email": "owner@example.com",
+            "password": "private-password",
+            "start_day": "2026-08-01",
+            "end_day": "2026-08-01",
+            "include_micronutrients": True,
+            "connect_timeout": 3.05,
+            "read_timeout": 15,
+            "request_workers": 3,
+        }
+    )
+
+    assert result == {"days": [{"local_date": "2026-08-01"}]}
+    assert calls == [("owner@example.com", True)]
 
 
 def test_local_yazio_slots_are_per_user_and_globally_bounded(monkeypatch) -> None:

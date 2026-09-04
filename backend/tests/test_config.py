@@ -73,6 +73,20 @@ def test_public_url_rejects_non_origin_values(value: str) -> None:
         Settings(_env_file=None, calograph_public_url=value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://yzapi.yazio.com",
+        "https://attacker.example.test",
+        "https://yzapi.yazio.com:8443",
+        "https://yzapi.yazio.com/v22",
+    ],
+)
+def test_yazio_api_url_rejects_insecure_or_non_yazio_origins(value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, environment="development", yazio_api_base_url=value)
+
+
 def test_proxy_networks_reject_wildcard_trust() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, trusted_proxy_networks="*")

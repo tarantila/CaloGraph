@@ -206,6 +206,33 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_enabled: bool = True
+    # Internal rollout switch. Legacy remains the safe default because the
+    # v22 SDK does not provide micronutrient parity with yazio-exporter.
+    yazio_provider: Literal["legacy", "sdk"] = "legacy"
+    yazio_api_base_url: str = Field(
+        default="https://yzapi.yazio.com",
+        min_length=1,
+        max_length=512,
+    )
+    yazio_sdk_user_agent: str = Field(
+        default="YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor",
+        min_length=1,
+        max_length=512,
+    )
+    yazio_sdk_client_id: str = Field(
+        default="3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw",
+        min_length=1,
+        max_length=512,
+        exclude=True,
+        repr=False,
+    )
+    yazio_sdk_client_secret: str = Field(
+        default="25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k",
+        min_length=1,
+        max_length=512,
+        exclude=True,
+        repr=False,
+    )
     yazio_sync_interval_hours: int = Field(default=6, ge=1, le=168)
     yazio_sync_days: int = Field(default=7, ge=1, le=366)
     yazio_connect_timeout_seconds: float = Field(default=3.05, ge=0.1, le=30)
@@ -357,6 +384,26 @@ class Settings(BaseSettings):
                     "TRUSTED_PROXY_NETWORKS must contain comma-separated IP addresses or CIDRs"
                 ) from exc
         return ",".join(entries)
+
+    @field_validator("yazio_api_base_url")
+    @classmethod
+    def valid_yazio_api_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "yzapi.yazio.com"
+            or parsed.port is not None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "YAZIO_API_BASE_URL must be https://yzapi.yazio.com without a path"
+            )
+        return normalized
 
     @field_validator("credential_encryption_key", "mfa_encryption_key")
     @classmethod

@@ -19,6 +19,52 @@ The experimental path is:
 YAZIO → yazio-exporter → CaloGraph YAZIO adapter
 ```
 
+## Provider rollout
+
+The default direct-sync provider remains `legacy`, which uses
+`yazio-exporter==0.2.0` and preserves the existing micronutrient behavior.
+`yazio-sdk==0.4.0` is available as an internal, non-UI provider selected with
+`YAZIO_PROVIDER=sdk`. The SDK's v22 aggregate endpoint contains energy,
+carbohydrates, protein, and fat, while its daily-summary widget can provide
+optional activity energy. It does not provide a safe daily micronutrient or
+fiber aggregate, so SDK results are explicitly marked incomplete and never
+advance `last_micronutrient_sync_at`.
+
+Before enabling SDK mode in a deployment, perform this controlled sequence
+without putting credentials in logs: first run the focused offline provider
+fixtures, then use a disposable YAZIO test account against a staging
+installation, verify the captured User-Agent and v22 status classifications,
+compare a bounded multi-day response with an exporter fixture, and finally
+enable `YAZIO_PROVIDER=sdk` for one account while monitoring failures. Keep
+the legacy setting available for immediate rollback. This document does not
+execute or authorize live YAZIO requests.
+
+### Controlled live verification sequence (later, staging only)
+
+This sequence is intentionally not run as part of development or CI. Use only
+with a disposable YAZIO test account and a staging CaloGraph instance. Record
+status codes and bounded response shapes, never credentials, access tokens, or
+raw health payloads:
+
+1. **TCP preflight:** verify only DNS resolution and a TCP connection to
+   `yzapi.yazio.com:443`; do not send an HTTP request yet.
+2. **Token exchange:** send one password-grant request to
+   `/v22/oauth/token` with the configured client credentials and captured
+   User-Agent. Keep the access token in process memory only.
+3. **Single safe read:** use that token for exactly one
+   `/v22/user/consumed-items/nutrients-daily` request over a minimal date range.
+4. **Response validation:** confirm the expected status, bounded body size,
+   ISO dates, optional fields, finite non-negative numeric values, and the
+   `403 {"error":"version_blocked"}` distinction. Do not persist the response.
+5. **One-day read:** repeat the provider through the staging CaloGraph worker
+   for exactly one harmless day and compare only normalized metrics.
+6. **Small historical period:** request a bounded multi-day range, compare it to
+   an exporter fixture, and watch rate-limit, timeout, circuit, and import
+   behavior.
+7. **Historical sync last:** only after the preceding checks pass, run the
+   initial historical synchronization for one test account. Keep
+   `YAZIO_PROVIDER=legacy` as the immediate rollback.
+
 ## Available methods
 
 ### Upload `days.json` or `nutrients.json`
@@ -149,6 +195,14 @@ CaloGraph account through `user_id`.
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
 | `mineral.calcium` through `mineral.choline` | 13 canonical mineral metrics | mg or µg |
 
+In SDK mode, `energy`, `protein`, `carb`, and `fat` are mapped directly from
+the v22 `nutrients-daily` response. `activity_energy` is read only from the
+daily-summary widget; meals and product/recipe maps are intentionally ignored
+because they cannot safely reconstruct daily micronutrients. Every requested
+date is emitted, including dates missing from the provider response, and
+provider values must be finite, non-negative numbers within the requested
+range.
+
 YAZIO's specific-nutrient endpoint returns these vitamin and mineral values in
 grams. The adapter preserves that source unit and converts each value to the
 canonical mg or µg unit before storing and analyzing it.
@@ -175,6 +229,12 @@ medical diagnosis.
 - CaloGraph owns the network transport around the exporter. Every request uses
   an explicit connect/read timeout, redirects are rejected, and authentication
   is never retried automatically.
+- The SDK provider uses `httpx.Timeout`, rejects redirects, sends one request
+  at a time, and calls generated `sync_detailed` operations so status and
+  `Retry-After` can be classified without exposing response bodies.
+- Worker serialization distinguishes authentication, `version_blocked`,
+  bounded `rate_limited`, unavailable, network timeout, absolute deadline, and
+  invalid response failures. No SDK request is retried automatically.
 - Each login runs in an isolated child process with a 25-second absolute
   deadline. A complete data retrieval has a five-minute absolute deadline. The
   parent process terminates the child when that deadline is exceeded.
