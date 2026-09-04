@@ -7,6 +7,28 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [0.6.3] - 2026-09-04
 
+### Upgrade notes
+
+Normal database-only backups require no extra configuration. The
+`backup-agent-secrets` service no longer exists, and a separate `backup-secrets`
+profile no longer exists and is no longer used. Database-only operators can keep
+`BACKUP_AGENT_ENABLED=true` and `BACKUP_INCLUDE_SECRETS=false` and run
+`docker compose --profile backup up -d`.
+
+Environment/secrets backup operators must use the existing override command:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.backup-secrets.yml \
+  --profile backup up -d
+```
+
+Exactly one `backup-agent` runs. Existing artifacts and status files remain
+compatible; retention and age format are unchanged. There is no new database
+migration and no new ENV requirement for database-only backups. Keep private age
+identities outside the runtime agent.
+
 ### Fixed
 
 - Consolidated database and optional environment/secrets backup into one
