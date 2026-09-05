@@ -109,6 +109,7 @@ RUN test -r /licenses/CaloGraph-LICENSE.md \
     && test -r /licenses/yazio-exporter-MIT.txt \
     && test -r /licenses/yazio-sdk-MIT.txt \
     && test -n "$(find /licenses/backend -type f -print -quit)"
+USER calograph
 EXPOSE 8000
 
 ENTRYPOINT ["backend-entrypoint"]

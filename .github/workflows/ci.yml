@@ -245,6 +245,18 @@ jobs:
             --build-arg "APP_REVISION=$GITHUB_SHA" \
             --tag calograph-backup-agent:ci \
             .
+      - name: Verify backend runtime is non-root
+        shell: bash
+        run: |
+          configured_user="$(docker image inspect calograph-backend:ci --format '{{.Config.User}}')"
+          test -n "$configured_user"
+          test "$configured_user" != "root"
+          test "$configured_user" != "0"
+          docker run --rm --entrypoint sh calograph-backend:ci -c '
+            test "$(id -u)" -ne 0 &&
+            test "$(id -g)" -ne 0 &&
+            test "$(whoami)" = calograph
+          '
       - name: Scan backend runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
