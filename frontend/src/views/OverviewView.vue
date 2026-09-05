@@ -26,7 +26,7 @@ import {
   isoWeekday,
   shiftIsoDate,
 } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, createNumberFormatter, i18n, roundHalfUp } from '../i18n'
 import type { DailyPoint, ImportBatch, ImportSummary, Target, User, YazioStatus } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
@@ -76,6 +76,7 @@ const highlightError = ref(false)
 const highlightRetryValue = ref(false)
 
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
 const percentage = createNumberFormatter({ style: 'percent', maximumFractionDigits: 0 })
 
@@ -241,7 +242,7 @@ const todayActivityNote = computed(() => {
   const today = summary.value?.today
   if (!today || !hasActivityCredit(today)) return null
   return t('activity.creditForToday', {
-    value: integer.format(Number(today.activity_credit_kcal)),
+    value: kcal.format(Number(today.activity_credit_kcal)),
   })
 })
 const weekActivityRelevant = computed(() =>
@@ -280,9 +281,9 @@ const sevenDayFat = computed(() => average(sevenRecordedDays.value.map((point) =
 
 const todayComparison = computed(() => {
   if (todayCalories.value == null || sevenDayCalories.value == null) return t('overview.noSevenDayAverage')
-  const difference = Math.round(todayCalories.value - sevenDayCalories.value)
+  const difference = roundHalfUp(todayCalories.value - sevenDayCalories.value)
   if (difference === 0) return t('overview.exactSevenDayAverage')
-  return `${integer.format(Math.abs(difference))} kcal ${difference > 0 ? t('common.above') : t('common.below')} ${t('overview.sevenDayAverage')}`
+  return `${kcal.format(Math.abs(difference))} kcal ${difference > 0 ? t('common.above') : t('common.below')} ${t('overview.sevenDayAverage')}`
 })
 
 const dateHeading = computed(() =>
@@ -451,12 +452,12 @@ function formatCalorieTooltip(params: unknown) {
   const rows = entries.map(
     (entry) =>
       `${entry.marker}${entry.seriesName}: ${
-        entry.value == null ? '–' : `${integer.format(Number(entry.value))} kcal`
+        entry.value == null ? '–' : `${kcal.format(Number(entry.value))} kcal`
       }`,
   )
   if (day && hasActivityCredit(day)) {
     rows.push(
-      `${t('activity.activityCredit')}: +${integer.format(Number(day.activity_credit_kcal))} kcal`,
+      `${t('activity.activityCredit')}: +${kcal.format(Number(day.activity_credit_kcal))} kcal`,
     )
   }
   return [`<strong>${entries[0].axisValueLabel}</strong>`, ...rows].join('<br/>')
@@ -551,7 +552,7 @@ const calorieChart = computed<EChartsOption>(() => {
       type: 'value',
       name: 'kcal',
       nameTextStyle: { color: chartText, fontFamily: 'Inter', padding: [0, 0, 0, -34] },
-      axisLabel: { color: chartText, fontFamily: 'Inter' },
+      axisLabel: { color: chartText, fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
       splitLine: { lineStyle: { color: chartGrid, type: 'dashed' } },
     },
     series: [
@@ -669,7 +670,7 @@ const macroChart = computed<EChartsOption>(() => ({
       <article class="card metric-card">
         <div class="metric-card-label"><PhFire :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.today') }}</span></div>
         <div class="metric-card-value">
-          {{ todayCalories == null ? '–' : integer.format(todayCalories) }}
+          {{ todayCalories == null ? '–' : kcal.format(todayCalories) }}
           <small>{{ t('common.kcal') }}</small>
         </div>
         <p :class="{ warning: todayCalories != null }">{{ todayComparison }}</p>
@@ -678,10 +679,10 @@ const macroChart = computed<EChartsOption>(() => ({
       <article class="card metric-card">
         <div class="metric-card-label purple"><PhTarget :size="22" weight="duotone" aria-hidden="true" /><span>{{ todayActivityRelevant ? t('activity.effectiveRemaining') : t('overview.remaining') }}</span></div>
         <div class="metric-card-value">
-          {{ caloriesRemaining == null ? '–' : integer.format(Math.max(caloriesRemaining, 0)) }}
+          {{ caloriesRemaining == null ? '–' : kcal.format(Math.max(caloriesRemaining, 0)) }}
           <small>{{ t('common.kcal') }}</small>
         </div>
-        <p>{{ caloriesRemaining != null && caloriesRemaining < 0 ? t('overviewUi.dailyOverBudget', { value: integer.format(Math.abs(caloriesRemaining)) }) : t('overviewUi.availableToday') }}</p>
+        <p>{{ caloriesRemaining != null && caloriesRemaining < 0 ? t('overviewUi.dailyOverBudget', { value: kcal.format(Math.abs(caloriesRemaining)) }) : t('overviewUi.availableToday') }}</p>
         <small v-if="todayActivityNote" class="activity-credit-note">{{ todayActivityNote }}</small>
       </article>
 
@@ -704,17 +705,17 @@ const macroChart = computed<EChartsOption>(() => ({
       <article class="card metric-card">
         <div class="metric-card-label blue"><PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" /><span>{{ weekActivityRelevant ? t('activity.effectiveRemaining') : t('overview.weekRemaining') }}</span></div>
         <div class="metric-card-value">
-          {{ weekRemaining == null ? '–' : integer.format(Math.max(weekRemaining, 0)) }}
+          {{ weekRemaining == null ? '–' : kcal.format(Math.max(weekRemaining, 0)) }}
           <small v-if="weekRemaining != null">{{ t('common.kcal') }}</small>
         </div>
         <p v-if="weekRemaining == null">{{ t('overviewUi.weekBudgetMissing') }}</p>
         <p v-else-if="weekRemaining < 0">
-          {{ t('overviewUi.weeklyOverBudget', { value: integer.format(Math.abs(weekRemaining)) }) }}
+          {{ t('overviewUi.weeklyOverBudget', { value: kcal.format(Math.abs(weekRemaining)) }) }}
         </p>
         <p v-else>
-          {{ weekActivityRelevant ? t('activity.baseBudget') : t('weekly.budgetTable') }} {{ summary.week.budget_kcal == null ? '–' : `${integer.format(summary.week.budget_kcal)} kcal` }}
+          {{ weekActivityRelevant ? t('activity.baseBudget') : t('weekly.budgetTable') }} {{ summary.week.budget_kcal == null ? '–' : `${kcal.format(summary.week.budget_kcal)} kcal` }}
           <template v-if="weekActivityRelevant">
-            · {{ t('activity.activityCredit') }} +{{ integer.format(summary.week.activity_credit_kcal) }} kcal
+            · {{ t('activity.activityCredit') }} +{{ kcal.format(summary.week.activity_credit_kcal) }} kcal
           </template>
         </p>
       </article>
@@ -770,7 +771,7 @@ const macroChart = computed<EChartsOption>(() => ({
           <PhTrendUp :size="22" weight="duotone" aria-hidden="true" />
         </div>
         <div class="average-grid">
-          <div><span>{{ t('overviewUi.calories') }}</span><strong>{{ sevenDayCalories == null ? '–' : `${integer.format(sevenDayCalories)} ${t('common.kcal')}` }}</strong></div>
+          <div><span>{{ t('overviewUi.calories') }}</span><strong>{{ sevenDayCalories == null ? '–' : `${kcal.format(sevenDayCalories)} ${t('common.kcal')}` }}</strong></div>
           <div><span>{{ t('overviewUi.protein') }}</span><strong>{{ sevenDayProtein == null ? '–' : `${integer.format(sevenDayProtein)} ${t('common.grams')}` }}</strong></div>
           <div><span>{{ t('overviewUi.carbs') }}</span><strong>{{ sevenDayCarbs == null ? '–' : `${integer.format(sevenDayCarbs)} ${t('common.grams')}` }}</strong></div>
           <div><span>{{ t('overviewUi.fat') }}</span><strong>{{ sevenDayFat == null ? '–' : `${integer.format(sevenDayFat)} ${t('common.grams')}` }}</strong></div>
@@ -787,7 +788,7 @@ const macroChart = computed<EChartsOption>(() => ({
               <PhChartBar :size="18" weight="fill" aria-hidden="true" />
             </span>
             <span class="weekly-summary-label">{{ t('overviewUi.weekAverage') }}</span>
-            <strong>{{ weekAverageCalories == null ? '–' : `${integer.format(weekAverageCalories)} ${t('common.kcal')}` }}</strong>
+            <strong>{{ weekAverageCalories == null ? '–' : `${kcal.format(weekAverageCalories)} ${t('common.kcal')}` }}</strong>
           </div>
           <div>
             <span class="weekly-summary-icon protein">

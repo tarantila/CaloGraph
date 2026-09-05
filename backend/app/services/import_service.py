@@ -53,6 +53,7 @@ def _start_batch(
     client_identifier: str | None,
     payload_hash: str | None = None,
     *,
+    connector_variant: str | None = None,
     commit: bool = True,
     log_started: bool = True,
 ) -> ImportBatch:
@@ -60,6 +61,7 @@ def _start_batch(
         user_id=user.id,
         source_type=source_type,
         client_identifier=client_identifier,
+        connector_variant=connector_variant,
         status="processing",
         payload_hash=payload_hash,
     )
@@ -486,6 +488,8 @@ def persist_import(
     raw_payload: bytes | None,
     content_type: str,
     client_identifier: str | None,
+    *,
+    connector_variant: str | None = None,
 ) -> ImportSummary:
     with shared_user_operation(db, user.id) as active_user:
         return _persist_import_locked(
@@ -495,6 +499,7 @@ def persist_import(
             raw_payload,
             content_type,
             client_identifier,
+            connector_variant=connector_variant,
         )
 
 
@@ -505,14 +510,19 @@ def _persist_import_locked(
     raw_payload: bytes | None,
     content_type: str,
     client_identifier: str | None,
+    *,
+    connector_variant: str | None = None,
 ) -> ImportSummary:
     payload_hash = hashlib.sha256(raw_payload).hexdigest() if raw_payload is not None else None
+    if connector_variant is None and result.source_type == "yazio_export_v1":
+        connector_variant = "legacy-v15"
     batch = _start_batch(
         db,
         user,
         result.source_type,
         client_identifier,
         payload_hash,
+        connector_variant=connector_variant,
     )
     counters = ImportCounters(
         received=result.received,

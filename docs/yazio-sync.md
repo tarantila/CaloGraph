@@ -30,6 +30,14 @@ optional activity energy. It does not provide a safe daily micronutrient or
 fiber aggregate, so SDK results are explicitly marked incomplete and never
 advance `last_micronutrient_sync_at`.
 
+For internal provenance, each newly created direct-sync `ImportBatch` records
+`connector_variant` as `sdk-v22` or `legacy-v15`. The fachliche
+`source_type=yazio_export_v1`, `source_name=YAZIO`, stable
+`source_identifier`, `external_sample_id`, and `client_identifier=yazio-exporter`
+remain unchanged. Existing batches keep their nullable legacy-compatible value.
+The connector variant is operational metadata and is intentionally not added to
+the normal imports UI or the portable export schema.
+
 Before enabling SDK mode in a deployment, perform this controlled sequence
 without putting credentials in logs: first run the focused offline provider
 fixtures, then use a disposable YAZIO test account against a staging

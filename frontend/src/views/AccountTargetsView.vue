@@ -7,7 +7,7 @@ import { api, ApiError, localizeApiError } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import DateInput from '../components/DateInput.vue'
 import { formatGermanDate, isoDateInTimeZone } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import {
   createEmptyTargetDraft,
@@ -93,6 +93,7 @@ const targetWeightMax = computed({
 })
 
 const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 
 const targetDeleteDescription = computed(() => {
   const item = targetToDelete.value
@@ -381,8 +382,8 @@ void load()
             <tr v-for="item in targets" :key="item.id">
               <td>{{ formatGermanDate(item.valid_from) }}</td>
               <td>{{ item.valid_to ? formatGermanDate(item.valid_to) : t('settingsUi.current') }}</td>
-              <td class="number">{{ integer.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
-              <td class="number">{{ item.maintenance_kcal == null ? '–' : `${integer.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
+              <td class="number">{{ kcal.format(Number(item.calories_kcal)) }} {{ t('common.kcal') }}</td>
+              <td class="number">{{ item.maintenance_kcal == null ? '–' : `${kcal.format(Number(item.maintenance_kcal))} ${t('common.kcal')}` }}</td>
               <td>{{ activityHistoryLabel(item) }}</td>
               <td>{{ targetWeightHistoryLabel(item) }}</td>
               <td class="number">{{ integer.format(Number(item.protein_g)) }} {{ t('common.grams') }}</td>

@@ -18,7 +18,7 @@ import { parseAnalyticsCompactPreset, type AnalyticsCompactPreset } from '../ana
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { formatGermanDate, formatGermanDayMonth, isoDateInTimeZone, shiftIsoDate } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { DailyPoint } from '../types'
 interface BudgetBalance {
@@ -70,7 +70,7 @@ const points = ref<DailyPoint[]>([])
 const budgetBalance = ref<BudgetBalance | null>(null)
 const loading = ref(true)
 const error = ref('')
-const integer = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
 
 function selectPeriod(value: AnalyticsCompactPreset) {
@@ -172,7 +172,7 @@ function formatCalorieTooltip(params: unknown) {
   if (!day) return ''
   const marker = (seriesName: string) => entries.find((entry) => entry.seriesName === seriesName)?.marker ?? ''
   const formatRow = (label: string, value: number | null, prefix = '', seriesName = label) =>
-    `${marker(seriesName)}${label}: ${value == null ? '–' : `${prefix}${integer.format(Number(value))} kcal`}`
+    `${marker(seriesName)}${label}: ${value == null ? '–' : `${prefix}${kcal.format(Number(value))} kcal`}`
   const rows = [
     formatRow(t('charts.calories'), day.calories_kcal, '', t('charts.calories')),
   ]
@@ -212,6 +212,7 @@ const tooltip = {
 const legendText = { color: '#98a5b9', fontFamily: 'Inter' }
 const axisLine = { lineStyle: { color: '#263449' } }
 const axisLabel = { color: '#98a5b9', fontFamily: 'Inter' }
+const calorieAxisLabel = { ...axisLabel, formatter: (value: number) => kcal.format(value) }
 const splitLine = { lineStyle: { color: '#263449', type: 'dashed' as const } }
 
 const calorieOption = computed<EChartsOption>(() => {
@@ -272,7 +273,7 @@ const calorieOption = computed<EChartsOption>(() => {
       axisTick: { show: false },
       axisLabel: { ...axisLabel, hideOverlap: true },
     },
-    yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel, splitLine },
+    yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel: calorieAxisLabel, splitLine },
     series: [
       {
         name: t('charts.calories'),
@@ -392,11 +393,11 @@ const nutritionOption = computed<EChartsOption>(() => ({
     <section class="insight-strip" :aria-label="t('trends.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhTrendUp :size="20" weight="duotone" /></span>
-        <span><small>{{ t('trends.average7') }}</small><strong>{{ latestSevenDayAverage == null ? '–' : `${integer.format(latestSevenDayAverage)} kcal` }}</strong></span>
+        <span><small>{{ t('trends.average7') }}</small><strong>{{ latestSevenDayAverage == null ? '–' : `${kcal.format(latestSevenDayAverage)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>{{ t('trends.latestDay') }}</small><strong>{{ latestNutrition?.calories_kcal == null ? '–' : `${integer.format(latestNutrition.calories_kcal)} kcal` }}</strong></span>
+        <span><small>{{ t('trends.latestDay') }}</small><strong>{{ latestNutrition?.calories_kcal == null ? '–' : `${kcal.format(latestNutrition.calories_kcal)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhBarbell :size="20" weight="duotone" /></span>
