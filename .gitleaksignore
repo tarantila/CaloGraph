@@ -5,3 +5,6 @@ b4ca2cf6e3521859da6f4ec8c3a34a76e727463c:README.md:curl-auth-header:77
 b4ca2cf6e3521859da6f4ec8c3a34a76e727463c:README.md:curl-auth-header:89
 # Synthetic password-policy rejection value committed in bbb3875e; not a credential.
 bbb3875e4c6861ff89598dab4a3f053d64418027:backend/tests/test_privileged_security_events.py:generic-api-key:468
+# Public YAZIO mobile-app client credential documented upstream; not a CaloGraph secret.
+1acaf8e1f6a84d842ff3cb0bb04d641e99d57ca0:.env.example:generic-api-key:109
+1acaf8e1f6a84d842ff3cb0bb04d641e99d57ca0:.env.production.example:generic-api-key:104
