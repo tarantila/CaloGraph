@@ -431,6 +431,7 @@ class ImportBatch(Base):
     )
     source_type: Mapped[str] = mapped_column(String(64), index=True)
     client_identifier: Mapped[str | None] = mapped_column(String(190))
+    connector_variant: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), default="processing", index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

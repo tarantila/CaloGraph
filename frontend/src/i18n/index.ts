@@ -44,6 +44,19 @@ export function formatNumber(value: number, options: Intl.NumberFormatOptions = 
   return new Intl.NumberFormat(intlLocale(), options).format(value)
 }
 
+export function roundHalfUp(value: number, fractionDigits = 0): number {
+  if (!Number.isFinite(value)) return value
+  const factor = 10 ** fractionDigits
+  if (!Number.isFinite(factor)) return value
+  const scaled = value * factor
+  const sign = scaled < 0 ? -1 : 1
+  return sign * Math.floor(Math.abs(scaled) + 0.5 + Number.EPSILON) / factor
+}
+
+export function createKcalFormatter(): Pick<Intl.NumberFormat, 'format'> {
+  return { format: (value: number) => formatNumber(roundHalfUp(value), { maximumFractionDigits: 0 }) }
+}
+
 export function formatDate(value: string | Date, options: Intl.DateTimeFormatOptions = {}): string {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)

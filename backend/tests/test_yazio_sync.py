@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app import security_events
 from app.api import yazio as yazio_api
 from app.config import settings
-from app.models import HealthSample, User, YazioConnection
+from app.models import HealthSample, ImportBatch, User, YazioConnection
 from app.schemas import ImportSummary
 from app.security_events import security_reference
 from app.services import yazio_sync
@@ -299,6 +299,11 @@ def test_manual_sync_imports_only_for_connection_user(
         db.scalars(select(HealthSample).where(HealthSample.user_id == user.id))
     )
     assert len(samples) == 4
+    batches = list(
+        db.scalars(select(ImportBatch).where(ImportBatch.user_id == user.id))
+    )
+    assert len(batches) == 1
+    assert batches[0].connector_variant == "legacy-v15"
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
@@ -913,3 +918,51 @@ def test_history_range_api_requires_csrf_and_rejects_overlapping_jobs(
     )
     assert response.status_code == 429
     assert "Retry-After" in response.headers
+
+
+def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_provider", "sdk")
+
+    def fake_sdk_fetch(*_args):
+        return {
+            "2026-07-23": {
+                "daily_summary": {
+                    "meals": {
+                        "dinner": {
+                            "nutrients": {
+                                "energy.energy": 1800,
+                                "nutrient.protein": 120,
+                                "nutrient.carb": 190,
+                                "nutrient.fat": 60,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(yazio_sync, "_fetch_yazio_payload_unlocked", fake_sdk_fetch)
+    summary = run_manual_yazio_sync(
+        user.id,
+        sync_days=1,
+        now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+    )
+
+    assert summary.inserted == 4
+    batch = db.scalar(
+        select(ImportBatch)
+        .where(ImportBatch.user_id == user.id)
+        .order_by(ImportBatch.started_at.desc())
+        .limit(1)
+    )
+    assert batch is not None
+    assert batch.connector_variant == "sdk-v22"
+    assert batch.source_type == "yazio_export_v1"
+    assert batch.client_identifier == "yazio-exporter"

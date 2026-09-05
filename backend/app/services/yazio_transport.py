@@ -21,6 +21,10 @@ from yazio_exporter.utils import serialize_day_data  # type: ignore[import-untyp
 
 from app.config import settings
 from app.micronutrients import YAZIO_MICRONUTRIENT_IDS
+from app.services.yazio_provider import (
+    YazioProviderError,
+    get_yazio_provider,
+)
 
 MAX_WORKER_INPUT_BYTES = 16 * 1024
 MAX_WORKER_OUTPUT_BYTES = 32 * 1024 * 1024
@@ -34,6 +38,28 @@ class YazioTransportAuthenticationError(YazioTransportError):
     pass
 
 
+class YazioTransportVersionBlockedError(YazioTransportError):
+    pass
+
+
+class YazioTransportRateLimitedError(YazioTransportError):
+    def __init__(self, retry_after: int | None = None) -> None:
+        self.retry_after = retry_after
+        super().__init__("YAZIO provider rate limit exceeded")
+
+
+class YazioTransportUnavailableError(YazioTransportError):
+    pass
+
+
+class YazioTransportNetworkTimeoutError(YazioTransportError):
+    pass
+
+
+class YazioTransportInvalidResponseError(YazioTransportError):
+    pass
+
+
 class YazioTransportDeadlineError(YazioTransportError):
     pass
 
@@ -44,7 +70,6 @@ class _WorkerAuthenticationError(RuntimeError):
 
 class _WorkerProviderError(RuntimeError):
     pass
-
 
 @dataclass(frozen=True, slots=True)
 class _TransportOptions:
@@ -76,12 +101,18 @@ class _BoundedYazioClient(YazioClient):  # type: ignore[misc]
         )
 
 
-def validate_yazio_credentials_transport(email: str, password: str) -> None:
+def validate_yazio_credentials_transport(
+    email: str,
+    password: str,
+    *,
+    provider_mode: str | None = None,
+) -> None:
     _run_worker(
         {
             "operation": "validate",
             "email": email,
             "password": password,
+            "provider_mode": provider_mode or settings.yazio_provider,
             **_worker_options(),
         },
         settings.yazio_login_deadline_seconds,
@@ -94,6 +125,8 @@ def fetch_yazio_payload_transport(
     start_day: date,
     end_day: date,
     include_micronutrients: bool,
+    *,
+    provider_mode: str | None = None,
 ) -> dict[str, Any]:
     result = _run_worker(
         {
@@ -103,12 +136,13 @@ def fetch_yazio_payload_transport(
             "start_day": start_day.isoformat(),
             "end_day": end_day.isoformat(),
             "include_micronutrients": include_micronutrients,
+            "provider_mode": provider_mode or settings.yazio_provider,
             **_worker_options(),
         },
         settings.yazio_operation_deadline_seconds,
     )
     if not isinstance(result, dict):
-        raise YazioTransportError("YAZIO worker returned an invalid payload")
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid payload")
     return result
 
 
@@ -203,8 +237,33 @@ def _run_worker(payload: dict[str, object], deadline_seconds: int) -> object:
     kind = response.get("kind")
     if kind == "authentication":
         raise YazioTransportAuthenticationError("YAZIO authentication failed")
-    if kind == "timeout":
-        raise YazioTransportDeadlineError("YAZIO request timed out")
+    if kind == "version_blocked":
+        raise YazioTransportVersionBlockedError(
+            "YAZIO API client version is blocked"
+        )
+    if kind == "rate_limited":
+        retry_after = response.get("retry_after")
+        if (
+            isinstance(retry_after, bool)
+            or not isinstance(retry_after, int)
+            or not 0 <= retry_after <= 3_600
+        ):
+            retry_after = None
+        raise YazioTransportRateLimitedError(retry_after)
+    if kind == "unavailable":
+        raise YazioTransportUnavailableError(
+            "YAZIO provider is temporarily unavailable"
+        )
+    if kind in {"network_timeout", "timeout"}:
+        raise YazioTransportNetworkTimeoutError("YAZIO provider request timed out")
+    if kind == "deadline":
+        raise YazioTransportDeadlineError(
+            "YAZIO operation exceeded its absolute deadline"
+        )
+    if kind == "invalid_response":
+        raise YazioTransportInvalidResponseError(
+            "YAZIO provider returned an invalid response"
+        )
     raise YazioTransportError("YAZIO provider request failed")
 
 
@@ -241,8 +300,10 @@ def _execute_worker(payload: dict[str, object]) -> object:
     operation = payload.get("operation")
     email = payload.get("email")
     password = payload.get("password")
+    provider_mode = payload.get("provider_mode", "legacy")
     if (
         operation not in {"validate", "fetch"}
+        or provider_mode not in {"legacy", "sdk"}
         or not isinstance(email, str)
         or not 3 <= len(email) <= 320
         or not isinstance(password, str)
@@ -272,6 +333,26 @@ def _execute_worker(payload: dict[str, object]) -> object:
         and 1 <= options.request_workers <= 10
     ):
         raise ValueError("Invalid worker options")
+
+    if provider_mode == "sdk":
+        provider = get_yazio_provider("sdk")
+        if operation == "validate":
+            provider.validate_credentials(email, password)
+            return None
+        try:
+            start_day = date.fromisoformat(str(payload["start_day"]))
+            end_day = date.fromisoformat(str(payload["end_day"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            from app.services.yazio_provider import YazioProviderInvalidResponseError
+
+            raise YazioProviderInvalidResponseError from exc
+        return provider.fetch(
+            email,
+            password,
+            start_day,
+            end_day,
+            payload.get("include_micronutrients") is True,
+        ).payload
 
     client = _BoundedYazioClient(options)
     try:
@@ -334,10 +415,20 @@ def _worker_main() -> int:
         response: dict[str, object] = {"ok": True, "result": result}
     except (_WorkerAuthenticationError, AuthenticationError):
         response = {"ok": False, "kind": "authentication"}
+    except YazioProviderError as exc:
+        response = {
+            "ok": False,
+            "kind": exc.kind,
+            **(
+                {"retry_after": exc.retry_after}
+                if exc.retry_after is not None
+                else {}
+            ),
+        }
     except requests.Timeout:
-        response = {"ok": False, "kind": "timeout"}
+        response = {"ok": False, "kind": "network_timeout"}
     except Exception:
-        response = {"ok": False, "kind": "provider"}
+        response = {"ok": False, "kind": "unavailable"}
     sys.stdout.write(json.dumps(response, ensure_ascii=True, separators=(",", ":")))
     return 0
 

@@ -5,12 +5,30 @@ import { ApiError, ApiTransportError, localizeApiError } from '../src/api'
 import { formatGermanDayMonth, formatGermanDate, parseGermanDate } from '../src/date-format'
 import {
   DEFAULT_LOCALE,
+  createKcalFormatter,
   i18n,
+  roundHalfUp,
   setLocale,
 } from '../src/i18n'
 
 afterEach(() => {
   setLocale(DEFAULT_LOCALE)
+})
+
+describe('calorie presentation rounding', () => {
+  it('uses half-up boundaries without changing the input value', () => {
+    expect(roundHalfUp(1204.49)).toBe(1204)
+    expect(roundHalfUp(1204.5)).toBe(1205)
+    expect(roundHalfUp(1204.51)).toBe(1205)
+    expect(roundHalfUp(1528.8668)).toBe(1529)
+  })
+
+  it('formats calories as whole kcal in the active locale', () => {
+    setLocale('de')
+    const formatter = createKcalFormatter()
+    expect(formatter.format(1204.5)).toBe('1.205')
+    expect(formatter.format(1528.8668)).toBe('1.529')
+  })
 })
 
 describe('interface language', () => {

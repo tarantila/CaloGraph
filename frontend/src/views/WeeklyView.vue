@@ -7,7 +7,7 @@ import { hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
 import { formatDate, formatDayMonth, shiftIsoDate } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 
 interface Week {
@@ -31,7 +31,7 @@ const weeks = ref<Week[]>([])
 const highlightOverBudget = ref(true)
 const error = ref('')
 const loading = ref(true)
-const format = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 const weekdayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const
 const weekStart = computed(() => auth.user?.week_starts_on ?? 0)
 const weeklyRange = computed(() => {
@@ -111,7 +111,7 @@ const option = computed<EChartsOption>(() => {
       backgroundColor: '#111d30',
       borderColor: '#324157',
       textStyle: { color: '#f3f6fb' },
-      valueFormatter: (value) => `${format.format(Number(value))} ${t('common.kcal')}`,
+      valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
     },
     legend: {
       top: 0,
@@ -130,7 +130,7 @@ const option = computed<EChartsOption>(() => {
       type: 'value',
       name: t('common.kcal'),
       nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-      axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
+      axisLabel: { color: '#98a5b9', fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
       splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
     },
     series: [
@@ -168,15 +168,15 @@ function weekLabel(value: string) {
     <section class="insight-strip" :aria-label="t('weekly.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>{{ t('weekly.currentWeek') }}</small><strong>{{ latestWeek ? `${format.format(latestWeek.consumed_kcal)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekly.currentWeek') }}</small><strong>{{ latestWeek ? `${kcal.format(latestWeek.consumed_kcal)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhGauge :size="20" weight="duotone" /></span>
-        <span><small>{{ latestWeek && weekHasActivityCredit(latestWeek) ? t('activity.effectiveRemaining') : t('overview.weekRemaining') }}</small><strong>{{ latestWeek == null || remainingForWeek(latestWeek) == null ? '–' : `${format.format(Math.max(remainingForWeek(latestWeek)!, 0))} kcal` }}</strong></span>
+        <span><small>{{ latestWeek && weekHasActivityCredit(latestWeek) ? t('activity.effectiveRemaining') : t('overview.weekRemaining') }}</small><strong>{{ latestWeek == null || remainingForWeek(latestWeek) == null ? '–' : `${kcal.format(Math.max(remainingForWeek(latestWeek)!, 0))} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhClockCounterClockwise :size="20" weight="duotone" /></span>
-        <span><small>{{ t('weekly.averagePerWeek') }}</small><strong>{{ averageWeek == null ? '–' : `${format.format(averageWeek)} kcal` }}</strong></span>
+        <span><small>{{ t('weekly.averagePerWeek') }}</small><strong>{{ averageWeek == null ? '–' : `${kcal.format(averageWeek)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhCalendarBlank :size="20" weight="duotone" /></span>
@@ -209,18 +209,18 @@ function weekLabel(value: string) {
           <tbody>
             <tr v-for="week in [...weeks].reverse()" :key="week.week_start">
               <td><strong>{{ weekLabel(week.week_start) }}</strong></td>
-              <td class="number">{{ format.format(week.consumed_kcal) }} kcal</td>
-              <td class="number">{{ week.budget_kcal == null ? '–' : `${format.format(week.budget_kcal)} kcal` }}</td>
+              <td class="number">{{ kcal.format(week.consumed_kcal) }} kcal</td>
+              <td class="number">{{ week.budget_kcal == null ? '–' : `${kcal.format(week.budget_kcal)} kcal` }}</td>
               <template v-if="activityRelevant">
-                <td class="number">{{ weekHasActivityCredit(week) ? `+${format.format(week.activity_credit_kcal)} kcal` : '–' }}</td>
-                <td class="number">{{ !weekHasActivityCredit(week) || week.effective_budget_kcal == null ? '–' : `${format.format(week.effective_budget_kcal)} kcal` }}</td>
+                <td class="number">{{ weekHasActivityCredit(week) ? `+${kcal.format(week.activity_credit_kcal)} kcal` : '–' }}</td>
+                <td class="number">{{ !weekHasActivityCredit(week) || week.effective_budget_kcal == null ? '–' : `${kcal.format(week.effective_budget_kcal)} kcal` }}</td>
               </template>
               <td :class="['number', 'difference-value', deviationForWeek(week) == null ? null : deviationForWeek(week)! > 0 ? 'over' : 'under']">
-                <template v-if="deviationForWeek(week) != null">{{ deviationForWeek(week)! > 0 ? '+' : '' }}{{ format.format(deviationForWeek(week)!) }} kcal</template>
+                <template v-if="deviationForWeek(week) != null">{{ deviationForWeek(week)! > 0 ? '+' : '' }}{{ kcal.format(deviationForWeek(week)!) }} kcal</template>
                 <template v-else>–</template>
               </td>
-              <td class="number">{{ week.mean_kcal == null ? '–' : `${format.format(week.mean_kcal)} kcal` }}</td>
-              <td class="number">{{ week.median_kcal == null ? '–' : `${format.format(week.median_kcal)} kcal` }}</td>
+              <td class="number">{{ week.mean_kcal == null ? '–' : `${kcal.format(week.mean_kcal)} kcal` }}</td>
+              <td class="number">{{ week.median_kcal == null ? '–' : `${kcal.format(week.median_kcal)} kcal` }}</td>
             </tr>
             <tr v-if="!weeks.length"><td :colspan="activityRelevant ? 8 : 6" class="empty">{{ t('weekly.noWeeks') }}</td></tr>
           </tbody>

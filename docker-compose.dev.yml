@@ -14,13 +14,18 @@ services:
       - --proxy-headers
       - --forwarded-allow-ips
       - "${CALOGRAPH_FRONTEND_PROXY_IP:-172.30.0.10}/32"
+    environment:
+      YAZIO_ENABLED: "true"
+      YAZIO_PROVIDER: "sdk"
     volumes:
       - ./backend:/app
     read_only: false
 
   yazio-scheduler:
     image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.3}
-
+    environment:
+      YAZIO_ENABLED: "true"
+      YAZIO_PROVIDER: "sdk"
   frontend:
     image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.3}
     build:

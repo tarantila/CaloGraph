@@ -13,7 +13,7 @@ import {
 } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 
 interface Weekday {
   weekday: number
@@ -54,6 +54,7 @@ const weekdays = ref<Weekday[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 
 function selectPeriod(value: AnalyticsCompactPreset) {
   period.value = value
@@ -117,7 +118,7 @@ const option = computed<EChartsOption>(() => ({
     backgroundColor: '#111d30',
     borderColor: '#324157',
     textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${number.format(Number(value))} ${t('common.kcal')}`,
+    valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
   },
   legend: {
     top: 0,
@@ -137,7 +138,7 @@ const option = computed<EChartsOption>(() => ({
     type: 'value',
     name: t('common.kcal'),
     nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
+    axisLabel: { color: '#98a5b9', fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
     splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
   },
   series: [
@@ -183,11 +184,11 @@ const option = computed<EChartsOption>(() => ({
     <section class="insight-strip" :aria-label="t('weekdays.stats')">
       <article class="card insight-card">
         <span class="insight-icon purple"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>{{ t('weekdays.highest') }}</small><strong>{{ highestDay ? `${weekdayLabel(highestDay.weekday)} · ${number.format(highestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekdays.highest') }}</small><strong>{{ highestDay ? `${weekdayLabel(highestDay.weekday)} · ${kcal.format(highestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon blue"><PhCalendarBlank :size="20" weight="duotone" /></span>
-        <span><small>{{ t('weekdays.lowest') }}</small><strong>{{ lowestDay ? `${weekdayLabel(lowestDay.weekday)} · ${number.format(lowestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
+        <span><small>{{ t('weekdays.lowest') }}</small><strong>{{ lowestDay ? `${weekdayLabel(lowestDay.weekday)} · ${kcal.format(lowestDay.mean_kcal ?? 0)} kcal` : '–' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhBarbell :size="20" weight="duotone" /></span>
@@ -217,10 +218,10 @@ const option = computed<EChartsOption>(() => ({
             <tr v-for="item in weekdays" :key="item.weekday">
               <td><strong>{{ weekdayLabel(item.weekday) }}</strong></td>
               <td class="number">{{ item.count }}</td>
-              <td class="number">{{ item.mean_kcal == null ? '–' : `${number.format(item.mean_kcal)} kcal` }}</td>
-              <td class="number">{{ item.median_kcal == null ? '–' : `${number.format(item.median_kcal)} kcal` }}</td>
-              <td class="number">{{ item.p25_kcal == null ? '–' : `${number.format(item.p25_kcal)}–${number.format(item.p75_kcal ?? 0)} kcal` }}</td>
-              <td :class="['number', 'difference-value', (item.mean_deviation_kcal ?? 0) > 0 ? 'over' : 'under']">{{ item.mean_deviation_kcal == null ? '–' : `${item.mean_deviation_kcal > 0 ? '+' : ''}${number.format(item.mean_deviation_kcal)} kcal` }}</td>
+              <td class="number">{{ item.mean_kcal == null ? '–' : `${kcal.format(item.mean_kcal)} kcal` }}</td>
+              <td class="number">{{ item.median_kcal == null ? '–' : `${kcal.format(item.median_kcal)} kcal` }}</td>
+              <td class="number">{{ item.p25_kcal == null ? '–' : `${kcal.format(item.p25_kcal)}–${kcal.format(item.p75_kcal ?? 0)} kcal` }}</td>
+              <td :class="['number', 'difference-value', (item.mean_deviation_kcal ?? 0) > 0 ? 'over' : 'under']">{{ item.mean_deviation_kcal == null ? '–' : `${item.mean_deviation_kcal > 0 ? '+' : ''}${kcal.format(item.mean_deviation_kcal)} kcal` }}</td>
               <td class="number">{{ item.mean_protein_g == null ? '–' : `${number.format(item.mean_protein_g)} g` }}</td>
             </tr>
           </tbody>

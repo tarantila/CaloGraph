@@ -19,7 +19,7 @@ import {
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { DailyPoint } from '../types'
 
@@ -46,6 +46,7 @@ const points = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
+const kcal = createKcalFormatter()
 
 function selectPeriod(value: AnalyticsCompactPreset) {
   period.value = value
@@ -183,9 +184,13 @@ async function load() {
   }
 }
 onMounted(load)
-const display = (value: number | null, unit = '') => {
+const display = (
+  value: number | null,
+  unit = '',
+  formatter: Pick<Intl.NumberFormat, 'format'> = number,
+) => {
   const parsed = numericValue(value)
-  return parsed == null ? '–' : `${number.format(parsed)}${unit}`
+  return parsed == null ? '–' : `${formatter.format(parsed)}${unit}`
 }
 const recordedPoints = computed(() =>
   points.value.filter((point) => numericValue(point.calories_kcal) != null),
@@ -204,7 +209,7 @@ function displayActivityCredit(point: DailyPoint) {
   if (!hasActivityCredit(point)) return '–'
   const credit = numericValue(point.activity_credit_kcal)
   if (credit == null) return '–'
-  return `+${number.format(credit)} kcal`
+  return `+${kcal.format(credit)} kcal`
 }
 
 const weekdays = computed(() =>
@@ -247,7 +252,7 @@ const weekdays = computed(() =>
       </article>
       <article class="card insight-card">
         <span class="insight-icon orange"><PhFire :size="20" weight="duotone" /></span>
-        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : `${number.format(averageCalories)} kcal` }}</strong></span>
+        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : `${kcal.format(averageCalories)} kcal` }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhCheckCircle :size="20" weight="duotone" /></span>
@@ -278,8 +283,8 @@ const weekdays = computed(() =>
             <tr v-for="point in sortedPoints" :key="point.date">
               <td>{{ formatGermanDate(point.date) }}</td>
               <td><StatusBadge :status="point.tracking_status" /></td>
-              <td class="number">{{ display(point.calories_kcal, ' kcal') }}</td>
-              <td class="number">{{ display(point.deviation_kcal, ' kcal') }}</td>
+              <td class="number">{{ display(point.calories_kcal, ' kcal', kcal) }}</td>
+              <td class="number">{{ display(point.deviation_kcal, ' kcal', kcal) }}</td>
               <td v-if="activityColumnVisible" class="number">{{ displayActivityCredit(point) }}</td>
               <td class="number">{{ display(point.protein_g, ' g') }}</td>
               <td class="number">{{ display(point.carbs_g, ' g') }}</td>

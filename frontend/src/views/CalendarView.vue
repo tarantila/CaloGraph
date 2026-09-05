@@ -13,7 +13,7 @@ import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDayMonth, formatGermanWeekday } from '../date-format'
-import { createDateFormatter, createNumberFormatter, i18n } from '../i18n'
+import { createDateFormatter, createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import type { DailyPoint } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
@@ -40,6 +40,7 @@ function dayUnit(count: number) {
   return count === 1 ? t('common.day') : t('common.days')
 }
 const format = createNumberFormatter({ maximumFractionDigits: 0 })
+const kcal = createKcalFormatter()
 const monthFormat = createDateFormatter({ month: 'long', year: 'numeric' })
 
 function dateString(value: Date) {
@@ -74,7 +75,7 @@ function calorieProgressLabel(day: DailyPoint) {
   const budget = budgetValue(day)
   if (calories == null || budget == null) return ''
   const label = hasActivityCredit(day) ? t('activity.effectiveBudget') : t('charts.dailyBudget')
-  return `${format.format(calories)} ${t('common.of')} ${format.format(budget)} kcal ${label}`
+  return `${kcal.format(calories)} ${t('common.of')} ${kcal.format(budget)} kcal ${label}`
 }
 
 function monthRange() {
@@ -175,7 +176,7 @@ const averageCalories = computed(() => {
       </article>
       <article class="card insight-card">
         <span class="insight-icon teal"><PhChartBar :size="20" weight="duotone" /></span>
-        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : format.format(averageCalories) + ' kcal' }}</strong></span>
+        <span><small>{{ t('calendar.averageCalories') }}</small><strong>{{ averageCalories == null ? '–' : kcal.format(averageCalories) + ' kcal' }}</strong></span>
       </article>
       <article class="card insight-card">
         <span class="insight-icon red"><PhWarningCircle :size="20" weight="duotone" /></span>
@@ -210,13 +211,13 @@ const averageCalories = computed(() => {
             <strong>{{ formatGermanWeekday(day.date) }}</strong>
             <time :datetime="day.date">{{ formatGermanDayMonth(day.date) }}</time>
           </div>
-          <b>{{ calorieValue(day) == null ? '–' : format.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
+          <b>{{ calorieValue(day) == null ? '–' : kcal.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
           <span>{{ classificationLabel(day.classification) }}</span>
           <small v-if="day.target_kcal != null" class="calendar-day-reference">
-            {{ hasActivityCredit(day) ? t('activity.baseBudget') : t('charts.dailyBudget') }} {{ format.format(Number(day.target_kcal)) }}
+            {{ hasActivityCredit(day) ? t('activity.baseBudget') : t('charts.dailyBudget') }} {{ kcal.format(Number(day.target_kcal)) }}
             <template v-if="hasActivityCredit(day)">
-              · {{ t('activity.activityCredit') }} +{{ format.format(Number(day.activity_credit_kcal)) }}
-              · {{ t('activity.effectiveBudget') }} {{ day.effective_budget_kcal == null ? '–' : format.format(Number(day.effective_budget_kcal)) }}
+              · {{ t('activity.activityCredit') }} +{{ kcal.format(Number(day.activity_credit_kcal)) }}
+              · {{ t('activity.effectiveBudget') }} {{ day.effective_budget_kcal == null ? '–' : kcal.format(Number(day.effective_budget_kcal)) }}
             </template>
             kcal
           </small>
