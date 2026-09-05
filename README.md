@@ -109,11 +109,12 @@ MIT-licensed dependency. See [YAZIO sync](docs/yazio-sync.md) and
 
 ## Quick start (local/private)
 
-Prerequisites: Docker Compose, Git and a local checkout. This example is for a
-loopback/private development instance, not an Internet-facing deployment.
+Prerequisites: Docker Compose and Git. This example is for a loopback/private
+development instance, not an Internet-facing deployment.
 
 ```sh
-git pull --ff-only
+git clone https://github.com/tarantila/CaloGraph.git
+cd CaloGraph
 cp .env.example .env
 ./scripts/init-secrets.sh
 # Review .env; keep CALOGRAPH_PUBLIC_URL on the address you use
