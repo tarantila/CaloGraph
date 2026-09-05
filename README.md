@@ -54,6 +54,24 @@ moral judgment or external telemetry.
   the browser, then further accounts are invitation-only with password, MFA and
   passkey options.
 
+## Future development
+
+CaloGraph is actively evolving. Planned areas of development include:
+
+- **AI-assisted nutrition analysis:** use structured nutrition, meal and food
+  data for deeper, opt-in analysis beyond charts and daily aggregates.
+- **Modernized YAZIO integration:** migrate the experimental direct YAZIO sync
+  from the legacy exporter path to a CaloGraph-owned integration based on the
+  newer community API and SDK.
+- **Richer Apple Health ingestion:** explore additional nutrition and meal-level
+  data where the available Apple Health export paths provide reliable metadata.
+- **Google Health integration:** explore the Google Health API as an additional
+  server-side source for health metrics, nutrition logs, meals and food data.
+
+These are planned development directions, not compatibility guarantees or
+release commitments. External provider APIs and available data may change over
+time.
+
 ## Multi-user by design
 
 Run one instance for multiple accounts. Health samples, imports, target history,
