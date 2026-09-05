@@ -4,9 +4,9 @@
 # Backend
 # -----------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:0.12.9@sha256:8b940d3a9d65bed080436972241af2e21c84b5e8c9193f7014ed71479ee795ff AS uv
+FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
 
-FROM python:3.14.7-alpine3.23@sha256:6b8f06d04d5305c1d1288435388df9165ab41e681fae6439d6349d8053cc3f83 AS backend-base
+FROM python:3.14.7-alpine3.23@sha256:8caa2adfeb414dfe68d8b257f7aea9e205a400521c2b13b2d2e5e731fb8e70e5 AS backend-base
 RUN apk upgrade --no-cache
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -44,7 +44,7 @@ COPY backend/tests ./tests
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-FROM python:3.14.7-alpine3.23@sha256:6b8f06d04d5305c1d1288435388df9165ab41e681fae6439d6349d8053cc3f83 AS backend-runtime
+FROM python:3.14.7-alpine3.23@sha256:8caa2adfeb414dfe68d8b257f7aea9e205a400521c2b13b2d2e5e731fb8e70e5 AS backend-runtime
 RUN apk upgrade --no-cache
 
 ARG APP_VERSION=development
@@ -115,7 +115,7 @@ EXPOSE 8000
 ENTRYPOINT ["backend-entrypoint"]
 CMD ["serve"]
 
-FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS backup-agent-runtime
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS backup-agent-runtime
 
 ARG APP_VERSION=development
 ARG APP_UID=10001
@@ -185,7 +185,7 @@ COPY frontend/ .
 
 CMD ["npx", "playwright", "test"]
 
-FROM nginxinc/nginx-unprivileged:1.31.4-alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9 AS frontend-runtime
+FROM nginxinc/nginx-unprivileged:1.31.5-alpine@sha256:aa8c9087d36d93e9d650c5365f883b421e8214aedbad24ade52b844c583358f1 AS frontend-runtime
 
 ARG APP_VERSION=development
 ARG APP_REVISION=unknown
