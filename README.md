@@ -54,6 +54,24 @@ moral judgment or external telemetry.
   the browser, then further accounts are invitation-only with password, MFA and
   passkey options.
 
+## Future development
+
+CaloGraph is actively evolving. Planned areas of development include:
+
+- **AI-assisted nutrition analysis:** use structured nutrition, meal and food
+  data for deeper, opt-in analysis beyond charts and daily aggregates.
+- **Modernized YAZIO integration:** migrate the experimental direct YAZIO sync
+  from the legacy exporter path to a CaloGraph-owned integration based on the
+  newer community API and SDK.
+- **Richer Apple Health ingestion:** explore additional nutrition and meal-level
+  data where the available Apple Health export paths provide reliable metadata.
+- **Google Health integration:** explore the Google Health API as an additional
+  server-side source for health metrics, nutrition logs, meals and food data.
+
+These are planned development directions, not compatibility guarantees or
+release commitments. External provider APIs and available data may change over
+time.
+
 ## Multi-user by design
 
 Run one instance for multiple accounts. Health samples, imports, target history,
@@ -91,11 +109,12 @@ MIT-licensed dependency. See [YAZIO sync](docs/yazio-sync.md) and
 
 ## Quick start (local/private)
 
-Prerequisites: Docker Compose, Git and a local checkout. This example is for a
-loopback/private development instance, not an Internet-facing deployment.
+Prerequisites: Docker Compose and Git. This example is for a loopback/private
+development instance, not an Internet-facing deployment.
 
 ```sh
-git pull --ff-only
+git clone https://github.com/tarantila/CaloGraph.git
+cd CaloGraph
 cp .env.example .env
 ./scripts/init-secrets.sh
 # Review .env; keep CALOGRAPH_PUBLIC_URL on the address you use
