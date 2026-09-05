@@ -50,6 +50,10 @@ YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)
 YAZIO_CIRCUIT_ACTION = "yazio-provider-failure"
 YAZIO_CIRCUIT_KEY = "provider:yzapi.yazio.com"
+YAZIO_VERSION_BLOCKED_MESSAGE = (
+    "Der von CaloGraph verwendete YAZIO-Client wird von YAZIO nicht mehr akzeptiert. "
+    "Prüfe, ob eine neuere CaloGraph-Version verfügbar ist."
+)
 
 
 class YazioSyncError(RuntimeError):
@@ -300,9 +304,7 @@ def validate_yazio_credentials(
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(
-            "Die konfigurierte YAZIO-API-Clientversion ist gesperrt."
-        ) from exc
+        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
         raise YazioRateLimitedError(exc.retry_after) from exc
@@ -381,9 +383,7 @@ def _fetch_yazio_payload_unlocked(
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(
-            "Die konfigurierte YAZIO-API-Clientversion ist gesperrt."
-        ) from exc
+        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
         raise YazioRateLimitedError(exc.retry_after) from exc

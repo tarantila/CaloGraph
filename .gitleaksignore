@@ -8,3 +8,5 @@ bbb3875e4c6861ff89598dab4a3f053d64418027:backend/tests/test_privileged_security_
 # Public YAZIO mobile-app client credential documented upstream; not a CaloGraph secret.
 1acaf8e1f6a84d842ff3cb0bb04d641e99d57ca0:.env.example:generic-api-key:109
 1acaf8e1f6a84d842ff3cb0bb04d641e99d57ca0:.env.production.example:generic-api-key:104
+# Public YAZIO mobile-app OAuth client credential; internal provider default, not a CaloGraph secret.
+4ae901dbda0a618d371fdad77914ca65270724a9:backend/app/config.py:generic-api-key:28

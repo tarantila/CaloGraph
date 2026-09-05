@@ -18,7 +18,11 @@ from app.auth.password_policy import (
     validate_new_password,
 )
 from app.auth.security import create_api_token, hash_password, purge_expired_sessions
-from app.config import ProductionConfigurationError, settings
+from app.config import (
+    ProductionConfigurationError,
+    settings,
+    warn_legacy_yazio_provider,
+)
 from app.database import SessionLocal
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
@@ -546,6 +550,7 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    warn_legacy_yazio_provider(logger)
     logger.info(
         "yazio_scheduler_started poll_seconds=%s jitter_minutes=%s",
         settings.yazio_scheduler_poll_seconds,
@@ -644,7 +649,7 @@ def parser() -> argparse.ArgumentParser:
     purge.set_defaults(handler=purge_raw)
     yazio = commands.add_parser(
         "sync-yazio",
-        help="Experimenteller Direktabruf über die inoffizielle YAZIO-Schnittstelle",
+        help="Direktabruf über die inoffizielle YAZIO-Schnittstelle",
     )
     yazio.add_argument("--username", default="admin")
     yazio.add_argument("--email")
