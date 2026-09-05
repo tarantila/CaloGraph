@@ -514,8 +514,6 @@ def _persist_import_locked(
     connector_variant: str | None = None,
 ) -> ImportSummary:
     payload_hash = hashlib.sha256(raw_payload).hexdigest() if raw_payload is not None else None
-    if connector_variant is None and result.source_type == "yazio_export_v1":
-        connector_variant = "legacy-v15"
     batch = _start_batch(
         db,
         user,

@@ -1,9 +1,9 @@
 """YAZIO community SDK v22 provider.
 
 This module is the only CaloGraph module that imports generated ``yazio_sdk``
-models and endpoint functions.  Calls are intentionally sequential and use
-only detailed generated operations so status and headers remain available for
-safe classification by the transport worker.
+models and endpoint functions. Calls use a bounded worker pool and only
+detailed generated operations so status and headers remain available for safe
+classification by the transport worker.
 """
 
 from __future__ import annotations
@@ -381,14 +381,12 @@ class YazioSdkProvider:
                         mapped[target_name] = value
                 days[item_day.isoformat()] = mapped
 
-            # The aggregate endpoint has no activity-energy field.  Widgets
-            # use the existing legacy request-worker cap, never unbounded
-            # parallelism, so long historical chunks remain within the parent
-            # operation deadline under normal latency.
-            requested_days = [
+            # The aggregate endpoint has no activity-energy field.  Keep the
+            # widget requests bounded by the shared worker cap.
+            requested_days = (
                 start_day + timedelta(days=offset)
                 for offset in range((end_day - start_day).days + 1)
-            ]
+            )
             with ThreadPoolExecutor(max_workers=settings.yazio_request_workers) as executor:
                 for item_day, activity in executor.map(
                     partial(_widget_activity, authenticated), requested_days

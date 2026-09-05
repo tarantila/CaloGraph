@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -85,10 +86,19 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
             ]
         )
 
+    active_requests = 0
+    max_active_requests = 0
+
     def widget(**kwargs: Any) -> _Response:
-        widget_calls.append(kwargs)
-        value = 300 if kwargs["date"] == "2026-08-01" else None
-        return _Response(parsed={"activity_energy": value})
+        nonlocal active_requests, max_active_requests
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        try:
+            time.sleep(0.005)
+            value = 300 if kwargs["date"] == "2026-08-01" else None
+            return _Response(parsed={"activity_energy": value})
+        finally:
+            active_requests -= 1
 
     monkeypatch.setattr(yazio_sdk_provider.get_daily_nutrients, "sync_detailed", daily)
     monkeypatch.setattr(yazio_sdk_provider.get_daily_summary_widget, "sync_detailed", widget)
@@ -123,6 +133,7 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
         "2026-08-02",
         "2026-08-03",
     ]
+    assert 1 < max_active_requests <= settings.yazio_request_workers
 
 
 def test_sdk_omits_missing_and_null_values_and_supports_empty_range(

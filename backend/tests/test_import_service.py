@@ -56,6 +56,25 @@ def test_repeated_import_is_idempotent(db: Session, user: User) -> None:
     assert count == 1
 
 
+def test_yazio_upload_without_connector_variant_keeps_provenance_unknown(
+    db: Session, user: User
+) -> None:
+    imported_sample = sample()
+    imported_sample.source_type = "yazio_export_v1"
+
+    result = persist_import(
+        db,
+        user,
+        AdapterResult("yazio_export_v1", [imported_sample], received=1),
+        None,
+        "application/json",
+        "uploaded-yazio.json",
+    )
+
+    batch = db.get(ImportBatch, result.batch_id)
+    assert batch is not None
+    assert batch.connector_variant is None
+
 def test_duplicate_samples_in_same_import_are_skipped(db: Session, user: User) -> None:
     first = sample()
     first.external_sample_id = None

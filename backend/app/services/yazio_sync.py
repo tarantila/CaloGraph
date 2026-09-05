@@ -500,9 +500,7 @@ def _sync_yazio_user_unlocked(
             include_micronutrients,
         )
     identifier = source_identifier or yazio_source_identifier(user.id)
-    connector_variant = (
-        "sdk-v22" if settings.yazio_provider == "sdk" else "legacy-v15"
-    ) if fetcher is None else None
+    connector_variant = "sdk-v22" if settings.yazio_provider == "sdk" else "legacy-v15"
     summary = import_yazio_payload(
         user,
         payload,

@@ -237,9 +237,10 @@ medical diagnosis.
 - CaloGraph owns the network transport around the exporter. Every request uses
   an explicit connect/read timeout, redirects are rejected, and authentication
   is never retried automatically.
-- The SDK provider uses `httpx.Timeout`, rejects redirects, sends one request
-  at a time, and calls generated `sync_detailed` operations so status and
-  `Retry-After` can be classified without exposing response bodies.
+- The SDK provider uses `httpx.Timeout`, rejects redirects, and uses a bounded
+  request worker pool without unbounded parallelism. It calls generated
+  `sync_detailed` operations so status and `Retry-After` can be classified
+  without exposing response bodies.
 - Worker serialization distinguishes authentication, `version_blocked`,
   bounded `rate_limited`, unavailable, network timeout, absolute deadline, and
   invalid response failures. No SDK request is retried automatically.
