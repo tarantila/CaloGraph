@@ -91,6 +91,7 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
 
     def widget(**kwargs: Any) -> _Response:
         nonlocal active_requests, max_active_requests
+        widget_calls.append(kwargs)
         active_requests += 1
         max_active_requests = max(max_active_requests, active_requests)
         try:
