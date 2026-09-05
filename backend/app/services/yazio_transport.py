@@ -300,7 +300,7 @@ def _execute_worker(payload: dict[str, object]) -> object:
     operation = payload.get("operation")
     email = payload.get("email")
     password = payload.get("password")
-    provider_mode = payload.get("provider_mode", "legacy")
+    provider_mode = payload.get("provider_mode")
     if (
         operation not in {"validate", "fetch"}
         or provider_mode not in {"legacy", "sdk"}

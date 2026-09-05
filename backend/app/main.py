@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from app.api.router import api_router
 from app.auth.password_policy import validate_password_blocklist
-from app.config import settings
+from app.config import settings, warn_legacy_yazio_provider
 from app.database import engine
 from app.problem_types import DATA_EXPORT_BUSY
 from app.security_events import (
@@ -34,6 +34,7 @@ logger = logging.getLogger("calograph")
 REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 settings.validate_runtime_security()
+warn_legacy_yazio_provider(logger)
 validate_password_blocklist()
 
 app = FastAPI(

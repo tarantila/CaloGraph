@@ -172,6 +172,23 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
     assert calls == [("owner@example.com", True)]
 
 
+def test_worker_rejects_missing_provider_mode() -> None:
+    with pytest.raises(ValueError, match="Invalid worker input"):
+        _execute_worker(
+            {
+                "operation": "fetch",
+                "email": "owner@example.com",
+                "password": "private-password",
+                "start_day": "2026-08-01",
+                "end_day": "2026-08-01",
+                "include_micronutrients": False,
+                "connect_timeout": 3.05,
+                "read_timeout": 15,
+                "request_workers": 3,
+            }
+        )
+
+
 def test_local_yazio_slots_are_per_user_and_globally_bounded(monkeypatch) -> None:
     monkeypatch.setattr(settings, "yazio_max_parallel_operations", 2)
 

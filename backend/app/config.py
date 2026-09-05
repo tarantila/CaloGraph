@@ -20,6 +20,17 @@ MAX_SECRET_FILE_BYTES = 16 * 1024
 APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS = 2
 BACKEND_TMPFS_RESERVE_BYTES = 16 * 1024 * 1024
 RuntimeRole = Literal["backend", "scheduler"]
+YAZIO_API_BASE_URL_DEFAULT = "https://yzapi.yazio.com"
+YAZIO_SDK_USER_AGENT_DEFAULT = (
+    "YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor"
+)
+YAZIO_SDK_CLIENT_ID_DEFAULT = "3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw"
+YAZIO_SDK_CLIENT_SECRET_DEFAULT = "25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k"
+YAZIO_LEGACY_DEPRECATION_MESSAGE = (
+    "The legacy YAZIO provider is deprecated. "
+    "Migrate to YAZIO_PROVIDER=sdk. "
+    "It will be removed no later than CaloGraph 1.0."
+)
 
 KNOWN_INSECURE_SECRETS = frozenset(
     {
@@ -205,29 +216,29 @@ class Settings(BaseSettings):
         exclude=True,
         repr=False,
     )
-    yazio_enabled: bool = True
-    # Internal rollout switch. Legacy remains the safe default because the
-    # v22 SDK does not provide micronutrient parity with yazio-exporter.
-    yazio_provider: Literal["legacy", "sdk"] = "legacy"
+    yazio_enabled: bool = False
+    # Explicit rollout choice. SDK is recommended; legacy remains available
+    # only as a deprecated compatibility provider.
+    yazio_provider: Literal["legacy", "sdk"] | None = None
     yazio_api_base_url: str = Field(
-        default="https://yzapi.yazio.com",
+        default=YAZIO_API_BASE_URL_DEFAULT,
         min_length=1,
         max_length=512,
     )
     yazio_sdk_user_agent: str = Field(
-        default="YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor",
+        default=YAZIO_SDK_USER_AGENT_DEFAULT,
         min_length=1,
         max_length=512,
     )
     yazio_sdk_client_id: str = Field(
-        default="3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw",
+        default=YAZIO_SDK_CLIENT_ID_DEFAULT,
         min_length=1,
         max_length=512,
         exclude=True,
         repr=False,
     )
     yazio_sdk_client_secret: str = Field(
-        default="25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k",
+        default=YAZIO_SDK_CLIENT_SECRET_DEFAULT,
         min_length=1,
         max_length=512,
         exclude=True,
@@ -342,6 +353,26 @@ class Settings(BaseSettings):
             port=self.database_port,
             database=self.database_name,
         ).render_as_string(hide_password=False)
+        return self
+
+    @field_validator("yazio_provider", mode="before")
+    @classmethod
+    def normalize_yazio_provider(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    @model_validator(mode="after")
+    def require_yazio_provider_when_enabled(self) -> Settings:
+        if self.yazio_enabled and self.yazio_provider is None:
+            raise ValueError(
+                "YAZIO_PROVIDER is required when YAZIO_ENABLED is true.\n"
+                "This setting was introduced with CaloGraph v0.6.4.\n"
+                "Set YAZIO_PROVIDER=sdk (recommended) or "
+                "YAZIO_PROVIDER=legacy (deprecated compatibility provider). "
+                "The legacy provider will be removed no later than CaloGraph 1.0."
+            )
         return self
 
     @field_validator("raw_payload_retention_days")
@@ -575,6 +606,11 @@ class Settings(BaseSettings):
         if self.calograph_public_url not in origins:
             origins.append(self.calograph_public_url)
         return origins
+
+
+def warn_legacy_yazio_provider(logger: logging.Logger) -> None:
+    if settings.yazio_provider == "legacy":
+        logger.warning(YAZIO_LEGACY_DEPRECATION_MESSAGE)
 
 
 @lru_cache
