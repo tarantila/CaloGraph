@@ -17,6 +17,11 @@ services:
     command: ["pytest"]
     networks: [data]
 
+    volumes:
+      - ./.env.example:/workspace/.env.example:ro
+      - ./.env.production.example:/workspace/.env.production.example:ro
+      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
+      - ./docker-compose.dev.yml:/workspace/docker-compose.dev.yml:ro
   postgres-ci:
     image: postgres:18.4-alpine
     environment:

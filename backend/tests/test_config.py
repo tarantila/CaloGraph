@@ -6,7 +6,17 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from app.config import ProductionConfigurationError, Settings
+from app.config import (
+    YAZIO_API_BASE_URL_DEFAULT,
+    YAZIO_LEGACY_DEPRECATION_MESSAGE,
+    YAZIO_SDK_CLIENT_ID_DEFAULT,
+    YAZIO_SDK_CLIENT_SECRET_DEFAULT,
+    YAZIO_SDK_USER_AGENT_DEFAULT,
+    ProductionConfigurationError,
+    Settings,
+    settings,
+    warn_legacy_yazio_provider,
+)
 
 
 def valid_production_settings(**overrides) -> Settings:
@@ -27,6 +37,7 @@ def valid_production_settings(**overrides) -> Settings:
         "credential_encryption_key": Fernet.generate_key().decode(),
         "mfa_encryption_key": Fernet.generate_key().decode(),
         "yazio_enabled": True,
+        "yazio_provider": "sdk",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -97,6 +108,102 @@ def test_environment_is_required(monkeypatch) -> None:
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("provider", [None, ""])
+def test_disabled_yazio_allows_missing_or_empty_provider(provider: str | None) -> None:
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=False,
+        yazio_provider=provider,
+    )
+
+    assert configured.yazio_provider is None
+
+
+@pytest.mark.parametrize("provider", [None, ""])
+def test_enabled_yazio_rejects_missing_or_empty_provider(provider: str | None) -> None:
+    with pytest.raises(ValidationError, match="YAZIO_PROVIDER is required"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            yazio_enabled=True,
+            yazio_provider=provider,
+        )
+
+
+@pytest.mark.parametrize("provider", ["sdk", "legacy"])
+def test_enabled_yazio_accepts_supported_provider(provider: str) -> None:
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+        yazio_provider=provider,
+    )
+
+    assert configured.yazio_provider == provider
+
+
+def test_yazio_provider_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            environment="development",
+            yazio_provider="invalid",
+        )
+
+
+def test_yazio_sdk_defaults_are_internal_and_stable() -> None:
+    configured = Settings(_env_file=None, environment="development")
+
+    assert configured.yazio_enabled is False
+    assert configured.yazio_provider is None
+    assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
+    assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
+    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
+
+
+def test_legacy_yazio_provider_warning_is_operator_facing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(settings, "yazio_provider", "legacy")
+    logger = logging.getLogger("test.yazio.provider")
+    caplog.set_level(logging.WARNING, logger=logger.name)
+
+    warn_legacy_yazio_provider(logger)
+
+    assert caplog.messages == [YAZIO_LEGACY_DEPRECATION_MESSAGE]
+
+
+def test_yazio_templates_and_compose_require_explicit_provider() -> None:
+    repository_roots = (
+        Path(__file__).resolve().parents[2],
+        Path("/workspace"),
+    )
+    repository_root = next(
+        root for root in repository_roots if (root / ".env.example").exists()
+    )
+    development = (repository_root / ".env.example").read_text()
+    production = (repository_root / ".env.production.example").read_text()
+    compose = (repository_root / "docker-compose.yml").read_text()
+    development_compose = (repository_root / "docker-compose.dev.yml").read_text()
+
+    assert "YAZIO_ENABLED=true" in development
+    assert "YAZIO_PROVIDER=sdk" in development
+    assert "YAZIO_ENABLED=false" in production
+    assert "YAZIO_PROVIDER=sdk" in production
+    for content in (development, production):
+        assert "YAZIO_API_BASE_URL" not in content
+        assert "YAZIO_SDK_USER_AGENT" not in content
+        assert "YAZIO_SDK_CLIENT_ID" not in content
+        assert "YAZIO_SDK_CLIENT_SECRET" not in content
+    assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
+    assert compose.count("YAZIO_PROVIDER: ${YAZIO_PROVIDER-}") == 2
+    assert "${YAZIO_PROVIDER:-legacy}" not in compose
+    assert "YAZIO_PROVIDER: \"sdk\"" in development_compose
 
 
 def test_validation_errors_do_not_echo_sensitive_inputs() -> None:
@@ -338,6 +445,7 @@ def test_scheduler_production_validation_only_requires_its_own_secrets(
         credential_encryption_key_file=str(credential_secret),
         rate_limit_secret_file=str(rate_limit_secret),
         yazio_enabled=True,
+        yazio_provider="sdk",
     )
 
     configured.validate_runtime_security("scheduler")
@@ -363,6 +471,7 @@ def test_scheduler_rejects_default_rate_limit_secret(
             write_secret(tmp_path / "credential-key", Fernet.generate_key())
         ),
         yazio_enabled=True,
+        yazio_provider="sdk",
     )
 
     with pytest.raises(ProductionConfigurationError, match="RATE_LIMIT_SECRET"):

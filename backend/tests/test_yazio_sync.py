@@ -25,6 +25,7 @@ from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioConnectionDisabled,
     YazioSyncError,
+    YazioVersionBlockedError,
     due_yazio_connection_ids,
     enqueue_historical_yazio_sync,
     run_due_yazio_syncs,
@@ -383,6 +384,30 @@ def test_scheduled_sync_records_safe_failure(
     assert stored.last_attempt_at is not None
     retry_delay = stored.next_sync_at - stored.last_attempt_at
     assert timedelta(hours=1, minutes=1) <= retry_delay <= timedelta(hours=1, minutes=30)
+
+
+def test_version_blocked_fetch_reports_operator_upgrade_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(yazio_sync, "_ensure_yazio_circuit_closed", lambda: None)
+    monkeypatch.setattr(yazio_sync, "_record_yazio_provider_failure", lambda: None)
+
+    def blocked_fetch(*_args, **_kwargs):
+        from app.services.yazio_transport import YazioTransportVersionBlockedError
+
+        raise YazioTransportVersionBlockedError("version blocked")
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", blocked_fetch)
+
+    with pytest.raises(YazioVersionBlockedError, match="neuere CaloGraph-Version"):
+        yazio_sync.fetch_yazio_payload(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            operation_key="test-version-blocked",
+        )
 
 
 

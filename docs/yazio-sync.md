@@ -7,28 +7,73 @@ CaloGraph therefore isolates the integration in its own adapter. Analytics and
 the database do not depend on the concrete exporter; if its format or interface
 changes, only the adapter should need adjustment.
 
-The stable default path remains:
-
-```text
-YAZIO → Apple Health → Health Auto Export → CaloGraph
-```
-
-The experimental path is:
-
-```text
-YAZIO → yazio-exporter → CaloGraph YAZIO adapter
-```
-
-## Provider rollout
-
-The default direct-sync provider remains `legacy`, which uses
-`yazio-exporter==0.2.0` and preserves the existing micronutrient behavior.
-`yazio-sdk==0.4.0` is available as an internal, non-UI provider selected with
-`YAZIO_PROVIDER=sdk`. The SDK's v22 aggregate endpoint contains energy,
-carbohydrates, protein, and fat, while its daily-summary widget can provide
-optional activity energy. It does not provide a safe daily micronutrient or
-fiber aggregate, so SDK results are explicitly marked incomplete and never
+The stable direct-sync provider is `sdk-v22`, backed by the pinned
+`yazio-sdk==0.4.0` and the YAZIO API v22. It maps the v22 aggregate endpoint
+to energy, carbohydrates, protein, and fat and reads optional activity energy
+from the daily-summary widget. It does not provide a safe daily micronutrient
+or fiber aggregate, so SDK results remain explicitly incomplete and never
 advance `last_micronutrient_sync_at`.
+
+`legacy-v15`, backed by `yazio-exporter==0.2.0`, remains available as a
+deprecated compatibility provider while its micronutrient and fiber coverage
+is still needed. It will be removed no later than CaloGraph 1.0.
+
+When direct YAZIO synchronization is enabled, `YAZIO_PROVIDER` must be set
+explicitly:
+
+```dotenv
+YAZIO_ENABLED=true
+YAZIO_PROVIDER=sdk
+```
+
+Use `YAZIO_PROVIDER=legacy` only as a temporary compatibility rollback. The
+application rejects an enabled installation with a missing or empty provider,
+and rejects every value other than `sdk` or `legacy`. Disabled installations
+may omit the provider.
+
+### Operator configuration
+
+Normal operator configuration consists of:
+
+- `YAZIO_ENABLED`
+- `YAZIO_PROVIDER`
+- optional rolling-sync defaults `YAZIO_SYNC_INTERVAL_HOURS` and
+  `YAZIO_SYNC_DAYS`
+
+Timeouts, worker limits, rate limits, circuit-breaker thresholds, and scheduler
+polling/jitter are advanced operational tuning:
+
+`YAZIO_CONNECT_TIMEOUT_SECONDS`, `YAZIO_READ_TIMEOUT_SECONDS`,
+`YAZIO_LOGIN_DEADLINE_SECONDS`, `YAZIO_OPERATION_DEADLINE_SECONDS`,
+`YAZIO_REQUEST_WORKERS`, `YAZIO_RATE_LIMIT`,
+`YAZIO_RATE_LIMIT_WINDOW_SECONDS`, `YAZIO_MAX_PARALLEL_OPERATIONS`,
+`YAZIO_CIRCUIT_FAILURE_LIMIT`, `YAZIO_CIRCUIT_WINDOW_SECONDS`,
+`YAZIO_SCHEDULER_POLL_SECONDS`, and `YAZIO_SCHEDULER_JITTER_MINUTES`.
+
+`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
+`YAZIO_SDK_CLIENT_SECRET` are internal provider details. CaloGraph supplies
+tested, versioned defaults; normal installations do not need to set them.
+The API origin remains fixed to `https://yzapi.yazio.com`. Maintainers may
+override these settings through the application environment when validating a
+compatible provider revision, but they are not personal credentials and are
+not generated per installation.
+
+The SDK defaults use the publicly documented YAZIO mobile-app OAuth client.
+All SDK-mode CaloGraph installations therefore share that client pair. If
+YAZIO disables or changes it, multiple installations can be affected at once.
+Generating random local values would not create a registered YAZIO client and
+would not solve this upstream dependency. CaloGraph does not add an instance
+ID or telemetry to YAZIO requests.
+
+The normal user configures only a personal YAZIO email address and password
+through CaloGraph. Those credentials remain in the existing per-user
+connection flow and are stored encrypted; they are unrelated to the SDK
+client defaults.
+
+If YAZIO responds with `403 {"error":"version_blocked"}`, CaloGraph reports:
+“Der von CaloGraph verwendete YAZIO-Client wird von YAZIO nicht mehr
+akzeptiert. Prüfe, ob eine neuere CaloGraph-Version verfügbar ist.” Users
+should update CaloGraph rather than editing User-Agent values.
 
 For internal provenance, each newly created direct-sync `ImportBatch` records
 `connector_variant` as `sdk-v22` or `legacy-v15`. The fachliche
@@ -38,13 +83,8 @@ remain unchanged. Existing batches keep their nullable legacy-compatible value.
 The connector variant is operational metadata and is intentionally not added to
 the normal imports UI or the portable export schema.
 
-Before enabling SDK mode in a deployment, perform this controlled sequence
-without putting credentials in logs: first run the focused offline provider
-fixtures, then use a disposable YAZIO test account against a staging
-installation, verify the captured User-Agent and v22 status classifications,
-compare a bounded multi-day response with an exporter fixture, and finally
-enable `YAZIO_PROVIDER=sdk` for one account while monitoring failures. Keep
-the legacy setting available for immediate rollback. This document does not
+Before enabling SDK mode in a deployment, perform the controlled staging
+sequence below without putting credentials in logs. This document does not
 execute or authorize live YAZIO requests.
 
 ### Controlled live verification sequence (later, staging only)
@@ -72,6 +112,25 @@ raw health payloads:
 7. **Historical sync last:** only after the preceding checks pass, run the
    initial historical synchronization for one test account. Keep
    `YAZIO_PROVIDER=legacy` as the immediate rollback.
+
+## Upgrade to CaloGraph v0.6.4
+
+Existing installations with enabled direct YAZIO synchronization must add an
+explicit provider selection before upgrading:
+
+```dotenv
+YAZIO_PROVIDER=sdk
+```
+
+For a temporary rollback or compatibility window, use:
+
+```dotenv
+YAZIO_PROVIDER=legacy
+```
+
+`legacy` is deprecated and will be removed no later than CaloGraph 1.0.
+Normal operators do not need to configure API URLs, User-Agent strings, SDK
+client values, or timeout, worker, and circuit-breaker settings.
 
 ## Available methods
 
@@ -232,11 +291,12 @@ medical diagnosis.
 
 ## Security and operational limits
 
-- Direct retrieval uses YAZIO's undocumented API through the pinned
-  `yazio-exporter==0.2.0` dependency.
-- CaloGraph owns the network transport around the exporter. Every request uses
-  an explicit connect/read timeout, redirects are rejected, and authentication
-  is never retried automatically.
+- Direct retrieval uses the explicitly selected provider. Legacy uses the
+  pinned `yazio-exporter==0.2.0` dependency; SDK uses the pinned community
+  `yazio-sdk==0.4.0` provider.
+- CaloGraph owns the network transport around both providers. Every request
+  uses explicit connect/read timeouts, redirects are rejected, and
+  authentication is never retried automatically.
 - The SDK provider uses `httpx.Timeout`, rejects redirects, and uses a bounded
   request worker pool without unbounded parallelism. It calls generated
   `sync_detailed` operations so status and `Retry-After` can be classified

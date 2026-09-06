@@ -67,6 +67,8 @@ from app.main import app
 from app.models import NutritionTarget, TrackingQualitySettings, User
 
 settings.mfa_encryption_key = Fernet.generate_key().decode()
+settings.yazio_enabled = True
+settings.yazio_provider = "legacy"
 
 
 def assert_safe_test_database() -> None:
