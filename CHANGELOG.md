@@ -5,6 +5,88 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-09-06
+
+### Upgrade notes
+
+Existing installations with enabled YAZIO Direct Sync must select a provider
+before upgrading to v0.6.4. Set the recommended provider explicitly:
+
+```env
+YAZIO_PROVIDER=sdk
+```
+
+`sdk` is the recommended provider. For a temporary compatibility or rollback
+path, use:
+
+```env
+YAZIO_PROVIDER=legacy
+```
+
+`legacy` is deprecated but remains functional in v0.6.4 and will be removed no
+later than CaloGraph 1.0. If `YAZIO_ENABLED=true` and `YAZIO_PROVIDER` is
+missing or empty, CaloGraph deliberately refuses to start and reports the
+migration requirement.
+
+New production templates use `YAZIO_ENABLED=false` and `YAZIO_PROVIDER=sdk`.
+YAZIO therefore remains disabled by default for new production installations.
+The internal, versioned provider defaults (`YAZIO_API_BASE_URL`,
+`YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
+`YAZIO_SDK_CLIENT_SECRET`) do not need to be configured by normal operators.
+The SDK client values are not personal YAZIO credentials and are not generated
+per CaloGraph installation. Personal YAZIO email addresses and passwords
+continue to be configured only through the existing CaloGraph web/API flow and
+remain encrypted per user.
+
+### YAZIO SDK provider
+
+- Added a YAZIO provider abstraction and the recommended SDK provider using
+  `yazio-sdk==0.4.0` and the private YAZIO API v22.
+- The deprecated `legacy-v15` provider remains available as a temporary
+  fallback.
+- Existing source identity and deduplication semantics remain unchanged.
+- Direct SDK imports are marked with `connector_variant=sdk-v22`; legacy direct
+  synchronization is marked `connector_variant=legacy-v15`.
+- Uploaded or historical YAZIO files may retain `connector_variant=NULL`; they
+  are not automatically migrated to `legacy-v15`.
+
+### Changed
+
+- kcal presentation now uses `ROUND_HALF_UP`; raw `HealthSample` and
+  `Decimal` values remain precise and unchanged.
+- YAZIO request concurrency is controlled and bounded.
+- YAZIO timeout, rate-limit, and circuit-breaker handling is hardened.
+- Explicit `version_blocked` guidance distinguishes an upstream client
+  rejection from other synchronization failures.
+- Starting with the deprecated legacy provider emits a deprecation warning.
+
+### Database migration
+
+- Alembic migration `ImportBatch.connector_variant` adds a nullable provenance
+  column.
+- The migration runs normally during upgrade; no manual data migration is
+  required.
+- Existing import and deduplication identity remains unchanged, and historical
+  uploads may keep a `NULL` connector variant.
+
+### Security / runtime hardening
+
+- Backend and scheduler containers now run as the non-root `calograph` user.
+- CI verifies the non-root runtime regression.
+- Trivy and the existing security gates remain active.
+
+### Known limitations
+
+- The SDK-v22 daily aggregate does not currently provide full micronutrient
+  parity with legacy-v15. Fiber is unavailable through the selected daily
+  aggregate endpoint, and missing values are not invented as zero.
+- YAZIO is a private, unofficial, reverse-engineered interface and may change
+  without notice; it is not an official YAZIO integration.
+- Food Diary persistence and YAZIO products/recipes persistence are out of
+  scope for v0.6.4. Google Health, additional Apple Health nutrition sources,
+  and AI nutrition analysis are also out of scope.
+
+
 ## [0.6.3] - 2026-09-04
 
 ### Upgrade notes
