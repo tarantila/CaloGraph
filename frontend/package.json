@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@intlify/devtools-types": "^11.4.10",
-    "@playwright/test": "1.62.1",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.13.3",
     "@vitejs/plugin-vue": "6.0.8",
