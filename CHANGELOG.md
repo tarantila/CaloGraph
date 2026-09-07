@@ -5,6 +5,41 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-09-07
+
+### YAZIO synchronization
+
+- Due YAZIO accounts are processed sequentially with a fixed 90-second delay between accounts.
+- No delay is added after the final due account.
+- Scheduler heartbeat handling remains active around the pacing delay.
+- The first authenticated CaloGraph use per user/local day can queue that user's YAZIO synchronization when YAZIO is globally enabled and the connection is enabled.
+- Authentication requests only queue database state; they never perform a YAZIO network request themselves.
+- A successful sync less than 30 minutes old satisfies the daily trigger without forcing another immediate synchronization.
+- Existing pending/running synchronization state is not disturbed.
+
+### Database migration
+
+- Migration `20260906_0024` adds the nullable `YazioConnection.last_daily_sync_trigger_date` marker.
+- Existing installations apply it through the normal migration path.
+- No manual data migration is required.
+
+### Upgrade notes
+
+- No new required environment variables are introduced.
+- YAZIO remains disabled by default unless the operator deliberately enables it.
+- Existing `YAZIO_PROVIDER` behavior from v0.6.4 remains unchanged.
+- The normal database migration must run during the upgrade.
+
+### Dependencies / maintenance
+
+- Refreshed container base images, including uv 0.12.10, Alpine 3.24, and nginx-unprivileged 1.31.5.
+- Updated Playwright to 1.63.0.
+- Updated Pinia to 4.0.3.
+- Updated Vue to 3.5.42.
+- Updated Vue Router to 5.3.1.
+- Refreshed the final nginx-unprivileged 1.31.5 image digest.
+- Corrected Dependabot Playwright multi-ecosystem cooldown handling so package and image updates can remain synchronized.
+
 ## [0.6.4] - 2026-09-06
 
 ### Upgrade notes
