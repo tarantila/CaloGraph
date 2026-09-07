@@ -35,7 +35,7 @@ moral judgment or external telemetry.
   <img
     src="docs/assets/dashboard-overview-v0.6.5.png"
     alt="CaloGraph nutrition dashboard showing calorie intake, remaining budget, macronutrient trends, weekly summary, and data status"
-    width="1000"
+    width="924"
   >
 </p>
 
