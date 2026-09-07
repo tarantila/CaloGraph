@@ -132,6 +132,30 @@ YAZIO_PROVIDER=legacy
 Normal operators do not need to configure API URLs, User-Agent strings, SDK
 client values, or timeout, worker, and circuit-breaker settings.
 
+## Automatic synchronization
+
+The dedicated `yazio-scheduler` polls due connections and performs provider
+access outside the web backend. When several user accounts are due in one
+cycle, the scheduler processes them sequentially with a fixed 90-second
+interval between accounts. There is no wait before the first account or after
+the last account. Existing per-user locks, provider capacity limits, retry
+state, rate limits, circuit breaker, and scheduler heartbeat remain active.
+
+### Daily trigger on app and login entry points
+
+At the first app request through `/auth/me` or after a successful login on each
+local calendar day, CaloGraph may queue the user's regular YAZIO
+synchronization. The local date is calculated from the user's configured
+timezone. A 30-minute freshness guard marks the daily trigger as handled
+without queuing another run when a recent successful synchronization already
+exists.
+
+The web request only updates PostgreSQL scheduling state. It never contacts
+YAZIO or invokes the SDK, transport, credential validation, or payload fetch.
+The existing `yazio-scheduler` notices the due `next_sync_at` and performs the
+provider operation through its normal VPN-routed path. No additional operator
+or environment configuration is required.
+
 ## Available methods
 
 ### Upload `days.json` or `nutrients.json`

@@ -16,6 +16,7 @@ from app.models import (
     UserSession,
     WebAuthnChallenge,
     WebAuthnUserHandle,
+    YazioConnection,
 )
 from app.services.passkeys import (
     PASSKEY_CHALLENGE_TTL_SECONDS,
@@ -203,6 +204,14 @@ def test_passkey_login_creates_session_and_updates_counter(
     )
 
     options = client.post("/api/v1/auth/passkey/options")
+    connection = YazioConnection(
+        user_id=user.id,
+        encrypted_email=b"encrypted-email",
+        encrypted_password=b"encrypted-password",
+        source_identifier="passkey-daily-trigger-test",
+    )
+    db.add(connection)
+    db.commit()
     assert options.status_code == 200
     original_create_session = create_session
     outer_lock_observed = False
@@ -230,6 +239,8 @@ def test_passkey_login_creates_session_and_updates_counter(
     assert response.status_code == 200
     assert response.json()["user"]["username"] == "admin"
     assert response.json()["csrf_token"]
+    db.refresh(connection)
+    assert connection.last_daily_sync_trigger_date is not None
     assert client.get("/api/v1/auth/me").status_code == 200
     db.expire_all()
     passkey = db.scalar(select(PasskeyCredential))

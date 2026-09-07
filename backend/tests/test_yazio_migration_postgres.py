@@ -510,6 +510,16 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
                     {"external_sample_id": sample_rows[0]["external_sample_id"]},
                 ).mappings()
             )
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT last_daily_sync_trigger_date
+                    FROM yazio_connections
+                    WHERE id = :id
+                    """
+                ),
+                {"id": connection_id},
+            ) is None
         assert active_energy_rows == [
             {
                 "id": sample_rows[0]["id"],

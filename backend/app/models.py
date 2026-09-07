@@ -171,6 +171,7 @@ class YazioConnection(Base):
     historical_sync_last_error: Mapped[str | None] = mapped_column(String(500))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_daily_sync_trigger_date: Mapped[date | None] = mapped_column(Date)
     last_micronutrient_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )

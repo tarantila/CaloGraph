@@ -97,6 +97,7 @@ from app.services.user_operation_lock import (
     exclusive_initial_user_operation,
     shared_user_operation,
 )
+from app.services.yazio_sync import queue_daily_yazio_sync_best_effort
 
 router = APIRouter(prefix="/auth", tags=["Authentifizierung"])
 REGISTRATION_COOKIE_NAME = "calograph_registration"
@@ -491,6 +492,7 @@ def login(
     session, raw_token, csrf_token = create_session(db, user)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
+    queue_daily_yazio_sync_best_effort(user.id)
     _log_login(request, "succeeded", client_key, account_key, actor=user)
     return {
         "mfa_required": False,
@@ -608,6 +610,7 @@ def verify_passkey_login(
         raise_invalid_login()
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
+    queue_daily_yazio_sync_best_effort(user.id)
     log_security_event(
         "auth.passkey.login_succeeded",
         actor_ref=security_reference("user", user.id),
@@ -677,6 +680,7 @@ def verify_totp_login(
         _reject_mfa_login(db, request, client_key, account_key)
     _set_session_cookie(response, session, raw_token)
     _delete_mfa_challenge_cookie(response)
+    queue_daily_yazio_sync_best_effort(user.id)
     _log_login(request, "succeeded_with_mfa", client_key, account_key, actor=user)
     return {
         "mfa_required": False,
@@ -687,6 +691,7 @@ def verify_totp_login(
 
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(current_user)) -> User:
+    queue_daily_yazio_sync_best_effort(user.id)
     return user
 
 

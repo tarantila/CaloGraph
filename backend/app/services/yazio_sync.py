@@ -1,4 +1,6 @@
+import logging
 import secrets
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime, timedelta
@@ -48,12 +50,16 @@ from app.services.yazio_transport import (
 
 YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)
+YAZIO_DAILY_SYNC_FRESHNESS = timedelta(minutes=30)
+YAZIO_INTER_ACCOUNT_DELAY_SECONDS = 90
 YAZIO_CIRCUIT_ACTION = "yazio-provider-failure"
 YAZIO_CIRCUIT_KEY = "provider:yzapi.yazio.com"
 YAZIO_VERSION_BLOCKED_MESSAGE = (
     "Der von CaloGraph verwendete YAZIO-Client wird von YAZIO nicht mehr akzeptiert. "
     "Prüfe, ob eine neuere CaloGraph-Version verfügbar ist."
 )
+
+logger = logging.getLogger(__name__)
 
 
 class YazioSyncError(RuntimeError):
@@ -251,6 +257,81 @@ def _yazio_operation_key(email: str) -> str:
 def _require_yazio_enabled() -> None:
     if not settings.yazio_enabled:
         raise YazioDisabled("Die YAZIO-Funktion ist auf diesem Server deaktiviert.")
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def queue_daily_yazio_sync_if_due(
+    db: Session,
+    user: User,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if not settings.yazio_enabled or not user.is_active:
+        return False
+
+    connection = db.scalar(
+        select(YazioConnection)
+        .where(YazioConnection.user_id == user.id)
+        .with_for_update()
+    )
+    if connection is None or not connection.sync_enabled:
+        return False
+    if connection.historical_sync_state in {"pending", "running"}:
+        return False
+
+    current_time = _utc_datetime(now or datetime.now(UTC))
+    local_today = current_time.astimezone(ZoneInfo(user.timezone)).date()
+    if connection.last_daily_sync_trigger_date == local_today:
+        return False
+
+    connection.last_daily_sync_trigger_date = local_today
+    last_success_at = (
+        _utc_datetime(connection.last_success_at)
+        if connection.last_success_at is not None
+        else None
+    )
+    if (
+        last_success_at is not None
+        and current_time - last_success_at < YAZIO_DAILY_SYNC_FRESHNESS
+    ):
+        db.commit()
+        return True
+
+    if connection.next_sync_at is None or _utc_datetime(connection.next_sync_at) > current_time:
+        connection.next_sync_at = current_time
+    db.commit()
+    return True
+
+
+def queue_daily_yazio_sync_best_effort(
+    user_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> None:
+    try:
+        with SessionLocal() as db:
+            try:
+                user = db.get(User, user_id)
+                if user is None:
+                    return
+                queue_daily_yazio_sync_if_due(db, user, now=now)
+            except Exception:
+                db.rollback()
+                raise
+    except Exception as exc:
+        logger.warning(
+            "yazio_daily_trigger_failed user_ref=%s error_type=%s",
+            security_reference("user", user_id),
+            type(exc).__name__,
+        )
+
+
+def _sleep_between_yazio_connections() -> None:
+    time.sleep(YAZIO_INTER_ACCOUNT_DELAY_SECONDS)
 
 
 def _ensure_yazio_circuit_closed() -> None:
@@ -953,12 +1034,16 @@ def run_due_yazio_syncs(
     fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
     after_connection: Callable[[], None] | None = None,
+    between_connections: Callable[[], None] | None = None,
 ) -> tuple[int, int]:
     if not settings.yazio_enabled:
         return 0, 0
     connection_ids = due_yazio_connection_ids(now)
     succeeded = 0
-    for connection_id in connection_ids:
+    pace = between_connections or _sleep_between_yazio_connections
+    for index, connection_id in enumerate(connection_ids):
+        if index:
+            pace()
         try:
             if run_scheduled_yazio_sync(connection_id, fetcher=fetcher, now=now) is not None:
                 succeeded += 1

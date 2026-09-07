@@ -19,6 +19,7 @@ from app.models import (
     User,
     UserAchievement,
     UserTotpCredential,
+    YazioConnection,
 )
 from app.services.mfa_crypto import MfaEncryptionError, decrypt_mfa_secret
 from app.services.user_operation_lock import (
@@ -82,6 +83,19 @@ def test_totp_login_blocks_session_until_factor_and_prevents_replay(
         "recovery_codes_remaining": 10,
     }
     stored_hashes = set(db.scalars(select(MfaRecoveryCode.code_hash)))
+
+    admin = db.scalar(select(User).where(User.username == "admin"))
+    assert admin is not None
+    connection = YazioConnection(
+        user_id=admin.id,
+        encrypted_email=b"encrypted-email",
+        encrypted_password=b"encrypted-password",
+        source_identifier="mfa-daily-trigger-test",
+    )
+    db.add(connection)
+    db.commit()
+    connection.last_daily_sync_trigger_date = None
+    db.commit()
     assert len(stored_hashes) == 10
     assert all(code.replace("-", "") not in stored_hashes for code in recovery_codes)
 
@@ -126,6 +140,8 @@ def test_totp_login_blocks_session_until_factor_and_prevents_replay(
     assert "csrf_token" in verified.json()
 
     assert _login(client) == {"mfa_required": True}
+    db.refresh(connection)
+    assert connection.last_daily_sync_trigger_date is not None
     replay = client.post(
         "/api/v1/auth/mfa/totp/verify",
         json={"code": following_code},

@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
@@ -847,28 +848,61 @@ def test_history_range_rejects_dates_before_discovery_boundary(
         )
 
 
-def test_due_yazio_sync_reports_progress_after_each_connection(
-    user: User,
+def test_due_yazio_sync_paces_between_accounts_and_isolates_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _configure_key(monkeypatch)
-    configure_yazio_connection(user, "owner@example.com", "yazio-password")
-    progress: list[None] = []
-
-    def fake_fetch(_email, _password, _start_day, end_day, _include_micronutrients):
-        return {
-            end_day.isoformat(): {
-                "daily_summary": {
-                    "meals": {"dinner": {"nutrients": {"energy.energy": 1800}}}
-                }
-            }
-        }
+    connection_ids = [uuid4(), uuid4(), uuid4()]
+    results = {
+        connection_ids[0]: None,
+        connection_ids[1]: object(),
+        connection_ids[2]: object(),
+    }
+    waits: list[int] = []
+    completed: list[object] = []
+    attempted: list[object] = []
+    monkeypatch.setattr(
+        yazio_sync,
+        "due_yazio_connection_ids",
+        lambda _now: connection_ids,
+    )
+    monkeypatch.setattr(
+        yazio_sync,
+        "run_scheduled_yazio_sync",
+        lambda connection_id, **_kwargs: (
+            attempted.append(connection_id) or results[connection_id]
+        ),
+    )
 
     assert run_due_yazio_syncs(
-        fetcher=fake_fetch,
-        after_connection=lambda: progress.append(None),
-    ) == (1, 1)
-    assert progress == [None]
+        between_connections=lambda: waits.append(
+            yazio_sync.YAZIO_INTER_ACCOUNT_DELAY_SECONDS
+        ),
+        after_connection=lambda: completed.append(None),
+    ) == (3, 2)
+    assert attempted == connection_ids
+    assert waits == [90, 90]
+    assert completed == [None, None, None]
+
+
+def test_due_yazio_sync_default_pacing_sleeps_exactly_once_for_two_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection_ids = [uuid4(), uuid4()]
+    sleeps: list[int] = []
+    monkeypatch.setattr(
+        yazio_sync,
+        "due_yazio_connection_ids",
+        lambda _now: connection_ids,
+    )
+    monkeypatch.setattr(
+        yazio_sync,
+        "run_scheduled_yazio_sync",
+        lambda _connection_id, **_kwargs: object(),
+    )
+    monkeypatch.setattr(yazio_sync.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert run_due_yazio_syncs() == (2, 2)
+    assert sleeps == [90]
 
 
 def test_history_queue_rejects_disabled_connection(

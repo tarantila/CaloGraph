@@ -60,6 +60,7 @@ from app.services.user_operation_lock import (
     shared_user_operation,
 )
 from app.services.yazio_sync import (
+    YAZIO_INTER_ACCOUNT_DELAY_SECONDS,
     YazioConnectionNotConfigured,
     YazioSyncError,
     configure_yazio_connection,
@@ -540,6 +541,10 @@ def queue_yazio_history(args: argparse.Namespace) -> None:
 def _touch_yazio_scheduler_heartbeat() -> None:
     Path("/tmp/yazio-scheduler-heartbeat").touch()
 
+def _wait_between_yazio_connections() -> None:
+    time.sleep(YAZIO_INTER_ACCOUNT_DELAY_SECONDS)
+    _touch_yazio_scheduler_heartbeat()
+
 
 def run_yazio_scheduler(args: argparse.Namespace) -> None:
     try:
@@ -561,7 +566,8 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         try:
             _touch_yazio_scheduler_heartbeat()
             attempted, succeeded = run_due_yazio_syncs(
-                after_connection=_touch_yazio_scheduler_heartbeat
+                after_connection=_touch_yazio_scheduler_heartbeat,
+                between_connections=_wait_between_yazio_connections,
             )
             monotonic_now = time.monotonic()
             if monotonic_now - last_security_cleanup >= 3600:
