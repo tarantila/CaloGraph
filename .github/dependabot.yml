@@ -25,6 +25,9 @@ updates:
     directory: /
     patterns: ["playwright"]
     multi-ecosystem-group: playwright
+    cooldown:
+      exclude:
+        - playwright
 
   - package-ecosystem: npm
     directory: /frontend
@@ -33,6 +36,9 @@ updates:
     allow:
       - dependency-name: "@playwright/test"
         dependency-type: development
+    cooldown:
+      exclude:
+        - "@playwright/test"
 
   - package-ecosystem: docker
     directory: /
