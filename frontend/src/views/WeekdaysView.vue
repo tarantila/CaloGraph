@@ -9,6 +9,7 @@ import {
   analyticsPresetMatchesRange,
   inferDesktopPreset,
   parseAnalyticsCompactPreset,
+  resolveAnalyticsRange,
   type AnalyticsCompactPreset,
 } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
@@ -40,8 +41,10 @@ const iso = (value: Date) => {
   const day = `${value.getDate()}`.padStart(2, '0')
   return `${year}-${month}-${day}`
 }
-const start = ref(String(route.query.start ?? iso(defaultStartDate)))
-const end = ref(String(route.query.end ?? iso(currentDate)))
+const defaultRange = { start: iso(defaultStartDate), end: iso(currentDate) }
+const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
+const start = ref(initialRange.start)
+const end = ref(initialRange.end)
 const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', '180', 'all']
 const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
 const period = ref<AnalyticsCompactPreset | undefined>(

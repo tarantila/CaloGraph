@@ -24,6 +24,15 @@ export function validAnalyticsRange(start: unknown, end: unknown): boolean {
     && start <= end
 }
 
+export function resolveAnalyticsRange(
+  start: unknown,
+  end: unknown,
+  fallback: { start: string; end: string },
+): { start: string; end: string } {
+  if (!validAnalyticsRange(start, end)) return fallback
+  return { start: start as string, end: end as string }
+}
+
 export function analyticsPresetMatchesRange(
   value: AnalyticsCompactPreset | undefined,
   start: unknown,
