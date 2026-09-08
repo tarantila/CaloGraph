@@ -587,3 +587,16 @@ class SecurityAuditEvent(Base):
 
 
 JsonDict = dict[str, Any]
+from app.nutrition.models import (  # noqa: E402,F401
+    NutritionConsumptionEvent,
+    NutritionExternalIdentity,
+    NutritionExternalIdentityLink,
+    NutritionFieldObservation,
+    NutritionFoodProfile,
+    NutritionFoodSnapshot,
+    NutritionIngestionRun,
+    NutritionProvenance,
+    NutritionServingObservation,
+    NutritionSourceObservation,
+    NutritionSourceTombstone,
+)
