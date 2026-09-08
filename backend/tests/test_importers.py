@@ -3,6 +3,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
+from xml.etree.ElementTree import Element
 
 import pytest
 from defusedxml.common import DefusedXmlException
@@ -11,7 +12,7 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 
 from app.config import settings
-from app.importers import json_adapter
+from app.importers import apple_xml, json_adapter
 from app.importers import yazio as yazio_importer
 from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.common import (
@@ -327,6 +328,110 @@ def test_yazio_adapter_never_leaks_unexpected_exceptions(
 ) -> None:
     with suppress(ImportFormatError):
         parse_yazio_export(payload, "Europe/Berlin")
+
+
+def test_apple_record_helper_converts_supported_record() -> None:
+    element = Element(
+        "Record",
+        {
+            "type": "HKQuantityTypeIdentifierDietaryProtein",
+            "value": "42.5",
+            "unit": "g",
+            "startDate": "2026-08-17 10:00:00 +0200",
+            "endDate": "2026-08-17 10:30:00 +0200",
+            "creationDate": "ignored even when malformed",
+        },
+    )
+
+    record = apple_xml._record_from_element(element, "Europe/Berlin", 3)
+
+    assert record.error is None
+    assert record.unknown_type is None
+    assert record.sample is not None
+    assert record.sample.metric_type == "protein_g"
+    assert record.sample.value == Decimal("42.500000")
+    assert record.sample.unit == "g"
+    assert record.sample.original_value == Decimal("42.5")
+    assert record.sample.original_unit == "g"
+    assert record.sample.start_at == datetime(2026, 8, 17, 8, 0, tzinfo=UTC)
+    assert record.sample.end_at == datetime(2026, 8, 17, 8, 30, tzinfo=UTC)
+    assert record.sample.timezone == "Europe/Berlin"
+    assert record.sample.source_type == "apple_health_xml"
+    assert record.sample.source_name is None
+    assert record.sample.source_identifier == "apple-health"
+    assert record.sample.external_sample_id is None
+
+
+@pytest.mark.parametrize(
+    ("source_attrs", "expected_source_name", "expected_identifier"),
+    [
+        ({"sourceName": "iPhone", "sourceVersion": "17.6"}, "iPhone", "17.6"),
+        ({"sourceName": "iPhone"}, "iPhone", "iPhone"),
+        ({}, None, "apple-health"),
+    ],
+)
+def test_apple_record_helper_preserves_source_identifier_fallback(
+    source_attrs: dict[str, str],
+    expected_source_name: str | None,
+    expected_identifier: str,
+) -> None:
+    attrs = {
+        "type": "HKQuantityTypeIdentifierDietaryProtein",
+        "value": "10",
+        "unit": "g",
+        "startDate": "2026-08-17 10:00:00 +0200",
+    }
+    attrs.update(source_attrs)
+
+    record = apple_xml._record_from_element(Element("Record", attrs), "Europe/Berlin", 0)
+
+    assert record.sample is not None
+    assert record.sample.source_name == expected_source_name
+    assert record.sample.source_identifier == expected_identifier
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected_unknown_type"),
+    [
+        ("HKQuantityTypeIdentifierUnsupported", "HKQuantityTypeIdentifierUnsupported"),
+        ("HKQuantityTypeIdentifierDietaryWater", None),
+    ],
+)
+def test_apple_record_helper_preserves_unknown_and_ignored_types(
+    raw_type: str,
+    expected_unknown_type: str | None,
+) -> None:
+    record = apple_xml._record_from_element(
+        Element("Record", {"type": raw_type}),
+        "Europe/Berlin",
+        4,
+    )
+
+    assert record.sample is None
+    assert record.error is None
+    assert record.unknown_type == expected_unknown_type
+
+
+def test_apple_record_helper_returns_safe_error_for_malformed_record() -> None:
+    element = Element(
+        "Record",
+        {
+            "type": "HKQuantityTypeIdentifierDietaryProtein",
+            "value": "10",
+            "unit": "g",
+        },
+    )
+
+    record = apple_xml._record_from_element(element, "Europe/Berlin", 7)
+
+    assert record.sample is None
+    assert record.unknown_type is None
+    assert record.error == (
+        7,
+        "HKQuantityTypeIdentifierDietaryProtein",
+        "invalid_sample",
+        "Messwert enthält ungültige oder zu lange Felder",
+    )
 
 
 def test_xml_entities_are_rejected() -> None:
