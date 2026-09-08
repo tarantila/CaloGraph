@@ -13,6 +13,7 @@ import {
   analyticsPresetMatchesRange,
   inferDesktopPreset,
   parseAnalyticsCompactPreset,
+  resolveAnalyticsRange,
   type AnalyticsCompactPreset,
 } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
@@ -60,8 +61,10 @@ const route = useRoute()
 const router = useRouter()
 const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
 const before = shiftIsoDate(today, -29)
-const start = ref(String(route.query.start ?? before))
-const end = ref(String(route.query.end ?? today))
+const defaultRange = { start: before, end: today }
+const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
+const start = ref(initialRange.start)
+const end = ref(initialRange.end)
 const source = ref(String(route.query.source ?? 'yazio_export_v1'))
 const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
 const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)

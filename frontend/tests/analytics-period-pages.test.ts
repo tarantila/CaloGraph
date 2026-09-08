@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { createMemoryHistory, createRouter, type RouteLocationRaw } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
@@ -33,9 +33,9 @@ function setUser() {
   }
 }
 
-async function mountView(component: typeof DailyView, path = '/') {
+async function mountView(component: typeof DailyView, location: RouteLocationRaw = '/') {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component }] })
-  await router.push(path)
+  await router.push(location)
   await router.isReady()
   const wrapper = mount(component, {
     global: { plugins: [router], stubs: { ChartPanel: true } },
@@ -43,6 +43,38 @@ async function mountView(component: typeof DailyView, path = '/') {
   await flushPromises()
   return wrapper
 }
+
+function requestFor(prefix: string): string {
+  const call = apiMock.mock.calls.find(([path]) => typeof path === 'string' && path.startsWith(prefix))
+  if (!call) throw new Error(`No API request matched ${prefix}`)
+  return call[0] as string
+}
+
+function browserIso(value: Date): string {
+  const year = value.getFullYear()
+  const month = `${value.getMonth() + 1}`.padStart(2, '0')
+  const day = `${value.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function weekdaysDefaultRange() {
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(end.getDate() - 179)
+  return { start: browserIso(start), end: browserIso(end) }
+}
+
+const analyticsViews = [
+  { component: DailyView, endpoint: '/analytics/daily', defaultRange: () => {
+    const end = isoDateInTimeZone('Europe/Berlin')
+    return { start: shiftIsoDate(end, -29), end }
+  }, suffix: '' },
+  { component: MicronutrientsView, endpoint: '/analytics/micronutrients', defaultRange: () => {
+    const end = isoDateInTimeZone('Europe/Berlin')
+    return { start: shiftIsoDate(end, -29), end }
+  }, suffix: '&source=yazio_export_v1' },
+  { component: WeekdaysView, endpoint: '/analytics/weekdays', defaultRange: weekdaysDefaultRange, suffix: '' },
+] as const
 
 beforeEach(() => {
   setLocale('de')
@@ -127,5 +159,62 @@ describe('analytics page responsive period integrations', () => {
 
     const weekdays = await mountView(WeekdaysView)
     expect(weekdays.getComponent(DateFilter).get('select').element.value).toBe('180')
+  })
+  it('preserves valid deep-linked ranges in all three analytics views', async () => {
+    const location = '/?start=2026-08-01&end=2026-08-31'
+    for (const view of analyticsViews) {
+      const wrapper = await mountView(view.component, location)
+      expect(requestFor(view.endpoint)).toBe(
+        `${view.endpoint}?start=2026-08-01&end=2026-08-31${view.suffix}`,
+      )
+      wrapper.unmount()
+      apiMock.mockClear()
+    }
+  })
+
+  it.each([
+    ['syntactically invalid start', '/?start=not-a-date&end=2026-08-31'],
+    ['impossible calendar date', '/?start=2026-02-30&end=2026-03-01'],
+    ['inverted range', '/?start=2026-08-31&end=2026-08-01'],
+    ['missing start', '/?end=2026-08-31'],
+    ['missing end', '/?start=2026-08-01'],
+  ])('uses each view default for %s', async (_label, location) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T12:00:00Z'))
+    try {
+      for (const view of analyticsViews) {
+        const wrapper = await mountView(view.component, location)
+        const range = view.defaultRange()
+        expect(requestFor(view.endpoint)).toBe(
+          `${view.endpoint}?start=${range.start}&end=${range.end}${view.suffix}`,
+        )
+        wrapper.unmount()
+        apiMock.mockClear()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses each view default for non-string router query values', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T12:00:00Z'))
+    try {
+      const location: RouteLocationRaw = {
+        path: '/',
+        query: { start: ['2026-08-01', '2026-08-02'], end: '2026-08-31' },
+      }
+      for (const view of analyticsViews) {
+        const wrapper = await mountView(view.component, location)
+        const range = view.defaultRange()
+        expect(requestFor(view.endpoint)).toBe(
+          `${view.endpoint}?start=${range.start}&end=${range.end}${view.suffix}`,
+        )
+        wrapper.unmount()
+        apiMock.mockClear()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
