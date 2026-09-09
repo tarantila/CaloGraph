@@ -31,6 +31,9 @@ from app.nutrition.enums import (
     OBSERVATION_KIND_VALUES,
     OBSERVATION_ROLE_VALUES,
     PRESENCE_VALUES,
+    PROJECTION_GRANULARITY_VALUES,
+    PROJECTION_LINEAGE_ROLE_VALUES,
+    PROJECTION_STATUS_VALUES,
     RESOLUTION_VALUES,
     RUN_STATUS_VALUES,
     SERVING_SCOPE_VALUES,
@@ -698,3 +701,168 @@ class NutritionProvenance(Base):
     lineage_state: Mapped[str] = mapped_column(String(16))
     provider_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class NutritionDailyProjection(Base):
+    __tablename__ = "nutrition_daily_projections"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_nutrition_projections_id_user"),
+        UniqueConstraint("id", "user_id", "local_date", name="uq_nutrition_projections_id_scope"),
+        UniqueConstraint(
+            "user_id",
+            "local_date",
+            "projection_version",
+            name="uq_nutrition_projections_user_date_version",
+        ),
+        ForeignKeyConstraint(
+            ["priority_policy_id", "user_id"],
+            ["source_priority_policies.id", "source_priority_policies.user_id"],
+            name="fk_nutrition_projections_policy_user",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("projection_version >= 1", name="ck_nutrition_projections_version"),
+        CheckConstraint(
+            "length(projection_algorithm_version) > 0",
+            name="ck_nutrition_projections_algorithm_version",
+        ),
+        CheckConstraint("length(input_watermark) > 0", name="ck_nutrition_projections_input_watermark"),
+        _in_check("projection_status", PROJECTION_STATUS_VALUES, "ck_nutrition_projections_status"),
+        Index("ix_nutrition_projections_user_date", "user_id", "local_date"),
+        Index("ix_nutrition_projections_user_policy", "user_id", "priority_policy_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    local_date: Mapped[date] = mapped_column(Date, nullable=False)
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    projection_algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    priority_policy_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    input_watermark: Mapped[str] = mapped_column(String(255), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    projection_status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class NutritionDailyProjectionFact(Base):
+    __tablename__ = "nutrition_daily_projection_facts"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_nutrition_projection_facts_id_user"),
+        UniqueConstraint("projection_id", "metric_key", name="uq_nutrition_projection_facts_metric"),
+        ForeignKeyConstraint(
+            ["projection_id", "user_id"],
+            ["nutrition_daily_projections.id", "nutrition_daily_projections.user_id"],
+            name="fk_nutrition_projection_facts_projection_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("length(metric_key) > 0", name="ck_nutrition_projection_facts_metric"),
+        CheckConstraint(
+            "selected_provider_key IS NULL OR length(selected_provider_key) > 0",
+            name="ck_nutrition_projection_facts_provider",
+        ),
+        _in_check(
+            "selected_granularity",
+            PROJECTION_GRANULARITY_VALUES,
+            "ck_nutrition_projection_facts_granularity",
+        ),
+        _in_check("presence_state", PRESENCE_VALUES, "ck_nutrition_projection_facts_presence"),
+        _in_check("coverage_state", COVERAGE_VALUES, "ck_nutrition_projection_facts_coverage"),
+        _in_check("resolution_state", RESOLUTION_VALUES, "ck_nutrition_projection_facts_resolution"),
+        _in_check("lineage_state", LINEAGE_VALUES, "ck_nutrition_projection_facts_lineage"),
+        Index("ix_nutrition_projection_facts_user_metric", "user_id", "metric_key"),
+        Index("ix_nutrition_projection_facts_user_projection", "user_id", "projection_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    projection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    metric_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[Decimal | None] = mapped_column(_DECIMAL_TYPE)
+    unit: Mapped[str | None] = mapped_column(String(64))
+    selected_provider_key: Mapped[str | None] = mapped_column(String(64))
+    selected_granularity: Mapped[str | None] = mapped_column(String(32))
+    presence_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    coverage_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    resolution_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    lineage_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    diagnostic_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class NutritionDailyProjectionLineage(Base):
+    __tablename__ = "nutrition_daily_projection_lineage"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_nutrition_projection_lineage_id_user"),
+        UniqueConstraint(
+            "projection_fact_id",
+            "source_observation_id",
+            "role",
+            name="uq_nutrition_projection_lineage_relation",
+        ),
+        ForeignKeyConstraint(
+            ["projection_fact_id", "user_id"],
+            ["nutrition_daily_projection_facts.id", "nutrition_daily_projection_facts.user_id"],
+            name="fk_nutrition_projection_lineage_fact_user",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_observation_id", "user_id"],
+            ["nutrition_source_observations.id", "nutrition_source_observations.user_id"],
+            name="fk_nutrition_projection_lineage_source_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("length(provider_key) > 0", name="ck_nutrition_projection_lineage_provider"),
+        _in_check("role", PROJECTION_LINEAGE_ROLE_VALUES, "ck_nutrition_projection_lineage_role"),
+        _in_check(
+            "granularity",
+            PROJECTION_GRANULARITY_VALUES,
+            "ck_nutrition_projection_lineage_granularity",
+        ),
+        _in_check("presence_state", PRESENCE_VALUES, "ck_nutrition_projection_lineage_presence"),
+        _in_check("coverage_state", COVERAGE_VALUES, "ck_nutrition_projection_lineage_coverage"),
+        Index("ix_nutrition_projection_lineage_user_fact", "user_id", "projection_fact_id"),
+        Index("ix_nutrition_projection_lineage_user_source", "user_id", "source_observation_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    projection_fact_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    source_observation_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    granularity: Mapped[str | None] = mapped_column(String(32))
+    contribution_value: Mapped[Decimal | None] = mapped_column(_DECIMAL_TYPE)
+    presence_state: Mapped[str | None] = mapped_column(String(16))
+    coverage_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(128))
+    lineage_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class NutritionProjectionHead(Base):
+    __tablename__ = "nutrition_projection_heads"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["current_projection_id", "user_id", "local_date"],
+            [
+                "nutrition_daily_projections.id",
+                "nutrition_daily_projections.user_id",
+                "nutrition_daily_projections.local_date",
+            ],
+            name="fk_nutrition_projection_heads_projection_scope",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    local_date: Mapped[date] = mapped_column(Date, primary_key=True, nullable=False)
+    current_projection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

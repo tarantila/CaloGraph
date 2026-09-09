@@ -51,6 +51,29 @@ class LineageState(StrEnum):
     UNCERTAIN = "uncertain"
     UNKNOWN = "unknown"
 
+class ProjectionStatus(StrEnum):
+    READY = "ready"
+    FAILED = "failed"
+
+
+class ProjectionGranularity(StrEnum):
+    EVENT = "event"
+    SUMMARY = "summary"
+    PARTIAL_EVENT = "partial_event"
+
+
+class ProjectionLineageRole(StrEnum):
+    SELECTED = "selected"
+    FALLBACK = "fallback"
+    REJECTED = "rejected"
+    DIAGNOSTIC = "diagnostic"
+
+
+PROJECTION_STATUS_VALUES = tuple(item.value for item in ProjectionStatus)
+PROJECTION_GRANULARITY_VALUES = tuple(item.value for item in ProjectionGranularity)
+PROJECTION_LINEAGE_ROLE_VALUES = tuple(item.value for item in ProjectionLineageRole)
+
+
 
 class ObservationRole(StrEnum):
     PROVIDER = "provider"
