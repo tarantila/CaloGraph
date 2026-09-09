@@ -44,3 +44,9 @@ The enabled test uses an injected bounded-transport fake whose markers are emitt
 - Added the required `energy_goal=None` to the diary fixture.
 
 Round 1 runtime checks remain blocked by the same environment limitation above: the available system interpreter has neither the project dependencies nor pytest. The changed Python modules were syntax-checked with `python3 -m py_compile`.
+
+## Round 2 review fixes
+
+- Restored the legacy bounded transport imports (`fetch_yazio_payload_transport`, `threading`, and micronutrient IDs) and updated the disabled-rollout regression to patch the current domain transport boundary.
+- Kept malformed aggregate/diary worker responses inside the transport boundary as `YazioTransportInvalidResponseError`, while preserving typed provider failures for safe sync mapping.
+- `python3 -m py_compile` passed for all changed modules. Focused pytest, existing YAZIO sync tests, and Ruff remain unavailable because the environment lacks project dependencies, pytest, and the Ruff executable.

@@ -166,12 +166,12 @@ def test_disabled_legacy_path_never_constructs_food_diary_provider(
     monkeypatch.setattr(settings, "yazio_provider", "legacy")
     called = False
 
-    def forbidden_provider():
+    def forbidden_transport(*args, **kwargs):
         nonlocal called
         called = True
-        raise AssertionError("food diary provider must not be constructed in legacy mode")
+        raise AssertionError("domain transport must not run in legacy mode")
 
-    monkeypatch.setattr(yazio_sync, "get_yazio_food_diary_provider", forbidden_provider)
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", forbidden_transport)
     result = run_manual_yazio_sync(
         user.id,
         fetcher=lambda *_args: _aggregate(),

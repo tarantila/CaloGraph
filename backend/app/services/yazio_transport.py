@@ -1,7 +1,7 @@
 import json
 import subprocess
 import sys
-from collections.abc import Mapping
+import threading
 from contextlib import suppress
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, timedelta
@@ -21,6 +21,7 @@ from yazio_exporter.export_nutrients import (  # type: ignore[import-untyped]
 from yazio_exporter.utils import serialize_day_data  # type: ignore[import-untyped]
 
 from app.config import settings
+from app.micronutrients import YAZIO_MICRONUTRIENT_IDS
 from app.services.yazio_provider import (
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,

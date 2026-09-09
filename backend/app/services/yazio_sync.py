@@ -55,6 +55,7 @@ from app.services.yazio_transport import (
     YazioTransportUnavailableError,
     YazioTransportVersionBlockedError,
     fetch_yazio_domain_transport,
+    fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
 
