@@ -172,6 +172,67 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     }
 
 
+def test_sdk_maps_dotted_profile_nutrient_keys_to_canonical_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed=yazio_sdk_provider._generated_consumed_items(
+                {
+                    "products": [
+                        {
+                            "id": "event-1",
+                            "product_id": "p-1",
+                            "date": "2026-08-01",
+                        }
+                    ]
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_product,
+        "sync_detailed",
+        lambda _product_id, **_: _Response(
+            parsed=yazio_sdk_provider._generated_product(
+                {
+                    "base_unit": "g",
+                    "nutrients": {
+                        "energy.energy": 123,
+                        "nutrient.protein": 4,
+                        "nutrient.carb": 5,
+                        "nutrient.fat": 6,
+                        "nutrient.dietaryfiber": 7,
+                        "nutrient.sugar": 8,
+                        "nutrient.saturated": 9,
+                    },
+                }
+            )
+        ),
+    )
+
+    result = yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+        "owner@example.com", "password", date(2026, 8, 1), date(2026, 8, 1)
+    )
+
+    nutrients = result.product_profiles[0].nutrients
+    assert nutrients.energy == Decimal("123")
+    assert nutrients.protein == Decimal("4")
+    assert nutrients.carb == Decimal("5")
+    assert nutrients.fat == Decimal("6")
+    assert nutrients.fiber == Decimal("7")
+    assert nutrients.sugar == Decimal("8")
+    assert nutrients.saturated_fat == Decimal("9")
+
+
 def test_food_reads_one_day_each_and_cache_distinct_product_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_auth(monkeypatch)
     product_calls: list[str] = []
