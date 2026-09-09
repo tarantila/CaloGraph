@@ -8,7 +8,7 @@ import json
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -30,6 +30,7 @@ from app.nutrition.models import (
     NutritionIngestionRun,
     NutritionProvenance,
     NutritionServingObservation,
+    NutritionSourceObservation,
 )
 from app.nutrition.repositories import (
     create_ingestion_run,
@@ -55,7 +56,26 @@ _CONNECTOR = "sdk-v22"
 _MAX_METADATA_ITEMS = 32
 _MAX_METADATA_KEY = 128
 _MAX_METADATA_TEXT = 512
-_SENSITIVE_TERMS = ("authorization", "cookie", "credential", "header", "password", "raw", "response", "secret", "token")
+_SENSITIVE_TERMS = (
+    "access_key",
+    "access_token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+    "bearer",
+    "cookie",
+    "credential",
+    "header",
+    "key",
+    "password",
+    "raw",
+    "refresh",
+    "response",
+    "secret",
+    "session",
+    "token",
+)
 _NUTRIENTS = ("energy", "protein", "carb", "fat", "fiber", "sugar", "saturated_fat", "salt")
 _METRIC_KEYS = {
     "energy": "dietary_energy_kcal",
@@ -132,7 +152,7 @@ def _metadata_with(metadata: Mapping[str, Any] | None, **values: Any) -> dict[st
     merged.update(values)
     return _safe_metadata(merged)
 def _nutrient_value(nutrients: YazioNutrientValues, key: str) -> Decimal | None:
-    return getattr(nutrients, key)
+    return cast(Decimal | None, getattr(nutrients, key))
 
 
 def _metric_key(provider_key: str) -> str | None:
@@ -275,6 +295,7 @@ def _field(
     db.add(field)
     db.flush()
     _provenance(db, user_id=user_id, source_observation_id=source_observation_id, field_observation_id=field.id, lineage_state=lineage_state)
+    return field
 def _provenance(
     db: Session,
     *,
@@ -409,8 +430,14 @@ def _profile_fields(
             provider_metadata=profile.metadata,
         )
 
-
-def _profile_observation(db: Session, *, user_id: UUID, run_id: UUID, source_instance_id: UUID, profile: YazioProductProfile):
+def _profile_observation(
+    db: Session,
+    *,
+    user_id: UUID,
+    run_id: UUID,
+    source_instance_id: UUID,
+    profile: YazioProductProfile,
+) -> NutritionFoodSnapshot:
     metadata = _safe_metadata(profile.metadata)
     fingerprint = _fingerprint({"product_id": profile.product_id, "profile": _profile_data(profile)})
     observation = get_or_create_source_observation(
@@ -515,7 +542,7 @@ def _event_observation(
     namespace: str,
     kind: str,
     content_context: str | None = None,
-):
+) -> NutritionSourceObservation:
     metadata = _safe_metadata(item.metadata)
     data = _product_data(item, content_context) if isinstance(item, YazioConsumedProduct) else _simple_data(item)
     fingerprint = _fingerprint(data)
@@ -552,8 +579,9 @@ def _product_event(
     source_instance_id: UUID,
     item: YazioConsumedProduct,
     snapshots: dict[str, NutritionFoodSnapshot],
-):
+) -> None:
     snapshot = snapshots.get(item.product_id)
+    resolved = snapshot is not None and snapshot.base_unit is not None
     observation = _event_observation(
         db,
         user_id=user_id,
@@ -602,7 +630,7 @@ def _product_event(
         amount_unit=snapshot.base_unit if snapshot else None,
         presence_state=_presence(item.amount),
         coverage_state=CoverageState.COMPLETE.value,
-        resolution_state=ResolutionState.RESOLVED.value if snapshot else ResolutionState.UNRESOLVED.value,
+        resolution_state=ResolutionState.RESOLVED.value if resolved else ResolutionState.UNRESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
         content_hash=_fingerprint({"item": _product_data(item), "snapshot": snapshot.content_hash if snapshot else None}),
         provider_metadata=metadata,
@@ -634,7 +662,8 @@ def _product_event(
         role=ObservationRole.PROVIDER.value,
         provider_metadata=item.metadata,
     )
-    if snapshot is not None:
+    if resolved:
+        assert snapshot is not None
         profile_fields = db.scalars(
             select(NutritionFieldObservation).where(
                 NutritionFieldObservation.source_observation_id == snapshot.source_observation_id,
@@ -675,7 +704,14 @@ def _product_event(
     )
 
 
-def _simple_event(db: Session, *, user_id: UUID, run_id: UUID, source_instance_id: UUID, item: YazioConsumedSimpleProduct):
+def _simple_event(
+    db: Session,
+    *,
+    user_id: UUID,
+    run_id: UUID,
+    source_instance_id: UUID,
+    item: YazioConsumedSimpleProduct,
+) -> None:
     observation = _event_observation(db, user_id=user_id, run_id=run_id, source_instance_id=source_instance_id, item=item, namespace="yazio.simple_product", kind=ObservationKind.SIMPLE_PRODUCT.value)
     identity = get_or_create_external_identity(db, user_id=user_id, provider_key=_PROVIDER, namespace="yazio.simple_product", identity_value=item.consumed_item_id, identity_kind="simple_product", source_instance_id=source_instance_id, provider_metadata=_safe_metadata(item.metadata))
     metadata = _metadata_with(item.metadata, name=item.name, is_ai_generated=item.metadata.get("is_ai_generated"))
@@ -692,8 +728,16 @@ def _simple_event(db: Session, *, user_id: UUID, run_id: UUID, source_instance_i
     _serving(db, user_id=user_id, source_observation_id=observation.id, scope=ServingScope.EVENT.value, label=item.serving, quantity=item.serving_quantity, amount=None, unit=None, consumption_event_id=event.id, metadata=item.metadata)
 
 
-def _summary(db: Session, *, user_id: UUID, run_id: UUID, source_instance_id: UUID, item: YazioDailyNutrientSummary):
+def _summary(
+    db: Session,
+    *,
+    user_id: UUID,
+    run_id: UUID,
+    source_instance_id: UUID,
+    item: YazioDailyNutrientSummary,
+) -> None:
     metadata = _safe_metadata(item.metadata)
+    summary_missing = metadata.get("provider_summary_missing") is True
     fingerprint = _fingerprint(
         {
             "local_date": item.local_date,
@@ -714,9 +758,15 @@ def _summary(db: Session, *, user_id: UUID, run_id: UUID, source_instance_id: UU
         observation_fingerprint=fingerprint,
         observation_kind=ObservationKind.DAILY_SUMMARY.value,
         local_date=item.local_date,
-        presence_state=PresenceState.SUPPLIED.value,
-        coverage_state=CoverageState.COMPLETE.value,
-        resolution_state=ResolutionState.RESOLVED.value,
+        presence_state=(
+            PresenceState.MISSING.value if summary_missing else PresenceState.SUPPLIED.value
+        ),
+        coverage_state=(
+            CoverageState.PARTIAL.value if summary_missing else CoverageState.COMPLETE.value
+        ),
+        resolution_state=(
+            ResolutionState.UNRESOLVED.value if summary_missing else ResolutionState.RESOLVED.value
+        ),
         lineage_state=LineageState.CONFIRMED.value,
         payload_hash=fingerprint,
         provider_metadata=metadata,
@@ -814,11 +864,30 @@ def ingest_yazio_food_diary(
         },
     )
     snapshots = {profile.product_id: _profile_observation(db, user_id=user_id, run_id=run.id, source_instance_id=source_instance_id, profile=profile) for profile in diary.product_profiles}
-    for item in diary.consumed_products:
-        _product_event(db, user_id=user_id, run_id=run.id, source_instance_id=source_instance_id, item=item, snapshots=snapshots)
-    for item in diary.consumed_simple_products:
-        _simple_event(db, user_id=user_id, run_id=run.id, source_instance_id=source_instance_id, item=item)
-    for item in diary.daily_summaries:
-        _summary(db, user_id=user_id, run_id=run.id, source_instance_id=source_instance_id, item=item)
+    for consumed_product in diary.consumed_products:
+        _product_event(
+            db,
+            user_id=user_id,
+            run_id=run.id,
+            source_instance_id=source_instance_id,
+            item=consumed_product,
+            snapshots=snapshots,
+        )
+    for simple_product in diary.consumed_simple_products:
+        _simple_event(
+            db,
+            user_id=user_id,
+            run_id=run.id,
+            source_instance_id=source_instance_id,
+            item=simple_product,
+        )
+    for summary in diary.daily_summaries:
+        _summary(
+            db,
+            user_id=user_id,
+            run_id=run.id,
+            source_instance_id=source_instance_id,
+            item=summary,
+        )
     db.flush()
     return run

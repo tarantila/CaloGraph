@@ -16,6 +16,7 @@ from app.nutrition.enums import (
     ObservationKind,
     ObservationRole,
     PresenceState,
+    ResolutionState,
     ServingScope,
 )
 from app.nutrition.models import (
@@ -115,7 +116,12 @@ def _diary(
             serving_quantity=Decimal("1"),
             provider_timezone=None,
             name="Tea",
-            metadata={"is_ai_generated": True, "simple_safe": "yes", "token": token},
+            metadata={
+                "is_ai_generated": True,
+                "simple_safe": "yes",
+                "token": token,
+                "api_key": "must-not-store",
+            },
         ),
     ) if simple else ()
     summaries = (
@@ -168,6 +174,19 @@ def test_product_event_uses_profile_base_unit_without_scaling(db, user):
     assert by_metric["protein_g"].presence_state == PresenceState.EXPLICIT_ZERO.value
 
 
+
+
+def test_product_event_without_base_unit_is_unresolved_and_not_derived(db, user):
+    _ingest(db, user, _diary(base_unit=None), simple=False, summary=False)
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event.resolution_state == ResolutionState.UNRESOLVED.value
+    assert event.amount_unit is None
+    fields = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == event.source_observation_id
+        )
+    ).all()
+    assert not any(field.observation_role == ObservationRole.DERIVED.value for field in fields)
 def test_product_event_ml_uses_same_formula_and_ignores_serving_quantity(db, user):
     _ingest(db, user, _diary(base_unit="ml"), simple=False, summary=False)
     event = db.scalar(select(NutritionConsumptionEvent))
@@ -183,6 +202,7 @@ def test_simple_product_preserves_direct_values_name_ai_zero_missing_unknown(db,
     assert event.provider_metadata["name"] == "Tea"
     assert event.provider_metadata["is_ai_generated"] is True
     assert "token" not in event.provider_metadata
+    assert "api_key" not in event.provider_metadata
     fields = db.scalars(select(NutritionFieldObservation).where(NutritionFieldObservation.source_observation_id == event.source_observation_id)).all()
     by_path = {field.provider_field_path: field for field in fields}
     assert by_path["nutrients.energy"].canonical_value == Decimal("0")
@@ -231,6 +251,25 @@ def test_daily_summary_is_observation_only(db, user):
     assert goal.canonical_value is None
     assert goal.canonical_unit is None
     assert goal.provider_raw_unit == "kcal"
+
+
+def test_missing_daily_summary_is_marked_missing_and_unresolved(db, user):
+    diary = _diary(simple=False)
+    missing = replace(
+        diary.daily_summaries[0],
+        nutrients=YazioNutrientValues(),
+        energy_goal=None,
+        metadata={"provider_summary_missing": True},
+    )
+    _ingest(db, user, replace(diary, daily_summaries=(missing,)))
+    summary = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.observation_kind == ObservationKind.DAILY_SUMMARY.value
+        )
+    )
+    assert summary.presence_state == PresenceState.MISSING.value
+    assert summary.coverage_state == CoverageState.PARTIAL.value
+    assert summary.resolution_state == ResolutionState.UNRESOLVED.value
 
 def test_absent_energy_goal_remains_missing_provider_field(db, user):
     diary = _diary(simple=False, summary=True)

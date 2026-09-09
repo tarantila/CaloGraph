@@ -93,7 +93,7 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
                             "protein": 0,
                             "mystery_nutrient": 4,
                             "mystery": "kept",
-                            "token": "must-not-survive",
+                            "api_key": "must-not-survive",
                         }
                     ],
                 }
@@ -147,7 +147,7 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     assert result.consumed_simple_products[0].nutrients.additional["mystery_nutrient"] == Decimal("4")
     assert "amount" not in result.consumed_simple_products[0].nutrients.additional
     assert "serving_quantity" not in result.consumed_simple_products[0].nutrients.additional
-    assert "token" not in result.consumed_simple_products[0].metadata
+    assert "api_key" not in result.consumed_simple_products[0].metadata
     assert result.consumed_simple_products[0].metadata["mystery"] == "kept"
     assert result.product_profiles[0].product_id == "p-1"
     assert result.product_profiles[0].base_unit == "g"
@@ -205,6 +205,39 @@ def test_food_reads_one_day_each_and_cache_distinct_product_ids(monkeypatch: pyt
     )
     assert len(result.consumed_products) == 3
     assert product_calls == ["same", "other"]
+    assert [summary.local_date for summary in result.daily_summaries] == [
+        date(2026, 8, 1),
+        date(2026, 8, 2),
+    ]
+    assert all(
+        summary.metadata["provider_summary_missing"] is True
+        for summary in result.daily_summaries
+    )
+
+
+def test_food_rejects_consumed_item_outside_requested_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed={
+                "products": [
+                    {
+                        "id": "event-1",
+                        "product_id": "product-1",
+                        "date": "2026-08-02",
+                    }
+                ]
+            }
+        ),
+    )
+    with pytest.raises(YazioProviderInvalidResponseError):
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "e", "p", date(2026, 8, 1), date(2026, 8, 1)
+        )
 
 
 @pytest.mark.parametrize(

@@ -323,14 +323,23 @@ _NUTRIENT_ALIASES = {
     "salt": "salt",
 }
 _SENSITIVE_METADATA_TERMS = (
+    "access_key",
+    "access_token",
+    "api_key",
+    "apikey",
     "authorization",
+    "auth",
+    "bearer",
     "cookie",
     "credential",
     "header",
+    "key",
     "password",
     "raw",
+    "refresh",
     "response",
     "secret",
+    "session",
     "token",
 )
 _MAX_METADATA_ITEMS = 32
@@ -691,13 +700,18 @@ class YazioSdkProvider:
                 )
                 products, simple_products = _consumed_items(response)
                 for item in products:
-                    event = _map_product_event(item, requested_day)
-                    consumed_products.append(event)
-                    if event.product_id not in seen_product_ids:
-                        seen_product_ids.add(event.product_id)
-                        product_ids.append(event.product_id)
+                    product_event = _map_product_event(item, requested_day)
+                    if not start_day <= product_event.local_date <= end_day:
+                        raise YazioProviderInvalidResponseError
+                    consumed_products.append(product_event)
+                    if product_event.product_id not in seen_product_ids:
+                        seen_product_ids.add(product_event.product_id)
+                        product_ids.append(product_event.product_id)
                 for item in simple_products:
-                    consumed_simple_products.append(_map_simple_product(item, requested_day))
+                    simple_event = _map_simple_product(item, requested_day)
+                    if not start_day <= simple_event.local_date <= end_day:
+                        raise YazioProviderInvalidResponseError
+                    consumed_simple_products.append(simple_event)
 
             daily_response = _call_detailed(
                 get_daily_nutrients.sync_detailed,
@@ -706,19 +720,29 @@ class YazioSdkProvider:
                 end=end_day.isoformat(),
             )
             daily_items = _daily_items(daily_response)
-            daily_summaries_list: list[YazioDailyNutrientSummary] = []
-            seen_summary_dates: set[date] = set()
+            daily_summaries_by_date: dict[date, YazioDailyNutrientSummary] = {}
             for item in daily_items:
                 summary = _map_daily_summary(item)
                 if (
                     summary.local_date < start_day
                     or summary.local_date > end_day
-                    or summary.local_date in seen_summary_dates
+                    or summary.local_date in daily_summaries_by_date
                 ):
                     raise YazioProviderInvalidResponseError
-                seen_summary_dates.add(summary.local_date)
-                daily_summaries_list.append(summary)
-            daily_summaries = tuple(daily_summaries_list)
+                daily_summaries_by_date[summary.local_date] = summary
+            daily_summaries = tuple(
+                daily_summaries_by_date.get(day)
+                or YazioDailyNutrientSummary(
+                    local_date=day,
+                    nutrients=YazioNutrientValues(),
+                    energy_goal=None,
+                    metadata={"provider_summary_missing": True},
+                )
+                for day in (
+                    start_day + timedelta(days=offset)
+                    for offset in range((end_day - start_day).days + 1)
+                )
+            )
 
             profiles: list[YazioProductProfile] = []
             for product_id in product_ids:

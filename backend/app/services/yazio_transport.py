@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import requests
 from yazio_exporter.auth import CLIENT_ID, CLIENT_SECRET  # type: ignore[import-untyped]
@@ -162,7 +162,7 @@ def fetch_yazio_payload_transport(
     return result
 
 
-def _raise_domain_provider_error(error: YazioTransportError) -> None:
+def _raise_domain_provider_error(error: YazioTransportError) -> NoReturn:
     if isinstance(error, YazioTransportAuthenticationError):
         raise YazioProviderAuthenticationError from error
     if isinstance(error, YazioTransportVersionBlockedError):
@@ -244,6 +244,35 @@ def _decode_mapping(value: object) -> dict[str, object]:
     return value
 
 
+def _decode_list(data: Mapping[str, object], key: str) -> list[object]:
+    value = data.get(key, [])
+    if not isinstance(value, list):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid domain field")
+    return value
+
+
+def _decode_optional_string(data: Mapping[str, object], key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _decode_optional_bool(data: Mapping[str, object], key: str) -> bool | None:
+    value = data.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _decode_metadata(value: object) -> dict[str, str | int | float | bool | None]:
+    data = _decode_mapping(value)
+    result: dict[str, str | int | float | bool | None] = {}
+    for key, item in data.items():
+        if not isinstance(key, str) or (
+            not isinstance(item, (str, int, float, bool)) and item is not None
+        ):
+            raise YazioTransportInvalidResponseError("YAZIO worker returned invalid metadata")
+        result[key] = item
+    return result
+
+
 def _decode_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -303,18 +332,17 @@ def _decode_nutrients(value: object) -> YazioNutrientValues:
 
 def _decode_serving(value: object) -> YazioServing:
     data = _decode_mapping(value)
-    metadata = _decode_mapping(data.get("metadata"))
     return YazioServing(
-        label=data.get("label") if isinstance(data.get("label"), str) else None,
+        label=_decode_optional_string(data, "label"),
         amount=_decode_decimal(data.get("amount")),
-        unit=data.get("unit") if isinstance(data.get("unit"), str) else None,
-        metadata=metadata,
+        unit=_decode_optional_string(data, "unit"),
+        metadata=_decode_metadata(data.get("metadata")),
     )
 
 
 def _decode_food_diary(data: dict[str, object]) -> YazioFoodDiary:
-    consumed_products = []
-    for raw in data.get("consumed_products", []):
+    consumed_products: list[YazioConsumedProduct] = []
+    for raw in _decode_list(data, "consumed_products"):
         item = _decode_mapping(raw)
         consumed_products.append(
             YazioConsumedProduct(
@@ -323,19 +351,15 @@ def _decode_food_diary(data: dict[str, object]) -> YazioFoodDiary:
                 amount=_decode_decimal(item.get("amount")),
                 provider_civil_datetime=_decode_datetime(item.get("provider_civil_datetime")),
                 local_date=_decode_date(item["local_date"]),
-                daytime=item.get("daytime") if isinstance(item.get("daytime"), str) else None,
-                serving=item.get("serving") if isinstance(item.get("serving"), str) else None,
+                daytime=_decode_optional_string(item, "daytime"),
+                serving=_decode_optional_string(item, "serving"),
                 serving_quantity=_decode_decimal(item.get("serving_quantity")),
-                provider_timezone=(
-                    item.get("provider_timezone")
-                    if isinstance(item.get("provider_timezone"), str)
-                    else None
-                ),
-                metadata=_decode_mapping(item.get("metadata")),
+                provider_timezone=_decode_optional_string(item, "provider_timezone"),
+                metadata=_decode_metadata(item.get("metadata")),
             )
         )
-    consumed_simple_products = []
-    for raw in data.get("consumed_simple_products", []):
+    consumed_simple_products: list[YazioConsumedSimpleProduct] = []
+    for raw in _decode_list(data, "consumed_simple_products"):
         item = _decode_mapping(raw)
         consumed_simple_products.append(
             YazioConsumedSimpleProduct(
@@ -343,51 +367,47 @@ def _decode_food_diary(data: dict[str, object]) -> YazioFoodDiary:
                 amount=_decode_decimal(item.get("amount")),
                 provider_civil_datetime=_decode_datetime(item.get("provider_civil_datetime")),
                 local_date=_decode_date(item["local_date"]),
-                daytime=item.get("daytime") if isinstance(item.get("daytime"), str) else None,
+                daytime=_decode_optional_string(item, "daytime"),
                 nutrients=_decode_nutrients(item["nutrients"]),
-                serving=item.get("serving") if isinstance(item.get("serving"), str) else None,
+                serving=_decode_optional_string(item, "serving"),
                 serving_quantity=_decode_decimal(item.get("serving_quantity")),
-                provider_timezone=(
-                    item.get("provider_timezone")
-                    if isinstance(item.get("provider_timezone"), str)
-                    else None
-                ),
-                name=item.get("name") if isinstance(item.get("name"), str) else None,
-                metadata=_decode_mapping(item.get("metadata")),
+                provider_timezone=_decode_optional_string(item, "provider_timezone"),
+                name=_decode_optional_string(item, "name"),
+                metadata=_decode_metadata(item.get("metadata")),
             )
         )
-    profiles = []
-    for raw in data.get("product_profiles", []):
+    profiles: list[YazioProductProfile] = []
+    for raw in _decode_list(data, "product_profiles"):
         item = _decode_mapping(raw)
-        servings = tuple(_decode_serving(serving) for serving in item.get("servings", []))
+        servings = tuple(_decode_serving(serving) for serving in _decode_list(item, "servings"))
         profiles.append(
             YazioProductProfile(
                 product_id=str(item["product_id"]),
-                name=item.get("name") if isinstance(item.get("name"), str) else None,
-                producer=item.get("producer") if isinstance(item.get("producer"), str) else None,
-                category=item.get("category") if isinstance(item.get("category"), str) else None,
-                base_unit=item.get("base_unit") if isinstance(item.get("base_unit"), str) else None,
+                name=_decode_optional_string(item, "name"),
+                producer=_decode_optional_string(item, "producer"),
+                category=_decode_optional_string(item, "category"),
+                base_unit=_decode_optional_string(item, "base_unit"),
                 nutrients=_decode_nutrients(item["nutrients"]),
                 servings=servings,
-                eans=tuple(str(ean) for ean in item.get("eans", [])),
-                language=item.get("language") if isinstance(item.get("language"), str) else None,
-                countries=tuple(str(country) for country in item.get("countries", [])),
+                eans=tuple(str(ean) for ean in _decode_list(item, "eans")),
+                language=_decode_optional_string(item, "language"),
+                countries=tuple(str(country) for country in _decode_list(item, "countries")),
                 updated_at=_decode_datetime(item.get("updated_at")),
-                is_verified=item.get("is_verified") if isinstance(item.get("is_verified"), bool) else None,
-                is_private=item.get("is_private") if isinstance(item.get("is_private"), bool) else None,
-                is_deleted=item.get("is_deleted") if isinstance(item.get("is_deleted"), bool) else None,
-                metadata=_decode_mapping(item.get("metadata")),
+                is_verified=_decode_optional_bool(item, "is_verified"),
+                is_private=_decode_optional_bool(item, "is_private"),
+                is_deleted=_decode_optional_bool(item, "is_deleted"),
+                metadata=_decode_metadata(item.get("metadata")),
             )
         )
-    summaries = []
-    for raw in data.get("daily_summaries", []):
+    summaries: list[YazioDailyNutrientSummary] = []
+    for raw in _decode_list(data, "daily_summaries"):
         item = _decode_mapping(raw)
         summaries.append(
             YazioDailyNutrientSummary(
                 local_date=_decode_date(item["local_date"]),
                 nutrients=_decode_nutrients(item["nutrients"]),
                 energy_goal=_decode_decimal(item.get("energy_goal")),
-                metadata=_decode_mapping(item.get("metadata")),
+                metadata=_decode_metadata(item.get("metadata")),
             )
         )
     return YazioFoodDiary(

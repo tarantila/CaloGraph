@@ -86,6 +86,7 @@ def _require_identity_target_compatibility(
     source_observation_id: UUID | None,
 ) -> None:
     target_id = consumption_event_id or food_profile_id or source_observation_id
+    target: NutritionConsumptionEvent | NutritionFoodProfile | NutritionSourceObservation | None
     if target_id is None:
         return
     if consumption_event_id is not None:
@@ -740,6 +741,7 @@ def get_or_create_food_snapshot(
         )
         db.add(snapshot)
         db.flush()
+    assert snapshot is not None
     should_advance = advance_current and (created or profile.current_snapshot_id is None)
     if should_advance and order_by_provider_updated_at and profile.current_snapshot_id is not None and created:
         current_snapshot = db.scalar(
@@ -756,6 +758,7 @@ def get_or_create_food_snapshot(
         ):
             should_advance = False
     if should_advance:
+        assert snapshot is not None
         profile.current_snapshot_id = snapshot.id
         db.flush()
     return snapshot

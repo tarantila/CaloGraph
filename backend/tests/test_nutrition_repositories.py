@@ -10,6 +10,7 @@ from app.models import (
     NutritionFoodProfile,
     NutritionIngestionRun,
     NutritionSourceObservation,
+    YazioConnection,
 )
 from app.nutrition.enums import CoverageState, ObservationKind, PresenceState, ResolutionState
 from app.nutrition.repositories import (
@@ -17,6 +18,18 @@ from app.nutrition.repositories import (
     current_identity_link,
     validate_source_instance,
 )
+
+
+def _yazio_source_instance(db, user):
+    connection = YazioConnection(
+        user_id=user.id,
+        encrypted_email=b"encrypted-email",
+        encrypted_password=b"encrypted-password",
+        source_identifier=f"yazio:{user.id}",
+    )
+    db.add(connection)
+    db.flush()
+    return connection.id
 
 
 def _source_observation(db, user, profile):
@@ -47,6 +60,7 @@ def _source_observation(db, user, profile):
     db.flush()
     return observation
 
+
 def test_append_identity_link_starts_revision_one_and_resolves_latest(db, user):
     identity = NutritionExternalIdentity(
         user_id=user.id,
@@ -55,10 +69,11 @@ def test_append_identity_link_starts_revision_one_and_resolves_latest(db, user):
         identity_value="product-1",
         identity_kind="product",
     )
+    source_instance_id = _yazio_source_instance(db, user)
     first_profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
-        source_instance_id=uuid4(),
+        source_instance_id=source_instance_id,
         profile_status="active",
     )
     second_profile = NutritionFoodProfile(
@@ -106,10 +121,11 @@ def test_identity_link_revision_scope_is_per_role(db, user):
         identity_value="product-1",
         identity_kind="product",
     )
+    source_instance_id = _yazio_source_instance(db, user)
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
-        source_instance_id=uuid4(),
+        source_instance_id=source_instance_id,
         profile_status="active",
     )
     db.add_all([identity, profile])
@@ -165,10 +181,11 @@ def test_current_identity_link_does_not_mix_roles(db, user):
         identity_value="product-1",
         identity_kind="product",
     )
+    source_instance_id = _yazio_source_instance(db, user)
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
-        source_instance_id=uuid4(),
+        source_instance_id=source_instance_id,
         profile_status="active",
     )
     db.add_all([identity, profile])
