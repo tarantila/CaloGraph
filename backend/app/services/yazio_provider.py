@@ -7,11 +7,137 @@ only stable, non-sensitive messages.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 ProviderMode = Literal["legacy", "sdk"]
+_MetadataValue = str | int | float | bool | None
+
+
+def _immutable_metadata(value: Mapping[str, _MetadataValue]) -> Mapping[str, _MetadataValue]:
+    return MappingProxyType(dict(value))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioNutrientValues:
+    """Normalized nutrient values; ``None`` means the provider omitted a value."""
+
+    energy: Decimal | None = None
+    protein: Decimal | None = None
+    carb: Decimal | None = None
+    fat: Decimal | None = None
+    fiber: Decimal | None = None
+    sugar: Decimal | None = None
+    saturated_fat: Decimal | None = None
+    salt: Decimal | None = None
+    additional: Mapping[str, Decimal] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "additional", MappingProxyType(dict(self.additional)))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioServing:
+    label: str | None = None
+    amount: Decimal | None = None
+    unit: str | None = None
+    metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_metadata(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioConsumedProduct:
+    consumed_item_id: str
+    product_id: str
+    amount: Decimal | None
+    provider_civil_datetime: datetime | None
+    local_date: date
+    daytime: str | None
+    serving: str | None
+    serving_quantity: Decimal | None
+    provider_timezone: str | None = None
+    metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_metadata(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioConsumedSimpleProduct:
+    consumed_item_id: str
+    amount: Decimal | None
+    provider_civil_datetime: datetime | None
+    local_date: date
+    daytime: str | None
+    nutrients: YazioNutrientValues
+    serving: str | None
+    serving_quantity: Decimal | None
+    provider_timezone: str | None = None
+    metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_metadata(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioProductProfile:
+    product_id: str
+    name: str | None
+    producer: str | None
+    category: str | None
+    base_unit: str | None
+    nutrients: YazioNutrientValues
+    servings: tuple[YazioServing, ...]
+    eans: tuple[str, ...]
+    language: str | None
+    countries: tuple[str, ...]
+    updated_at: datetime | None
+    is_verified: bool | None
+    is_private: bool | None
+    is_deleted: bool | None
+    metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_metadata(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioDailyNutrientSummary:
+    local_date: date
+    nutrients: YazioNutrientValues
+    energy_goal: Decimal | None
+    metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", _immutable_metadata(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class YazioFoodDiary:
+    requested_start_day: date
+    requested_end_day: date
+    consumed_products: tuple[YazioConsumedProduct, ...]
+    consumed_simple_products: tuple[YazioConsumedSimpleProduct, ...]
+    product_profiles: tuple[YazioProductProfile, ...]
+    daily_summaries: tuple[YazioDailyNutrientSummary, ...]
+
+
+class YazioFoodDiaryProvider(Protocol):
+    """SDK-v22-only food diary reads; legacy providers need not implement this."""
+
+    mode: Literal["sdk"]
+
+    def fetch_food_diary(
+        self, email: str, password: str, start_day: date, end_day: date
+    ) -> YazioFoodDiary:
+        """Fetch and normalize consumed items, profiles, and daily summaries."""
+
 
 
 class YazioProviderError(RuntimeError):
