@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -21,7 +22,9 @@ from app.nutrition.models import (
     NutritionSourceObservation,
 )
 from app.nutrition.repositories import (
+    append_identity_link,
     create_ingestion_run,
+    get_current_consumption_event,
     get_or_create_consumption_event,
     get_or_create_external_identity,
     get_or_create_food_profile,
@@ -101,6 +104,15 @@ def test_source_observation_retries_are_idempotent_and_user_scoped(db, user):
     )
     assert fingerprint_retry.id == fingerprint_first.id
     assert db.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 2
+    changed = _observation(
+        db,
+        user,
+        connection,
+        run,
+        fingerprint="c" * 64,
+    )
+    assert changed.source_revision == 2
+    assert changed.id != first.id
 
     other = type(user)(username="other", password_hash="hash", timezone="UTC")
     db.add(other)
@@ -131,7 +143,7 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
         namespace="yazio.product",
         identity_value="product-1",
         identity_kind="product",
-        provider_metadata={"source": "fixture"},
+        source_instance_id=connection.id,
     )
     same_identity = get_or_create_external_identity(
         db,
@@ -140,6 +152,7 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
         namespace="yazio.product",
         identity_value="product-1",
         identity_kind="product",
+        source_instance_id=connection.id,
         provider_metadata={"source": "retry"},
     )
     assert same_identity.id == identity.id
@@ -151,6 +164,7 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
         namespace="yazio.ean",
         identity_value="product-1",
         identity_kind="ean",
+        source_instance_id=connection.id,
     )
     assert ean_identity.id != identity.id
 
@@ -206,6 +220,17 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
     db.refresh(snapshot)
     assert snapshot.name == "Food"
     assert db.scalar(select(func.count()).select_from(NutritionFoodSnapshot)) == 2
+    historical_snapshot = get_or_create_food_snapshot(
+        db,
+        user_id=user.id,
+        food_profile_id=profile.id,
+        source_observation_id=observation.id,
+        content_hash="b" * 64,
+        provider_revision="rev-1",
+    )
+    db.refresh(profile)
+    assert historical_snapshot.id == snapshot.id
+    assert profile.current_snapshot_id == changed_snapshot.id
 
 
 def test_consumption_event_retry_reuses_revision_and_changed_content_supersedes(db, user):
@@ -296,6 +321,7 @@ def test_cross_user_profile_and_event_targets_are_rejected(db, user):
         namespace="yazio.product",
         identity_value="product-1",
         identity_kind="product",
+        source_instance_id=connection.id,
     )
     profile = get_or_create_food_profile(
         db,
@@ -304,6 +330,41 @@ def test_cross_user_profile_and_event_targets_are_rejected(db, user):
         source_instance_id=connection.id,
         external_identity_id=identity.id,
     )
+    with pytest.raises(ValueError, match="same user"):
+        get_or_create_external_identity(
+            db,
+            user_id=user.id,
+            provider_key="yazio",
+            namespace="yazio.product",
+            identity_value="foreign-source",
+            identity_kind="product",
+            source_instance_id=uuid4(),
+        )
+    with pytest.raises(ValueError, match="same user"):
+        get_current_consumption_event(
+            db,
+            user_id=user.id,
+            provider_key="yazio",
+            source_instance_id=uuid4(),
+            logical_event_key="item-1",
+        )
+    foreign_identity = get_or_create_external_identity(
+        db,
+        user_id=user.id,
+        provider_key="other-provider",
+        namespace="other.product",
+        identity_value="product-1",
+        identity_kind="product",
+        source_instance_id=uuid4(),
+    )
+    with pytest.raises(ValueError, match="provider"):
+        append_identity_link(
+            db,
+            user_id=user.id,
+            external_identity_id=foreign_identity.id,
+            link_role="profile_identity",
+            food_profile_id=profile.id,
+        )
     other = type(user)(username="other", password_hash="hash", timezone="UTC")
     db.add(other)
     db.flush()
@@ -345,6 +406,7 @@ def test_decimal_civil_time_local_date_and_metadata_round_trip(db, user):
         namespace="yazio.ean",
         identity_value="123",
         identity_kind="ean",
+        source_instance_id=connection.id,
         provider_metadata={"decimal": "1.2"},
     )
     assert identity.provider_metadata == {"decimal": "1.2"}

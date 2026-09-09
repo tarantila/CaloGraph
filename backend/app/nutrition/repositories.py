@@ -76,6 +76,50 @@ def _require_same_user_target(
         )
         if target is None:
             raise ValueError("source observation target must belong to the same user")
+def _require_identity_target_compatibility(
+    db: Session,
+    *,
+    identity: NutritionExternalIdentity,
+    user_id: UUID,
+    consumption_event_id: UUID | None,
+    food_profile_id: UUID | None,
+    source_observation_id: UUID | None,
+) -> None:
+    target_id = consumption_event_id or food_profile_id or source_observation_id
+    if target_id is None:
+        return
+    if consumption_event_id is not None:
+        target = db.scalar(
+            select(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.id == target_id,
+                NutritionConsumptionEvent.user_id == user_id,
+            )
+        )
+    elif food_profile_id is not None:
+        target = db.scalar(
+            select(NutritionFoodProfile).where(
+                NutritionFoodProfile.id == target_id,
+                NutritionFoodProfile.user_id == user_id,
+            )
+        )
+    else:
+        target = db.scalar(
+            select(NutritionSourceObservation).where(
+                NutritionSourceObservation.id == target_id,
+                NutritionSourceObservation.user_id == user_id,
+            )
+        )
+    if target is None:
+        return
+    if target.provider_key != identity.provider_key:
+        raise ValueError("identity target provider must match external identity")
+    if hasattr(target, "source_instance_id"):
+        validate_source_instance(
+            db,
+            user_id=user_id,
+            provider_key=target.provider_key,
+            source_instance_id=target.source_instance_id,
+        )
 
 
 def append_identity_link(
@@ -110,6 +154,14 @@ def append_identity_link(
     _require_same_user_target(
         db,
         user_id,
+        consumption_event_id=consumption_event_id,
+        food_profile_id=food_profile_id,
+        source_observation_id=source_observation_id,
+    )
+    _require_identity_target_compatibility(
+        db,
+        identity=identity,
+        user_id=user_id,
         consumption_event_id=consumption_event_id,
         food_profile_id=food_profile_id,
         source_observation_id=source_observation_id,
@@ -275,7 +327,6 @@ def get_source_observation(
     validate_source_record_id(source_record_id)
     validate_source_revision(source_revision)
     validate_observation_fingerprint(observation_fingerprint)
-
     identity_filters = [
         NutritionSourceObservation.user_id == user_id,
         NutritionSourceObservation.source_instance_id == source_instance_id,
@@ -294,9 +345,33 @@ def get_source_observation(
             [
                 NutritionSourceObservation.source_record_id == source_record_id,
                 NutritionSourceObservation.source_revision == source_revision,
+                NutritionSourceObservation.observation_fingerprint == observation_fingerprint,
             ]
         )
     return db.scalar(select(NutritionSourceObservation).where(*identity_filters))
+
+
+def _latest_source_observation(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    provider_key: str,
+    source_namespace: str,
+    source_record_id: str,
+) -> NutritionSourceObservation | None:
+    return db.scalar(
+        select(NutritionSourceObservation)
+        .where(
+            NutritionSourceObservation.user_id == user_id,
+            NutritionSourceObservation.source_instance_id == source_instance_id,
+            NutritionSourceObservation.provider_key == provider_key,
+            NutritionSourceObservation.source_namespace == source_namespace,
+            NutritionSourceObservation.source_record_id == source_record_id,
+        )
+        .order_by(NutritionSourceObservation.source_revision.desc())
+        .limit(1)
+    )
 
 
 def get_or_create_source_observation(
@@ -337,8 +412,21 @@ def get_or_create_source_observation(
         source_revision=source_revision,
         observation_fingerprint=observation_fingerprint,
     )
-    if existing is not None:
+    if existing is not None and existing.observation_fingerprint == observation_fingerprint:
         return existing
+    if source_record_id is not None:
+        latest = _latest_source_observation(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            provider_key=provider_key,
+            source_namespace=source_namespace,
+            source_record_id=source_record_id,
+        )
+        if latest is not None:
+            if latest.observation_fingerprint == observation_fingerprint:
+                return latest
+            source_revision = latest.source_revision + 1
     observation = NutritionSourceObservation(
         id=uuid4(),
         user_id=user_id,
@@ -421,7 +509,6 @@ def create_source_observation(
         ingestion_run_id=ingestion_run_id,
         provider_key=provider_key,
         source_instance_id=source_instance_id,
-        source_namespace=source_namespace,
         source_record_id=source_record_id,
         source_revision=source_revision,
         observation_fingerprint=observation_fingerprint,
@@ -439,9 +526,16 @@ def get_or_create_external_identity(
     namespace: str,
     identity_value: str,
     identity_kind: str,
+    source_instance_id: UUID,
     provider_metadata: dict[str, Any] | None = None,
     last_seen_at: datetime | None = None,
 ) -> NutritionExternalIdentity:
+    validate_source_instance(
+        db,
+        user_id=user_id,
+        provider_key=provider_key,
+        source_instance_id=source_instance_id,
+    )
     if not provider_key or not namespace or not identity_value or not identity_kind:
         raise ValueError("external identity provider, namespace, value, and kind are required")
     identity = db.scalar(
@@ -619,7 +713,8 @@ def get_or_create_food_snapshot(
         )
         .with_for_update()
     )
-    if snapshot is None:
+    created = snapshot is None
+    if created:
         snapshot = NutritionFoodSnapshot(
             user_id=user_id,
             food_profile_id=food_profile_id,
@@ -639,12 +734,13 @@ def get_or_create_food_snapshot(
         )
         db.add(snapshot)
         db.flush()
-    set_current_food_snapshot(
-        db,
-        user_id=user_id,
-        food_profile_id=food_profile_id,
-        food_snapshot_id=snapshot.id,
-    )
+    if created or profile.current_snapshot_id is None:
+        set_current_food_snapshot(
+            db,
+            user_id=user_id,
+            food_profile_id=food_profile_id,
+            food_snapshot_id=snapshot.id,
+        )
     return snapshot
 
 
@@ -656,6 +752,12 @@ def get_current_consumption_event(
     source_instance_id: UUID,
     logical_event_key: str,
 ) -> NutritionConsumptionEvent | None:
+    validate_source_instance(
+        db,
+        user_id=user_id,
+        provider_key=provider_key,
+        source_instance_id=source_instance_id,
+    )
     return db.scalar(
         select(NutritionConsumptionEvent)
         .where(
@@ -668,6 +770,55 @@ def get_current_consumption_event(
         .limit(1)
     )
 
+
+def _event_content_matches(
+    latest: NutritionConsumptionEvent,
+    *,
+    observation: NutritionSourceObservation,
+    content_hash: str | None,
+    provider_metadata: dict[str, Any],
+    latest_source_fingerprint: str | None,
+    event_kind: str,
+    food_snapshot_id: UUID | None,
+    provider_civil_datetime: datetime | None,
+    provider_timezone: str | None,
+    canonical_start_at: datetime | None,
+    canonical_end_at: datetime | None,
+    local_date: date | None,
+    daytime: str | None,
+    amount: Decimal | None,
+    amount_unit: str | None,
+    presence_state: str,
+    coverage_state: str,
+    resolution_state: str,
+    lineage_state: str,
+) -> bool:
+    latest_hash = (latest.provider_metadata or {}).get("content_hash")
+    requested_hash = content_hash or provider_metadata.get("content_hash")
+    if requested_hash is not None and latest_hash is not None:
+        if requested_hash != latest_hash:
+            return False
+    elif requested_hash is not None and latest_hash is None:
+        return False
+    if latest.source_observation_id != observation.id and latest_source_fingerprint != observation.observation_fingerprint:
+        return False
+    comparisons = (
+        ("event_kind", event_kind),
+        ("food_snapshot_id", food_snapshot_id),
+        ("provider_civil_datetime", provider_civil_datetime),
+        ("provider_timezone", provider_timezone),
+        ("canonical_start_at", canonical_start_at),
+        ("canonical_end_at", canonical_end_at),
+        ("local_date", local_date),
+        ("daytime", daytime),
+        ("amount", amount),
+        ("amount_unit", amount_unit),
+        ("presence_state", presence_state),
+        ("coverage_state", coverage_state),
+        ("resolution_state", resolution_state),
+        ("lineage_state", lineage_state),
+    )
+    return all(value is None or getattr(latest, field) == value for field, value in comparisons)
 
 def get_or_create_consumption_event(
     db: Session,
@@ -742,15 +893,16 @@ def get_or_create_consumption_event(
     requested_metadata = dict(provider_metadata or {})
     if content_hash is not None:
         _validate_content_hash(content_hash)
-        requested_metadata.setdefault("content_hash", content_hash)
-    requested_hash = requested_metadata.get("content_hash")
-    latest_hash = (latest.provider_metadata or {}).get("content_hash") if latest is not None else None
-    if latest is not None and (
-        latest.source_observation_id == source_observation_id
-        or (requested_hash is not None and requested_hash == latest_hash)
-    ):
-        return latest
-    revision = 1 if latest is None else latest.revision + 1
+        requested_metadata["content_hash"] = content_hash
+    latest_source_fingerprint = None
+    if latest is not None:
+        latest_source_fingerprint = db.scalar(
+            select(NutritionSourceObservation.observation_fingerprint).where(
+                NutritionSourceObservation.id == latest.source_observation_id,
+                NutritionSourceObservation.user_id == user_id,
+            )
+        )
+    supersedes = None
     if supersedes_event_id is not None:
         supersedes = db.scalar(
             select(NutritionConsumptionEvent).where(
@@ -765,9 +917,33 @@ def get_or_create_consumption_event(
             raise ValueError("superseded event must belong to the same user and logical event")
         if latest is not None and supersedes.id != latest.id:
             raise ValueError("superseded event must be the current revision")
-        revision = supersedes.revision + 1
-    else:
+    if latest is not None and _event_content_matches(
+        latest,
+        observation=observation,
+        content_hash=content_hash,
+        provider_metadata=requested_metadata,
+        latest_source_fingerprint=latest_source_fingerprint,
+        event_kind=event_kind,
+        food_snapshot_id=food_snapshot_id,
+        provider_civil_datetime=provider_civil_datetime,
+        provider_timezone=provider_timezone,
+        canonical_start_at=canonical_start_at,
+        canonical_end_at=canonical_end_at,
+        local_date=local_date,
+        daytime=daytime,
+        amount=amount,
+        amount_unit=amount_unit,
+        presence_state=presence_state,
+        coverage_state=coverage_state,
+        resolution_state=resolution_state,
+        lineage_state=lineage_state,
+    ):
+        return latest
+    revision = 1 if latest is None else latest.revision + 1
+    if supersedes is None:
         supersedes = latest
+    if supersedes is not None:
+        revision = supersedes.revision + 1
     event = NutritionConsumptionEvent(
         user_id=user_id,
         source_observation_id=source_observation_id,

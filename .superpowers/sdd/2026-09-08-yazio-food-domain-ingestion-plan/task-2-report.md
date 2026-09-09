@@ -67,3 +67,41 @@ No migration was added. The approved A1 schema already provides the required com
 - Event content identity is represented by the source observation fingerprint and, when supplied, a bounded provider metadata `content_hash`; unchanged retries never append a revision.
 - Repository metadata is treated as already sanitized by the provider/domain boundary; repository code does not log or emit credentials, tokens, headers, cookies, or raw provider responses.
 - No live YAZIO calls, orchestration, migration, projections, source priority, analytics, API, or frontend work was performed.
+## Review round 1 fixes
+
+- Changed source-record observation retries to compare fingerprints. A changed
+  payload appends the next source revision instead of reusing the prior row.
+- Made event idempotence compare source fingerprints, explicit event content
+  hashes, and supplied event fields; explicit `content_hash` is authoritative.
+  Supersession targets are validated before an idempotent early return.
+- Kept historical snapshots immutable and prevented retries of snapshot A from
+  moving the profile pointer backward after snapshot B is current.
+- Enforced provider/source-instance compatibility for identity-link targets and
+  required YAZIO source-instance validation for external identity creation and
+  current-event lookup.
+- Added regression coverage for source revision 2, A-to-B snapshot pointer
+  safety, namespace/provider separation, foreign source instances, and target
+  compatibility.
+
+Review-fix verification:
+
+```text
+PYTHONPATH=/tmp/repo-shim:/tmp/calo-deps:/home/wizard/Projects/CaloGraph/backend \
+  python3 -m pytest /tmp/repo-shim/test_nutrition_ingestion_repositories.py -q
+```
+
+Result: `6 passed in 0.15s`.
+
+```text
+PYTHONPATH=/tmp/ruff-env python3 -m ruff check \
+  app/nutrition/repositories.py tests/test_nutrition_ingestion_repositories.py
+```
+
+Result: `All checks passed!`
+
+```text
+python3 -m py_compile app/nutrition/repositories.py \
+  tests/test_nutrition_ingestion_repositories.py
+```
+
+Result: success.
