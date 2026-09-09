@@ -217,8 +217,7 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_enabled: bool = False
-    # Explicit rollout choice. SDK is recommended; legacy remains available
-    # only as a deprecated compatibility provider.
+    yazio_nutrition_domain_write_enabled: bool = False
     yazio_provider: Literal["legacy", "sdk"] | None = None
     yazio_api_base_url: str = Field(
         default=YAZIO_API_BASE_URL_DEFAULT,
