@@ -11,6 +11,7 @@ from app.database import Base
 
 _A1_REVISION_PATH = Path(__file__).parents[1] / "alembic" / "versions" / "20260908_0025_nutrition_domain_a1.py"
 _A2_REVISION_PATH = Path(__file__).parents[1] / "alembic" / "versions" / "20260908_0026_nutrition_domain_a2.py"
+_A3_REVISION_PATH = Path(__file__).parents[1] / "alembic" / "versions" / "20260909_0027_nutrition_provenance_identity.py"
 _A1_TABLES = {
     "nutrition_ingestion_runs",
     "nutrition_source_observations",
@@ -102,6 +103,41 @@ def test_a2_migration_is_additive_and_preserves_a1(tmp_path):
     assert remaining >= _A1_TABLES
     assert not _A2_TABLES & remaining
     engine.dispose()
+def test_a3_migration_recreates_provenance_indexes_after_a2(tmp_path):
+    engine = _sqlite_engine(tmp_path)
+    existing_tables = [
+        table
+        for table in Base.metadata.sorted_tables
+        if table.name not in _A1_TABLES | _A2_TABLES
+    ]
+    Base.metadata.create_all(engine, tables=existing_tables)
+    a1 = _revision(_A1_REVISION_PATH, "nutrition_a1_for_a3")
+    a2 = _revision(_A2_REVISION_PATH, "nutrition_a2_for_a3")
+    a3 = _revision(_A3_REVISION_PATH, "nutrition_a3")
+    _apply_revision(engine, a1)
+    _apply_revision(engine, a2)
+
+    identity_indexes = {
+        "uq_nutrition_provenance_event_identity",
+        "uq_nutrition_provenance_snapshot_identity",
+        "uq_nutrition_provenance_serving_identity",
+        "uq_nutrition_provenance_field_identity",
+    }
+    with engine.begin() as connection:
+        for name in identity_indexes | {"ix_nutrition_provenance_user_serving"}:
+            connection.exec_driver_sql(f'DROP INDEX "{name}"')
+
+    _apply_revision(engine, a3)
+
+    indexes = {
+        item["name"]: item
+        for item in inspect(engine).get_indexes("nutrition_provenance")
+    }
+    assert identity_indexes <= indexes.keys()
+    assert all(indexes[name]["unique"] for name in identity_indexes)
+    assert indexes["ix_nutrition_provenance_user_serving"]["unique"] == 0
+    engine.dispose()
+
 
 
 def test_a2_sqlite_foreign_keys_are_enforced(tmp_path):

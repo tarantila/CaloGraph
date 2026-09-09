@@ -494,14 +494,26 @@ def test_concurrent_provenance_conflict_is_idempotent(db, user, monkeypatch):
         )
     )
     assert field is not None
-    original_flush = db.flush
+    original_scalar = db.scalar
+    missing_once = True
 
-    def conflict_flush(*args, **kwargs):
-        if any(isinstance(item, NutritionProvenance) for item in db.new):
-            raise IntegrityError("INSERT", {}, RuntimeError("duplicate"))
-        return original_flush(*args, **kwargs)
+    def pretend_missing(statement, *args, **kwargs):
+        nonlocal missing_once
+        if missing_once:
+            missing_once = False
+            return None
+        return original_scalar(statement, *args, **kwargs)
 
-    monkeypatch.setattr(db, "flush", conflict_flush)
+    monkeypatch.setattr(db, "scalar", pretend_missing)
+    _provenance(
+        db,
+        user_id=user.id,
+        source_observation_id=field.source_observation_id,
+        field_observation_id=field.id,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    monkeypatch.undo()
+
     _provenance(
         db,
         user_id=user.id,
@@ -511,7 +523,7 @@ def test_concurrent_provenance_conflict_is_idempotent(db, user, monkeypatch):
     )
     assert db.scalar(
         select(NutritionProvenance).where(NutritionProvenance.role == "concurrency-test")
-    ) is None
+    ) is not None
 
 
 
