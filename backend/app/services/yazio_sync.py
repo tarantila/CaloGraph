@@ -32,8 +32,6 @@ from app.services.yazio_provider import (
     YazioProviderNetworkTimeoutError,
     YazioProviderRateLimitedError,
     YazioProviderUnavailableError,
-    get_yazio_food_diary_provider,
-    get_yazio_provider,
 )
 from app.services.rate_limit import (
     RateLimitExceeded,
@@ -56,7 +54,7 @@ from app.services.yazio_transport import (
     YazioTransportRateLimitedError,
     YazioTransportUnavailableError,
     YazioTransportVersionBlockedError,
-    fetch_yazio_payload_transport,
+    fetch_yazio_domain_transport,
     validate_yazio_credentials_transport,
 )
 
@@ -223,17 +221,11 @@ def _sync_yazio_user_with_domain(
         raise YazioSyncError(
             "Die YAZIO-Nährwertdomäne ist ausschließlich für den SDK-Anbieter aktiviert."
         )
-
+    _require_yazio_enabled()
+    _ensure_yazio_circuit_closed()
     identifier = source_identifier or yazio_source_identifier(user.id)
     try:
-        aggregate = get_yazio_provider().fetch(
-            email,
-            password,
-            start_day,
-            end_day,
-            True,
-        )
-        diary = get_yazio_food_diary_provider().fetch_food_diary(
+        aggregate_payload, diary = fetch_yazio_domain_transport(
             email,
             password,
             start_day,
@@ -244,8 +236,7 @@ def _sync_yazio_user_with_domain(
             _record_yazio_provider_failure()
         raise _map_yazio_provider_error(exc) from exc
     _clear_yazio_provider_failures()
-
-    result = parse_yazio_export(aggregate.payload, user.timezone, identifier)
+    result = parse_yazio_export(aggregate_payload, user.timezone, identifier)
     with SessionLocal() as db:
         active_user = db.get(User, user.id)
         if active_user is None or not active_user.is_active:
@@ -261,6 +252,13 @@ def _sync_yazio_user_with_domain(
                 connector_variant="sdk-v22",
                 shared_transaction=True,
             )
+            if (
+                summary.failed > 0
+                and summary.inserted == 0
+                and summary.updated == 0
+                and summary.skipped == 0
+            ):
+                raise YazioSyncError("YAZIO-Daten konnten nicht verarbeitet werden.")
             ingest_yazio_food_diary(
                 db,
                 user_id=active_user.id,
@@ -280,6 +278,12 @@ def _sync_yazio_user_with_domain(
         except Exception:
             db.rollback()
             raise
+    log_security_event(
+        "import.started",
+        actor_ref=security_reference("user", active_user.id),
+        target_ref=security_reference("import_batch", summary.batch_id),
+        details={"source_type": "yazio_export_v1"},
+    )
     log_security_event(
         "import.completed",
         actor_ref=security_reference("user", active_user.id),

@@ -523,6 +523,7 @@ def _persist_import_locked(
         payload_hash,
         connector_variant=connector_variant,
         commit=not shared_transaction,
+        log_started=not shared_transaction,
     )
     counters = ImportCounters(
         received=result.received,

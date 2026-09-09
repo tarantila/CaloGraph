@@ -17,8 +17,6 @@ from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
     YazioFoodDiary,
     YazioNutrientValues,
-    YazioProviderMetadata,
-    YazioProviderResult,
 )
 from app.services.yazio_sync import YazioSyncError, run_manual_yazio_sync
 
@@ -68,37 +66,10 @@ def _diary() -> YazioFoodDiary:
             YazioDailyNutrientSummary(
                 local_date=DAY,
                 nutrients=YazioNutrientValues(energy=Decimal("1800")),
+                energy_goal=None,
             ),
         ),
     )
-
-
-class _AggregateProvider:
-    mode = "sdk"
-
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    def fetch(self, email, password, start_day, end_day, include_micronutrients):
-        del email, password, start_day, end_day, include_micronutrients
-        self.events.append("aggregate")
-        return YazioProviderResult(
-            payload=_aggregate(),
-            metadata=YazioProviderMetadata(micronutrient_complete=False, provider_mode="sdk"),
-        )
-
-
-class _FoodDiaryProvider:
-    mode = "sdk"
-
-    def __init__(self, events: list[str], diary: YazioFoodDiary | None = None) -> None:
-        self.events = events
-        self.diary = diary or _diary()
-
-    def fetch_food_diary(self, email, password, start_day, end_day):
-        del email, password, start_day, end_day
-        self.events.extend(("consumed-items", "daily-summary", "product"))
-        return self.diary
 
 
 def _enable_sdk_rollout(
@@ -107,12 +78,13 @@ def _enable_sdk_rollout(
     monkeypatch.setattr(settings, "yazio_enabled", True)
     monkeypatch.setattr(settings, "yazio_provider", "sdk")
     monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
-    monkeypatch.setattr(yazio_sync, "get_yazio_provider", lambda: _AggregateProvider(events))
-    monkeypatch.setattr(
-        yazio_sync,
-        "get_yazio_food_diary_provider",
-        lambda: _FoodDiaryProvider(events, diary),
-    )
+
+    def fetch_domain(email, password, start_day, end_day):
+        del email, password, start_day, end_day
+        events.extend(("aggregate", "consumed-items", "daily-summary", "product"))
+        return _aggregate(), diary or _diary()
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fetch_domain)
 
 
 def test_rollout_flag_defaults_false_and_reads_environment(monkeypatch) -> None:
@@ -127,7 +99,7 @@ def test_rollout_flag_defaults_false_and_reads_environment(monkeypatch) -> None:
 def test_enabled_sdk_reads_everything_before_shared_transaction(
     db, user, monkeypatch
 ) -> None:
-    connection = _connection(db, user)
+    _connection(db, user)
     events: list[str] = []
     _enable_sdk_rollout(monkeypatch, events)
     original = yazio_sync._persist_import_locked
