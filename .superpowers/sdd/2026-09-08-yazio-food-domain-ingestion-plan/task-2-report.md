@@ -105,3 +105,25 @@ python3 -m py_compile app/nutrition/repositories.py \
 ```
 
 Result: success.
+## Review round 2 fix
+
+- Restored `source_namespace` propagation through the preserved
+  `create_source_observation` public entry point.
+- Added a direct regression assertion that the public entry point persists the
+  requested namespace.
+
+Verification:
+
+```text
+PYTHONPATH=/tmp/repo-shim:/tmp/calo-deps:/home/wizard/Projects/CaloGraph/backend \
+  python3 -m pytest /tmp/repo-shim/test_nutrition_ingestion_repositories.py -q
+```
+
+Result: `6 passed in 0.13s`.
+
+```text
+PYTHONPATH=/tmp/ruff-env python3 -m ruff check \
+  app/nutrition/repositories.py tests/test_nutrition_ingestion_repositories.py
+```
+
+Result: `All checks passed!`

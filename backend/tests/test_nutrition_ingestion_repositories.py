@@ -24,6 +24,7 @@ from app.nutrition.models import (
 from app.nutrition.repositories import (
     append_identity_link,
     create_ingestion_run,
+    create_source_observation,
     get_current_consumption_event,
     get_or_create_consumption_event,
     get_or_create_external_identity,
@@ -113,6 +114,24 @@ def test_source_observation_retries_are_idempotent_and_user_scoped(db, user):
     )
     assert changed.source_revision == 2
     assert changed.id != first.id
+    public_observation = create_source_observation(
+        db,
+        user_id=user.id,
+        ingestion_run_id=run.id,
+        provider_key="yazio",
+        source_instance_id=connection.id,
+        source_namespace="yazio.daily_summary",
+        source_record_id="summary-1",
+        source_revision=1,
+        observation_fingerprint="f" * 64,
+        observation_kind=ObservationKind.DAILY_SUMMARY.value,
+        local_date=date(2026, 9, 1),
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    assert public_observation.source_namespace == "yazio.daily_summary"
 
     other = type(user)(username="other", password_hash="hash", timezone="UTC")
     db.add(other)

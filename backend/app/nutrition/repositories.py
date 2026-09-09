@@ -509,6 +509,7 @@ def create_source_observation(
         ingestion_run_id=ingestion_run_id,
         provider_key=provider_key,
         source_instance_id=source_instance_id,
+        source_namespace=source_namespace,
         source_record_id=source_record_id,
         source_revision=source_revision,
         observation_fingerprint=observation_fingerprint,
