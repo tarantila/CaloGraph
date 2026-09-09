@@ -128,6 +128,7 @@ class YazioFoodDiary:
     product_profiles: tuple[YazioProductProfile, ...]
     daily_summaries: tuple[YazioDailyNutrientSummary, ...]
 
+
 class YazioFoodDiaryProvider(Protocol):
     """SDK-v22-only food diary reads; legacy providers need not implement this."""
 
@@ -264,6 +265,7 @@ def get_yazio_provider(mode: ProviderMode | None = None) -> YazioProvider:
     if selected == "legacy":
         return LegacyYazioProvider()
     raise ValueError("YAZIO provider mode is invalid")
+
 
 def get_yazio_food_diary_provider() -> YazioFoodDiaryProvider:
     """Construct the SDK-v22 food diary provider without importing it in legacy mode."""

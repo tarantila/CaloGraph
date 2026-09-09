@@ -65,6 +65,8 @@ def _generated_daily_nutrients(payload: Mapping[str, Any]) -> object:
 
 def _generated_product(payload: Mapping[str, Any]) -> object:
     return Product.from_dict(payload)
+
+
 MAX_PROVIDER_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_RETRY_AFTER_SECONDS = 3_600
 MAX_TOKEN_BYTES = 8 * 1024

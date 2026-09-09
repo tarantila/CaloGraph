@@ -236,6 +236,7 @@ def test_food_rejects_daily_summary_outside_range_and_duplicates(
     with pytest.raises(YazioProviderInvalidResponseError):
         yazio_sdk_provider.YazioSdkProvider().fetch_food_diary("e", "p", start_day, end_day)
 
+
 def test_food_mapping_rejects_malformed_numbers_and_simple_product_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

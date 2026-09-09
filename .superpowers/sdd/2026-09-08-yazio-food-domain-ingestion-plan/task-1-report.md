@@ -62,3 +62,12 @@ Review-round verification:
 - Focused tests: `ENVIRONMENT=development PYTHONPATH=/tmp:/tmp/calo-deps:. python3 -m pytest --confcutdir=/tmp /tmp/test_yazio_food_provider.py /tmp/test_yazio_provider.py -q` -> `14 passed in 0.26s`.
 - Ruff: `PYTHONPATH=/tmp/ruff-env python3 -m ruff check app/services/yazio_provider.py app/services/yazio_sdk_provider.py tests/test_yazio_food_provider.py` -> `All checks passed!`.
 - Focused mypy smoke (Python 3.12 fallback, with missing-runtime `httpx` diagnostics disabled): `PYTHONPATH=/tmp/mypy-env:/tmp/calo-deps:. ENVIRONMENT=development python3 -m mypy --strict --follow-imports=skip --ignore-missing-imports --disable-error-code unused-ignore --disable-error-code misc --disable-error-code no-any-return app/services/yazio_provider.py app/services/yazio_sdk_provider.py` -> `Success: no issues found in 2 source files`.
+
+## Review fix round 2
+
+- Added the required two blank lines before `YazioFoodDiaryProvider`, before
+  `get_yazio_food_diary_provider`, after adapter-local generated model helpers
+  and before `MAX_PROVIDER_RESPONSE_BYTES`, and before the test following the
+  parametrized daily-summary test.
+- Verification: `PYTHONPATH=/tmp/ruff-env python3 -m ruff check app/services/yazio_provider.py app/services/yazio_sdk_provider.py tests/test_yazio_food_provider.py` -> `All checks passed!`.
+- Focused provider tests -> `14 passed in 0.36s`.
