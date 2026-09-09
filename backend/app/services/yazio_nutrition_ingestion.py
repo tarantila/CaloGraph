@@ -12,6 +12,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.nutrition.enums import (
@@ -300,13 +301,6 @@ def _field(
         existing.lineage_state = lineage_state
         existing.provider_metadata = _safe_metadata(provider_metadata)
         db.flush()
-        _provenance(
-            db,
-            user_id=user_id,
-            source_observation_id=source_observation_id,
-            field_observation_id=existing.id,
-            lineage_state=lineage_state,
-        )
         return existing
     field = NutritionFieldObservation(
         user_id=user_id,
@@ -357,25 +351,25 @@ def _provenance(
         NutritionProvenance.role == role,
     ]
     filters.extend(column == target for column, target in zip(target_columns, targets, strict=True))
-    existing = db.scalar(select(NutritionProvenance).where(*filters))
-    if existing is not None:
-        if existing.lineage_state != lineage_state:
-            existing.lineage_state = lineage_state
-            db.flush()
+    if db.scalar(select(NutritionProvenance).where(*filters)) is not None:
         return
-    db.add(
-        NutritionProvenance(
-            user_id=user_id,
-            source_observation_id=source_observation_id,
-            consumption_event_id=consumption_event_id,
-            food_snapshot_id=food_snapshot_id,
-            serving_observation_id=serving_observation_id,
-            field_observation_id=field_observation_id,
-            role=role,
-            lineage_state=lineage_state,
-        )
-    )
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(
+                NutritionProvenance(
+                    user_id=user_id,
+                    source_observation_id=source_observation_id,
+                    consumption_event_id=consumption_event_id,
+                    food_snapshot_id=food_snapshot_id,
+                    serving_observation_id=serving_observation_id,
+                    field_observation_id=field_observation_id,
+                    role=role,
+                    lineage_state=lineage_state,
+                )
+            )
+            db.flush()
+    except IntegrityError:
+        return
 
 
 def _serving(
@@ -523,7 +517,6 @@ def _profile_observation(
         user_id=user_id,
         food_profile_id=food_profile.id,
         advance_current=True,
-        order_by_provider_updated_at=True,
         source_observation_id=observation.id,
         content_hash=fingerprint,
         provider_revision=profile.updated_at.isoformat() if profile.updated_at else None,

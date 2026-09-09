@@ -673,7 +673,6 @@ def get_or_create_food_snapshot(
     source_observation_id: UUID,
     content_hash: str,
     advance_current: bool = True,
-    order_by_provider_updated_at: bool = False,
     provider_revision: str | None = None,
     name: str | None = None,
     producer: str | None = None,
@@ -742,23 +741,7 @@ def get_or_create_food_snapshot(
         db.add(snapshot)
         db.flush()
     assert snapshot is not None
-    should_advance = advance_current and (created or profile.current_snapshot_id is None)
-    if should_advance and order_by_provider_updated_at and profile.current_snapshot_id is not None and created:
-        current_snapshot = db.scalar(
-            select(NutritionFoodSnapshot).where(
-                NutritionFoodSnapshot.id == profile.current_snapshot_id,
-                NutritionFoodSnapshot.user_id == user_id,
-            )
-        )
-        if (
-            provider_updated_at is not None
-            and current_snapshot is not None
-            and current_snapshot.provider_updated_at is not None
-            and provider_updated_at < current_snapshot.provider_updated_at
-        ):
-            should_advance = False
-    if should_advance:
-        assert snapshot is not None
+    if advance_current and (created or profile.current_snapshot_id is None):
         profile.current_snapshot_id = snapshot.id
         db.flush()
     return snapshot

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.models import YazioConnection
 from app.nutrition.enums import (
@@ -32,7 +33,7 @@ from app.nutrition.models import (
     NutritionServingObservation,
     NutritionSourceObservation,
 )
-from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_nutrition_ingestion import _provenance, ingest_yazio_food_diary
 from app.services.yazio_provider import (
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
@@ -311,15 +312,15 @@ def test_product_identity_links_are_event_specific_and_retry_stable(db, user):
     assert all(link.link_role.startswith("product_event:") for link in links)
 
 
-def test_stale_profile_snapshot_binds_event_while_current_stays_newer(db, user):
+def test_profile_snapshot_binds_event_and_current_pointer_tracks_observation(db, user):
     connection = _connection(db, user)
     _ingest(db, user, _diary(profile_energy=Decimal("3"), updated_at=datetime(2026, 9, 3, 10, 0)), connection=connection)
-    current_id = db.scalar(select(NutritionFoodProfile)).current_snapshot_id
+    first_id = db.scalar(select(NutritionFoodProfile)).current_snapshot_id
     _ingest(db, user, _diary(profile_energy=Decimal("4"), updated_at=datetime(2026, 9, 1, 10, 0)), connection=connection)
     event = db.scalar(select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision.desc()))
     assert event.revision == 2
-    assert event.food_snapshot_id != current_id
-    assert db.scalar(select(NutritionFoodProfile)).current_snapshot_id == current_id
+    assert event.food_snapshot_id != first_id
+    assert db.scalar(select(NutritionFoodProfile)).current_snapshot_id == event.food_snapshot_id
 
 
 def test_profile_without_provider_timestamp_advances_current(db, user):
@@ -427,7 +428,7 @@ def test_provider_derived_field_roles_lineage_and_provenance(db, user):
     derived_ids = {field.id for field in fields if field.observation_role == ObservationRole.DERIVED.value}
     assert all(item.lineage_state == LineageState.UNCERTAIN.value for item in provenance if item.field_observation_id in derived_ids)
 
-def test_reingestion_refreshes_existing_product_provenance_lineage(db, user):
+def test_reingestion_keeps_existing_product_provenance_append_only(db, user):
     connection = _connection(db, user)
     diary = _diary(simple=False, summary=False)
     _ingest(db, user, diary, connection=connection)
@@ -436,22 +437,106 @@ def test_reingestion_refreshes_existing_product_provenance_lineage(db, user):
             NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value
         )
     ).all()
-    provenance = db.scalars(select(NutritionProvenance)).all()
-    for field in derived:
-        field.lineage_state = LineageState.CONFIRMED.value
-    for item in provenance:
-        if item.field_observation_id in {field.id for field in derived}:
-            item.lineage_state = LineageState.CONFIRMED.value
-    db.flush()
+    provenance = db.scalars(
+        select(NutritionProvenance).where(
+            NutritionProvenance.field_observation_id.in_([field.id for field in derived])
+        )
+    ).all()
+    target_provenance = next(item for item in provenance if item.field_observation_id == derived[0].id)
+    provenance_ids = {item.id for item in provenance}
+    assert provenance
+    assert all(item.lineage_state == LineageState.UNCERTAIN.value for item in provenance)
 
     _ingest(db, user, diary, connection=connection)
 
-    assert all(field.lineage_state == LineageState.UNCERTAIN.value for field in derived)
-    assert all(
-        item.lineage_state == LineageState.UNCERTAIN.value
-        for item in provenance
-        if item.field_observation_id in {field.id for field in derived}
+    persisted = db.scalars(
+        select(NutritionProvenance).where(
+            NutritionProvenance.field_observation_id.in_([field.id for field in derived])
+        )
+    ).all()
+    assert {item.id for item in persisted} == provenance_ids
+    assert all(item.lineage_state == LineageState.UNCERTAIN.value for item in persisted)
+    assert not any(db.is_modified(item, include_collections=False) for item in persisted)
+    _provenance(
+        db,
+        user_id=user.id,
+        source_observation_id=derived[0].source_observation_id,
+        field_observation_id=derived[0].id,
+        lineage_state=LineageState.CONFIRMED.value,
     )
+    db.flush()
+    assert db.get(NutritionProvenance, target_provenance.id).lineage_state == LineageState.UNCERTAIN.value
+def test_provenance_identity_is_database_unique(db, user):
+    connection = _connection(db, user)
+    _ingest(db, user, _diary(simple=False, summary=False), connection=connection)
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value
+        )
+    )
+    assert field is not None
+    duplicate = NutritionProvenance(
+        user_id=user.id,
+        source_observation_id=field.source_observation_id,
+        field_observation_id=field.id,
+        role="provider",
+        lineage_state=LineageState.UNCERTAIN.value,
+    )
+    with pytest.raises(IntegrityError), db.begin_nested():
+        db.add(duplicate)
+        db.flush()
+def test_concurrent_provenance_conflict_is_idempotent(db, user, monkeypatch):
+    connection = _connection(db, user)
+    _ingest(db, user, _diary(simple=False, summary=False), connection=connection)
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value
+        )
+    )
+    assert field is not None
+    original_flush = db.flush
+
+    def conflict_flush(*args, **kwargs):
+        if any(isinstance(item, NutritionProvenance) for item in db.new):
+            raise IntegrityError("INSERT", {}, RuntimeError("duplicate"))
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(db, "flush", conflict_flush)
+    _provenance(
+        db,
+        user_id=user.id,
+        source_observation_id=field.source_observation_id,
+        field_observation_id=field.id,
+        role="concurrency-test",
+    )
+    assert db.scalar(
+        select(NutritionProvenance).where(NutritionProvenance.role == "concurrency-test")
+    ) is None
+
+
+
+def test_future_provider_timestamp_cannot_pin_current_snapshot(db, user):
+    connection = _connection(db, user)
+    _ingest(
+        db,
+        user,
+        _diary(profile_energy=Decimal("2"), updated_at=datetime(2099, 1, 1, 0, 0)),
+        connection=connection,
+    )
+    _ingest(
+        db,
+        user,
+        _diary(profile_energy=Decimal("3"), updated_at=datetime(2026, 9, 2, 10, 0)),
+        connection=connection,
+    )
+
+    snapshots = db.scalars(select(NutritionFoodSnapshot)).all()
+    profile = db.scalar(select(NutritionFoodProfile))
+    incoming = next(snapshot for snapshot in snapshots if snapshot.provider_updated_at == datetime(2026, 9, 2, 10, 0))
+    future = next(snapshot for snapshot in snapshots if snapshot.provider_updated_at == datetime(2099, 1, 1, 0, 0))
+    assert len(snapshots) == 2
+    assert profile.current_snapshot_id == incoming.id
+    assert future.provider_updated_at == datetime(2099, 1, 1, 0, 0)
 
 
 def test_repeated_diary_is_idempotent_and_changed_content_revises(db, user):
@@ -467,17 +552,20 @@ def test_repeated_diary_is_idempotent_and_changed_content_revises(db, user):
     assert db.scalar(select(func.count()).select_from(NutritionFoodSnapshot)) == 2
     assert db.scalar(select(func.count()).select_from(NutritionConsumptionEvent)) == 3
     assert db.scalar(select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision.desc())).revision == 2
-def test_older_profile_snapshot_is_history_and_does_not_rewind_current(db, user):
+def test_older_profile_snapshot_remains_immutable_while_new_observation_is_current(db, user):
     connection = _connection(db, user)
     _ingest(db, user, _diary(updated_at=datetime(2026, 9, 2, 10, 0)), connection=connection)
     _ingest(db, user, _diary(profile_energy=Decimal("3"), updated_at=datetime(2026, 9, 3, 10, 0)), connection=connection)
-    current_id = db.scalar(select(NutritionFoodProfile)).current_snapshot_id
+    previous_id = db.scalar(select(NutritionFoodProfile)).current_snapshot_id
     _ingest(db, user, _diary(updated_at=datetime(2026, 9, 1, 10, 0)), connection=connection)
-    current = db.scalar(select(NutritionFoodSnapshot).where(NutritionFoodSnapshot.id == current_id))
-    assert db.scalar(select(NutritionFoodProfile)).current_snapshot_id == current_id
-    assert current.provider_updated_at == datetime(2026, 9, 3, 10, 0)
+    previous = db.scalar(select(NutritionFoodSnapshot).where(NutritionFoodSnapshot.id == previous_id))
+    incoming = db.scalar(
+        select(NutritionFoodSnapshot).where(NutritionFoodSnapshot.provider_updated_at == datetime(2026, 9, 1, 10, 0))
+    )
+    assert db.scalar(select(NutritionFoodProfile)).current_snapshot_id == incoming.id
+    assert previous.provider_updated_at == datetime(2026, 9, 3, 10, 0)
 
-def test_locked_profile_refreshes_pointer_before_provider_time_ordering(db, user):
+def test_locked_profile_refreshes_pointer_for_new_observed_snapshot(db, user):
     connection = _connection(db, user)
     _ingest(db, user, _diary(profile_energy=Decimal("2"), updated_at=datetime(2026, 9, 1, 10, 0)), connection=connection)
     first = db.scalar(select(NutritionFoodSnapshot))
