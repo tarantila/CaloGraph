@@ -23,16 +23,6 @@ from app.services.credential_crypto import (
     encrypt_credential,
 )
 from app.services.import_service import _persist_import_locked, persist_import
-from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
-from app.services.yazio_provider import (
-    YazioProviderAuthenticationError,
-    YazioProviderDeadlineError,
-    YazioProviderError,
-    YazioProviderInvalidResponseError,
-    YazioProviderNetworkTimeoutError,
-    YazioProviderRateLimitedError,
-    YazioProviderUnavailableError,
-)
 from app.services.rate_limit import (
     RateLimitExceeded,
     check_rate_limit,
@@ -45,6 +35,16 @@ from app.services.user_operation_lock import (
     shared_user_operation,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import (
+    YazioProviderAuthenticationError,
+    YazioProviderDeadlineError,
+    YazioProviderError,
+    YazioProviderInvalidResponseError,
+    YazioProviderNetworkTimeoutError,
+    YazioProviderRateLimitedError,
+    YazioProviderUnavailableError,
+)
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,

@@ -29,6 +29,7 @@ def _connection(db, user) -> YazioConnection:
         settings.credential_encryption_key = Fernet.generate_key().decode()
     connection = YazioConnection(
         user_id=user.id,
+        source_identifier=f"yazio:{user.id}",
         encrypted_email=encrypt_credential("owner@example.com"),
         encrypted_password=encrypt_credential("yazio-password"),
         sync_days=1,

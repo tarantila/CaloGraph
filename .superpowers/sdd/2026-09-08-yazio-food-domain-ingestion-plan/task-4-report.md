@@ -61,3 +61,10 @@ Round 1 runtime checks remain blocked by the same environment limitation above: 
 
 - Restored `import threading` while preserving `from collections.abc import Mapping` in `yazio_transport.py`; `python3 -m py_compile app/services/yazio_transport.py` passed.
 - `python3 -m py_compile` passed. Focused pytest, existing YAZIO sync tests, and Ruff remain unavailable in this environment.
+
+## Round 5 verification fixes
+
+- Ordered the YAZIO sync service imports to satisfy Ruff's `I001` check.
+- Added the required `source_identifier` to the YAZIO connection fixture so rollout tests exercise synchronization rather than failing at database constraint setup.
+- Focused container run passed: `docker compose -f docker-compose.yml -f docker-compose.test.yml run --build --rm backend-ci pytest tests/test_yazio_domain_sync.py -q` (`7 passed`).
+- Ruff passed for all changed Python files, and `python3 -m py_compile` passed for all touched Python files.
