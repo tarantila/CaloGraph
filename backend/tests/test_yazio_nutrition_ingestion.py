@@ -354,16 +354,104 @@ def test_civil_datetime_is_naive_and_timezone_is_metadata(db, user):
     assert event.provider_civil_datetime.tzinfo is None
 
 
+def test_product_derived_fields_mark_temporal_lineage_uncertain(db, user):
+    diary = _diary(updated_at=datetime(2026, 9, 2, 10, 0))
+    _ingest(db, user, diary)
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.event_kind == ConsumptionEventKind.PRODUCT.value
+        )
+    )
+    assert event is not None
+    assert event.resolution_state == ResolutionState.RESOLVED.value
+    derived = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == event.source_observation_id,
+            NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value,
+        )
+    ).all()
+    assert derived
+    assert all(field.coverage_state == CoverageState.COMPLETE.value for field in derived)
+    assert all(field.resolution_state == ResolutionState.RESOLVED.value for field in derived)
+    assert all(field.lineage_state == LineageState.UNCERTAIN.value for field in derived)
+    assert {field.provider_metadata["profile_temporal_relation"] for field in derived} == {"after_event"}
+    assert all(field.derived_from_field_observation_id is not None for field in derived)
+    provenance = db.scalars(
+        select(NutritionProvenance).where(
+            NutritionProvenance.field_observation_id.in_([field.id for field in derived])
+        )
+    ).all()
+    assert provenance
+    assert all(item.lineage_state == LineageState.UNCERTAIN.value for item in provenance)
+
+
+def test_product_derived_temporal_lineage_is_unknown_without_profile_timestamp(db, user):
+    _ingest(db, user, _diary(updated_at=None), simple=False, summary=False)
+    derived = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value
+        )
+    ).all()
+    assert derived
+    assert all(field.lineage_state == LineageState.UNCERTAIN.value for field in derived)
+    assert {field.provider_metadata["profile_temporal_relation"] for field in derived} == {"unknown"}
+
+
+def test_simple_product_direct_fields_remain_confirmed(db, user):
+    _ingest(db, user, _diary(simple=True, summary=False))
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.event_kind == ConsumptionEventKind.SIMPLE_PRODUCT.value
+        )
+    )
+    assert event is not None
+    fields = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == event.source_observation_id
+        )
+    ).all()
+    assert any(field.metric_key == "dietary_energy_kcal" for field in fields)
+    assert all(field.lineage_state == LineageState.CONFIRMED.value for field in fields)
+
+
 def test_provider_derived_field_roles_lineage_and_provenance(db, user):
     _ingest(db, user, simple=False, summary=False)
     fields = db.scalars(select(NutritionFieldObservation)).all()
     assert {field.observation_role for field in fields} >= {ObservationRole.PROVIDER.value, ObservationRole.DERIVED.value}
     derived = next(field for field in fields if field.observation_role == ObservationRole.DERIVED.value)
     assert derived.derived_from_field_observation_id is not None
-    assert derived.lineage_state == LineageState.CONFIRMED.value
+    assert derived.lineage_state == LineageState.UNCERTAIN.value
     provenance = db.scalars(select(NutritionProvenance)).all()
     assert provenance
     assert all(sum(target is not None for target in (item.consumption_event_id, item.food_snapshot_id, item.serving_observation_id, item.field_observation_id)) == 1 for item in provenance)
+    derived_ids = {field.id for field in fields if field.observation_role == ObservationRole.DERIVED.value}
+    assert all(item.lineage_state == LineageState.UNCERTAIN.value for item in provenance if item.field_observation_id in derived_ids)
+
+def test_reingestion_refreshes_existing_product_provenance_lineage(db, user):
+    connection = _connection(db, user)
+    diary = _diary(simple=False, summary=False)
+    _ingest(db, user, diary, connection=connection)
+    derived = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value
+        )
+    ).all()
+    provenance = db.scalars(select(NutritionProvenance)).all()
+    for field in derived:
+        field.lineage_state = LineageState.CONFIRMED.value
+    for item in provenance:
+        if item.field_observation_id in {field.id for field in derived}:
+            item.lineage_state = LineageState.CONFIRMED.value
+    db.flush()
+
+    _ingest(db, user, diary, connection=connection)
+
+    assert all(field.lineage_state == LineageState.UNCERTAIN.value for field in derived)
+    assert all(
+        item.lineage_state == LineageState.UNCERTAIN.value
+        for item in provenance
+        if item.field_observation_id in {field.id for field in derived}
+    )
 
 
 def test_repeated_diary_is_idempotent_and_changed_content_revises(db, user):

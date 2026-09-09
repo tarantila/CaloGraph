@@ -151,6 +151,33 @@ def _metadata_with(metadata: Mapping[str, Any] | None, **values: Any) -> dict[st
     merged = dict(metadata or {})
     merged.update(values)
     return _safe_metadata(merged)
+
+def _profile_temporal_metadata(
+    db: Session,
+    *,
+    snapshot: NutritionFoodSnapshot,
+    event_civil_datetime: datetime | None,
+) -> dict[str, Any]:
+    if snapshot.provider_updated_at is None or event_civil_datetime is None:
+        relation = "unknown"
+    elif snapshot.provider_updated_at > event_civil_datetime:
+        relation = "after_event"
+    else:
+        relation = "before_or_equal_event"
+    source_observation = db.get(NutritionSourceObservation, snapshot.source_observation_id)
+    return {
+        "source": "profile",
+        "profile_temporal_relation": relation,
+        "profile_provider_updated_at": (
+            snapshot.provider_updated_at.isoformat() if snapshot.provider_updated_at is not None else None
+        ),
+        "profile_source_observed_at": (
+            source_observation.observed_at.isoformat()
+            if source_observation is not None and source_observation.observed_at is not None
+            else None
+        ),
+        "event_civil_datetime": event_civil_datetime.isoformat() if event_civil_datetime is not None else None,
+    }
 def _nutrient_value(nutrients: YazioNutrientValues, key: str) -> Decimal | None:
     return cast(Decimal | None, getattr(nutrients, key))
 
@@ -273,6 +300,13 @@ def _field(
         existing.lineage_state = lineage_state
         existing.provider_metadata = _safe_metadata(provider_metadata)
         db.flush()
+        _provenance(
+            db,
+            user_id=user_id,
+            source_observation_id=source_observation_id,
+            field_observation_id=existing.id,
+            lineage_state=lineage_state,
+        )
         return existing
     field = NutritionFieldObservation(
         user_id=user_id,
@@ -323,7 +357,11 @@ def _provenance(
         NutritionProvenance.role == role,
     ]
     filters.extend(column == target for column, target in zip(target_columns, targets, strict=True))
-    if db.scalar(select(NutritionProvenance).where(*filters)) is not None:
+    existing = db.scalar(select(NutritionProvenance).where(*filters))
+    if existing is not None:
+        if existing.lineage_state != lineage_state:
+            existing.lineage_state = lineage_state
+            db.flush()
         return
     db.add(
         NutritionProvenance(
@@ -670,6 +708,11 @@ def _product_event(
                 NutritionFieldObservation.observation_role == ObservationRole.PROVIDER.value,
             )
         ).all()
+        derived_metadata = _profile_temporal_metadata(
+            db,
+            snapshot=snapshot,
+            event_civil_datetime=item.provider_civil_datetime,
+        )
         for source_field in profile_fields:
             provider_nutrient = _provider_key(source_field.metric_key or "")
             if provider_nutrient is None:
@@ -686,9 +729,12 @@ def _product_event(
                 canonical_unit=source_field.canonical_unit,
                 provider_raw_unit=source_field.canonical_unit,
                 role=ObservationRole.DERIVED.value,
+                coverage_state=CoverageState.COMPLETE.value,
+                resolution_state=ResolutionState.RESOLVED.value,
+                lineage_state=LineageState.UNCERTAIN.value,
                 derived_from_field_observation_id=source_field.id,
                 presence_state=_presence(derived),
-                provider_metadata={"source": "profile"},
+                provider_metadata=derived_metadata,
             )
     _serving(
         db,
