@@ -1,7 +1,7 @@
 import json
 import subprocess
 import sys
-import threading
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, timedelta
@@ -199,21 +199,23 @@ def fetch_yazio_domain_transport(
             },
             settings.yazio_operation_deadline_seconds,
         )
+        if not isinstance(result, dict):
+            raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid payload")
+        aggregate = result.get("aggregate")
+        diary = result.get("diary")
+        if not isinstance(aggregate, dict) or not isinstance(diary, dict):
+            raise YazioTransportInvalidResponseError(
+                "YAZIO worker returned an invalid domain payload"
+            )
+        try:
+            normalized_diary = _decode_food_diary(diary)
+        except YazioTransportInvalidResponseError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise YazioTransportInvalidResponseError from exc
+        return aggregate, normalized_diary
     except YazioTransportError as exc:
         _raise_domain_provider_error(exc)
-    if not isinstance(result, dict):
-        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid payload")
-    aggregate = result.get("aggregate")
-    diary = result.get("diary")
-    if not isinstance(aggregate, dict) or not isinstance(diary, dict):
-        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid domain payload")
-    try:
-        normalized_diary = _decode_food_diary(diary)
-    except YazioTransportInvalidResponseError:
-        raise
-    except (KeyError, TypeError, ValueError) as exc:
-        raise YazioTransportInvalidResponseError from exc
-    return aggregate, normalized_diary
 
 
 def _encode_transport_value(value: object) -> object:

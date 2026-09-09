@@ -11,12 +11,13 @@ from app.config import Settings, settings
 from app.models import HealthSample, ImportBatch, YazioConnection
 from app.nutrition.models import NutritionConsumptionEvent, NutritionIngestionRun
 from app.schemas import ImportSummary
-from app.services import yazio_sync
+from app.services import yazio_sync, yazio_transport
 from app.services.credential_crypto import encrypt_credential
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
     YazioFoodDiary,
     YazioNutrientValues,
+    YazioProviderInvalidResponseError,
 )
 from app.services.yazio_sync import YazioSyncError, run_manual_yazio_sync
 
@@ -156,6 +157,22 @@ def test_domain_failure_rolls_back_legacy_and_domain_rows(
     assert db.scalar(select(func.count()).select_from(HealthSample)) == 0
     assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
     assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 0
+
+
+def test_domain_transport_rejects_malformed_worker_result(monkeypatch) -> None:
+    monkeypatch.setattr(
+        yazio_transport,
+        "_run_worker",
+        lambda *_args, **_kwargs: {"aggregate": {}},
+    )
+    with pytest.raises(YazioProviderInvalidResponseError):
+        yazio_transport.fetch_yazio_domain_transport(
+            "owner@example.com",
+            "yazio-password",
+            DAY,
+            DAY,
+        )
+
 
 
 def test_disabled_legacy_path_never_constructs_food_diary_provider(
