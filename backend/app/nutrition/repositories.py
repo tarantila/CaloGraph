@@ -671,6 +671,8 @@ def get_or_create_food_snapshot(
     food_profile_id: UUID,
     source_observation_id: UUID,
     content_hash: str,
+    advance_current: bool = True,
+    order_by_provider_updated_at: bool = False,
     provider_revision: str | None = None,
     name: str | None = None,
     producer: str | None = None,
@@ -685,10 +687,13 @@ def get_or_create_food_snapshot(
 ) -> NutritionFoodSnapshot:
     _validate_content_hash(content_hash)
     profile = db.scalar(
-        select(NutritionFoodProfile).where(
+        select(NutritionFoodProfile)
+        .where(
             NutritionFoodProfile.id == food_profile_id,
             NutritionFoodProfile.user_id == user_id,
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     if profile is None:
         raise ValueError("food profile must belong to the same user")
@@ -735,13 +740,24 @@ def get_or_create_food_snapshot(
         )
         db.add(snapshot)
         db.flush()
-    if created or profile.current_snapshot_id is None:
-        set_current_food_snapshot(
-            db,
-            user_id=user_id,
-            food_profile_id=food_profile_id,
-            food_snapshot_id=snapshot.id,
+    should_advance = advance_current and (created or profile.current_snapshot_id is None)
+    if should_advance and order_by_provider_updated_at and profile.current_snapshot_id is not None and created:
+        current_snapshot = db.scalar(
+            select(NutritionFoodSnapshot).where(
+                NutritionFoodSnapshot.id == profile.current_snapshot_id,
+                NutritionFoodSnapshot.user_id == user_id,
+            )
         )
+        if (
+            provider_updated_at is not None
+            and current_snapshot is not None
+            and current_snapshot.provider_updated_at is not None
+            and provider_updated_at < current_snapshot.provider_updated_at
+        ):
+            should_advance = False
+    if should_advance:
+        profile.current_snapshot_id = snapshot.id
+        db.flush()
     return snapshot
 
 
