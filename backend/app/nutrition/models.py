@@ -647,6 +647,46 @@ class NutritionProvenance(Base):
     __tablename__ = "nutrition_provenance"
     __table_args__ = (
         UniqueConstraint("id", "user_id", name="uq_nutrition_provenance_id_user"),
+        Index(
+            "uq_nutrition_provenance_event_identity",
+            "user_id",
+            "source_observation_id",
+            "role",
+            "consumption_event_id",
+            unique=True,
+            postgresql_where=text("consumption_event_id IS NOT NULL"),
+            sqlite_where=text("consumption_event_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_nutrition_provenance_snapshot_identity",
+            "user_id",
+            "source_observation_id",
+            "role",
+            "food_snapshot_id",
+            unique=True,
+            postgresql_where=text("food_snapshot_id IS NOT NULL"),
+            sqlite_where=text("food_snapshot_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_nutrition_provenance_serving_identity",
+            "user_id",
+            "source_observation_id",
+            "role",
+            "serving_observation_id",
+            unique=True,
+            postgresql_where=text("serving_observation_id IS NOT NULL"),
+            sqlite_where=text("serving_observation_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_nutrition_provenance_field_identity",
+            "user_id",
+            "source_observation_id",
+            "role",
+            "field_observation_id",
+            unique=True,
+            postgresql_where=text("field_observation_id IS NOT NULL"),
+            sqlite_where=text("field_observation_id IS NOT NULL"),
+        ),
         ForeignKeyConstraint(
             ["source_observation_id", "user_id"],
             ["nutrition_source_observations.id", "nutrition_source_observations.user_id"],
@@ -687,6 +727,7 @@ class NutritionProvenance(Base):
         Index("ix_nutrition_provenance_user_source", "user_id", "source_observation_id"),
         Index("ix_nutrition_provenance_user_event", "user_id", "consumption_event_id"),
         Index("ix_nutrition_provenance_user_snapshot", "user_id", "food_snapshot_id"),
+        Index("ix_nutrition_provenance_user_serving", "user_id", "serving_observation_id"),
         Index("ix_nutrition_provenance_user_field", "user_id", "field_observation_id"),
     )
 

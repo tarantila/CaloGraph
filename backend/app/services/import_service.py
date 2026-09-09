@@ -512,6 +512,7 @@ def _persist_import_locked(
     client_identifier: str | None,
     *,
     connector_variant: str | None = None,
+    shared_transaction: bool = False,
 ) -> ImportSummary:
     payload_hash = hashlib.sha256(raw_payload).hexdigest() if raw_payload is not None else None
     batch = _start_batch(
@@ -521,6 +522,8 @@ def _persist_import_locked(
         client_identifier,
         payload_hash,
         connector_variant=connector_variant,
+        commit=not shared_transaction,
+        log_started=not shared_transaction,
     )
     counters = ImportCounters(
         received=result.received,
@@ -542,10 +545,24 @@ def _persist_import_locked(
             counters.inserted += inserted
             counters.updated += updated
             counters.duplicate_skipped += skipped
-            _checkpoint(db, batch, counters, unknown_types, pending_errors)
+            _checkpoint(
+                db,
+                batch,
+                counters,
+                unknown_types,
+                pending_errors,
+                commit=not shared_transaction,
+            )
 
         if not result.samples:
-            _checkpoint(db, batch, counters, unknown_types, pending_errors)
+            _checkpoint(
+                db,
+                batch,
+                counters,
+                unknown_types,
+                pending_errors,
+                commit=not shared_transaction,
+            )
 
         retention_days = user.raw_payload_retention_days
         if raw_payload is not None and retention_days > 0:
@@ -559,8 +576,14 @@ def _persist_import_locked(
             )
         batch.status = "completed_with_errors" if counters.failed else "completed"
         batch.finished_at = datetime.now(UTC)
-        db.commit()
+        if shared_transaction:
+            db.flush()
+        else:
+            db.commit()
     except SQLAlchemyError as exc:
+        if shared_transaction:
+            db.rollback()
+            raise
         _finish_partial(
             db,
             batch.id,
@@ -570,12 +593,13 @@ def _persist_import_locked(
             exc,
         )
         raise
-    log_security_event(
-        "import.completed",
-        actor_ref=security_reference("user", batch.user_id),
-        target_ref=security_reference("import_batch", batch.id),
-        details=_batch_event_details(batch),
-    )
+    if not shared_transaction:
+        log_security_event(
+            "import.completed",
+            actor_ref=security_reference("user", batch.user_id),
+            target_ref=security_reference("import_batch", batch.id),
+            details=_batch_event_details(batch),
+        )
     return _summary(batch)
 
 

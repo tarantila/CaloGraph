@@ -2,10 +2,12 @@ import json
 import subprocess
 import sys
 import threading
+from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Any, cast
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from typing import Any, NoReturn, cast
 
 import requests
 from yazio_exporter.auth import CLIENT_ID, CLIENT_SECRET  # type: ignore[import-untyped]
@@ -22,7 +24,21 @@ from yazio_exporter.utils import serialize_day_data  # type: ignore[import-untyp
 from app.config import settings
 from app.micronutrients import YAZIO_MICRONUTRIENT_IDS
 from app.services.yazio_provider import (
+    YazioConsumedProduct,
+    YazioConsumedSimpleProduct,
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
+    YazioProductProfile,
+    YazioProviderAuthenticationError,
+    YazioProviderDeadlineError,
     YazioProviderError,
+    YazioProviderInvalidResponseError,
+    YazioProviderNetworkTimeoutError,
+    YazioProviderRateLimitedError,
+    YazioProviderUnavailableError,
+    YazioServing,
+    get_yazio_food_diary_provider,
     get_yazio_provider,
 )
 
@@ -144,6 +160,264 @@ def fetch_yazio_payload_transport(
     if not isinstance(result, dict):
         raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid payload")
     return result
+
+
+def _raise_domain_provider_error(error: YazioTransportError) -> NoReturn:
+    if isinstance(error, YazioTransportAuthenticationError):
+        raise YazioProviderAuthenticationError from error
+    if isinstance(error, YazioTransportVersionBlockedError):
+        from app.services.yazio_provider import YazioProviderVersionBlockedError
+
+        raise YazioProviderVersionBlockedError from error
+    if isinstance(error, YazioTransportRateLimitedError):
+        raise YazioProviderRateLimitedError(error.retry_after) from error
+    if isinstance(error, YazioTransportNetworkTimeoutError):
+        raise YazioProviderNetworkTimeoutError from error
+    if isinstance(error, YazioTransportDeadlineError):
+        raise YazioProviderDeadlineError from error
+    if isinstance(error, YazioTransportInvalidResponseError):
+        raise YazioProviderInvalidResponseError from error
+    raise YazioProviderUnavailableError from error
+
+
+def fetch_yazio_domain_transport(
+    email: str,
+    password: str,
+    start_day: date,
+    end_day: date,
+) -> tuple[dict[str, Any], YazioFoodDiary]:
+    try:
+        result = _run_worker(
+            {
+                "operation": "fetch_domain",
+                "email": email,
+                "password": password,
+                "start_day": start_day.isoformat(),
+                "end_day": end_day.isoformat(),
+                "include_micronutrients": True,
+                "provider_mode": "sdk",
+                **_worker_options(),
+            },
+            settings.yazio_operation_deadline_seconds,
+        )
+        if not isinstance(result, dict):
+            raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid payload")
+        aggregate = result.get("aggregate")
+        diary = result.get("diary")
+        if not isinstance(aggregate, dict) or not isinstance(diary, dict):
+            raise YazioTransportInvalidResponseError(
+                "YAZIO worker returned an invalid domain payload"
+            )
+        try:
+            normalized_diary = _decode_food_diary(diary)
+        except YazioTransportInvalidResponseError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise YazioTransportInvalidResponseError from exc
+        return aggregate, normalized_diary
+    except YazioTransportError as exc:
+        _raise_domain_provider_error(exc)
+
+
+def _encode_transport_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return {"__decimal__": str(value)}
+    if isinstance(value, datetime):
+        return {"__datetime__": value.isoformat()}
+    if isinstance(value, date):
+        return {"__date__": value.isoformat()}
+    if is_dataclass(value):
+        return {
+            item.name: _encode_transport_value(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {str(key): _encode_transport_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_encode_transport_value(item) for item in value]
+    return value
+
+
+def _decode_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid domain field")
+    return value
+
+
+def _decode_list(data: Mapping[str, object], key: str) -> list[object]:
+    value = data.get(key, [])
+    if not isinstance(value, list):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid domain field")
+    return value
+
+
+def _decode_optional_string(data: Mapping[str, object], key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _decode_optional_bool(data: Mapping[str, object], key: str) -> bool | None:
+    value = data.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _decode_metadata(value: object) -> dict[str, str | int | float | bool | None]:
+    data = _decode_mapping(value)
+    result: dict[str, str | int | float | bool | None] = {}
+    for key, item in data.items():
+        if not isinstance(key, str) or (
+            not isinstance(item, (str, int, float, bool)) and item is not None
+        ):
+            raise YazioTransportInvalidResponseError("YAZIO worker returned invalid metadata")
+        result[key] = item
+    return result
+
+
+def _decode_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    data = _decode_mapping(value)
+    raw = data.get("__decimal__")
+    if not isinstance(raw, str):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid decimal")
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, ValueError) as exc:
+        raise YazioTransportInvalidResponseError from exc
+
+
+def _decode_date(value: object) -> date:
+    data = _decode_mapping(value)
+    raw = data.get("__date__")
+    if not isinstance(raw, str):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid date")
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise YazioTransportInvalidResponseError from exc
+
+
+def _decode_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    data = _decode_mapping(value)
+    raw = data.get("__datetime__")
+    if not isinstance(raw, str):
+        raise YazioTransportInvalidResponseError("YAZIO worker returned an invalid datetime")
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise YazioTransportInvalidResponseError from exc
+
+
+def _decode_nutrients(value: object) -> YazioNutrientValues:
+    data = _decode_mapping(value)
+    additional = _decode_mapping(data.get("additional"))
+    return YazioNutrientValues(
+        energy=_decode_decimal(data.get("energy")),
+        protein=_decode_decimal(data.get("protein")),
+        carb=_decode_decimal(data.get("carb")),
+        fat=_decode_decimal(data.get("fat")),
+        fiber=_decode_decimal(data.get("fiber")),
+        sugar=_decode_decimal(data.get("sugar")),
+        saturated_fat=_decode_decimal(data.get("saturated_fat")),
+        salt=_decode_decimal(data.get("salt")),
+        additional={
+            key: decimal
+            for key, item in additional.items()
+            if (decimal := _decode_decimal(item)) is not None
+        },
+    )
+
+
+def _decode_serving(value: object) -> YazioServing:
+    data = _decode_mapping(value)
+    return YazioServing(
+        label=_decode_optional_string(data, "label"),
+        amount=_decode_decimal(data.get("amount")),
+        unit=_decode_optional_string(data, "unit"),
+        metadata=_decode_metadata(data.get("metadata")),
+    )
+
+
+def _decode_food_diary(data: dict[str, object]) -> YazioFoodDiary:
+    consumed_products: list[YazioConsumedProduct] = []
+    for raw in _decode_list(data, "consumed_products"):
+        item = _decode_mapping(raw)
+        consumed_products.append(
+            YazioConsumedProduct(
+                consumed_item_id=str(item["consumed_item_id"]),
+                product_id=str(item["product_id"]),
+                amount=_decode_decimal(item.get("amount")),
+                provider_civil_datetime=_decode_datetime(item.get("provider_civil_datetime")),
+                local_date=_decode_date(item["local_date"]),
+                daytime=_decode_optional_string(item, "daytime"),
+                serving=_decode_optional_string(item, "serving"),
+                serving_quantity=_decode_decimal(item.get("serving_quantity")),
+                provider_timezone=_decode_optional_string(item, "provider_timezone"),
+                metadata=_decode_metadata(item.get("metadata")),
+            )
+        )
+    consumed_simple_products: list[YazioConsumedSimpleProduct] = []
+    for raw in _decode_list(data, "consumed_simple_products"):
+        item = _decode_mapping(raw)
+        consumed_simple_products.append(
+            YazioConsumedSimpleProduct(
+                consumed_item_id=str(item["consumed_item_id"]),
+                amount=_decode_decimal(item.get("amount")),
+                provider_civil_datetime=_decode_datetime(item.get("provider_civil_datetime")),
+                local_date=_decode_date(item["local_date"]),
+                daytime=_decode_optional_string(item, "daytime"),
+                nutrients=_decode_nutrients(item["nutrients"]),
+                serving=_decode_optional_string(item, "serving"),
+                serving_quantity=_decode_decimal(item.get("serving_quantity")),
+                provider_timezone=_decode_optional_string(item, "provider_timezone"),
+                name=_decode_optional_string(item, "name"),
+                metadata=_decode_metadata(item.get("metadata")),
+            )
+        )
+    profiles: list[YazioProductProfile] = []
+    for raw in _decode_list(data, "product_profiles"):
+        item = _decode_mapping(raw)
+        servings = tuple(_decode_serving(serving) for serving in _decode_list(item, "servings"))
+        profiles.append(
+            YazioProductProfile(
+                product_id=str(item["product_id"]),
+                name=_decode_optional_string(item, "name"),
+                producer=_decode_optional_string(item, "producer"),
+                category=_decode_optional_string(item, "category"),
+                base_unit=_decode_optional_string(item, "base_unit"),
+                nutrients=_decode_nutrients(item["nutrients"]),
+                servings=servings,
+                eans=tuple(str(ean) for ean in _decode_list(item, "eans")),
+                language=_decode_optional_string(item, "language"),
+                countries=tuple(str(country) for country in _decode_list(item, "countries")),
+                updated_at=_decode_datetime(item.get("updated_at")),
+                is_verified=_decode_optional_bool(item, "is_verified"),
+                is_private=_decode_optional_bool(item, "is_private"),
+                is_deleted=_decode_optional_bool(item, "is_deleted"),
+                metadata=_decode_metadata(item.get("metadata")),
+            )
+        )
+    summaries: list[YazioDailyNutrientSummary] = []
+    for raw in _decode_list(data, "daily_summaries"):
+        item = _decode_mapping(raw)
+        summaries.append(
+            YazioDailyNutrientSummary(
+                local_date=_decode_date(item["local_date"]),
+                nutrients=_decode_nutrients(item["nutrients"]),
+                energy_goal=_decode_decimal(item.get("energy_goal")),
+                metadata=_decode_metadata(item.get("metadata")),
+            )
+        )
+    return YazioFoodDiary(
+        requested_start_day=_decode_date(data["requested_start_day"]),
+        requested_end_day=_decode_date(data["requested_end_day"]),
+        consumed_products=tuple(consumed_products),
+        consumed_simple_products=tuple(consumed_simple_products),
+        product_profiles=tuple(profiles),
+        daily_summaries=tuple(summaries),
+    )
 
 
 def _worker_options() -> dict[str, float | int]:
@@ -302,7 +576,7 @@ def _execute_worker(payload: dict[str, object]) -> object:
     password = payload.get("password")
     provider_mode = payload.get("provider_mode")
     if (
-        operation not in {"validate", "fetch"}
+        operation not in {"validate", "fetch", "fetch_domain"}
         or provider_mode not in {"legacy", "sdk"}
         or not isinstance(email, str)
         or not 3 <= len(email) <= 320
@@ -346,13 +620,25 @@ def _execute_worker(payload: dict[str, object]) -> object:
             from app.services.yazio_provider import YazioProviderInvalidResponseError
 
             raise YazioProviderInvalidResponseError from exc
-        return provider.fetch(
+        aggregate = provider.fetch(
             email,
             password,
             start_day,
             end_day,
             payload.get("include_micronutrients") is True,
         ).payload
+        if operation == "fetch_domain":
+            diary = get_yazio_food_diary_provider().fetch_food_diary(
+                email,
+                password,
+                start_day,
+                end_day,
+            )
+            return {
+                "aggregate": aggregate,
+                "diary": _encode_transport_value(diary),
+            }
+        return aggregate
 
     client = _BoundedYazioClient(options)
     try:

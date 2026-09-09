@@ -22,7 +22,7 @@ from app.services.credential_crypto import (
     decrypt_credential,
     encrypt_credential,
 )
-from app.services.import_service import persist_import
+from app.services.import_service import _persist_import_locked, persist_import
 from app.services.rate_limit import (
     RateLimitExceeded,
     check_rate_limit,
@@ -35,6 +35,16 @@ from app.services.user_operation_lock import (
     shared_user_operation,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import (
+    YazioProviderAuthenticationError,
+    YazioProviderDeadlineError,
+    YazioProviderError,
+    YazioProviderInvalidResponseError,
+    YazioProviderNetworkTimeoutError,
+    YazioProviderRateLimitedError,
+    YazioProviderUnavailableError,
+)
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,
@@ -44,6 +54,7 @@ from app.services.yazio_transport import (
     YazioTransportRateLimitedError,
     YazioTransportUnavailableError,
     YazioTransportVersionBlockedError,
+    fetch_yazio_domain_transport,
     fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
@@ -159,6 +170,24 @@ def yazio_failure_reason(error: Exception) -> str:
     return "unexpected_error"
 
 
+def _map_yazio_provider_error(error: YazioProviderError) -> YazioSyncError:
+    if isinstance(error, YazioProviderAuthenticationError):
+        return YazioAuthenticationError("YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen.")
+    if error.kind == "version_blocked":
+        return YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE)
+    if isinstance(error, YazioProviderRateLimitedError):
+        return YazioRateLimitedError(error.retry_after)
+    if isinstance(error, YazioProviderNetworkTimeoutError):
+        return YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet.")
+    if isinstance(error, YazioProviderDeadlineError):
+        return YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet.")
+    if isinstance(error, YazioProviderInvalidResponseError):
+        return YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert.")
+    if isinstance(error, YazioProviderUnavailableError):
+        return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
+    return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
+
+
 def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
     max_jitter = settings.yazio_scheduler_jitter_minutes
     jitter_minutes = secrets.randbelow(max_jitter) + 1 if max_jitter else 0
@@ -179,6 +208,109 @@ def effective_sync_interval_minutes(connection: YazioConnection) -> int:
 
 def effective_sync_days(connection: YazioConnection) -> int:
     return connection.sync_days or settings.yazio_sync_days
+
+
+def _sync_yazio_user_with_domain(
+    user: User,
+    email: str,
+    password: str,
+    start_day: date,
+    end_day: date,
+    source_identifier: str | None,
+) -> ImportSummary:
+    if settings.yazio_provider != "sdk":
+        raise YazioSyncError(
+            "Die YAZIO-Nährwertdomäne ist ausschließlich für den SDK-Anbieter aktiviert."
+        )
+    _require_yazio_enabled()
+    _ensure_yazio_circuit_closed()
+    identifier = source_identifier or yazio_source_identifier(user.id)
+    try:
+        aggregate_payload, diary = fetch_yazio_domain_transport(
+            email,
+            password,
+            start_day,
+            end_day,
+        )
+    except YazioProviderError as exc:
+        if exc.kind != "authentication":
+            _record_yazio_provider_failure()
+        raise _map_yazio_provider_error(exc) from exc
+    _clear_yazio_provider_failures()
+    result = parse_yazio_export(aggregate_payload, user.timezone, identifier)
+    with SessionLocal() as db:
+        active_user = db.get(User, user.id)
+        if active_user is None or not active_user.is_active:
+            raise YazioSyncError("CaloGraph-Benutzer ist nicht aktiv.")
+        try:
+            summary = _persist_import_locked(
+                db,
+                active_user,
+                result,
+                None,
+                "application/x-yazio-sync",
+                "yazio-sdk",
+                connector_variant="sdk-v22",
+                shared_transaction=True,
+            )
+            if (
+                summary.failed > 0
+                and summary.inserted == 0
+                and summary.updated == 0
+                and summary.skipped == 0
+            ):
+                raise YazioSyncError("YAZIO-Daten konnten nicht verarbeitet werden.")
+            ingest_yazio_food_diary(
+                db,
+                user_id=active_user.id,
+                source_instance_id=(
+                    db.scalar(
+                        select(YazioConnection.id).where(
+                            YazioConnection.user_id == active_user.id,
+                        )
+                    )
+                    or _raise_missing_yazio_source_instance()
+                ),
+                requested_start=start_day,
+                requested_end=end_day,
+                diary=diary,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    log_security_event(
+        "import.started",
+        actor_ref=security_reference("user", active_user.id),
+        target_ref=security_reference("import_batch", summary.batch_id),
+        details={"source_type": "yazio_export_v1"},
+    )
+    log_security_event(
+        "import.completed",
+        actor_ref=security_reference("user", active_user.id),
+        target_ref=security_reference("import_batch", summary.batch_id),
+        details={
+            "source_type": "yazio_export_v1",
+            "received": summary.received,
+            "inserted": summary.inserted,
+            "updated": summary.updated,
+            "skipped": summary.skipped,
+            "failed": summary.failed,
+        },
+    )
+
+    if (
+        summary.failed > 0
+        and summary.inserted == 0
+        and summary.updated == 0
+        and summary.skipped == 0
+    ):
+        raise YazioSyncError("YAZIO-Daten konnten nicht verarbeitet werden.")
+    return summary
+
+
+def _raise_missing_yazio_source_instance() -> UUID:
+    raise YazioSyncError("YAZIO-Verbindung ist nicht verfügbar.")
 
 
 def _validate_historical_range(
@@ -564,6 +696,15 @@ def _sync_yazio_user_unlocked(
     *,
     include_micronutrients: bool,
 ) -> ImportSummary:
+    if settings.yazio_nutrition_domain_write_enabled:
+        return _sync_yazio_user_with_domain(
+            user,
+            email,
+            password,
+            start_day,
+            end_day,
+            source_identifier,
+        )
     if fetcher is None:
         payload = _fetch_yazio_payload_unlocked(
             email,
