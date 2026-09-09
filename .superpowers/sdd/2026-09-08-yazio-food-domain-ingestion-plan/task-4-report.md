@@ -56,4 +56,8 @@ Round 1 runtime checks remain blocked by the same environment limitation above: 
 - Restored `collections.abc.Mapping` alongside the bounded worker's `threading` dependency.
 - Moved domain result-shape validation and diary decoding into the same transport error boundary so malformed worker output is mapped to `YazioProviderInvalidResponseError` at the provider boundary and reaches sync circuit-failure handling safely.
 - Added a focused malformed-worker-result regression test.
+
+## Round 4 review fix
+
+- Restored `import threading` while preserving `from collections.abc import Mapping` in `yazio_transport.py`; `python3 -m py_compile app/services/yazio_transport.py` passed.
 - `python3 -m py_compile` passed. Focused pytest, existing YAZIO sync tests, and Ruff remain unavailable in this environment.

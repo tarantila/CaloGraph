@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, fields, is_dataclass
