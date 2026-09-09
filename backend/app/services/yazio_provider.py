@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 ProviderMode = Literal["legacy", "sdk"]
 _MetadataValue = str | int | float | bool | None
@@ -79,6 +79,7 @@ class YazioConsumedSimpleProduct:
     serving: str | None
     serving_quantity: Decimal | None
     provider_timezone: str | None = None
+    name: str | None = None
     metadata: Mapping[str, _MetadataValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -127,11 +128,12 @@ class YazioFoodDiary:
     product_profiles: tuple[YazioProductProfile, ...]
     daily_summaries: tuple[YazioDailyNutrientSummary, ...]
 
-
 class YazioFoodDiaryProvider(Protocol):
     """SDK-v22-only food diary reads; legacy providers need not implement this."""
 
-    mode: Literal["sdk"]
+    @property
+    def mode(self) -> Literal["sdk"]:
+        ...
 
     def fetch_food_diary(
         self, email: str, password: str, start_day: date, end_day: date
@@ -218,8 +220,9 @@ class YazioProviderResult:
 class YazioProvider(Protocol):
     """Provider operations executed inside the isolated transport worker."""
 
-    mode: ProviderMode
-
+    @property
+    def mode(self) -> ProviderMode:
+        ...
     def validate_credentials(self, email: str, password: str) -> None:
         """Validate credentials without returning or persisting provider tokens."""
 
@@ -238,8 +241,7 @@ def provider_mode_from_settings() -> ProviderMode:
     """Read and validate the deployment's internal provider mode."""
 
     from app.config import settings
-
-    mode = settings.yazio_provider
+    mode = cast(ProviderMode, settings.yazio_provider)
     if mode not in {"legacy", "sdk"}:
         # Settings validation normally makes this unreachable; keeping this
         # boundary fail-closed is useful for tests and direct callers.
@@ -263,11 +265,18 @@ def get_yazio_provider(mode: ProviderMode | None = None) -> YazioProvider:
         return LegacyYazioProvider()
     raise ValueError("YAZIO provider mode is invalid")
 
+def get_yazio_food_diary_provider() -> YazioFoodDiaryProvider:
+    """Construct the SDK-v22 food diary provider without importing it in legacy mode."""
+
+    from app.services.yazio_sdk_provider import YazioSdkProvider
+
+    provider: YazioFoodDiaryProvider = YazioSdkProvider()
+    return provider
+
 
 class LegacyYazioProvider:
     """Adapter preserving the existing yazio-exporter transport behavior."""
-
-    mode: ProviderMode = "legacy"
+    mode: Literal["legacy"] = "legacy"
 
     def validate_credentials(self, email: str, password: str) -> None:
         from app.services.yazio_transport import validate_yazio_credentials_transport

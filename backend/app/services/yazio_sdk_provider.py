@@ -16,7 +16,7 @@ from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import partial
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 from yazio_sdk import AuthenticatedClient, Client  # type: ignore[import-untyped]
@@ -27,11 +27,16 @@ from yazio_sdk.api.diary import (  # type: ignore[import-untyped]
 )
 from yazio_sdk.api.products import get_product  # type: ignore[import-untyped]
 from yazio_sdk.api.widgets import get_daily_summary_widget  # type: ignore[import-untyped]
-from yazio_sdk.models import OAuthTokenRequest  # type: ignore[import-untyped]
+from yazio_sdk.models import (  # type: ignore[import-untyped]
+    ConsumedItems,
+    DailyNutrients,
+    OAuthTokenRequest,
+    Product,
+)
 from yazio_sdk.types import UNSET  # type: ignore[import-untyped]
+
 from app.config import settings
 from app.services.yazio_provider import (
-    ProviderMode,
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
     YazioDailyNutrientSummary,
@@ -49,6 +54,17 @@ from app.services.yazio_provider import (
     YazioServing,
 )
 
+
+def _generated_consumed_items(payload: Mapping[str, Any]) -> object:
+    return ConsumedItems.from_dict(payload)
+
+
+def _generated_daily_nutrients(payload: Mapping[str, Any]) -> object:
+    return DailyNutrients.from_dict(payload)
+
+
+def _generated_product(payload: Mapping[str, Any]) -> object:
+    return Product.from_dict(payload)
 MAX_PROVIDER_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_RETRY_AFTER_SECONDS = 3_600
 MAX_TOKEN_BYTES = 8 * 1024
@@ -358,12 +374,14 @@ def _optional_bool(value: object) -> bool | None:
 
 
 def _metadata(value: object, known: set[str]) -> dict[str, str | int | float | bool | None]:
+    source: Mapping[Any, Any]
     if isinstance(value, Mapping):
         source = value
     else:
-        source = _field(value, "additional_properties")
-        if not isinstance(source, Mapping):
+        candidate = _field(value, "additional_properties")
+        if not isinstance(candidate, Mapping):
             return {}
+        source = candidate
     result: dict[str, str | int | float | bool | None] = {}
     for key, item in source.items():
         if not isinstance(key, str) or key in known:
@@ -404,6 +422,7 @@ def _civil_time(
         raise YazioProviderInvalidResponseError
     return None, local_date, None
 
+
 def _updated_time(value: object) -> datetime | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
@@ -427,7 +446,23 @@ def _nutrient_source(value: object) -> Mapping[str, object]:
     raise YazioProviderInvalidResponseError
 
 
-def _nutrients(value: object) -> YazioNutrientValues:
+_STRUCTURAL_NUTRIENT_KEYS = {
+    "amount",
+    "date",
+    "daytime",
+    "energy_goal",
+    "id",
+    "name",
+    "product_id",
+    "serving",
+    "serving_quantity",
+    "type",
+}
+
+
+def _nutrients(
+    value: object, *, excluded: set[str] = _STRUCTURAL_NUTRIENT_KEYS
+) -> YazioNutrientValues:
     source = dict(_nutrient_source(value))
     if not isinstance(value, Mapping):
         for key in _NUTRIENT_ALIASES:
@@ -440,6 +475,8 @@ def _nutrients(value: object) -> YazioNutrientValues:
     for key, raw in source.items():
         if not isinstance(key, str):
             raise YazioProviderInvalidResponseError
+        if key in excluded:
+            continue
         target = _NUTRIENT_ALIASES.get(key)
         if target is None:
             try:
@@ -451,6 +488,7 @@ def _nutrients(value: object) -> YazioNutrientValues:
             continue
         mapped[target] = _decimal(raw)
     return YazioNutrientValues(additional=additional, **mapped)
+
 
 def _consumed_items(response: object) -> tuple[list[object], list[object]]:
     parsed = getattr(response, "parsed", _MISSING)
@@ -491,19 +529,21 @@ def _map_simple_product(item: object, fallback_day: date) -> YazioConsumedSimple
         raise YazioProviderInvalidResponseError
     known = {
         "id", "amount", "date", "daytime", "serving", "serving_quantity", "type", "name",
-        *_NUTRIENT_ALIASES,
+        "nutrients", *_NUTRIENT_ALIASES,
     }
     civil, local_date, timezone = _civil_time(item.get("date", _MISSING), fallback_day)
+    nutrient_value = item.get("nutrients", item)
     return YazioConsumedSimpleProduct(
         consumed_item_id=_required_string(item.get("id", _MISSING)),
         amount=_decimal(item.get("amount", _MISSING)),
         provider_civil_datetime=civil,
         local_date=local_date,
         daytime=_optional_string(item.get("daytime", _MISSING)),
-        nutrients=_nutrients(item),
+        nutrients=_nutrients(nutrient_value),
         serving=_optional_string(item.get("serving", _MISSING)),
         serving_quantity=_decimal(item.get("serving_quantity", _MISSING)),
         provider_timezone=timezone,
+        name=_optional_string(item.get("name", _MISSING)),
         metadata=_metadata(item, known),
     )
 
@@ -586,7 +626,7 @@ def _widget_activity(
 class YazioSdkProvider:
     """Map safe v22 SDK responses into the legacy parser envelope."""
 
-    mode: ProviderMode = "sdk"
+    mode: Literal["sdk"] = "sdk"
 
     def validate_credentials(self, email: str, password: str) -> None:
         client = _new_client()
@@ -664,7 +704,19 @@ class YazioSdkProvider:
                 end=end_day.isoformat(),
             )
             daily_items = _daily_items(daily_response)
-            daily_summaries = tuple(_map_daily_summary(item) for item in daily_items)
+            daily_summaries_list: list[YazioDailyNutrientSummary] = []
+            seen_summary_dates: set[date] = set()
+            for item in daily_items:
+                summary = _map_daily_summary(item)
+                if (
+                    summary.local_date < start_day
+                    or summary.local_date > end_day
+                    or summary.local_date in seen_summary_dates
+                ):
+                    raise YazioProviderInvalidResponseError
+                seen_summary_dates.add(summary.local_date)
+                daily_summaries_list.append(summary)
+            daily_summaries = tuple(daily_summaries_list)
 
             profiles: list[YazioProductProfile] = []
             for product_id in product_ids:

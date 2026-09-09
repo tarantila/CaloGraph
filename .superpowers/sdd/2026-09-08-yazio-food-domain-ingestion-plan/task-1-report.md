@@ -40,3 +40,25 @@ The literal repository command was attempted, but this workstation's available P
 
 - No live YAZIO calls were made, as required. The repository `.venv` launcher points at `/app/.venv/bin/python`, which is unavailable in this workstation, so focused proof used temporary dependency installation and isolated test execution.
 - The adapter intentionally ignores unresolved recipe portions because the approved boundary does not provide an interpretable recipe contract.
+
+## Review fix round 1
+
+- Preserved simple-product `name` in `YazioConsumedSimpleProduct` and mapped it from the untyped mapping.
+- Added explicit structural nutrient exclusions so `amount`, `serving_quantity`, `energy_goal`, IDs, dates, serving labels, and other event fields cannot become nutrient `additional` values; unknown numeric nutrient keys remain available.
+- Validated every daily summary date against the requested range and rejected duplicate dates.
+- Made both provider protocols expose read-only `mode` properties. `YazioSdkProvider.mode` is `Literal["sdk"]`, `LegacyYazioProvider.mode` is `Literal["legacy"]`, and `get_yazio_food_diary_provider()` assigns the SDK implementation to the protocol type.
+- Added adapter-local generated model fixture helpers and changed tests to exercise generated `ConsumedItems`, `Product`, and `DailyNutrients` instances, including simple-product name, flags, missing servings, explicit zero, Product base unit, and offset-bearing naive civil time.
+- Fixed Ruff import/spacing issues.
+
+Covering tests:
+
+- `test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary`
+- `test_food_reads_one_day_each_and_cache_distinct_product_ids`
+- `test_food_rejects_daily_summary_outside_range_and_duplicates`
+- `test_food_contracts_are_immutable_and_preserve_zero`
+
+Review-round verification:
+
+- Focused tests: `ENVIRONMENT=development PYTHONPATH=/tmp:/tmp/calo-deps:. python3 -m pytest --confcutdir=/tmp /tmp/test_yazio_food_provider.py /tmp/test_yazio_provider.py -q` -> `14 passed in 0.26s`.
+- Ruff: `PYTHONPATH=/tmp/ruff-env python3 -m ruff check app/services/yazio_provider.py app/services/yazio_sdk_provider.py tests/test_yazio_food_provider.py` -> `All checks passed!`.
+- Focused mypy smoke (Python 3.12 fallback, with missing-runtime `httpx` diagnostics disabled): `PYTHONPATH=/tmp/mypy-env:/tmp/calo-deps:. ENVIRONMENT=development python3 -m mypy --strict --follow-imports=skip --ignore-missing-imports --disable-error-code unused-ignore --disable-error-code misc --disable-error-code no-any-return app/services/yazio_provider.py app/services/yazio_sdk_provider.py` -> `Success: no issues found in 2 source files`.

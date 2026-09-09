@@ -7,18 +7,16 @@ from typing import Any
 
 import pytest
 
+from app.services import yazio_sdk_provider
 from app.services.yazio_provider import (
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
     YazioDailyNutrientSummary,
-    YazioFoodDiary,
-    YazioFoodDiaryProvider,
     YazioNutrientValues,
     YazioProductProfile,
     YazioProviderInvalidResponseError,
     YazioServing,
 )
-from app.services import yazio_sdk_provider
 
 
 @dataclass
@@ -71,53 +69,66 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     def consumed(**kwargs: Any) -> _Response:
         calls.append(("consumed", kwargs))
         return _Response(
-            parsed={
-                "products": [
-                    {
-                        "id": "event-1",
-                        "product_id": "p-1",
-                        "amount": 2.5,
-                        "date": "2026-08-01T12:34:56",
-                        "daytime": "lunch",
-                        "serving": "bowl",
-                        "serving_quantity": 2,
-                        "unknown": "safe",
-                    }
-                ],
-                "simple_products": [
-                    {
-                        "id": "simple-1",
-                        "name": "Tea",
-                        "amount": 1,
-                        "date": "2026-08-01T08:10:00",
-                        "energy": 0,
-                        "protein": 0,
-                        "mystery": "kept",
-                        "token": "must-not-survive",
-                    }
-                ],
-            }
+            parsed=yazio_sdk_provider._generated_consumed_items(
+                {
+                    "products": [
+                        {
+                            "id": "event-1",
+                            "product_id": "p-1",
+                            "amount": 2.5,
+                            "date": "2026-08-01T12:34:56+02:00",
+                            "daytime": "lunch",
+                            "serving": "bowl",
+                            "serving_quantity": 2,
+                            "unknown": "safe",
+                        }
+                    ],
+                    "simple_products": [
+                        {
+                            "id": "simple-1",
+                            "name": "Tea",
+                            "amount": 1,
+                            "date": "2026-08-01T08:10:00",
+                            "energy": 0,
+                            "protein": 0,
+                            "mystery_nutrient": 4,
+                            "mystery": "kept",
+                            "token": "must-not-survive",
+                        }
+                    ],
+                }
+            )
         )
-
     def daily(**kwargs: Any) -> _Response:
         calls.append(("daily", kwargs))
-        return _Response(parsed=[{"date": "2026-08-01", "energy": 0, "protein": 3.2}])
+        return _Response(
+            parsed=[
+                yazio_sdk_provider._generated_daily_nutrients(
+                    {"date": "2026-08-01", "energy": 0, "protein": 3.2, "energy_goal": 2000}
+                )
+            ]
+        )
 
     def product(product_id: str, **kwargs: Any) -> _Response:
         calls.append(("product", {"id": product_id, **kwargs}))
         return _Response(
-            parsed={
-                "name": "Food",
-                "producer": None,
-                "base_unit": "g",
-                "is_verified": True,
-                "is_private": False,
-                "is_deleted": False,
-                "eans": ["111", "222"],
-                "servings": [{"serving": "portion", "amount": 30}, {"serving": "bag", "amount": 10}],
-                "nutrients": {"energy": 2, "protein": 0},
-                "unknown_profile": "safe",
-            }
+            parsed=yazio_sdk_provider._generated_product(
+                {
+                    "name": "Food",
+                    "producer": None,
+                    "base_unit": "g",
+                    "is_verified": True,
+                    "is_private": False,
+                    "is_deleted": False,
+                    "eans": ["111", "222"],
+                    "servings": [
+                        {"serving": "portion", "amount": 30},
+                        {"serving": "bag", "amount": 10},
+                    ],
+                    "nutrients": {"energy": 2, "protein": 0},
+                    "unknown_profile": "safe",
+                }
+            )
         )
 
     monkeypatch.setattr(yazio_sdk_provider.list_consumed_items, "sync_detailed", consumed)
@@ -127,16 +138,22 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     result = yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
         "owner@example.com", "password", date(2026, 8, 1), date(2026, 8, 1)
     )
-
-    assert isinstance(result, YazioFoodDiary)
-    assert hasattr(yazio_sdk_provider.YazioSdkProvider(), "fetch_food_diary")
     assert result.consumed_products[0].amount == Decimal("2.5")
     assert result.consumed_products[0].provider_civil_datetime == datetime(2026, 8, 1, 12, 34, 56)
+    assert result.consumed_products[0].provider_timezone == "UTC+02:00"
     assert result.consumed_products[0].local_date == date(2026, 8, 1)
+    assert result.consumed_simple_products[0].name == "Tea"
     assert result.consumed_simple_products[0].nutrients.energy == Decimal("0")
+    assert result.consumed_simple_products[0].nutrients.additional["mystery_nutrient"] == Decimal("4")
+    assert "amount" not in result.consumed_simple_products[0].nutrients.additional
+    assert "serving_quantity" not in result.consumed_simple_products[0].nutrients.additional
     assert "token" not in result.consumed_simple_products[0].metadata
     assert result.consumed_simple_products[0].metadata["mystery"] == "kept"
     assert result.product_profiles[0].product_id == "p-1"
+    assert result.product_profiles[0].base_unit == "g"
+    assert result.product_profiles[0].is_verified is True
+    assert result.product_profiles[0].is_private is False
+    assert result.product_profiles[0].is_deleted is False
     assert result.product_profiles[0].eans == ("111", "222")
     assert result.product_profiles[0].servings == (
         YazioServing(label="portion", amount=Decimal("30"), unit="g"),
@@ -144,6 +161,7 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     )
     assert result.product_profiles[0].nutrients.energy == Decimal("2")
     assert result.daily_summaries[0].nutrients.energy == Decimal("0")
+    assert "energy_goal" not in result.daily_summaries[0].nutrients.additional
     assert [kind for kind, _ in calls].count("consumed") == 1
     assert [kind for kind, _ in calls].count("daily") == 1
     assert [kind for kind, _ in calls].count("product") == 1
@@ -175,7 +193,11 @@ def test_food_reads_one_day_each_and_cache_distinct_product_ids(monkeypatch: pyt
 
     def product(product_id: str, **_: Any) -> _Response:
         product_calls.append(product_id)
-        return _Response(parsed={"base_unit": "g", "nutrients": {}})
+        return _Response(
+            parsed=yazio_sdk_provider._generated_product(
+                {"base_unit": "g", "nutrients": {}, "is_verified": False, "is_private": True}
+            )
+        )
 
     monkeypatch.setattr(yazio_sdk_provider.get_product, "sync_detailed", product)
     result = yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
@@ -184,6 +206,35 @@ def test_food_reads_one_day_each_and_cache_distinct_product_ids(monkeypatch: pyt
     assert len(result.consumed_products) == 3
     assert product_calls == ["same", "other"]
 
+
+@pytest.mark.parametrize(
+    ("rows", "start_day", "end_day"),
+    [
+        ([{"date": "2026-07-31"}], date(2026, 8, 1), date(2026, 8, 1)),
+        ([{"date": "2026-08-01"}, {"date": "2026-08-01"}], date(2026, 8, 1), date(2026, 8, 1)),
+    ],
+)
+def test_food_rejects_daily_summary_outside_range_and_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, Any]],
+    start_day: date,
+    end_day: date,
+) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _Response(parsed=yazio_sdk_provider._generated_consumed_items({})),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed=[yazio_sdk_provider._generated_daily_nutrients(row) for row in rows]
+        ),
+    )
+    with pytest.raises(YazioProviderInvalidResponseError):
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary("e", "p", start_day, end_day)
 
 def test_food_mapping_rejects_malformed_numbers_and_simple_product_shape(
     monkeypatch: pytest.MonkeyPatch,
