@@ -136,6 +136,13 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
     ]
     assert 1 < max_active_requests <= settings.yazio_request_workers
 
+def test_metadata_cap_is_deterministic_and_order_independent() -> None:
+    metadata = {f"safe_{index:02d}": index for index in range(40)}
+    expected = {key: metadata[key] for key in sorted(metadata)[:32]}
+
+    assert yazio_sdk_provider._metadata(metadata, set()) == expected
+    assert yazio_sdk_provider._metadata(dict(reversed(tuple(metadata.items()))), set()) == expected
+
 
 def test_sdk_omits_missing_and_null_values_and_supports_empty_range(
     monkeypatch: pytest.MonkeyPatch,
