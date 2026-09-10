@@ -59,6 +59,7 @@ def _validate_metric_and_unit(
 @dataclass(frozen=True, slots=True)
 class MetricContribution:
     evidence_id: UUID
+    source_observation_id: UUID
     metric_key: str
     value: Decimal | None
     unit: str | None
@@ -68,12 +69,17 @@ class MetricContribution:
     evidence_kind: EvidenceKind
     reason_code: ReasonCode | None = None
     expected: bool = True
+    contributing: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.evidence_id, UUID):
             raise TypeError("evidence_id must be an internal UUID")
         if self.evidence_id.int == 0:
             raise ValueError("evidence_id must be non-zero")
+        if not isinstance(self.source_observation_id, UUID):
+            raise TypeError("source_observation_id must be an internal UUID")
+        if self.source_observation_id.int == 0:
+            raise ValueError("source_observation_id must be non-zero")
         if not isinstance(self.presence_state, PresenceState):
             raise TypeError("presence_state must be PresenceState")
         if not isinstance(self.resolution_state, ResolutionState):
@@ -86,6 +92,8 @@ class MetricContribution:
             raise TypeError("reason_code must be ReasonCode or None")
         if not isinstance(self.expected, bool):
             raise TypeError("expected must be bool")
+        if not isinstance(self.contributing, bool):
+            raise TypeError("contributing must be bool")
         _validate_decimal(self.value)
         _validate_metric_and_unit(self.metric_key, self.value, self.unit, self.reason_code)
         _validate_value_presence(self.value, self.presence_state)
@@ -93,7 +101,8 @@ class MetricContribution:
     @property
     def value_contributing(self) -> bool:
         return (
-            self.expected
+            self.contributing
+            and self.expected
             and self.value is not None
             and is_known_metric(self.metric_key)
             and unit_matches(self.metric_key, self.unit)
@@ -101,9 +110,10 @@ class MetricContribution:
         )
 
     @property
-    def sort_key(self) -> tuple[str, str, str, str, str, str, str, str, str, str]:
+    def sort_key(self) -> tuple[str, str, str, str, str, str, str, str, str, str, str, str]:
         return (
             str(self.evidence_id),
+            str(self.source_observation_id),
             self.metric_key,
             self.unit or "",
             str(self.value) if self.value is not None else "",
@@ -113,7 +123,10 @@ class MetricContribution:
             self.evidence_kind.value,
             self.reason_code.value if self.reason_code is not None else "",
             str(self.expected),
+            str(self.contributing),
         )
+
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +243,7 @@ class ProviderCandidate:
     reason_code: ReasonCode
     diagnostic_codes: tuple[ReasonCode, ...] = ()
     parity_diagnostic: ParityDiagnostic | None = None
+    resolution_diagnostic_evidence: tuple[MetricContribution, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_candidate(
@@ -248,12 +262,43 @@ class ProviderCandidate:
             reason_code=self.reason_code,
             diagnostic_codes=self.diagnostic_codes,
         )
+        _validate_diagnostic_lineage(self.resolution_diagnostic_evidence, self.metric_key)
         object.__setattr__(self, "source_lineage", _sorted_lineage(self.source_lineage))
         object.__setattr__(
             self,
             "diagnostic_codes",
             tuple(sorted(set(self.diagnostic_codes), key=lambda item: item.value)),
         )
+        object.__setattr__(
+            self,
+            "resolution_diagnostic_evidence",
+            _sorted_lineage(self.resolution_diagnostic_evidence),
+        )
+
+    @property
+    def contributing_evidence(self) -> tuple[MetricContribution, ...]:
+        return tuple(item for item in self.source_lineage if item.value_contributing)
+
+    @property
+    def diagnostic_evidence(self) -> tuple[MetricContribution, ...]:
+        return _sorted_lineage(
+            tuple(item for item in self.source_lineage if not item.value_contributing)
+            + self.resolution_diagnostic_evidence
+        )
+
+
+def _validate_diagnostic_lineage(
+    diagnostic_lineage: tuple[MetricContribution, ...],
+    metric_key: str,
+) -> None:
+    if not isinstance(diagnostic_lineage, tuple):
+        raise TypeError("resolution_diagnostic_evidence must be a tuple")
+    if any(not isinstance(item, MetricContribution) for item in diagnostic_lineage):
+        raise TypeError("resolution_diagnostic_evidence must contain MetricContribution values")
+    if any(item.metric_key != metric_key for item in diagnostic_lineage):
+        raise ValueError("resolution_diagnostic_evidence metric scope mismatch")
+    if any(item.value_contributing for item in diagnostic_lineage):
+        raise ValueError("resolution diagnostic evidence cannot contribute to candidate value")
 
 
 def _validate_candidate(
@@ -299,6 +344,8 @@ def _validate_candidate(
         raise TypeError("source_lineage must contain MetricContribution values")
     if any(item.metric_key != metric_key for item in source_lineage):
         raise ValueError("source_lineage metric scope mismatch")
+    if value is None and any(item.value_contributing for item in source_lineage):
+        raise ValueError("value-less candidate cannot have numeric contributing evidence")
     if value is not None and not source_lineage:
         raise ValueError("value-bearing candidate requires source_lineage")
     if value is not None:
@@ -386,7 +433,6 @@ def build_event_candidate(
         diagnostic_codes=tuple(sorted(set(diagnostic_codes), key=lambda item: item.value)),
     )
 
-
 def build_summary_candidate(
     *,
     provider_key: str,
@@ -400,6 +446,7 @@ def build_summary_candidate(
     resolution_state: ResolutionState,
     lineage_state: LineageState,
     evidence_id: UUID,
+    source_observation_id: UUID,
     diagnostic_codes: tuple[ReasonCode, ...] = (),
 ) -> SummaryCandidate:
     lineage: tuple[MetricContribution, ...] = ()
@@ -407,13 +454,14 @@ def build_summary_candidate(
         lineage = (
             MetricContribution(
                 evidence_id=evidence_id,
+                source_observation_id=source_observation_id,
                 metric_key=metric_key,
                 value=value,
                 unit=unit,
                 presence_state=presence_state,
                 resolution_state=resolution_state,
                 lineage_state=lineage_state,
-                evidence_kind=EvidenceKind.SUMMARY,
+                evidence_kind=EvidenceKind.SOURCE_OBSERVATION,
                 reason_code=diagnostic_codes[0] if diagnostic_codes else None,
             ),
         )

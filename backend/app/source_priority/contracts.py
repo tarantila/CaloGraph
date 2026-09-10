@@ -171,13 +171,17 @@ class ProviderDisposition:
     eligible: bool | None
     role: PrioritySelectionRole | None
     reason_code: PriorityReasonCode
+    candidate: ProviderCandidate | None = None
 
     def __post_init__(self) -> None:
         if not self.provider_key:
             raise PriorityContractError("provider_key must be non-empty")
         if self.priority_rank is not None and self.priority_rank < 1:
             raise PriorityContractError("priority_rank must be at least 1")
-
+        if self.candidate_present != (self.candidate is not None):
+            raise PriorityContractError("candidate_present does not match candidate")
+        if self.candidate is not None and self.candidate.provider_key != self.provider_key:
+            raise PriorityContractError("candidate provider does not match disposition provider")
 
 @dataclass(frozen=True, slots=True)
 class PrioritySelection:
@@ -202,6 +206,19 @@ class PrioritySelection:
         normalized_dispositions = tuple(self.dispositions)
         if any(not isinstance(item, ProviderDisposition) for item in normalized_dispositions):
             raise PriorityContractError("dispositions must contain ProviderDisposition values")
+        if self.selected_candidate is None and self.selected_role is not None:
+            raise PriorityContractError("selected_role requires selected_candidate")
+        if self.selected_candidate is not None and self.selected_role not in {
+            PrioritySelectionRole.SELECTED,
+            PrioritySelectionRole.FALLBACK,
+        }:
+            raise PriorityContractError("selected_candidate requires selected or fallback role")
+        winning = tuple(item for item in normalized_dispositions if item.role is self.selected_role)
+        if self.selected_candidate is None:
+            if winning:
+                raise PriorityContractError("empty selection cannot have a winning disposition")
+        elif len(winning) != 1 or winning[0].candidate != self.selected_candidate:
+            raise PriorityContractError("winning disposition candidate must equal selected_candidate")
         object.__setattr__(self, "dispositions", normalized_dispositions)
 
 

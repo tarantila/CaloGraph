@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from uuid import UUID
 
 from app.nutrition.enums import CoverageState, LineageState, PresenceState, ResolutionState
 
-from .contracts import EventReconstructionCandidate, ProviderCandidate, SummaryCandidate
+from .contracts import (
+    EventReconstructionCandidate,
+    MetricContribution,
+    ProviderCandidate,
+    SummaryCandidate,
+)
 from .eligibility import is_candidate_eligible, is_summary_usable
 from .parity import ParityDiagnostic, compare_decimal_parity
 from .reasons import ReasonCode
@@ -39,6 +45,17 @@ def _diagnostics(*codes: ReasonCode) -> tuple[ReasonCode, ...]:
     return tuple(sorted(set(codes), key=lambda item: item.value))
 
 
+def _diagnostic_evidence(
+    *lineages: tuple[MetricContribution, ...],
+) -> tuple[MetricContribution, ...]:
+    return tuple(
+        sorted(
+            (replace(item, contributing=False) for lineage in lineages for item in lineage),
+            key=lambda item: item.sort_key,
+        )
+    )
+
+
 def _parity(
     event: EventReconstructionCandidate | None,
     summary: SummaryCandidate | None,
@@ -64,6 +81,7 @@ def _from_candidate(
     reason_code: ReasonCode,
     diagnostic_codes: tuple[ReasonCode, ...] = (),
     parity_diagnostic: ParityDiagnostic | None = None,
+    diagnostic_evidence: tuple[MetricContribution, ...] = (),
 ) -> ProviderCandidate:
     return ProviderCandidate(
         provider_key=candidate.provider_key,
@@ -81,6 +99,7 @@ def _from_candidate(
         reason_code=reason_code,
         diagnostic_codes=_diagnostics(*candidate.diagnostic_codes, *diagnostic_codes),
         parity_diagnostic=parity_diagnostic,
+        resolution_diagnostic_evidence=_diagnostic_evidence(diagnostic_evidence),
     )
 
 
@@ -89,6 +108,7 @@ def _empty_candidate(
     *,
     reason_code: ReasonCode,
     diagnostic_codes: tuple[ReasonCode, ...] = (),
+    diagnostic_evidence: tuple[MetricContribution, ...] = (),
 ) -> ProviderCandidate:
     if candidate is None:
         return ProviderCandidate(
@@ -122,7 +142,12 @@ def _empty_candidate(
         source_lineage=(),
         reason_code=reason_code,
         diagnostic_codes=_diagnostics(*candidate.diagnostic_codes, *diagnostic_codes),
+        resolution_diagnostic_evidence=_diagnostic_evidence(
+            candidate.source_lineage,
+            diagnostic_evidence,
+        ),
     )
+
 
 def resolve_event_vs_summary(
     event: EventReconstructionCandidate | None,
@@ -143,35 +168,41 @@ def resolve_event_vs_summary(
                 summary,
                 reason_code=ReasonCode.SUMMARY_FALLBACK_EVENT_CONFLICT,
                 parity_diagnostic=parity_diagnostic,
+                diagnostic_evidence=event.source_lineage,
             )
         if event is not None and event.resolution_state is ResolutionState.DUPLICATE_CANDIDATE:
             return _from_candidate(
                 summary,
                 reason_code=ReasonCode.SUMMARY_FALLBACK_DUPLICATE_CANDIDATE,
                 parity_diagnostic=parity_diagnostic,
+                diagnostic_evidence=event.source_lineage,
             )
         if event is not None and event.coverage_state is CoverageState.PARTIAL:
             return _from_candidate(
                 summary,
                 reason_code=ReasonCode.SUMMARY_FALLBACK_PARTIAL_EVENTS,
                 parity_diagnostic=parity_diagnostic,
+                diagnostic_evidence=event.source_lineage,
             )
         if event is not None and event.lineage_state is LineageState.UNCERTAIN:
             return _from_candidate(
                 summary,
                 reason_code=ReasonCode.SUMMARY_FALLBACK_UNCERTAIN_LINEAGE,
                 parity_diagnostic=parity_diagnostic,
+                diagnostic_evidence=event.source_lineage,
             )
         if event_eligible and event is not None:
             return _from_candidate(
                 event,
                 reason_code=ReasonCode.EVENT_COMPLETE_CONFIRMED,
                 parity_diagnostic=parity_diagnostic,
+                diagnostic_evidence=summary.source_lineage,
             )
         return _from_candidate(
             summary,
             reason_code=ReasonCode.SUMMARY_ONLY,
             parity_diagnostic=parity_diagnostic,
+            diagnostic_evidence=event.source_lineage if event is not None else (),
         )
 
     if event is not None and event_eligible:
@@ -183,10 +214,15 @@ def resolve_event_vs_summary(
             reason_code=_event_reason(event),
             diagnostic_codes=diagnostics,
             parity_diagnostic=parity_diagnostic,
+            diagnostic_evidence=summary.source_lineage if summary is not None else (),
         )
 
     if summary is not None and event is None:
         return _empty_candidate(summary, reason_code=ReasonCode.SUMMARY_UNUSABLE)
     if event is not None and summary is not None:
-        return _empty_candidate(event, reason_code=ReasonCode.SUMMARY_UNUSABLE)
+        return _empty_candidate(
+            event,
+            reason_code=ReasonCode.SUMMARY_UNUSABLE,
+            diagnostic_evidence=summary.source_lineage,
+        )
     return _empty_candidate(event or summary, reason_code=ReasonCode.ALL_SOURCES_MISSING)

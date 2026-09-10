@@ -2,9 +2,12 @@ from enum import StrEnum
 
 
 class EvidenceKind(StrEnum):
-    EVENT = "event"
-    SUMMARY = "summary"
-    FIELD = "field"
+    CONSUMPTION_EVENT = "event"
+    EVENT = CONSUMPTION_EVENT
+    SOURCE_OBSERVATION = "summary"
+    SUMMARY = SOURCE_OBSERVATION
+    FIELD_OBSERVATION = "field"
+    FIELD = FIELD_OBSERVATION
     UNKNOWN = "unknown"
 
 

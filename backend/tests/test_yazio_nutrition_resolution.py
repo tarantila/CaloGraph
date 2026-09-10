@@ -222,6 +222,22 @@ def test_simple_product_confirmed_event_wins_over_summary(db, user):
     assert result.selected_granularity is ProjectionGranularity.EVENT
     assert result.reason_code is ReasonCode.EVENT_COMPLETE_CONFIRMED
     assert result.lineage_state is LineageState.CONFIRMED
+    event = _event(db, user, "simple-1")
+    event_field = _event_field(db, event)
+    summary_source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_instance_id == connection.id,
+            NutritionSourceObservation.local_date == DAY,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert event_field is not None
+    assert summary_source is not None
+    assert result.source_lineage[0].source_observation_id == event_field.source_observation_id
+    assert summary_source.id in {
+        item.source_observation_id for item in result.diagnostic_evidence
+    }
 
 
 def test_confirmed_simple_plus_uncertain_product_aggregates_but_summary_wins(db, user):

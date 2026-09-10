@@ -338,13 +338,15 @@ def _missing_contribution(
     evidence_id: UUID,
     metric_key: str,
     *,
+    source_observation_id: UUID,
     resolution_state: ResolutionState = ResolutionState.UNRESOLVED,
     lineage_state: LineageState = LineageState.UNKNOWN,
     reason_code: ReasonCode | None = None,
-    evidence_kind: EvidenceKind = EvidenceKind.EVENT,
+    evidence_kind: EvidenceKind = EvidenceKind.CONSUMPTION_EVENT,
 ) -> MetricContribution:
     return MetricContribution(
         evidence_id=evidence_id,
+        source_observation_id=source_observation_id,
         metric_key=metric_key,
         value=None,
         unit=None,
@@ -381,13 +383,14 @@ def _field_contribution(field: NutritionFieldObservation, metric_key: str) -> Me
         reason = ReasonCode.UNRESOLVED_PRODUCT
     return MetricContribution(
         evidence_id=field.id,
+        source_observation_id=field.source_observation_id,
         metric_key=metric_key,
         value=value,
         unit=field.canonical_unit if value is not None else None,
         presence_state=presence,
         resolution_state=resolution,
         lineage_state=lineage,
-        evidence_kind=EvidenceKind.FIELD,
+        evidence_kind=EvidenceKind.FIELD_OBSERVATION,
         reason_code=reason,
     )
 
@@ -440,6 +443,7 @@ def _event_contributions(
                     _missing_contribution(
                         event.id,
                         metric_key,
+                        source_observation_id=event.source_observation_id,
                         resolution_state=item.revision_state,
                         reason_code=ReasonCode.UNRESOLVED_PRODUCT,
                     )
@@ -452,7 +456,12 @@ def _event_contributions(
             ConsumptionEventKind.SIMPLE_PRODUCT.value,
         }:
             contributions.append(
-                _missing_contribution(event.id, metric_key, reason_code=ReasonCode.UNRESOLVED_PRODUCT)
+                _missing_contribution(
+                    event.id,
+                    metric_key,
+                    source_observation_id=event.source_observation_id,
+                    reason_code=ReasonCode.UNRESOLVED_PRODUCT,
+                )
             )
             continue
         expected_namespace = (
@@ -468,7 +477,12 @@ def _event_contributions(
             namespace=expected_namespace,
         ):
             contributions.append(
-                _missing_contribution(event.id, metric_key, reason_code=ReasonCode.UNRESOLVED_PRODUCT)
+                _missing_contribution(
+                    event.id,
+                    metric_key,
+                    source_observation_id=event.source_observation_id,
+                    reason_code=ReasonCode.UNRESOLVED_PRODUCT,
+                )
             )
             continue
         role = (
@@ -494,7 +508,12 @@ def _event_contributions(
             )
         if len(fields) == 0:
             contributions.append(
-                _missing_contribution(event.id, metric_key, reason_code=ReasonCode.UNRESOLVED_PRODUCT)
+                _missing_contribution(
+                    event.id,
+                    metric_key,
+                    source_observation_id=event.source_observation_id,
+                    reason_code=ReasonCode.UNRESOLVED_PRODUCT,
+                )
             )
         elif len(fields) > 1:
             units = {field.canonical_unit for field in fields}
@@ -504,9 +523,10 @@ def _event_contributions(
                 _missing_contribution(
                     field.id,
                     metric_key,
+                    source_observation_id=field.source_observation_id,
                     resolution_state=resolution,
                     reason_code=reason,
-                    evidence_kind=EvidenceKind.FIELD,
+                    evidence_kind=EvidenceKind.FIELD_OBSERVATION,
                 )
                 for field in fields
             )
@@ -563,9 +583,10 @@ def _summary_candidate(
                 _missing_contribution(
                     field.id,
                     metric_key,
+                    source_observation_id=field.source_observation_id,
                     resolution_state=resolution,
                     reason_code=ReasonCode.SUMMARY_UNUSABLE,
-                    evidence_kind=EvidenceKind.FIELD,
+                    evidence_kind=EvidenceKind.FIELD_OBSERVATION,
                 )
                 for field in fields
             )
@@ -574,9 +595,10 @@ def _summary_candidate(
                 _missing_contribution(
                     observation.id,
                     metric_key,
+                    source_observation_id=observation.id,
                     resolution_state=resolution,
                     reason_code=ReasonCode.SUMMARY_UNUSABLE,
-                    evidence_kind=EvidenceKind.SUMMARY,
+                    evidence_kind=EvidenceKind.SOURCE_OBSERVATION,
                 ),
             )
         return SummaryCandidate(
@@ -608,13 +630,14 @@ def _summary_candidate(
     summary_contributions: list[MetricContribution] = [
         MetricContribution(
             evidence_id=contribution.evidence_id,
+            source_observation_id=contribution.source_observation_id,
             metric_key=metric_key,
             value=value,
             unit=contribution.unit,
             presence_state=contribution.presence_state,
             resolution_state=resolution,
             lineage_state=lineage,
-            evidence_kind=EvidenceKind.FIELD,
+            evidence_kind=EvidenceKind.FIELD_OBSERVATION,
             reason_code=contribution.reason_code,
         )
     ]
@@ -623,9 +646,10 @@ def _summary_candidate(
             _missing_contribution(
                 observation.id,
                 metric_key,
+                source_observation_id=observation.id,
                 resolution_state=resolution,
                 lineage_state=lineage,
-                evidence_kind=EvidenceKind.SUMMARY,
+                evidence_kind=EvidenceKind.SOURCE_OBSERVATION,
             )
         )
     return SummaryCandidate(
@@ -728,9 +752,10 @@ def resolve_yazio_metric(
                 _missing_contribution(
                     observation.id,
                     metric_key,
+                    source_observation_id=observation.id,
                     resolution_state=ResolutionState.DUPLICATE_CANDIDATE,
                     reason_code=ReasonCode.SUMMARY_FALLBACK_DUPLICATE_CANDIDATE,
-                    evidence_kind=EvidenceKind.SUMMARY,
+                    evidence_kind=EvidenceKind.SOURCE_OBSERVATION,
                 )
                 for observation in observations
             ),

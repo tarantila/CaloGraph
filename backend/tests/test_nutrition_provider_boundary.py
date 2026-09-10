@@ -65,6 +65,7 @@ def _candidate(
         )
     contribution = MetricContribution(
         evidence_id=uuid4(),
+        source_observation_id=uuid4(),
         metric_key=metric_key,
         value=value,
         unit="g",
@@ -80,6 +81,7 @@ def _candidate(
             contribution,
             MetricContribution(
                 evidence_id=uuid4(),
+                source_observation_id=uuid4(),
                 metric_key=metric_key,
                 value=None,
                 unit="g",

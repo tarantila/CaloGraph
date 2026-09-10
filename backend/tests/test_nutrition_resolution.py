@@ -58,6 +58,7 @@ def contribution(
     lineage: LineageState = LineageState.CONFIRMED,
     evidence_kind: EvidenceKind = EvidenceKind.EVENT,
     reason_code: ReasonCode | None = None,
+    source_observation_id: str | UUID | None = None,
 ) -> MetricContribution:
     if presence is None:
         presence = (
@@ -68,8 +69,13 @@ def contribution(
             else PresenceState.SUPPLIED
         )
     evidence_id = evidence_uuid(evidence_id) if isinstance(evidence_id, str) else evidence_id
+    if source_observation_id is None:
+        source_observation_id = evidence_uuid(f"{evidence_id}:source")
+    elif isinstance(source_observation_id, str):
+        source_observation_id = evidence_uuid(source_observation_id)
     return MetricContribution(
         evidence_id=evidence_id,
+        source_observation_id=source_observation_id,
         metric_key=metric_key,
         value=value,
         unit=unit,
@@ -443,6 +449,7 @@ def test_invalid_contract_states_fail_fast() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         MetricContribution(
             evidence_id=evidence_uuid("salt"),
+            source_observation_id=evidence_uuid("salt-source"),
             metric_key="salt",
             value=Decimal("1"),
             unit="g",
@@ -454,6 +461,7 @@ def test_invalid_contract_states_fail_fast() -> None:
     with pytest.raises(ValueError, match="unit"):
         MetricContribution(
             evidence_id=evidence_uuid("bad-unit"),
+            source_observation_id=evidence_uuid("bad-unit-source"),
             metric_key="protein_g",
             value=Decimal("1"),
             unit="mg",

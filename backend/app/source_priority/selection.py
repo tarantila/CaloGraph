@@ -219,6 +219,7 @@ def select_by_source_priority(
                     eligible=None,
                     role=PrioritySelectionRole.DIAGNOSTIC,
                     reason_code=PriorityReasonCode.PROVIDER_NOT_AVAILABLE,
+                    candidate=None,
                 )
             )
             continue
@@ -234,6 +235,7 @@ def select_by_source_priority(
                     eligible=False,
                     role=PrioritySelectionRole.DIAGNOSTIC,
                     reason_code=PriorityReasonCode.CANDIDATE_INELIGIBLE,
+                    candidate=candidate,
                 )
             )
             continue
@@ -257,6 +259,7 @@ def select_by_source_priority(
                         if applied_scope is AppliedPriorityScope.METRIC
                         else PriorityReasonCode.WILDCARD_PRIORITY
                     ),
+                    candidate=candidate,
                 )
             )
         else:
@@ -269,6 +272,7 @@ def select_by_source_priority(
                     eligible=True,
                     role=PrioritySelectionRole.REJECTED,
                     reason_code=PriorityReasonCode.LOWER_PRIORITY_PROVIDER,
+                    candidate=candidate,
                 )
             )
 
@@ -285,6 +289,7 @@ def select_by_source_priority(
                 eligible=eligibility[candidate.provider_key],
                 role=PrioritySelectionRole.DIAGNOSTIC,
                 reason_code=PriorityReasonCode.PROVIDER_NOT_CONFIGURED_FOR_METRIC,
+                candidate=candidate,
             )
         )
 
