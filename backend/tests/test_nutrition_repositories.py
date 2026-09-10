@@ -62,14 +62,15 @@ def _source_observation(db, user, profile):
 
 
 def test_append_identity_link_starts_revision_one_and_resolves_latest(db, user):
+    source_instance_id = _yazio_source_instance(db, user)
     identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
         identity_kind="product",
     )
-    source_instance_id = _yazio_source_instance(db, user)
     first_profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
@@ -114,14 +115,15 @@ def test_append_identity_link_starts_revision_one_and_resolves_latest(db, user):
 
 
 def test_identity_link_revision_scope_is_per_role(db, user):
+    source_instance_id = _yazio_source_instance(db, user)
     identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
         identity_kind="product",
     )
-    source_instance_id = _yazio_source_instance(db, user)
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
@@ -156,6 +158,7 @@ def test_append_identity_link_rejects_other_user_target(db, user):
     other = User(username="other", password_hash="hash", timezone="UTC")
     identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=uuid4(),
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
@@ -172,16 +175,16 @@ def test_append_identity_link_rejects_other_user_target(db, user):
             food_profile_id=uuid4(),
         )
 
-
 def test_current_identity_link_does_not_mix_roles(db, user):
+    source_instance_id = _yazio_source_instance(db, user)
     identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
         identity_kind="product",
     )
-    source_instance_id = _yazio_source_instance(db, user)
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",

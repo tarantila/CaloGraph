@@ -92,6 +92,7 @@ def test_identity_link_cannot_cross_users(db):
     second = _user(db, "second")
     first_identity = NutritionExternalIdentity(
         user_id=first.id,
+        source_instance_id=uuid4(),
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -33,7 +33,11 @@ from app.nutrition.models import (
     NutritionServingObservation,
     NutritionSourceObservation,
 )
-from app.services.yazio_nutrition_ingestion import _provenance, ingest_yazio_food_diary
+from app.services.yazio_nutrition_ingestion import (
+    _provenance,
+    _safe_metadata,
+    ingest_yazio_food_diary,
+)
 from app.services.yazio_provider import (
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
@@ -159,6 +163,14 @@ def _ingest(db, user, diary=None, **kwargs):
         diary=diary,
     )
 
+def test_domain_metadata_cap_is_deterministic_and_order_independent():
+    metadata = {f"safe_{index:02d}": index for index in range(40)}
+    expected = {key: metadata[key] for key in sorted(metadata)[:32]}
+
+    assert _safe_metadata(metadata) == expected
+    assert _safe_metadata(dict(reversed(tuple(metadata.items())))) == expected
+
+
 
 def test_product_event_uses_profile_base_unit_without_scaling(db, user):
     run = _ingest(db, user, simple=False, summary=False)
@@ -234,6 +246,17 @@ def test_profile_metadata_eans_servings_and_no_ean_event_link(db, user):
         for link in db.scalars(select(NutritionExternalIdentityLink)).all()
     )
 
+def test_deleted_profile_snapshot_preserves_event_binding(db, user):
+    diary = _diary(simple=False, summary=False)
+    deleted_profile = replace(diary.product_profiles[0], is_deleted=True)
+    _ingest(db, user, replace(diary, product_profiles=(deleted_profile,)))
+
+    snapshot = db.scalar(select(NutritionFoodSnapshot))
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert snapshot.is_deleted is True
+    assert event.food_snapshot_id == snapshot.id
+
+
 
 def test_daily_summary_is_observation_only(db, user):
     _ingest(db, user, simple=False)
@@ -252,6 +275,85 @@ def test_daily_summary_is_observation_only(db, user):
     assert goal.canonical_value is None
     assert goal.canonical_unit is None
     assert goal.provider_raw_unit == "kcal"
+
+
+def test_exact_requested_date_boundaries_are_persisted(db, user):
+    connection = _connection(db, user)
+    next_day = DAY + timedelta(days=1)
+    diary = _diary()
+    diary = replace(
+        diary,
+        requested_end_day=next_day,
+        consumed_products=(replace(diary.consumed_products[0], local_date=DAY),),
+        consumed_simple_products=(replace(diary.consumed_simple_products[0], local_date=next_day),),
+        daily_summaries=(replace(diary.daily_summaries[0], local_date=next_day),),
+    )
+
+    run = ingest_yazio_food_diary(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=DAY,
+        requested_end=next_day,
+        diary=diary,
+    )
+
+    assert run.requested_start_date == DAY
+    assert run.requested_end_date == next_day
+    event_dates = set(
+        db.scalars(
+            select(NutritionSourceObservation.local_date).where(
+                NutritionSourceObservation.observation_kind.in_(
+                    (ObservationKind.CONSUMPTION_EVENT.value, ObservationKind.SIMPLE_PRODUCT.value)
+                )
+            )
+        ).all()
+    )
+    assert event_dates == {DAY, next_day}
+    summary_dates = set(
+        db.scalars(
+            select(NutritionSourceObservation.local_date).where(
+                NutritionSourceObservation.observation_kind == ObservationKind.DAILY_SUMMARY.value
+            )
+        ).all()
+    )
+    assert summary_dates == {next_day}
+
+
+@pytest.mark.parametrize("invalid_kind", ("consumption_event", "daily_summary"))
+def test_out_of_range_dates_are_rejected_before_persistence(db, user, invalid_kind):
+    connection = _connection(db, user)
+    diary = _diary(simple=False)
+    if invalid_kind == "consumption_event":
+        diary = replace(
+            diary,
+            consumed_products=(
+                replace(
+                    diary.consumed_products[0],
+                    provider_civil_datetime=datetime(2026, 8, 31, 23, 59),
+                    local_date=DAY - timedelta(days=1),
+                ),
+            ),
+        )
+    else:
+        diary = replace(
+            diary,
+            daily_summaries=(replace(diary.daily_summaries[0], local_date=DAY + timedelta(days=1)),),
+        )
+
+    with pytest.raises(ValueError, match="within requested range"):
+        ingest_yazio_food_diary(
+            db,
+            user_id=user.id,
+            source_instance_id=connection.id,
+            requested_start=DAY,
+            requested_end=DAY,
+            diary=diary,
+        )
+
+    assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 0
+    assert db.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 0
+    assert db.scalar(select(func.count()).select_from(NutritionConsumptionEvent)) == 0
 
 
 def test_missing_daily_summary_is_marked_missing_and_unresolved(db, user):

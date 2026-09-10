@@ -129,9 +129,20 @@ def _safe_metadata(metadata: Mapping[str, Any] | None) -> dict[str, str | int | 
                 result[key] = value
         elif isinstance(value, str) and len(value.encode()) <= _MAX_METADATA_TEXT:
             result[key] = value
-        if len(result) >= _MAX_METADATA_ITEMS:
-            break
-    return result
+    return {key: result[key] for key in sorted(result)[:_MAX_METADATA_ITEMS]}
+
+
+def _validate_diary_dates(diary: YazioFoodDiary, requested_start: date, requested_end: date) -> None:
+    for item in diary.consumed_products:
+        if not requested_start <= item.local_date <= requested_end:
+            raise ValueError("diary consumption local_date must be within requested range")
+    for simple_item in diary.consumed_simple_products:
+        if not requested_start <= simple_item.local_date <= requested_end:
+            raise ValueError("diary consumption local_date must be within requested range")
+    for summary in diary.daily_summaries:
+        if not requested_start <= summary.local_date <= requested_end:
+            raise ValueError("diary summary local_date must be within requested range")
+
 
 
 def _civil(value: datetime | None) -> datetime | None:
@@ -884,6 +895,7 @@ def ingest_yazio_food_diary(
         raise ValueError("requested_start must not be after requested_end")
     if diary.requested_start_day != requested_start or diary.requested_end_day != requested_end:
         raise ValueError("diary range must match requested range")
+    _validate_diary_dates(diary, requested_start, requested_end)
     coverage = CoverageState.COMPLETE.value
     run = create_ingestion_run(
         db,

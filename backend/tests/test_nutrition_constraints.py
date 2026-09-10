@@ -101,6 +101,7 @@ def test_external_identity_is_user_scoped(db, user):
     db.flush()
     first = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=uuid4(),
         provider_key="yazio",
         namespace="product",
         identity_value="same-value",
@@ -108,6 +109,7 @@ def test_external_identity_is_user_scoped(db, user):
     )
     second = NutritionExternalIdentity(
         user_id=other_user.id,
+        source_instance_id=uuid4(),
         provider_key="yazio",
         namespace="product",
         identity_value="same-value",

@@ -422,9 +422,7 @@ def _metadata(value: object, known: set[str]) -> dict[str, str | int | float | b
             if isinstance(item, str) and len(item.encode("utf-8")) > _MAX_METADATA_STRING_BYTES:
                 continue
             result[key] = item
-        if len(result) >= _MAX_METADATA_ITEMS:
-            break
-    return result
+    return {key: result[key] for key in sorted(result)[:_MAX_METADATA_ITEMS]}
 
 
 def _civil_time(
