@@ -77,15 +77,24 @@ class _GoogleOAuthAdapter:
             scopes=[GOOGLE_HEALTH_SCOPE],
             redirect_uri=redirect_uri,
         )
-        flow.fetch_token(code=code, code_verifier=code_verifier)
+        token_response = flow.fetch_token(code=code, code_verifier=code_verifier)
         credentials = flow.credentials
+        granted_scopes = getattr(credentials, "granted_scopes", None)
+        if granted_scopes is None and isinstance(token_response, Mapping):
+            granted_scopes = token_response.get("granted_scopes", token_response.get("scope"))
+        if granted_scopes is None:
+            granted_scopes = (GOOGLE_HEALTH_SCOPE,)
         result: dict[str, Any] = {
             "refresh_token": credentials.refresh_token,
             "access_token": credentials.token,
-            "scope": credentials.scopes or (),
+            "granted_scopes": granted_scopes,
         }
         if credentials.expiry is not None:
             result["access_token_expires_at"] = credentials.expiry
+        if isinstance(token_response, Mapping):
+            refresh_expires_in = token_response.get("refresh_token_expires_in")
+            if refresh_expires_in is not None:
+                result["refresh_token_expires_in"] = refresh_expires_in
         return result
 
 
@@ -245,10 +254,15 @@ def _error_code(exc: BaseException) -> str:
         getattr(exc, "response", None), "status_code", None
     )
     text = str(exc).casefold()
-    if "invalid_grant" in text or "expired" in text or status == 400:
-        return "reauth_required"
-    if status == 403 or "scope" in text or "forbidden" in text:
+    if "scope" in text or "forbidden" in text or status == 403:
         return "scope_missing"
+    if (
+        "invalid_grant" in text
+        or "expired_grant" in text
+        or "expired token" in text
+        or "token has expired" in text
+    ):
+        return "reauth_required"
     if status == 429 or "rate" in text:
         return "rate_limited"
     if isinstance(exc, (TimeoutError, ConnectionError)) or "timeout" in text or "network" in text:
@@ -294,6 +308,13 @@ def complete_google_health_oauth(
     if not code and not error:
         raise GoogleHealthOAuthError("invalid_response")
     with exclusive_user_lifecycle_operation(db, user.id):
+        active_user = db.scalar(
+            select(User)
+            .where(User.id == user.id, User.is_active.is_(True))
+            .execution_options(populate_existing=True)
+        )
+        if active_user is None:
+            raise GoogleHealthOAuthError("session_inactive", status_code=401)
         flow = db.scalar(
             select(GoogleHealthOAuthFlow)
             .where(
@@ -312,7 +333,7 @@ def complete_google_health_oauth(
         try:
             verifier = decrypt_credential(flow.encrypted_pkce_verifier)
         except CredentialEncryptionError as exc:
-            db.rollback()
+            db.commit()
             raise GoogleHealthOAuthError("invalid_response", status_code=500) from exc
 
         if error:
@@ -383,7 +404,8 @@ def complete_google_health_oauth(
         try:
             encrypted_refresh_token = encrypt_credential(refresh_token)
         except CredentialEncryptionError as exc:
-            db.rollback()
+            connection = _record_failure(db, user, timestamp, "credential_unavailable")
+            db.commit()
             raise GoogleHealthOAuthError("credential_unavailable", status_code=500) from exc
         connection = db.scalar(
             select(GoogleHealthConnection)
@@ -396,13 +418,16 @@ def complete_google_health_oauth(
         connection.encrypted_refresh_token = encrypted_refresh_token
         connection.granted_scopes = list(scopes)
         connection.state = "active"
-        connection.last_attempt_at = timestamp
         connection.last_success_at = timestamp
         connection.last_error = None
         refresh_expiry = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
-        connection.refresh_token_expires_at = (
-            refresh_expiry if isinstance(refresh_expiry, datetime) else None
-        )
+        refresh_expires_in = _token_value(payload, "refresh_token_expires_in")
+        if isinstance(refresh_expires_in, (int, float)) and not isinstance(refresh_expires_in, bool):
+            connection.refresh_token_expires_at = timestamp + timedelta(seconds=refresh_expires_in)
+        elif isinstance(refresh_expiry, datetime):
+            connection.refresh_token_expires_at = refresh_expiry
+        else:
+            connection.refresh_token_expires_at = None
         db.commit()
     log_security_event(
         "integration.google_health.oauth_completed",
