@@ -10,6 +10,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import YazioConnection
+from app.nutrition.enums import ObservationKind
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionExternalIdentityLink,
@@ -281,6 +282,10 @@ def _load_relevant_tokens(
     if not snapshot_ids.issubset(snapshots_by_id):
         raise ValueError("manifest snapshot evidence is outside the user scope")
     source_ids.update(snapshot.source_observation_id for snapshot in snapshots)
+    global_reference_source_ids = {
+        snapshot.source_observation_id
+        for snapshot in snapshots_by_id.values()
+    }
 
     if source_ids != set(source_by_id):
         extra_sources = list(
@@ -298,7 +303,19 @@ def _load_relevant_tokens(
     if any(
         source.source_instance_id != source_instance_id
         or source.provider_key != _PROVIDER_KEY
-        or source.local_date != local_date
+        or (
+            (
+                source.id in global_reference_source_ids
+                and (
+                    source.observation_kind != ObservationKind.PRODUCT_PROFILE.value
+                    or source.local_date is not None
+                )
+            )
+            or (
+                source.id not in global_reference_source_ids
+                and source.local_date != local_date
+            )
+        )
         for source in source_by_id.values()
     ):
         raise ValueError("manifest derived source evidence is outside the date/provider scope")

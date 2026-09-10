@@ -4,17 +4,22 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 import app.nutrition.projection.orchestration as orchestration
-from app.models import YazioConnection
+from app.database import SessionLocal
+from app.models import User, YazioConnection
 from app.nutrition.models import (
+    NutritionConsumptionEvent,
     NutritionDailyProjection,
     NutritionDailyProjectionFact,
     NutritionDailyProjectionLineage,
+    NutritionFieldObservation,
+    NutritionFoodSnapshot,
     NutritionSourceObservation,
 )
 from app.nutrition.projection import ProjectionPersistenceStatus
@@ -24,11 +29,15 @@ from app.nutrition.projection.orchestration import (
     rebuild_nutrition_day,
 )
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.reasons import EvidenceKind
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
+    YazioConsumedProduct,
+    YazioConsumedSimpleProduct,
     YazioDailyNutrientSummary,
     YazioFoodDiary,
     YazioNutrientValues,
+    YazioProductProfile,
 )
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -53,6 +62,9 @@ def _diary(
     *,
     nutrients: YazioNutrientValues | None = None,
     include_summary: bool = True,
+    consumed_products: tuple[YazioConsumedProduct, ...] = (),
+    consumed_simple_products: tuple[YazioConsumedSimpleProduct, ...] = (),
+    product_profiles: tuple[YazioProductProfile, ...] = (),
 ) -> YazioFoodDiary:
     nutrient_values = nutrients or YazioNutrientValues(
         energy=Decimal("2100"),
@@ -77,9 +89,9 @@ def _diary(
     return YazioFoodDiary(
         requested_start_day=DAY,
         requested_end_day=DAY,
-        consumed_products=(),
-        consumed_simple_products=(),
-        product_profiles=(),
+        consumed_products=consumed_products,
+        consumed_simple_products=consumed_simple_products,
+        product_profiles=product_profiles,
         daily_summaries=summaries,
     )
 
@@ -116,6 +128,150 @@ def _policy(
         datetime(2026, 1, 1, tzinfo=UTC),
         (PriorityRuleSpec("nutrition", metric_key, provider_key, 1),),
     )
+
+
+def _source_contribution(source: NutritionSourceObservation) -> SimpleNamespace:
+    return SimpleNamespace(
+        evidence_id=source.id,
+        source_observation_id=source.id,
+        metric_key="protein_g",
+        evidence_kind=EvidenceKind.SOURCE_OBSERVATION,
+    )
+
+
+def _load_source_tokens(db, user, connection, source: NutritionSourceObservation):
+    return orchestration._load_relevant_tokens(
+        db,
+        user_id=user.id,
+        local_date=DAY,
+        source_instance_id=connection.id,
+        contributions=(_source_contribution(source),),
+    )
+
+
+def test_b6_event_source_with_null_date_fails_closed(db, user) -> None:
+    connection = _connection(db, user)
+    simple_product = YazioConsumedSimpleProduct(
+        consumed_item_id="b6-scope-event",
+        amount=Decimal("1"),
+        provider_civil_datetime=datetime(2026, 9, 11, 12),
+        local_date=DAY,
+        daytime="lunch",
+        nutrients=YazioNutrientValues(protein=Decimal("20")),
+        serving=None,
+        serving_quantity=None,
+    )
+    _ingest(
+        db,
+        user,
+        connection,
+        diary=_diary(include_summary=False, consumed_simple_products=(simple_product,)),
+    )
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.simple_product",
+        )
+    )
+    assert source is not None
+    source.local_date = None
+    db.flush()
+
+    with pytest.raises(ValueError, match="date/provider scope"):
+        _load_source_tokens(db, user, connection, source)
+
+
+def test_b6_summary_source_with_null_date_fails_closed(db, user) -> None:
+    connection = _connection(db, user)
+    _ingest(db, user, connection)
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert source is not None
+    source.local_date = None
+    db.flush()
+
+    with pytest.raises(ValueError, match="date/provider scope"):
+        _load_source_tokens(db, user, connection, source)
+
+
+def test_b6_unbound_global_profile_source_fails_closed(db, user) -> None:
+    connection = _connection(db, user)
+    _ingest(db, user, connection)
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert source is not None
+    source.observation_kind = "product_profile"
+    source.local_date = None
+    db.flush()
+
+    with pytest.raises(ValueError, match="date/provider scope"):
+        _load_source_tokens(db, user, connection, source)
+
+
+def test_b6_global_reference_requires_provider_and_source_binding(db, user) -> None:
+    connection = _connection(db, user)
+    _ingest(db, user, connection)
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert source is not None
+
+    source.provider_key = "other-provider"
+    db.flush()
+    with pytest.raises(ValueError, match="date/provider scope"):
+        _load_source_tokens(db, user, connection, source)
+    db.rollback()
+
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert source is not None
+    source.source_instance_id = uuid4()
+    db.flush()
+    with pytest.raises(ValueError, match="date/provider scope"):
+        _load_source_tokens(db, user, connection, source)
+
+
+def test_b6_global_reference_from_other_user_fails_closed(db, user) -> None:
+    connection = _connection(db, user)
+    _ingest(db, user, connection)
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.source_namespace == "yazio.daily_summary",
+        )
+    )
+    assert source is not None
+    other_user = User(
+        username="b6-other-user",
+        password_hash="hash",
+        timezone="UTC",
+    )
+    db.add(other_user)
+    db.flush()
+
+    with pytest.raises(ValueError, match="user scope"):
+        orchestration._load_relevant_tokens(
+            db,
+            user_id=other_user.id,
+            local_date=DAY,
+            source_instance_id=connection.id,
+            contributions=(_source_contribution(source),),
+        )
 
 
 def test_b6_builds_one_complete_daily_projection_from_one_policy_snapshot(db, user) -> None:
@@ -470,3 +626,149 @@ def test_b6_exhausts_exactly_three_whole_transaction_attempts(
 
     assert attempts == 3
     assert not db.in_transaction()
+
+
+def test_b6_simple_product_without_profile_remains_projectable(db, user) -> None:
+    connection = _connection(db, user)
+    simple_product = YazioConsumedSimpleProduct(
+        consumed_item_id="b6-simple",
+        amount=Decimal("1"),
+        provider_civil_datetime=datetime(2026, 9, 11, 12),
+        local_date=DAY,
+        daytime="lunch",
+        nutrients=YazioNutrientValues(protein=Decimal("20")),
+        serving=None,
+        serving_quantity=None,
+        name="B6 simple",
+    )
+    _ingest(
+        db,
+        user,
+        connection,
+        diary=_diary(
+            include_summary=False,
+            consumed_simple_products=(simple_product,),
+        ),
+    )
+    _policy(db, user)
+    db.commit()
+
+    first = rebuild_nutrition_day(db, user_id=user.id, local_date=DAY, policy_at=POLICY_AT)
+    with SessionLocal() as second_db:
+        second = rebuild_nutrition_day(
+            second_db,
+            user_id=user.id,
+            local_date=DAY,
+            policy_at=POLICY_AT,
+        )
+
+    assert first.status is ProjectionPersistenceStatus.CREATED
+    assert second.status is ProjectionPersistenceStatus.UNCHANGED
+
+def test_b6_product_event_uses_bound_global_profile_snapshot(
+    db,
+    user,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _connection(db, user)
+    product = YazioConsumedProduct(
+        consumed_item_id="b6-event",
+        product_id="b6-product",
+        amount=Decimal("1"),
+        provider_civil_datetime=datetime(2026, 9, 11, 12),
+        local_date=DAY,
+        daytime="lunch",
+        serving=None,
+        serving_quantity=None,
+    )
+    profile = YazioProductProfile(
+        product_id="b6-product",
+        name="B6 product",
+        producer="B6 producer",
+        category="meal",
+        base_unit="g",
+        nutrients=YazioNutrientValues(protein=Decimal("20")),
+        servings=(),
+        eans=(),
+        language="de",
+        countries=("DE",),
+        updated_at=datetime(2026, 9, 11, 11),
+        is_verified=True,
+        is_private=False,
+        is_deleted=False,
+    )
+    _ingest(
+        db,
+        user,
+        connection,
+        diary=_diary(
+            include_summary=False,
+            consumed_products=(product,),
+            product_profiles=(profile,),
+        ),
+    )
+    _policy(db, user)
+    db.commit()
+    captured: dict[str, object] = {}
+    original_persist = orchestration.persist_daily_projection
+
+    def persist_spy(db, *, build_input):
+        captured["build_input"] = build_input
+        return original_persist(db, build_input=build_input)
+
+    monkeypatch.setattr(orchestration, "persist_daily_projection", persist_spy)
+
+    first = rebuild_nutrition_day(db, user_id=user.id, local_date=DAY, policy_at=POLICY_AT)
+
+    assert first.status is ProjectionPersistenceStatus.CREATED
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.user_id == user.id,
+            NutritionConsumptionEvent.local_date == DAY,
+        )
+    )
+    assert event is not None
+    assert event.food_snapshot_id is not None
+    snapshot = db.scalar(
+        select(NutritionFoodSnapshot).where(
+            NutritionFoodSnapshot.id == event.food_snapshot_id,
+            NutritionFoodSnapshot.user_id == user.id,
+        )
+    )
+    assert snapshot is not None
+    profile_source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.id == snapshot.source_observation_id,
+            NutritionSourceObservation.user_id == user.id,
+        )
+    )
+    assert profile_source is not None
+    assert profile_source.local_date is None
+    manifest = captured["build_input"].input_manifest
+    assert any(
+        token.source_observation_id == profile_source.id
+        for token in manifest.technical_evidence
+        if isinstance(token, orchestration.SourceObservationToken)
+    )
+    lineage_sources = {
+        lineage.source_observation_id
+        for lineage in db.scalars(select(NutritionDailyProjectionLineage)).all()
+    }
+    assert profile_source.id not in lineage_sources
+    with SessionLocal() as second_db:
+        second = rebuild_nutrition_day(
+            second_db,
+            user_id=user.id,
+            local_date=DAY,
+            policy_at=POLICY_AT,
+        )
+    assert second.status is ProjectionPersistenceStatus.UNCHANGED
+    db.execute(
+        delete(NutritionFieldObservation).where(
+            NutritionFieldObservation.user_id == user.id,
+            NutritionFieldObservation.derived_from_field_observation_id.is_not(None),
+        )
+    )
+    db.execute(delete(NutritionFieldObservation).where(NutritionFieldObservation.user_id == user.id))
+    db.execute(delete(User).where(User.id == user.id))
+    db.commit()
