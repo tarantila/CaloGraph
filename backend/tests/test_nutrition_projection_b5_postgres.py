@@ -175,7 +175,7 @@ def _build_input(
             local_date=LOCAL_DATE,
             projection_algorithm_version="nutrition-daily-v1",
             metric_registry_version="nutrition-metrics-v1",
-            watermark_format_version="nutrition-watermark-v1",
+            watermark_format_version="nutrition-watermark-v2",
             policy=policy,
             relevant_rules=policy.rules,
             technical_evidence=tuple(tokens),

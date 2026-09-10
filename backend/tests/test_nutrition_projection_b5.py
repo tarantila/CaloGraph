@@ -54,7 +54,7 @@ USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 LOCAL_DATE = date(2026, 9, 11)
 ALGORITHM = "nutrition-daily-v1"
 METRIC_REGISTRY = "nutrition-metrics-v1"
-WATERMARK_FORMAT = "nutrition-watermark-v1"
+WATERMARK_FORMAT = "nutrition-watermark-v2"
 
 
 def _source_observation(

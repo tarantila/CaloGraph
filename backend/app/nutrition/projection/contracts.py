@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
@@ -8,6 +8,7 @@ from typing import Final
 from uuid import UUID
 
 from app.nutrition.resolution.metrics import CANONICAL_METRICS, canonical_unit
+from app.nutrition.resolution.sources import ProviderSourceBindings
 from app.source_priority.contracts import (
     PriorityPolicySnapshot,
     PriorityRuleSnapshot,
@@ -18,7 +19,7 @@ from .tokens import TechnicalEvidenceToken, token_identity, token_sort_key
 
 PROJECTION_ALGORITHM_VERSION: Final = "nutrition-daily-v1"
 METRIC_REGISTRY_VERSION: Final = "nutrition-metrics-v1"
-WATERMARK_FORMAT_VERSION: Final = "nutrition-watermark-v1"
+WATERMARK_FORMAT_VERSION: Final = "nutrition-watermark-v2"
 CANONICAL_METRIC_KEYS: tuple[str, ...] = tuple(CANONICAL_METRICS)
 
 
@@ -52,7 +53,6 @@ def validate_projection_decimal(value: Decimal | None, field_name: str = "value"
         raise ProjectionContractError(f"{field_name} exceeds Numeric(24, 12) range")
     return value
 
-
 @dataclass(frozen=True, slots=True)
 class ProjectionInputManifest:
     user_id: UUID
@@ -63,6 +63,7 @@ class ProjectionInputManifest:
     policy: PriorityPolicySnapshot | None
     relevant_rules: tuple[PriorityRuleSnapshot, ...]
     technical_evidence: tuple[TechnicalEvidenceToken, ...]
+    relevant_provider_sources: ProviderSourceBindings = field(default_factory=ProviderSourceBindings)
 
     def __post_init__(self) -> None:
         if not isinstance(self.user_id, UUID) or self.user_id.int == 0:
@@ -98,6 +99,18 @@ class ProjectionInputManifest:
             policy_rules = {rule.rule_id: rule for rule in self.policy.rules}
             if any(policy_rules.get(rule_id) != rule for rule_id, rule in rule_by_id.items()):
                 raise ProjectionContractError("relevant rule is not present in policy snapshot")
+        if not isinstance(self.relevant_provider_sources, ProviderSourceBindings):
+            raise ProjectionContractError(
+                "relevant_provider_sources must be ProviderSourceBindings"
+            )
+        relevant_provider_keys = {rule.provider_key for rule in self.relevant_rules}
+        if any(
+            binding.provider_key not in relevant_provider_keys
+            for binding in self.relevant_provider_sources
+        ):
+            raise ProjectionContractError(
+                "relevant provider source is not referenced by a relevant rule"
+            )
         object.__setattr__(
             self,
             "relevant_rules",

@@ -21,7 +21,6 @@ from app.nutrition.projection import (
     TombstoneToken,
     compute_input_watermark,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.source_priority.contracts import (
     AppliedPriorityScope,
     PriorityPolicySnapshot,
@@ -110,8 +109,7 @@ def _build_input(
 def test_b5_versions_and_metric_registry_are_stable_and_exactly_seven_metrics() -> None:
     assert PROJECTION_ALGORITHM_VERSION == "nutrition-daily-v1"
     assert METRIC_REGISTRY_VERSION == "nutrition-metrics-v1"
-    assert WATERMARK_FORMAT_VERSION == "nutrition-watermark-v1"
-    assert tuple(CANONICAL_METRIC_KEYS) == tuple(CANONICAL_METRICS)
+    assert WATERMARK_FORMAT_VERSION == "nutrition-watermark-v2"
     assert len(CANONICAL_METRIC_KEYS) == 7
     assert "salt" not in CANONICAL_METRIC_KEYS
 
@@ -307,7 +305,7 @@ def test_manifest_rejects_unsupported_versions() -> None:
     for field_name, value in (
         ("algorithm", "nutrition-daily-v2"),
         ("metric_registry", "nutrition-metrics-v2"),
-        ("watermark_format", "nutrition-watermark-v2"),
+        ("watermark_format", "nutrition-watermark-v3"),
     ):
         with pytest.raises(ValueError, match="unsupported"):
             _manifest(**{field_name: value})

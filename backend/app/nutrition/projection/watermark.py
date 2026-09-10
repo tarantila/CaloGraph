@@ -50,6 +50,13 @@ def compute_input_watermark(manifest: ProjectionInputManifest) -> str:
                 ),
             )
         ],
+        "relevant_provider_sources": [
+            {
+                "provider_key": binding.provider_key,
+                "source_instance_id": str(binding.source_instance_id),
+            }
+            for binding in manifest.relevant_provider_sources
+        ],
         "technical_evidence": [
             _token_payload(token)
             for token in sorted(
