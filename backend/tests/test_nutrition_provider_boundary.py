@@ -15,10 +15,10 @@ from app.nutrition.enums import (
     ResolutionState,
 )
 from app.nutrition.resolution import (
+    PROVIDER_RESOLVERS,
     EvidenceKind,
     MetricContribution,
     ProviderCandidate,
-    PROVIDER_RESOLVERS,
     ReasonCode,
 )
 from app.nutrition.resolution.providers import (
