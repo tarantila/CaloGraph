@@ -87,7 +87,6 @@ def build_authorization_url(
     client_id: str,
     state: str,
     verifier: str,
-    redirect_uri: str,
     reauthorize: bool = False,
     intent: str | None = None,
     initial: bool = False,
@@ -95,6 +94,7 @@ def build_authorization_url(
     scope_change: bool = False,
 ) -> str:
     """Build the fixed, read-only Google Health authorization request."""
+    redirect_uri = google_health_redirect_uri(settings.calograph_public_url)
     query: dict[str, str] = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,

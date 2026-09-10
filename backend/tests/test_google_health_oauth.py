@@ -2,6 +2,9 @@ import base64
 import hashlib
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
+from app.config import settings
 from app.google_health.constants import (
     GOOGLE_HEALTH_AUTH_URI,
     GOOGLE_HEALTH_CALLBACK_PATH,
@@ -15,7 +18,6 @@ from app.google_health.oauth import (
     normalize_granted_scopes,
     pkce_challenge,
 )
-
 
 def test_oauth_state_is_random_url_safe_and_hash_is_one_way() -> None:
     first = create_oauth_state()
@@ -52,7 +54,10 @@ def test_granted_scopes_are_split_deduplicated_and_sorted() -> None:
     assert normalize_granted_scopes(None) == ()
 
 
-def test_authorization_url_contains_exact_read_scope_and_pkce_parameters() -> None:
+def test_authorization_url_contains_exact_read_scope_and_pkce_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
     state = create_oauth_state()
     verifier = create_pkce_verifier()
     redirect_uri = f"https://nutrition.example.test{GOOGLE_HEALTH_CALLBACK_PATH}"
@@ -60,7 +65,6 @@ def test_authorization_url_contains_exact_read_scope_and_pkce_parameters() -> No
         client_id="client-id.apps.googleusercontent.com",
         state=state,
         verifier=verifier,
-        redirect_uri=redirect_uri,
     )
     query = parse_qs(urlsplit(url).query)
 
@@ -81,10 +85,13 @@ def test_authorization_url_prompts_only_for_consent_intents() -> None:
         "client_id": "client-id",
         "state": create_oauth_state(),
         "verifier": create_pkce_verifier(),
-        "redirect_uri": "https://nutrition.example.test/api/v1/google-health/oauth/callback",
     }
 
     assert parse_qs(urlsplit(build_authorization_url(**kwargs)).query).get("prompt") is None
+    reconnect_query = parse_qs(
+        urlsplit(build_authorization_url(**kwargs, intent="reconnect")).query
+    )
+    assert "prompt" not in reconnect_query
     for intent in ("initial", "reauthorize", "missing_refresh", "scope_change"):
         query = parse_qs(urlsplit(build_authorization_url(**kwargs, intent=intent)).query)
         assert query["prompt"] == ["consent"]
