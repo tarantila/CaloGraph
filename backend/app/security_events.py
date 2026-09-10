@@ -80,6 +80,9 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "import.validation_completed": EventSpec(
         "success", logging.INFO, _COUNT_FIELDS | {"source_type"}
     ),
+    "integration.google_health.oauth_started": EventSpec("pending", logging.INFO),
+    "integration.google_health.oauth_completed": EventSpec("success", logging.INFO),
+    "integration.google_health.oauth_failed": EventSpec("failure", logging.WARNING),
     "integration.yazio.connection_configured": EventSpec("success", logging.INFO),
     "integration.yazio.connection_disabled": EventSpec("success", logging.WARNING),
     "integration.yazio.connection_failed": EventSpec("failure", logging.WARNING),

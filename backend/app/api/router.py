@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import achievements, admin, analytics, auth, imports, settings, users, yazio
+from app.api import achievements, admin, analytics, auth, google_health, imports, settings, users, yazio
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(achievements.router)
@@ -11,3 +11,4 @@ api_router.include_router(settings.router)
 api_router.include_router(yazio.router)
 api_router.include_router(admin.router)
 api_router.include_router(users.router)
+api_router.include_router(google_health.router)
