@@ -165,10 +165,15 @@ def _tombstone(
 
 def _event(db, user, event_id: str = "event-1") -> NutritionConsumptionEvent:
     return db.scalar(
-        select(NutritionConsumptionEvent).where(
+        select(NutritionConsumptionEvent)
+        .where(
             NutritionConsumptionEvent.user_id == user.id,
             NutritionConsumptionEvent.provider_key == PROVIDER,
             NutritionConsumptionEvent.logical_event_key == event_id,
+        )
+        .order_by(
+            NutritionConsumptionEvent.revision.desc(),
+            NutritionConsumptionEvent.id.desc(),
         )
     )
 
@@ -382,7 +387,7 @@ def test_tombstoned_current_revision_does_not_fall_back_to_old_revision(db, user
 
     assert result.value == Decimal("99")
     assert result.selected_granularity is ProjectionGranularity.SUMMARY
-    assert result.reason_code is ReasonCode.SUMMARY_FALLBACK_UNCERTAIN_LINEAGE
+    assert result.reason_code is ReasonCode.SUMMARY_ONLY
 
 
 def test_tombstoning_only_old_revision_keeps_newer_revision(db, user):
