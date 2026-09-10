@@ -24,20 +24,34 @@ from .metrics import (
     metric_definition,
 )
 from .parity import ParityDiagnostic, compare_decimal_parity
+from .providers import (
+    PROVIDER_RESOLVERS,
+    NutritionProviderResolver,
+    ProviderCandidateContractError,
+    ProviderNotAvailableError,
+    YazioProviderResolver,
+    collect_provider_candidates,
+    resolve_provider_metric,
+)
 from .reasons import EvidenceKind, ReasonCode
 from .resolver import resolve_event_vs_summary
 
 __all__ = [
     "CANONICAL_METRICS",
+    "PROVIDER_RESOLVERS",
     "AggregatedMetric",
     "EventReconstructionCandidate",
     "EvidenceKind",
     "MetricContribution",
     "MetricDefinition",
+    "NutritionProviderResolver",
     "ParityDiagnostic",
     "ProviderCandidate",
+    "ProviderCandidateContractError",
+    "ProviderNotAvailableError",
     "ReasonCode",
     "SummaryCandidate",
+    "YazioProviderResolver",
     "aggregate_contributions",
     "aggregate_coverage",
     "aggregate_lineage",
@@ -46,6 +60,7 @@ __all__ = [
     "build_event_candidate",
     "build_summary_candidate",
     "canonical_unit",
+    "collect_provider_candidates",
     "compare_decimal_parity",
     "is_candidate_eligible",
     "is_known_metric",
@@ -53,4 +68,5 @@ __all__ = [
     "is_unsupported_metric",
     "metric_definition",
     "resolve_event_vs_summary",
+    "resolve_provider_metric",
 ]
