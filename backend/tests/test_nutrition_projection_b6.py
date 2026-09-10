@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -194,6 +194,47 @@ def test_b6_identical_rebuild_is_unchanged(db, user) -> None:
     assert first.status is ProjectionPersistenceStatus.CREATED
     assert second.status is ProjectionPersistenceStatus.UNCHANGED
     assert len(db.scalars(select(NutritionDailyProjection)).all()) == 1
+
+
+def test_b6_unrelated_date_change_does_not_change_watermark(db, user) -> None:
+    connection = _connection(db, user)
+    _ingest(db, user, connection)
+    _policy(db, user)
+    db.commit()
+
+    first = rebuild_nutrition_day(db, user_id=user.id, local_date=DAY, policy_at=POLICY_AT)
+    unrelated_day = DAY + timedelta(days=1)
+    unrelated_diary = YazioFoodDiary(
+        requested_start_day=unrelated_day,
+        requested_end_day=unrelated_day,
+        consumed_products=(),
+        consumed_simple_products=(),
+        product_profiles=(),
+        daily_summaries=(
+            YazioDailyNutrientSummary(
+                local_date=unrelated_day,
+                nutrients=YazioNutrientValues(protein=Decimal("999")),
+                energy_goal=None,
+            ),
+        ),
+    )
+    ingest_yazio_food_diary(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=unrelated_day,
+        requested_end=unrelated_day,
+        diary=unrelated_diary,
+    )
+    db.commit()
+
+    second = rebuild_nutrition_day(db, user_id=user.id, local_date=DAY, policy_at=POLICY_AT)
+
+    assert first.status is ProjectionPersistenceStatus.CREATED
+    assert second.status is ProjectionPersistenceStatus.UNCHANGED
+    assert second.input_watermark == first.input_watermark
+
+
 
 
 def test_b6_policy_missing_is_typed_no_mutation(db, user) -> None:

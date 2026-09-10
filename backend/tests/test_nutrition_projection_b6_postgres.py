@@ -29,6 +29,7 @@ from app.services.yazio_provider import (
 )
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -236,6 +237,83 @@ def test_b6_postgres_uses_one_snapshot_for_all_provider_reads(
             user_id=user.id,
             local_date=DAY,
             policy_at=POLICY_V1_AT,
+        )
+
+    assert second.projection_version == 2
+
+
+def test_b6_postgres_policy_change_keeps_one_snapshot_for_all_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert engine.dialect.name == "postgresql"
+    user = _seed_day()
+    first_metric_read = Event()
+    allow_projection_to_continue = Event()
+    writer_errors: list[BaseException] = []
+    original_collect = orchestration.collect_provider_candidates
+
+    def collect_with_policy_gate(db, **kwargs):
+        result = original_collect(db, **kwargs)
+        if kwargs["metric_key"] == next(iter(CANONICAL_METRICS)):
+            first_metric_read.set()
+            assert allow_projection_to_continue.wait(timeout=30)
+        return result
+
+    def add_policy() -> None:
+        try:
+            assert first_metric_read.wait(timeout=30)
+            with SessionLocal() as writer:
+                create_policy_with_rules(
+                    writer,
+                    user.id,
+                    version=2,
+                    effective_from=POLICY_V2_AT,
+                    rules=(PriorityRuleSpec("nutrition", None, "yazio", 1),),
+                )
+                writer.commit()
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            allow_projection_to_continue.set()
+
+    monkeypatch.setattr(orchestration, "collect_provider_candidates", collect_with_policy_gate)
+    writer = Thread(target=add_policy)
+    writer.start()
+    with SessionLocal() as db:
+        first = rebuild_nutrition_day(
+            db,
+            user_id=user.id,
+            local_date=DAY,
+            policy_at=POLICY_V1_AT,
+        )
+    writer.join(timeout=30)
+
+    assert not writer.is_alive()
+    assert writer_errors == []
+    assert first.projection_version == 1
+    with SessionLocal() as db:
+        policy_v1_id = db.scalar(
+            select(SourcePriorityPolicy.id).where(
+                SourcePriorityPolicy.user_id == user.id,
+                SourcePriorityPolicy.version == 1,
+            )
+        )
+        projection = db.scalar(
+            select(NutritionDailyProjection).where(
+                NutritionDailyProjection.user_id == user.id,
+                NutritionDailyProjection.local_date == DAY,
+            )
+        )
+        assert policy_v1_id is not None
+        assert projection is not None
+        assert projection.priority_policy_id == policy_v1_id
+
+    with SessionLocal() as db:
+        second = rebuild_nutrition_day(
+            db,
+            user_id=user.id,
+            local_date=DAY,
+            policy_at=POLICY_V2_AT,
         )
 
     assert second.projection_version == 2
