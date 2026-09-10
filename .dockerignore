@@ -25,3 +25,7 @@ uploads
 !.env.example
 !.env.production.example
 !**/.env.example
+
+# Local AI / agent-generated artifacts
+.superpowers/
+docs/superpowers/

@@ -58,3 +58,7 @@ Thumbs.db
 *.swp
 *.swo
 .mcp.json
+
+# Local AI / agent-generated artifacts
+.superpowers/
+docs/superpowers/
