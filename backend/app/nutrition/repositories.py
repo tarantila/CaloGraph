@@ -115,6 +115,8 @@ def _require_identity_target_compatibility(
     if target.provider_key != identity.provider_key:
         raise ValueError("identity target provider must match external identity")
     if hasattr(target, "source_instance_id"):
+        if target.source_instance_id != identity.source_instance_id:
+            raise ValueError("identity target source instance must match external identity")
         validate_source_instance(
             db,
             user_id=user_id,
@@ -532,18 +534,19 @@ def get_or_create_external_identity(
     provider_metadata: dict[str, Any] | None = None,
     last_seen_at: datetime | None = None,
 ) -> NutritionExternalIdentity:
+    if not provider_key or not namespace or not identity_value or not identity_kind:
+        raise ValueError("external identity provider, namespace, value, and kind are required")
     validate_source_instance(
         db,
         user_id=user_id,
         provider_key=provider_key,
         source_instance_id=source_instance_id,
     )
-    if not provider_key or not namespace or not identity_value or not identity_kind:
-        raise ValueError("external identity provider, namespace, value, and kind are required")
     identity = db.scalar(
         select(NutritionExternalIdentity)
         .where(
             NutritionExternalIdentity.user_id == user_id,
+            NutritionExternalIdentity.source_instance_id == source_instance_id,
             NutritionExternalIdentity.provider_key == provider_key,
             NutritionExternalIdentity.namespace == namespace,
             NutritionExternalIdentity.identity_value == identity_value,
@@ -553,6 +556,7 @@ def get_or_create_external_identity(
     if identity is None:
         identity = NutritionExternalIdentity(
             user_id=user_id,
+            source_instance_id=source_instance_id,
             provider_key=provider_key,
             namespace=namespace,
             identity_value=identity_value,
@@ -595,6 +599,8 @@ def get_or_create_food_profile(
     )
     if identity is None:
         raise ValueError("external identity must belong to the same user")
+    if identity.source_instance_id != source_instance_id:
+        raise ValueError("external identity source instance must match the food profile")
     if identity.provider_key != provider_key:
         raise ValueError("external identity provider must match the food profile")
     link = current_identity_link(db, user_id, external_identity_id, "profile_identity")

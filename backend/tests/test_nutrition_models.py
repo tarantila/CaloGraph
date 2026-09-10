@@ -201,8 +201,10 @@ def test_source_observation_partial_idempotency_indexes(db, user) -> None:
 
 
 def test_external_identity_links_are_revisioned_per_role(db, user) -> None:
+    source_instance_id = uuid4()
     identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
@@ -211,7 +213,7 @@ def test_external_identity_links_are_revisioned_per_role(db, user) -> None:
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
-        source_instance_id=uuid4(),
+        source_instance_id=source_instance_id,
         profile_status="active",
     )
     run = NutritionIngestionRun(
@@ -274,11 +276,11 @@ def test_external_identity_links_are_revisioned_per_role(db, user) -> None:
     db.add(role_independent)
     db.commit()
     assert role_independent.id is not None
-
-
 def test_invalid_external_identity_link_supersedes_scope_is_rejected(db, user) -> None:
+    source_instance_id = uuid4()
     first_identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-1",
@@ -286,6 +288,7 @@ def test_invalid_external_identity_link_supersedes_scope_is_rejected(db, user) -
     )
     second_identity = NutritionExternalIdentity(
         user_id=user.id,
+        source_instance_id=source_instance_id,
         provider_key="yazio",
         namespace="product",
         identity_value="product-2",
@@ -294,7 +297,7 @@ def test_invalid_external_identity_link_supersedes_scope_is_rejected(db, user) -
     profile = NutritionFoodProfile(
         user_id=user.id,
         provider_key="yazio",
-        source_instance_id=uuid4(),
+        source_instance_id=source_instance_id,
         profile_status="active",
     )
     db.add_all([first_identity, second_identity, profile])

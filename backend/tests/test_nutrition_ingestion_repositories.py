@@ -18,6 +18,8 @@ from app.nutrition.enums import (
 )
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionExternalIdentityLink,
+    NutritionFoodProfile,
     NutritionFoodSnapshot,
     NutritionSourceObservation,
 )
@@ -176,6 +178,8 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
     )
     assert same_identity.id == identity.id
     assert same_identity.provider_metadata == {"source": "retry"}
+
+
     ean_identity = get_or_create_external_identity(
         db,
         user_id=user.id,
@@ -250,6 +254,100 @@ def test_external_identity_and_profile_snapshot_are_idempotent_and_revisioned(db
     db.refresh(profile)
     assert historical_snapshot.id == snapshot.id
     assert profile.current_snapshot_id == changed_snapshot.id
+def test_external_identity_is_scoped_by_source_instance(db, user):
+    source_a = uuid4()
+    source_b = uuid4()
+    first = get_or_create_external_identity(
+        db,
+        user_id=user.id,
+        provider_key="internal",
+        namespace="product",
+        identity_value="same-id",
+        identity_kind="product",
+        source_instance_id=source_a,
+    )
+    retry = get_or_create_external_identity(
+        db,
+        user_id=user.id,
+        provider_key="internal",
+        namespace="product",
+        identity_value="same-id",
+        identity_kind="product",
+        source_instance_id=source_a,
+    )
+    second = get_or_create_external_identity(
+        db,
+        user_id=user.id,
+        provider_key="internal",
+        namespace="product",
+        identity_value="same-id",
+        identity_kind="product",
+        source_instance_id=source_b,
+    )
+
+    assert retry.id == first.id
+    assert second.id != first.id
+
+
+@pytest.mark.parametrize("target_kind", ("event", "profile", "observation"))
+def test_identity_link_rejects_target_from_other_source(db, user, monkeypatch, target_kind):
+    monkeypatch.setattr(
+        "app.nutrition.repositories.validate_source_instance",
+        lambda *_args, **_kwargs: None,
+    )
+    connection = _connection(db, user)
+    run = _run(db, user, connection)
+    observation = _observation(db, user, connection, run)
+    identity = get_or_create_external_identity(
+        db,
+        user_id=user.id,
+        provider_key="yazio",
+        namespace="yazio.product",
+        identity_value="product-1",
+        identity_kind="product",
+        source_instance_id=connection.id,
+    )
+    other_source = uuid4()
+    if target_kind == "observation":
+        observation.source_instance_id = other_source
+        target = {"source_observation_id": observation.id}
+    elif target_kind == "profile":
+        profile = NutritionFoodProfile(
+            user_id=user.id,
+            provider_key="yazio",
+            source_instance_id=other_source,
+        )
+        db.add(profile)
+        db.flush()
+        target = {"food_profile_id": profile.id}
+    else:
+        event = get_or_create_consumption_event(
+            db,
+            user_id=user.id,
+            source_observation_id=observation.id,
+            provider_key="yazio",
+            source_instance_id=connection.id,
+            event_kind=ConsumptionEventKind.PRODUCT.value,
+            logical_event_key="item-1",
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+        event.source_instance_id = other_source
+        target = {"consumption_event_id": event.id}
+    db.flush()
+
+    with pytest.raises(ValueError, match="source instance"):
+        append_identity_link(
+            db,
+            user_id=user.id,
+            external_identity_id=identity.id,
+            link_role="source-mismatch",
+            **target,
+        )
+
+    assert db.scalar(select(func.count()).select_from(NutritionExternalIdentityLink)) == 0
 
 
 def test_consumption_event_retry_reuses_revision_and_changed_content_supersedes(db, user):

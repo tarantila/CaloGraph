@@ -172,16 +172,24 @@ class NutritionExternalIdentity(Base):
         UniqueConstraint("id", "user_id", name="uq_nutrition_external_identities_id_user"),
         UniqueConstraint(
             "user_id",
+            "source_instance_id",
             "provider_key",
             "namespace",
             "identity_value",
-            name="uq_nutrition_external_identity_value",
+            name="uq_nutrition_external_identity_source_value",
         ),
-        Index("ix_nutrition_external_identities_user_namespace", "user_id", "provider_key", "namespace"),
+        Index(
+            "ix_nutrition_external_identities_user_source_namespace",
+            "user_id",
+            "source_instance_id",
+            "provider_key",
+            "namespace",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    source_instance_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     provider_key: Mapped[str] = mapped_column(String(64))
     namespace: Mapped[str] = mapped_column(String(128))
     identity_value: Mapped[str] = mapped_column(String(512))

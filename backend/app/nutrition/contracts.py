@@ -23,6 +23,7 @@ class SourceObservationIdentity:
 @dataclass(frozen=True, slots=True)
 class ExternalIdentityKey:
     user_id: UUID
+    source_instance_id: UUID
     provider_key: str
     namespace: str
     identity_value: str
