@@ -15,6 +15,11 @@ from .mapping import (
     map_build_input_to_facts,
     map_selection_to_fact,
 )
+from .orchestration import (
+    NutritionProjectionConcurrencyError,
+    NutritionProjectionTransactionError,
+    rebuild_nutrition_day,
+)
 from .persistence import persist_daily_projection
 from .tokens import (
     ConsumptionEventToken,
@@ -37,6 +42,8 @@ __all__ = [
     "FieldObservationToken",
     "FoodSnapshotToken",
     "IdentityLinkToken",
+    "NutritionProjectionConcurrencyError",
+    "NutritionProjectionTransactionError",
     "ProjectionContractError",
     "ProjectionFactPayload",
     "ProjectionInputManifest",
@@ -50,4 +57,5 @@ __all__ = [
     "map_build_input_to_facts",
     "map_selection_to_fact",
     "persist_daily_projection",
+    "rebuild_nutrition_day",
 ]
