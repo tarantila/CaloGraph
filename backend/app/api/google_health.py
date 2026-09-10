@@ -31,7 +31,7 @@ def _oauth_error(exc: GoogleHealthOAuthError) -> HTTPException:
         "invalid_response": "Google Health-Antwort ist ungültig.",
         "credential_unavailable": "Google Health ist derzeit nicht verfügbar.",
     }.get(exc.code, "Google Health-Anfrage fehlgeschlagen.")
-    status = 502 if exc.code in {"rate_limited", "transient_error", "provider_error"} else exc.status_code
+    status = 429 if exc.code == "rate_limited" else 502 if exc.code in {"transient_error", "provider_error"} else exc.status_code
     return HTTPException(status_code=status, detail=detail)
 
 
@@ -62,6 +62,7 @@ def google_health_oauth_start(
     return GoogleHealthOAuthStartResponse(authorization_url=url)
 @router.get("/oauth/callback", response_model=GoogleHealthStatus)
 def google_health_oauth_callback(
+    request: Request,
     state: str | None = Query(default=None, max_length=512),
     code: str | None = Query(default=None, max_length=4096),
     error: str | None = Query(default=None, max_length=128),
@@ -75,6 +76,7 @@ def google_health_oauth_callback(
             state=state,
             code=code,
             error=error,
+            request=request,
         )
     except GoogleHealthDisabledError as exc:
         raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.") from exc

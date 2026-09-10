@@ -2,7 +2,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from app.api.google_health import _oauth_error
 from app.config import settings
+from app.google_health.errors import GoogleHealthOAuthError
 from app.models import User
 
 
@@ -65,3 +67,8 @@ def test_google_health_disabled_is_safe(client: TestClient, user: User, monkeypa
     response = client.post("/api/v1/google-health/oauth/start", headers={"X-CSRF-Token": csrf})
     assert response.status_code in {200, 403, 404}
     assert "authorization_url" not in response.text
+
+
+def test_rate_limited_callback_uses_http_429():
+    response = _oauth_error(GoogleHealthOAuthError("rate_limited"))
+    assert response.status_code == 429

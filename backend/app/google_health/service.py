@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from app.google_health.oauth import (
     hash_oauth_state,
     normalize_granted_scopes,
 )
+from app.auth.dependencies import _revalidate_locked_session
 from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
 from app.schemas_google_health import GoogleHealthStatus
 from app.security_events import log_security_event, security_reference
@@ -290,7 +292,6 @@ def _record_failure(
             connection.state = "reauth_required"
     return connection
 
-
 def complete_google_health_oauth(
     db: Session,
     user: User,
@@ -300,6 +301,7 @@ def complete_google_health_oauth(
     error: str | None,
     now: datetime | None = None,
     oauth_adapter: OAuthAdapter | None = None,
+    request: Request | None = None,
 ) -> GoogleHealthStatus:
     _require_enabled()
     timestamp = _now(now)
@@ -308,13 +310,16 @@ def complete_google_health_oauth(
     if not code and not error:
         raise GoogleHealthOAuthError("invalid_response")
     with exclusive_user_lifecycle_operation(db, user.id):
-        active_user = db.scalar(
-            select(User)
-            .where(User.id == user.id, User.is_active.is_(True))
-            .execution_options(populate_existing=True)
-        )
-        if active_user is None:
-            raise GoogleHealthOAuthError("session_inactive", status_code=401)
+        if request is not None:
+            _revalidate_locked_session(request, user.id, db)
+        else:
+            active_user = db.scalar(
+                select(User)
+                .where(User.id == user.id, User.is_active.is_(True))
+                .execution_options(populate_existing=True)
+            )
+            if active_user is None:
+                raise GoogleHealthOAuthError("session_inactive", status_code=401)
         flow = db.scalar(
             select(GoogleHealthOAuthFlow)
             .where(
@@ -418,6 +423,7 @@ def complete_google_health_oauth(
         connection.encrypted_refresh_token = encrypted_refresh_token
         connection.granted_scopes = list(scopes)
         connection.state = "active"
+        connection.last_attempt_at = timestamp
         connection.last_success_at = timestamp
         connection.last_error = None
         refresh_expiry = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
