@@ -174,8 +174,8 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
         "pageSize": "10",
         "pageToken": "a token/&",
         "filter": (
-            "nutrition_log.interval.start_time >= 2026-01-02T03:04:05+00:00 AND "
-            "nutrition_log.interval.start_time < 2026-01-03T03:04:05+00:00"
+            'nutrition_log.interval.start_time >= "2026-01-02T03:04:05+00:00" AND '
+            'nutrition_log.interval.start_time < "2026-01-03T03:04:05+00:00"'
         ),
     }
     assert call["headers"] == {"Authorization": "Bearer access-token"}

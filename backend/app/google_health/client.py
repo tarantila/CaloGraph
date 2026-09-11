@@ -121,9 +121,9 @@ class GoogleHealthHTTPTransport:
             params["pageToken"] = page_token
         filters: list[str] = []
         if start_time is not None:
-            filters.append(f"nutrition_log.interval.start_time >= {start_time.isoformat()}")
+            filters.append(f'nutrition_log.interval.start_time >= "{start_time.isoformat()}"')
         if end_time is not None:
-            filters.append(f"nutrition_log.interval.start_time < {end_time.isoformat()}")
+            filters.append(f'nutrition_log.interval.start_time < "{end_time.isoformat()}"')
         if filters:
             params["filter"] = " AND ".join(filters)
 
