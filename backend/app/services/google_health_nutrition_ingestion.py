@@ -460,6 +460,14 @@ def _field_observations(
         )
         duplicate = canonical is not None and canonical[0] in emitted_canonical_metrics
         provider_only = overridden or canonical is None or duplicate
+        metric_key = None
+        canonical_value = None
+        canonical_unit = None
+        role = ObservationRole.PROVIDER.value
+        if canonical is not None and not provider_only:
+            metric_key, canonical_unit = canonical
+            canonical_value = value
+            role = ObservationRole.CANONICAL.value
         _field(
             db,
             user_id=user_id,
@@ -467,17 +475,15 @@ def _field_observations(
             provider_field_path=provider_path,
             value=value,
             raw_unit=nutrient.quantity.unit,
-            metric_key=None if provider_only else canonical[0],
-            canonical_value=None if provider_only else value,
-            canonical_unit=None if provider_only else canonical[1],
-            role=ObservationRole.PROVIDER.value
-            if provider_only
-            else ObservationRole.CANONICAL.value,
+            metric_key=metric_key,
+            canonical_value=canonical_value,
+            canonical_unit=canonical_unit,
+            role=role,
             metadata=metadata,
             coverage_state=coverage_state,
         )
-        if canonical is not None and not provider_only:
-            emitted_canonical_metrics.add(canonical[0])
+        if metric_key is not None:
+            emitted_canonical_metrics.add(metric_key)
 
     if log.serving is not None:
         serving = log.serving
