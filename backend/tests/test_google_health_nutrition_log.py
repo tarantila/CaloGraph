@@ -299,6 +299,105 @@ def test_malformed_nutrition_scalar_types_are_rejected(
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
 
+@pytest.mark.parametrize(
+    ("field", "payload_field", "scalar_key"),
+    [
+        ("energy", "energy", "kcal"),
+        ("nutrient", "nutrients", "grams"),
+    ],
+)
+def test_negative_energy_or_nutrient_quantity_is_rejected(field: str, payload_field: str, scalar_key: str) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/negative-quantity-1", 1)
+    if field == "energy":
+        value["nutritionLog"][payload_field] = {
+            scalar_key: -1.0,
+            "userProvidedUnit": "KILOCALORIE",
+        }
+    else:
+        value["nutritionLog"][payload_field] = [
+            {
+                "nutrient": "PROTEIN",
+                "quantity": {"grams": -1.0, "userProvidedUnit": "GRAM"},
+            }
+        ]
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        pytest.param(
+            lambda value: value["nutritionLog"].update({"foodDisplayName": "A" * 513}),
+            id="food-display-name-ascii",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update({"foodDisplayName": "é" * 257}),
+            id="food-display-name-utf8",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "serving": {
+                        "amount": 1,
+                        "foodMeasurementUnit": "A" * 513,
+                        "foodMeasurementUnitDisplayName": "GRAM",
+                    }
+                }
+            ),
+            id="serving-food-measurement-unit-ascii",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "serving": {
+                        "amount": 1,
+                        "foodMeasurementUnit": "é" * 257,
+                        "foodMeasurementUnitDisplayName": "GRAM",
+                    }
+                }
+            ),
+            id="serving-food-measurement-unit-utf8",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "serving": {
+                        "amount": 1,
+                        "foodMeasurementUnit": "GRAM",
+                        "foodMeasurementUnitDisplayName": "A" * 513,
+                    }
+                }
+            ),
+            id="serving-food-measurement-unit-display-name-ascii",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "serving": {
+                        "amount": 1,
+                        "foodMeasurementUnit": "GRAM",
+                        "foodMeasurementUnitDisplayName": "é" * 257,
+                    }
+                }
+            ),
+            id="serving-food-measurement-unit-display-name-utf8",
+        ),
+    ],
+)
+def test_oversized_food_and_serving_strings_are_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/food-huge-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+
 
 @pytest.mark.parametrize(
     "mutator",
@@ -747,6 +846,18 @@ def test_serving_amount_without_unit_is_a_valid_typed_value() -> None:
 
     assert page.data_points[0].nutrition_log.serving is not None
     assert page.data_points[0].nutrition_log.serving.amount == 1
+
+def test_negative_serving_amount_is_rejected() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/serving-negative-1", 1)
+    value["nutritionLog"]["serving"] = {
+        "foodMeasurementUnit": "g",
+        "foodMeasurementUnitDisplayName": "grams",
+        "amount": -1,
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
 
 
 def test_contradictory_civil_and_physical_interval_is_rejected() -> None:

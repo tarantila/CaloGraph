@@ -398,6 +398,23 @@ def test_canonical_decimal_metrics_are_not_double_counted(db, user):
     ) == 1
 
 
+def test_energy_user_provided_unit_does_not_convert_canonical_scalar(db, user):
+    _ingest(db, user, (_point(energy=NutritionQuantity(10.0, "KILOJOULE")),))
+    energy = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.metric_key == "dietary_energy_kcal",
+            NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
+        )
+    )
+    assert energy is not None
+    assert energy.canonical_value == Decimal("10")
+    assert energy.canonical_unit == "kcal"
+    assert energy.provider_raw_unit == "KILOJOULE"
+
+
+
+
+
 def test_civil_date_controls_local_date_and_missing_civil_is_partial(db, user):
     _ingest(db, user, (_point(civil=True),))
     event = db.scalar(select(NutritionConsumptionEvent))
@@ -414,7 +431,20 @@ def test_civil_date_controls_local_date_and_missing_civil_is_partial(db, user):
     assert missing.local_date is None
     assert missing_source.local_date is None
     assert missing.coverage_state == CoverageState.PARTIAL.value
+    missing_fields = [
+        field for field in _rows(db, NutritionFieldObservation)
+        if field.source_observation_id == missing_source.id
+    ]
+    assert missing_fields
+    assert all(field.coverage_state == CoverageState.PARTIAL.value for field in missing_fields)
 
+
+
+def test_overlong_direct_dto_name_is_rejected_before_domain_writes(db, user):
+    before_counts = _domain_counts(db)
+    with pytest.raises(ValueError):
+        _ingest(db, user, (_point(name="n" * 256),))
+    assert _domain_counts(db) == before_counts
 
 
 def test_short_semantic_serving_unit_is_persisted_in_valid_unit_columns(db, user):
