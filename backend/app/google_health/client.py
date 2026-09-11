@@ -202,9 +202,8 @@ class GoogleHealthHTTPTransport:
         """Perform exactly one GET against the fixed Nutrition Log resource."""
         _validate_page_size(page_size)
         _validate_page_token(page_token)
-        _validate_time_bounds(start_time, end_time)
+        _reject_physical_bounds(start_time, end_time)
         _validate_civil_bounds(civil_start_time, civil_end_time)
-        _validate_bound_modes(start_time, end_time, civil_start_time, civil_end_time)
         if not access_token or any(ord(char) < 0x20 for char in access_token):
             raise GoogleHealthAuthenticationError("Google Health credentials are unavailable")
 
@@ -212,10 +211,6 @@ class GoogleHealthHTTPTransport:
         if page_token is not None:
             params["pageToken"] = page_token
         filters: list[str] = []
-        if start_time is not None:
-            filters.append(f'nutrition_log.interval.start_time >= "{start_time.isoformat()}"')
-        if end_time is not None:
-            filters.append(f'nutrition_log.interval.start_time < "{end_time.isoformat()}"')
         if civil_start_time is not None:
             filters.append(
                 f'nutrition_log.interval.civil_start_time >= "{_civil_time_text(civil_start_time)}"'
@@ -281,8 +276,7 @@ class GoogleHealthClient:
     ) -> NutritionLogPage:
         _validate_page_size(page_size, maximum=self._max_page_size)
         _validate_page_token(page_token)
-        _validate_time_bounds(start_time, end_time)
-        _validate_bound_modes(start_time, end_time, civil_start_time, civil_end_time)
+        _reject_physical_bounds(start_time, end_time)
         _validate_civil_bounds(civil_start_time, civil_end_time)
         access_token = self._access_token()
         try:
@@ -874,24 +868,9 @@ def _validate_page_token(page_token: str | None) -> None:
         raise ValueError("page_token is invalid")
 
 
-def _validate_time_bounds(start_time: datetime | None, end_time: datetime | None) -> None:
-    for value in (start_time, end_time):
-        if value is not None and (not isinstance(value, datetime) or value.tzinfo is None):
-            raise ValueError("time bounds must be timezone-aware datetimes")
-    if start_time is not None and end_time is not None and start_time > end_time:
-        raise ValueError("start_time must not be after end_time")
-
-
-def _validate_bound_modes(
-    start_time: datetime | None,
-    end_time: datetime | None,
-    civil_start: date | datetime | None,
-    civil_end: date | datetime | None,
-) -> None:
-    if (start_time is not None or end_time is not None) and (
-        civil_start is not None or civil_end is not None
-    ):
-        raise ValueError("physical and civil time bounds cannot be mixed")
+def _reject_physical_bounds(start_time: datetime | None, end_time: datetime | None) -> None:
+    if start_time is not None or end_time is not None:
+        raise ValueError("physical time bounds are unsupported; use civil time bounds")
 
 
 def _validate_civil_bounds(

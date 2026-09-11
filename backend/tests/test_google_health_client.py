@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import traceback
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import ClassVar
 
 import pytest
@@ -156,15 +156,17 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
     transport = GoogleHealthHTTPTransport(
         http_client=http_client, connect_timeout=2.0, read_timeout=7.0
     )
-    start = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-    end = datetime(2026, 1, 3, 3, 4, 5, tzinfo=UTC)
+    start = date(2026, 1, 2)
+    end = date(2026, 1, 3)
 
     transport.get_nutrition_log(
         access_token="access-token",
         page_size=10,
         page_token="a token/&",
-        start_time=start,
-        end_time=end,
+        start_time=None,
+        end_time=None,
+        civil_start_time=start,
+        civil_end_time=end,
     )
 
     call = http_client.calls[0]
@@ -174,8 +176,8 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
         "pageSize": "10",
         "pageToken": "a token/&",
         "filter": (
-            'nutrition_log.interval.start_time >= "2026-01-02T03:04:05+00:00" AND '
-            'nutrition_log.interval.start_time < "2026-01-03T03:04:05+00:00"'
+            'nutrition_log.interval.civil_start_time >= "2026-01-02" AND '
+            'nutrition_log.interval.civil_start_time < "2026-01-03"'
         ),
     }
     assert call["headers"] == {"Authorization": "Bearer access-token"}
@@ -220,12 +222,45 @@ def test_client_validates_page_token_and_time_boundaries() -> None:
     with pytest.raises(ValueError):
         client.get_nutrition_log_page(page_size=10, page_token="\nnot-safe")
     with pytest.raises(ValueError):
-        client.get_nutrition_log_page(page_size=10, start_time=datetime(2026, 1, 1))
+        client.get_nutrition_log_page(
+            page_size=10,
+            civil_start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        )
     with pytest.raises(ValueError):
         client.get_nutrition_log_page(
             page_size=10,
+            civil_start_time=date(2026, 1, 2),
+            civil_end_time=date(2026, 1, 1),
+        )
+
+
+def test_client_rejects_unsupported_physical_time_bounds() -> None:
+    client = GoogleHealthClient(FakeTransport(), FakeCredentials())
+
+    with pytest.raises(ValueError, match="civil"):
+        client.get_nutrition_log_page(
+            page_size=10,
             start_time=datetime(2026, 1, 2, tzinfo=UTC),
-            end_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 3, tzinfo=UTC),
+        )
+
+
+def test_transport_rejects_physical_time_bounds_before_request() -> None:
+    class UnusedHTTPClient:
+        def stream(self, *_args: object, **_kwargs: object) -> StreamContext:
+            raise AssertionError("physical bounds must be rejected before request")
+
+        def close(self) -> None:
+            pass
+
+    transport = GoogleHealthHTTPTransport(http_client=UnusedHTTPClient())
+    with pytest.raises(ValueError, match="civil"):
+        transport.get_nutrition_log(
+            access_token="access-token",
+            page_size=10,
+            page_token=None,
+            start_time=datetime(2026, 1, 2, tzinfo=UTC),
+            end_time=datetime(2026, 1, 3, tzinfo=UTC),
         )
 
 
