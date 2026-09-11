@@ -393,11 +393,9 @@ class GoogleHealthClient:
             ) from None
         if not isinstance(payload, dict):
             raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
-        if set(payload) - {"dataPoints", "nextPageToken"}:
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
+        points_payload: object = payload.get("dataPoints", [])
 
         try:
-            points_payload = payload.get("dataPoints")
             if not isinstance(points_payload, list) or len(points_payload) > page_size:
                 raise ValueError
             next_page_token = _parse_response_page_token(payload)
@@ -524,12 +522,12 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
 
 
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
-    if not isinstance(value, dict):
-        raise ValueError
-    if set(value) - {"name", "dataSource", "nutritionLog"} or "nutritionLog" not in value:
+    if not isinstance(value, dict) or "nutritionLog" not in value:
         raise ValueError
     name = value.get("name")
-    if name is not None and (not isinstance(name, str) or not _RESOURCE_NAME_RE.fullmatch(name)):
+    if name is not None and not isinstance(name, str):
+        raise ValueError
+    if isinstance(name, str) and name and not _RESOURCE_NAME_RE.fullmatch(name):
         raise ValueError
     data_source = value.get("dataSource")
     if data_source is not None:
@@ -537,70 +535,27 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
     nutrition_log = value["nutritionLog"]
     if not isinstance(nutrition_log, dict):
         raise ValueError
-    parsed_name = name if isinstance(name, str) else None
     return NutritionLogDataPoint(
-        name=parsed_name,
+        name=name if isinstance(name, str) else None,
         nutrition_log=_parse_nutrition_log(nutrition_log),
     )
 
 
-_RECORDING_METHODS = {
-    "RECORDING_METHOD_UNSPECIFIED",
-    "MANUAL",
-    "PASSIVELY_MEASURED",
-    "DERIVED",
-    "ACTIVELY_MEASURED",
-    "UNKNOWN",
-}
-_FORM_FACTORS = {
-    "FORM_FACTOR_UNSPECIFIED",
-    "FITNESS_BAND",
-    "WATCH",
-    "PHONE",
-    "RING",
-    "CHEST_STRAP",
-    "SCALE",
-    "TABLET",
-    "HEAD_MOUNTED",
-    "SMART_DISPLAY",
-}
-_PLATFORMS = {
-    "PLATFORM_UNSPECIFIED",
-    "FITBIT",
-    "HEALTH_CONNECT",
-    "HEALTH_KIT",
-    "FIT",
-    "GOOGLE_WEB_API",
-    "FITBIT_WEB_API",
-    "NEST",
-    "GOOGLE_PARTNER_INTEGRATION",
-}
-
-
 def _validate_data_source(value: object) -> None:
-    if not isinstance(value, dict) or set(value) - {
-        "recordingMethod",
-        "device",
-        "application",
-        "platform",
-    }:
+    if not isinstance(value, dict):
         raise ValueError
     recording_method = value.get("recordingMethod")
-    if recording_method is not None and recording_method not in _RECORDING_METHODS:
+    if recording_method is not None and not isinstance(recording_method, str):
         raise ValueError
     platform = value.get("platform")
-    if platform is not None and platform not in _PLATFORMS:
+    if platform is not None and not isinstance(platform, str):
         raise ValueError
     device = value.get("device")
     if device is not None:
-        if not isinstance(device, dict) or set(device) - {
-            "formFactor",
-            "manufacturer",
-            "displayName",
-        }:
+        if not isinstance(device, dict):
             raise ValueError
         form_factor = device.get("formFactor")
-        if form_factor is not None and form_factor not in _FORM_FACTORS:
+        if form_factor is not None and not isinstance(form_factor, str):
             raise ValueError
         for key in ("manufacturer", "displayName"):
             item = device.get(key)
@@ -608,31 +563,16 @@ def _validate_data_source(value: object) -> None:
                 raise ValueError
     application = value.get("application")
     if application is not None:
-        if not isinstance(application, dict) or set(application) - {
-            "packageName",
-            "webClientId",
-            "googleWebClientId",
-        }:
+        if not isinstance(application, dict):
             raise ValueError
-        for _key, item in application.items():
-            if not isinstance(item, str) or not item or len(item) > 512:
+        for key in ("packageName", "webClientId", "googleWebClientId"):
+            item = application.get(key)
+            if item is not None and (not isinstance(item, str) or not item or len(item) > 512):
                 raise ValueError
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
-    allowed = {
-        "interval",
-        "nutrients",
-        "energy",
-        "energyFromFat",
-        "totalCarbohydrate",
-        "totalFat",
-        "mealType",
-        "serving",
-        "food",
-        "foodDisplayName",
-    }
-    if set(value) - allowed or "interval" not in value:
+    if "interval" not in value:
         raise ValueError
     interval = value["interval"]
     if not isinstance(interval, dict):
@@ -685,20 +625,8 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
 
 
 def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
-    allowed = {
-        "startTime",
-        "endTime",
-        "startUtcOffset",
-        "endUtcOffset",
-        "civilStartTime",
-        "civilEndTime",
-    }
-    if set(value) - allowed or not {
-        "startTime",
-        "endTime",
-        "startUtcOffset",
-        "endUtcOffset",
-    } <= set(value):
+    required = {"startTime", "endTime", "startUtcOffset", "endUtcOffset"}
+    if not required <= set(value):
         raise ValueError
     start_precise = _parse_timestamp(value["startTime"])
     end_precise = _parse_timestamp(value["endTime"])
@@ -783,10 +711,10 @@ def _civil_key(value: _PreciseTime) -> int:
 
 
 def _parse_civil_datetime(value: object) -> _PreciseTime:
-    if not isinstance(value, dict) or set(value) - {"date", "time"} or "date" not in value:
+    if not isinstance(value, dict) or "date" not in value:
         raise ValueError
     date_value = value["date"]
-    if not isinstance(date_value, dict) or set(date_value) != {"year", "month", "day"}:
+    if not isinstance(date_value, dict) or not {"year", "month", "day"} <= set(date_value):
         raise ValueError
     date_parts = tuple(date_value.get(key) for key in ("year", "month", "day"))
     if any(isinstance(item, bool) or not isinstance(item, int) for item in date_parts):
@@ -795,12 +723,7 @@ def _parse_civil_datetime(value: object) -> _PreciseTime:
     if year < 1 or not 1 <= month <= 12 or not 1 <= day <= 31:
         raise ValueError
     time_value = value.get("time", {})
-    if not isinstance(time_value, dict) or set(time_value) - {
-        "hours",
-        "minutes",
-        "seconds",
-        "nanos",
-    }:
+    if not isinstance(time_value, dict):
         raise ValueError
     hours = time_value.get("hours", 0)
     minutes = time_value.get("minutes", 0)
@@ -831,11 +754,7 @@ def _parse_quantity(
     scalar_key: str,
     units: set[str],
 ) -> NutritionQuantity:
-    if (
-        not isinstance(value, dict)
-        or set(value) - {"userProvidedUnit", scalar_key}
-        or scalar_key not in value
-    ):
+    if not isinstance(value, dict) or scalar_key not in value:
         raise ValueError
     number = value[scalar_key]
     unit = value.get("userProvidedUnit")
@@ -855,7 +774,7 @@ def _parse_quantity(
 
 
 def _parse_nutrient(value: object) -> NutritionNutrient:
-    if not isinstance(value, dict) or set(value) != {"quantity", "nutrient"}:
+    if not isinstance(value, dict) or not {"quantity", "nutrient"} <= set(value):
         raise ValueError
     nutrient = value["nutrient"]
     if not isinstance(nutrient, str) or nutrient not in _NUTRIENTS:
@@ -867,13 +786,7 @@ def _parse_nutrient(value: object) -> NutritionNutrient:
 
 
 def _parse_serving(value: object) -> NutritionServing:
-    if not isinstance(value, dict) or set(value) - {
-        "foodMeasurementUnit",
-        "foodMeasurementUnitDisplayName",
-        "amount",
-    }:
-        raise ValueError
-    if not value:
+    if not isinstance(value, dict) or not value:
         raise ValueError
     unit = value.get("foodMeasurementUnit")
     display_name = value.get("foodMeasurementUnitDisplayName")

@@ -101,6 +101,67 @@ def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
     assert not hasattr(page, "payload")
 
 
+def test_empty_list_response_without_optional_data_points_is_valid() -> None:
+    nutrition_client, _ = client({})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points == ()
+    assert page.next_page_token is None
+
+
+def test_unused_page_fields_are_ignored() -> None:
+    nutrition_client, _ = client({"futurePageMetadata": {"version": 2}})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points == ()
+    assert page.next_page_token is None
+
+
+def test_future_data_source_values_and_fields_are_ignored() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-1", 1)
+    value["dataSource"] = {
+        "platform": "FUTURE_PLATFORM",
+        "futureSourceField": {"enabled": True},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert len(page.data_points) == 1
+
+
+def test_future_interval_fields_are_ignored() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-2", 1)
+    nutrition_interval = value["nutritionLog"]["interval"]
+    assert isinstance(nutrition_interval, dict)
+    nutrition_interval["futureIntervalField"] = {"enabled": True}
+    civil_start = nutrition_interval["civilStartTime"]
+    assert isinstance(civil_start, dict)
+    civil_start["futureCivilField"] = "ignored"
+    civil_date = civil_start["date"]
+    assert isinstance(civil_date, dict)
+    civil_date["futureDateField"] = 1
+    civil_time = civil_start["time"]
+    assert isinstance(civil_time, dict)
+    civil_time["futureTimeField"] = 1
+
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert len(page.data_points) == 1
+
+
+def test_empty_data_point_name_is_valid() -> None:
+    nutrition_client, _ = client({"dataPoints": [point("", 1)]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].name == ""
+
+
 @pytest.mark.parametrize("page_size", [0, -1, 101])
 def test_page_size_is_bounded(page_size: int) -> None:
     nutrition_client, _ = client({"dataPoints": []}, max_page_size=100)
@@ -187,14 +248,6 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
                     "nutritionLog": {
                         "interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}
                     },
-                }
-            ]
-        },
-        {
-            "dataPoints": [
-                {
-                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
-                    "nutritionLog": {"interval": interval(1), "unexpected": True},
                 }
             ]
         },
@@ -335,7 +388,7 @@ def test_year_one_negative_offset_underflow_is_rejected() -> None:
         lambda item: item.update(
             {
                 "dataSource": {
-                    "device": {"unknown": "value"},
+                    "device": {"formFactor": 1},
                 }
             }
         ),
