@@ -1,12 +1,12 @@
 from __future__ import annotations
-
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from typing import Any, Protocol
 
 from fastapi import Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import _revalidate_locked_session
@@ -41,6 +41,7 @@ from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.user_operation_lock import exclusive_user_lifecycle_operation
 
 FLOW_TTL = timedelta(minutes=10)
+MAX_REFRESH_TOKEN_EXPIRES_IN = 10 * 365 * 24 * 60 * 60
 
 
 class OAuthAdapter(Protocol):
@@ -84,8 +85,6 @@ class _GoogleOAuthAdapter:
         granted_scopes = getattr(credentials, "granted_scopes", None)
         if granted_scopes is None and isinstance(token_response, Mapping):
             granted_scopes = token_response.get("granted_scopes", token_response.get("scope"))
-        if granted_scopes is None:
-            granted_scopes = (GOOGLE_HEALTH_SCOPE,)
         result: dict[str, Any] = {
             "refresh_token": credentials.refresh_token,
             "access_token": credentials.token,
@@ -196,6 +195,14 @@ def start_google_health_oauth(
     _rate_limit_start(db, user, client_ip)
     operation = exclusive_user_lifecycle_operation(db, user.id) if lock else nullcontext()
     with operation:
+        db.execute(
+            delete(GoogleHealthOAuthFlow)
+            .where(
+                GoogleHealthOAuthFlow.user_id == user.id,
+                GoogleHealthOAuthFlow.expires_at < timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
         connection = db.scalar(
             select(GoogleHealthConnection)
             .where(GoogleHealthConnection.user_id == user.id)
@@ -249,6 +256,27 @@ def _token_value(payload: Mapping[str, Any], *keys: str) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _refresh_token_expiry(
+    payload: Mapping[str, Any], timestamp: datetime
+) -> datetime | None:
+    value = _token_value(payload, "refresh_token_expires_in")
+    if value is None:
+        explicit = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
+        return explicit if isinstance(explicit, datetime) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("invalid refresh token expiry")
+    try:
+        seconds = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError("invalid refresh token expiry") from None
+    if not isfinite(seconds) or seconds < 0 or seconds > MAX_REFRESH_TOKEN_EXPIRES_IN:
+        raise ValueError("invalid refresh token expiry")
+    try:
+        return timestamp + timedelta(seconds=seconds)
+    except (OverflowError, ValueError):
+        raise ValueError("invalid refresh token expiry") from None
 
 
 def _error_code(exc: BaseException) -> str:
@@ -403,6 +431,12 @@ def complete_google_health_oauth(
                 if connection
                 else _status_for_error("scope_missing")
             )
+        try:
+            refresh_expires_at = _refresh_token_expiry(payload, timestamp)
+        except ValueError:
+            _record_failure(db, user, timestamp, "invalid_response")
+            db.commit()
+            raise GoogleHealthTokenExchangeError("invalid_response") from None
         refresh_token = _token_value(payload, "refresh_token", "refreshToken")
         if not isinstance(refresh_token, str) or not refresh_token:
             connection = _record_failure(db, user, timestamp, "reauth_required")
@@ -439,16 +473,7 @@ def complete_google_health_oauth(
         connection.last_attempt_at = timestamp
         connection.last_success_at = timestamp
         connection.last_error = None
-        refresh_expiry = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
-        refresh_expires_in = _token_value(payload, "refresh_token_expires_in")
-        if isinstance(refresh_expires_in, (int, float)) and not isinstance(
-            refresh_expires_in, bool
-        ):
-            connection.refresh_token_expires_at = timestamp + timedelta(seconds=refresh_expires_in)
-        elif isinstance(refresh_expiry, datetime):
-            connection.refresh_token_expires_at = refresh_expiry
-        else:
-            connection.refresh_token_expires_at = None
+        connection.refresh_token_expires_at = refresh_expires_at
         db.commit()
     log_security_event(
         "integration.google_health.oauth_completed",

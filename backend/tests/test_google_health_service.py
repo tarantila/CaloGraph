@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.google_health import service as google_health_service
 from app.google_health.constants import GOOGLE_HEALTH_SCOPE
+from app.google_health.errors import GoogleHealthTokenExchangeError
 from app.google_health.oauth import hash_oauth_state
 from app.google_health.service import (
     GoogleHealthOAuthError,
@@ -239,3 +240,58 @@ def test_provider_error_categories_are_fixed(message, status, expected):
         status_code = status
 
     assert google_health_service._error_code(ProviderError(message)) == expected
+
+
+def test_provider_response_without_scope_cannot_activate(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    start_url = start_google_health_oauth(db, user, now=now)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+
+    result = complete_google_health_oauth(
+        db,
+        user,
+        state=state,
+        code="code",
+        error=None,
+        now=now,
+        oauth_adapter=TokenAdapter({"refresh_token": "secret"}),
+    )
+    assert result.state == "scope_missing"
+    assert db.scalar(select(GoogleHealthConnection)) is None
+
+
+@pytest.mark.parametrize("expires_in", [float("nan"), float("inf"), -1, 10**30, "3600"])
+def test_malformed_refresh_expiry_is_safe_error(db, user: User, monkeypatch, expires_in):
+    _configure(monkeypatch)
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    start_url = start_google_health_oauth(db, user, now=now)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+
+    with pytest.raises(GoogleHealthTokenExchangeError, match="invalid_response"):
+        complete_google_health_oauth(
+            db,
+            user,
+            state=state,
+            code="code",
+            error=None,
+            now=now,
+            oauth_adapter=TokenAdapter(
+                {
+                    "refresh_token": "secret",
+                    "scope": GOOGLE_HEALTH_SCOPE,
+                    "refresh_token_expires_in": expires_in,
+                }
+            ),
+        )
+
+
+def test_start_purges_expired_flow_rows(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    start_google_health_oauth(db, user, now=now - timedelta(minutes=11))
+    start_google_health_oauth(db, user, now=now)
+
+    flows = list(db.scalars(select(GoogleHealthOAuthFlow)))
+    assert len(flows) == 1
+    assert flows[0].expires_at.replace(tzinfo=UTC) > now
