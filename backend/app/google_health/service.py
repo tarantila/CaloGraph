@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
@@ -258,9 +259,7 @@ def _token_value(payload: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _refresh_token_expiry(
-    payload: Mapping[str, Any], timestamp: datetime
-) -> datetime | None:
+def _refresh_token_expiry(payload: Mapping[str, Any], timestamp: datetime) -> datetime | None:
     value = _token_value(payload, "refresh_token_expires_in")
     if value is None:
         explicit = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
@@ -269,13 +268,13 @@ def _refresh_token_expiry(
         raise ValueError("invalid refresh token expiry")
     try:
         seconds = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         raise ValueError("invalid refresh token expiry") from None
     if not isfinite(seconds) or seconds < 0 or seconds > MAX_REFRESH_TOKEN_EXPIRES_IN:
         raise ValueError("invalid refresh token expiry")
     try:
         return timestamp + timedelta(seconds=seconds)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         raise ValueError("invalid refresh token expiry") from None
 
 
