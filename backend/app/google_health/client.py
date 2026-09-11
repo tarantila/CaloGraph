@@ -438,7 +438,7 @@ _NUTRIENTS = {
     "CHOLESTEROL",
     "CHROMIUM",
     "COPPER",
-    "DIETARY_FIBER",
+    "FOLATE",
     "FOLIC_ACID",
     "IODINE",
     "IRON",
@@ -482,7 +482,7 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
 
 
 _RESOURCE_NAME_RE = re.compile(
-    r"^users/[A-Za-z0-9._~-]+/dataTypes/nutrition-log/dataPoints/[a-z0-9-]{4,63}$"
+    r"^users/[A-Za-z0-9-]{1,63}/dataTypes/nutrition-log/dataPoints/[a-z0-9-]{4,63}$"
 )
 
 
@@ -528,7 +528,17 @@ _FORM_FACTORS = {
     "HEAD_MOUNTED",
     "SMART_DISPLAY",
 }
-_PLATFORMS = {"PLATFORM_UNSPECIFIED", "FITBIT", "HEALTH_CONNECT", "HEALTH_KIT", "FIT"}
+_PLATFORMS = {
+    "PLATFORM_UNSPECIFIED",
+    "FITBIT",
+    "HEALTH_CONNECT",
+    "HEALTH_KIT",
+    "FIT",
+    "GOOGLE_WEB_API",
+    "FITBIT_WEB_API",
+    "NEST",
+    "GOOGLE_PARTNER_INTEGRATION",
+}
 
 
 def _validate_data_source(value: object) -> None:

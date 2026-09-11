@@ -74,14 +74,26 @@ def client(payload: object, *, max_page_size: int = 100) -> tuple[GoogleHealthCl
 
 
 def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
-    nutrition_client, _ = client({"dataPoints": [point("users/u/dataTypes/nutrition-log/dataPoints/point-1", 1)], "nextPageToken": "next"})
+    value = point(
+        "users/user-id-42/dataTypes/nutrition-log/dataPoints/point-1",
+        1,
+    )
+    value["dataSource"] = {"platform": "GOOGLE_WEB_API"}
+    value["nutritionLog"]["nutrients"] = [
+        {
+            "nutrient": "FOLATE",
+            "quantity": {"grams": 1, "userProvidedUnit": "GRAM"},
+        }
+    ]
+    nutrition_client, _ = client({"dataPoints": [value], "nextPageToken": "next"})
 
     page = nutrition_client.get_nutrition_log_page(page_size=10)
 
     assert isinstance(page, NutritionLogPage)
     assert isinstance(page.data_points[0], NutritionLogDataPoint)
-    assert page.data_points[0].name == "users/u/dataTypes/nutrition-log/dataPoints/point-1"
+    assert page.data_points[0].name == "users/user-id-42/dataTypes/nutrition-log/dataPoints/point-1"
     assert page.data_points[0].nutrition_log.food_display_name == "Breakfast"
+    assert page.data_points[0].nutrition_log.nutrients[0].nutrient == "FOLATE"
     assert page.data_points[0].nutrition_log.interval.civil_start_time == datetime(2026, 1, 1, 8)
     assert page.next_page_token == "next"
     assert page.page_size == 10
