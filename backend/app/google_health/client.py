@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 import json
 import math
 import re
@@ -75,6 +75,10 @@ class NutritionLog:
 class NutritionLogDataPoint:
     name: str | None
     nutrition_log: NutritionLog
+@dataclass(frozen=True, slots=True)
+class _PreciseTime:
+    value: datetime
+    nanos: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +200,7 @@ class GoogleHealthHTTPTransport:
         _validate_page_token(page_token)
         _validate_time_bounds(start_time, end_time)
         _validate_civil_bounds(civil_start_time, civil_end_time)
+        _validate_bound_modes(start_time, end_time, civil_start_time, civil_end_time)
         if not access_token or any(ord(char) < 0x20 for char in access_token):
             raise GoogleHealthAuthenticationError("Google Health credentials are unavailable")
 
@@ -267,6 +272,7 @@ class GoogleHealthClient:
         _validate_page_size(page_size, maximum=self._max_page_size)
         _validate_page_token(page_token)
         _validate_time_bounds(start_time, end_time)
+        _validate_bound_modes(start_time, end_time, civil_start_time, civil_end_time)
         _validate_civil_bounds(civil_start_time, civil_end_time)
         access_token = self._access_token()
         try:
@@ -393,10 +399,10 @@ class GoogleHealthClient:
         )
 
 
-_DURATION_RE = re.compile(r"^-?\d+(?:\.\d+)?s$")
 _TIMESTAMP_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$"
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$"
 )
+_DURATION_RE = re.compile(r"^(-?)(\d+)(?:\.(\d{1,9}))?s$")
 _MEAL_TYPES = {
     "MEAL_TYPE_UNSPECIFIED",
     "BEFORE_BREAKFAST",
@@ -472,6 +478,14 @@ _NUTRIENTS = {
 }
 
 
+_RESOURCE_NAME_RE = re.compile(
+    r"^users/[A-Za-z0-9-]{1,63}/dataTypes/nutrition-log/dataPoints/[a-z0-9-]{4,63}$"
+)
+_FOOD_RESOURCE_NAME_RE = re.compile(
+    r"^users/[A-Za-z0-9-]{1,63}/dataTypes/food/dataPoints/[a-z0-9-]{4,63}$"
+)
+
+
 def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
     if "nextPageToken" not in payload:
         return None
@@ -480,12 +494,6 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
         return None
     _validate_page_token(token)
     return cast(str, token)
-
-
-_RESOURCE_NAME_RE = re.compile(
-    r"^users/[A-Za-z0-9-]{1,63}/dataTypes/nutrition-log/dataPoints/[a-z0-9-]{4,63}$"
-)
-
 
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict):
@@ -607,7 +615,9 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
         raise ValueError
     food = value.get("food")
     food_display_name = value.get("foodDisplayName")
-    if food is not None and (not isinstance(food, str) or not food):
+    if food is not None and (
+        not isinstance(food, str) or not _FOOD_RESOURCE_NAME_RE.fullmatch(food)
+    ):
         raise ValueError
     if food_display_name is not None and (
         not isinstance(food_display_name, str) or not food_display_name
@@ -650,10 +660,12 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
     }
     if set(value) - allowed or not {"startTime", "endTime", "startUtcOffset", "endUtcOffset"} <= set(value):
         raise ValueError
-    start_time = _parse_timestamp(value["startTime"])
-    end_time = _parse_timestamp(value["endTime"])
-    if start_time >= end_time:
+    start_precise = _parse_timestamp(value["startTime"])
+    end_precise = _parse_timestamp(value["endTime"])
+    if _physical_key(start_precise) >= _physical_key(end_precise):
         raise ValueError
+    start_time = start_precise.value
+    end_time = end_precise.value
     start_offset_text = value["startUtcOffset"]
     end_offset_text = value["endUtcOffset"]
     start_offset = _parse_duration(start_offset_text)
@@ -662,46 +674,71 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
         _parse_civil_datetime(value["civilStartTime"]) if "civilStartTime" in value else None
     )
     civil_end = _parse_civil_datetime(value["civilEndTime"]) if "civilEndTime" in value else None
-    if civil_start is not None and civil_start != _civil_from_physical(start_time, start_offset):
+    if civil_start is not None and _civil_key(civil_start) != _physical_key(start_precise) + start_offset:
         raise ValueError
-    if civil_end is not None and civil_end != _civil_from_physical(end_time, end_offset):
-        raise ValueError
-    if civil_start is not None and civil_end is not None and civil_start > civil_end:
+    if civil_end is not None and _civil_key(civil_end) != _physical_key(end_precise) + end_offset:
         raise ValueError
     return NutritionLogInterval(
         start_time=start_time,
         end_time=end_time,
         start_utc_offset=cast(str, start_offset_text),
         end_utc_offset=cast(str, end_offset_text),
-        civil_start_time=civil_start,
-        civil_end_time=civil_end,
+        civil_start_time=civil_start.value if civil_start is not None else None,
+        civil_end_time=civil_end.value if civil_end is not None else None,
     )
-def _parse_duration(value: object) -> timedelta:
-    if not isinstance(value, str) or not _DURATION_RE.fullmatch(value):
+def _parse_duration(value: object) -> int:
+    if not isinstance(value, str):
         raise ValueError
-    seconds = float(value[:-1])
-    if not math.isfinite(seconds) or abs(seconds) > 86_400:
+    match = _DURATION_RE.fullmatch(value)
+    if match is None:
         raise ValueError
-    return timedelta(seconds=seconds)
-
-
-def _civil_from_physical(value: datetime, offset: timedelta) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None) + offset
-
-
-def _parse_timestamp(value: object) -> datetime:
-    if not isinstance(value, str) or not _TIMESTAMP_RE.fullmatch(value):
+    sign, whole, fraction = match.groups()
+    nanos = int(whole) * 1_000_000_000
+    if fraction:
+        nanos += int(fraction.ljust(9, "0"))
+    if sign:
+        nanos = -nanos
+    if abs(nanos) > 86_400 * 1_000_000_000:
         raise ValueError
+    return nanos
+
+
+def _parse_timestamp(value: object) -> _PreciseTime:
+    if not isinstance(value, str):
+        raise ValueError
+    match = _TIMESTAMP_RE.fullmatch(value)
+    if match is None:
+        raise ValueError
+    fraction = match.group(1) or ""
+    nanos = int(fraction.ljust(9, "0")) if fraction else 0
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise ValueError from None
     if parsed.tzinfo is None:
         raise ValueError
-    return parsed
+    return _PreciseTime(parsed.replace(microsecond=nanos // 1000), nanos)
 
 
-def _parse_civil_datetime(value: object) -> datetime:
+def _physical_key(value: _PreciseTime) -> int:
+    utc = value.value.astimezone(timezone.utc).replace(microsecond=0, tzinfo=None)
+    return (
+        ((utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second)
+        * 1_000_000_000
+        + value.nanos
+    )
+
+
+def _civil_key(value: _PreciseTime) -> int:
+    civil = value.value.replace(tzinfo=None, microsecond=0)
+    return (
+        ((civil.toordinal() - 1) * 86_400 + civil.hour * 3_600 + civil.minute * 60 + civil.second)
+        * 1_000_000_000
+        + value.nanos
+    )
+
+
+def _parse_civil_datetime(value: object) -> _PreciseTime:
     if not isinstance(value, dict) or set(value) - {"date", "time"} or "date" not in value:
         raise ValueError
     date_value = value["date"]
@@ -728,7 +765,7 @@ def _parse_civil_datetime(value: object) -> datetime:
     if not 0 <= hours <= 23 or not 0 <= minutes <= 59 or not 0 <= seconds <= 59 or not 0 <= nanos <= 999_999_999:
         raise ValueError
     try:
-        return datetime(year, month, day, hours, minutes, seconds, nanos // 1000)
+        return _PreciseTime(datetime(year, month, day, hours, minutes, seconds, nanos // 1000), nanos)
     except ValueError:
         raise ValueError from None
 
@@ -746,11 +783,19 @@ def _parse_quantity(
         raise ValueError
     number = value[scalar_key]
     unit = value.get("userProvidedUnit")
-    if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+    try:
+        number_value = float(number)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError from None
+    if (
+        isinstance(number, bool)
+        or not isinstance(number, (int, float))
+        or not math.isfinite(number_value)
+    ):
         raise ValueError
     if unit is not None and (not isinstance(unit, str) or unit not in units):
         raise ValueError
-    return NutritionQuantity(value=float(number), unit=unit)
+    return NutritionQuantity(value=number_value, unit=unit)
 
 
 def _parse_nutrient(value: object) -> NutritionNutrient:
@@ -779,14 +824,18 @@ def _parse_serving(value: object) -> NutritionServing:
         raise ValueError
     if display_name is not None and (not isinstance(display_name, str) or not display_name):
         raise ValueError
-    if amount is not None and (
-        isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount)
-    ):
-        raise ValueError
+    amount_value: float | None = None
+    if amount is not None:
+        try:
+            amount_value = float(amount)
+        except (OverflowError, TypeError, ValueError):
+            raise ValueError from None
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount_value):
+            raise ValueError
     return NutritionServing(
         food_measurement_unit=unit,
         food_measurement_unit_display_name=display_name,
-        amount=float(amount) if amount is not None else None,
+        amount=amount_value,
     )
 
 
@@ -855,6 +904,18 @@ def _validate_time_bounds(start_time: datetime | None, end_time: datetime | None
         raise ValueError("start_time must not be after end_time")
 
 
+def _validate_bound_modes(
+    start_time: datetime | None,
+    end_time: datetime | None,
+    civil_start: date | datetime | None,
+    civil_end: date | datetime | None,
+) -> None:
+    if (start_time is not None or end_time is not None) and (
+        civil_start is not None or civil_end is not None
+    ):
+        raise ValueError("physical and civil time bounds cannot be mixed")
+
+
 def _validate_civil_bounds(
     start: date | datetime | None,
     end: date | datetime | None,
@@ -863,8 +924,6 @@ def _validate_civil_bounds(
         _civil_boundary(start)
     if end is not None:
         _civil_boundary(end)
-    if start is not None and end is not None and _civil_boundary(start) > _civil_boundary(end):
-        raise ValueError("civil_start_time must not be after civil_end_time")
 
 def _retry_after(headers: Mapping[str, str]) -> int:
     try:

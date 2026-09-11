@@ -163,7 +163,7 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
         {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "startTime": "nope"}}}]},
         {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}}}]},
         {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "unexpected": True}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "mealType": "BRUNCH"}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "mealType": "UNKNOWN_MEAL"}}]},
         {"dataPoints": "not-a-list"},
     ],
 )
@@ -174,15 +174,25 @@ def test_malformed_provider_shapes_are_rejected(payload: object) -> None:
         nutrition_client.get_nutrition_log_page(page_size=10)
 
 
-def test_civil_bounds_require_ordered_supported_values() -> None:
-    nutrition_client, _ = client({"dataPoints": []})
+def test_civil_time_can_reverse_during_timezone_fall_back() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/fallback-1", 1)
+    cast_interval = value["nutritionLog"]["interval"]
+    assert isinstance(cast_interval, dict)
+    cast_interval["startUtcOffset"] = "7200s"
+    cast_interval["endTime"] = "2026-01-01T09:00:00Z"
+    cast_interval["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"hours": 10, "minutes": 0, "seconds": 0, "nanos": 0},
+    }
+    cast_interval["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"hours": 9, "minutes": 0, "seconds": 0, "nanos": 0},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
 
-    with pytest.raises(ValueError):
-        nutrition_client.get_nutrition_log_page(
-            page_size=1,
-            civil_start_time=date(2026, 1, 3),
-            civil_end_time=date(2026, 1, 2),
-        )
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert len(page.data_points) == 1
 
 
 def test_civil_datetime_filter_preserves_subsecond_precision() -> None:
@@ -192,6 +202,60 @@ def test_civil_datetime_filter_preserves_subsecond_precision() -> None:
     nutrition_client.get_nutrition_log_page(page_size=1, civil_start_time=bound)
 
     assert transport.calls[0]["civil_start_time"] == bound
+
+
+def test_submicrosecond_timestamps_and_offsets_are_validated_exactly() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/nanos-1", 1)
+    cast_interval = value["nutritionLog"]["interval"]
+    assert isinstance(cast_interval, dict)
+    cast_interval["startTime"] = "2026-01-01T08:00:00.000000001Z"
+    cast_interval["endTime"] = "2026-01-01T08:00:00.000000002Z"
+    cast_interval["startUtcOffset"] = "0.000000001s"
+    cast_interval["endUtcOffset"] = "0.000000001s"
+    cast_interval["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"hours": 8, "minutes": 0, "seconds": 0, "nanos": 2},
+    }
+    cast_interval["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"hours": 8, "minutes": 0, "seconds": 0, "nanos": 3},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+    assert page.data_points[0].nutrition_log.interval.start_time.microsecond == 0
+
+
+def test_invalid_food_resource_name_is_rejected() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/food-1", 1)
+    value["nutritionLog"]["food"] = "arbitrary-food"
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize("field", ["energy", "totalFat"])
+def test_oversized_quantity_integer_is_rejected(field: str) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/huge-1", 1)
+    scalar = "kcal" if field == "energy" else "grams"
+    value["nutritionLog"][field] = {scalar: 10**400}
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+def test_physical_and_civil_bounds_cannot_be_mixed() -> None:
+    nutrition_client, _ = client({"dataPoints": []})
+
+    with pytest.raises(ValueError):
+        nutrition_client.get_nutrition_log_page(
+            page_size=1,
+            start_time=datetime(2026, 1, 1, tzinfo=__import__("datetime").UTC),
+            civil_start_time=date(2026, 1, 1),
+        )
+
 
 
 @pytest.mark.parametrize(
