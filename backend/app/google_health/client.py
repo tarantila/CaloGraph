@@ -622,13 +622,9 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
     nutrients = tuple(_parse_nutrient(item) for item in nutrients_value)
     meal_type = _optional_bounded_string(value.get("mealType"))
     food = value.get("food")
-    food_display_name = value.get("foodDisplayName")
+    food_display_name = _optional_bounded_string(value.get("foodDisplayName"))
     if food is not None and (
         not isinstance(food, str) or not _FOOD_RESOURCE_NAME_RE.fullmatch(food)
-    ):
-        raise ValueError
-    if food_display_name is not None and (
-        not isinstance(food_display_name, str) or not food_display_name
     ):
         raise ValueError
     serving_value = value.get("serving")
@@ -827,13 +823,9 @@ def _parse_nutrient(value: object) -> NutritionNutrient:
 def _parse_serving(value: object) -> NutritionServing:
     if not isinstance(value, dict) or not value:
         raise ValueError
-    unit = value.get("foodMeasurementUnit")
-    display_name = value.get("foodMeasurementUnitDisplayName")
+    unit = _optional_bounded_string(value.get("foodMeasurementUnit"))
+    display_name = _optional_bounded_string(value.get("foodMeasurementUnitDisplayName"))
     amount = value.get("amount")
-    if unit is not None and (not isinstance(unit, str) or not unit):
-        raise ValueError
-    if display_name is not None and (not isinstance(display_name, str) or not display_name):
-        raise ValueError
     amount_value: float | None = None
     if amount is not None:
         try:
