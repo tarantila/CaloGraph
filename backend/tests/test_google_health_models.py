@@ -17,10 +17,7 @@ def test_google_health_models_have_only_encrypted_connection_and_flow_fields() -
 
     assert connection.name == "google_health_connections"
     assert flow.name == "google_health_oauth_flows"
-    assert {
-        column.name
-        for column in connection.columns
-    } == {
+    assert {column.name for column in connection.columns} == {
         "id",
         "user_id",
         "encrypted_refresh_token",
@@ -33,10 +30,7 @@ def test_google_health_models_have_only_encrypted_connection_and_flow_fields() -
         "created_at",
         "updated_at",
     }
-    assert {
-        column.name
-        for column in flow.columns
-    } == {
+    assert {column.name for column in flow.columns} == {
         "id",
         "user_id",
         "state_hash",
@@ -84,10 +78,7 @@ def test_google_health_connection_contract_is_encrypted_and_one_per_user() -> No
         and "reauth_required" in str(constraint.sqltext)
         for constraint in table.constraints
     )
-    assert any(
-        index.name == "ix_google_health_connections_user_id"
-        for index in table.indexes
-    )
+    assert any(index.name == "ix_google_health_connections_user_id" for index in table.indexes)
 
 
 def test_google_health_flow_contract_has_expiry_consumption_and_state_hash_index() -> None:
@@ -131,8 +122,14 @@ def test_google_health_models_persist_defaults_and_relationships(db, user: User)
     assert connection.updated_at is not None
     assert flow.created_at is not None
     assert flow.consumed_at is None
-    assert db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id)) is connection
-    assert db.scalar(select(GoogleHealthOAuthFlow).where(GoogleHealthOAuthFlow.state_hash == "a" * 64)) is flow
+    assert (
+        db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+        is connection
+    )
+    assert (
+        db.scalar(select(GoogleHealthOAuthFlow).where(GoogleHealthOAuthFlow.state_hash == "a" * 64))
+        is flow
+    )
     assert user.google_health_connection is connection
     assert flow in user.google_health_oauth_flows
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import traceback
 from datetime import UTC, datetime
+from typing import ClassVar
 
 import pytest
 
 from app.google_health.client import (
-    GOOGLE_HEALTH_API_BASE_URL,
     GOOGLE_HEALTH_MAX_RESPONSE_BYTES,
     GoogleHealthAuthenticationError,
     GoogleHealthClient,
@@ -18,7 +18,6 @@ from app.google_health.client import (
     GoogleHealthScopeError,
     GoogleHealthTransientError,
 )
-
 
 
 class FakeCredentials:
@@ -41,9 +40,6 @@ class FakeResponse:
 
     def iter_bytes(self):
         yield json.dumps(self._payload).encode()
-
-
- 
 
 
 class StreamContext:
@@ -79,7 +75,9 @@ class FailingCredentials:
 
 def test_client_suppresses_refresh_failure_cause() -> None:
     with pytest.raises(GoogleHealthAuthenticationError) as raised:
-        GoogleHealthClient(FakeTransport(), FailingCredentials()).get_nutrition_log_page(page_size=10)
+        GoogleHealthClient(FakeTransport(), FailingCredentials()).get_nutrition_log_page(
+            page_size=10
+        )
     assert raised.value.__cause__ is None
     assert "refresh-secret" not in "".join(traceback.format_exception(raised.value))
 
@@ -155,7 +153,9 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
             return StreamContext(FakeResponse())
 
     http_client = RecordingHTTPClient()
-    transport = GoogleHealthHTTPTransport(http_client=http_client, connect_timeout=2.0, read_timeout=7.0)
+    transport = GoogleHealthHTTPTransport(
+        http_client=http_client, connect_timeout=2.0, read_timeout=7.0
+    )
     start = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     end = datetime(2026, 1, 3, 3, 4, 5, tzinfo=UTC)
 
@@ -184,7 +184,7 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
 def test_transport_caps_chunked_response_before_json_buffering() -> None:
     class OversizedResponse:
         status_code = 200
-        headers = {"content-length": "1"}
+        headers: ClassVar[dict[str, str]] = {"content-length": "1"}
 
         def iter_bytes(self):
             yield b"x" * GOOGLE_HEALTH_MAX_RESPONSE_BYTES
@@ -240,7 +240,9 @@ def test_client_validates_page_token_and_time_boundaries() -> None:
         (418, GoogleHealthInvalidResponseError),
     ],
 )
-def test_client_maps_provider_status_without_response_leakage(status: int, error_type: type[Exception]) -> None:
+def test_client_maps_provider_status_without_response_leakage(
+    status: int, error_type: type[Exception]
+) -> None:
     response = FakeResponse(status)
     with pytest.raises(error_type) as raised:
         GoogleHealthClient(FakeTransport(response), FakeCredentials()).get_nutrition_log_page(
@@ -259,7 +261,9 @@ def test_client_maps_transport_failure_without_provider_cause() -> None:
             raise RuntimeError("provider-secret-body")
 
     with pytest.raises(GoogleHealthTransientError) as raised:
-        GoogleHealthClient(FailingTransport(), FakeCredentials()).get_nutrition_log_page(page_size=10)
+        GoogleHealthClient(FailingTransport(), FakeCredentials()).get_nutrition_log_page(
+            page_size=10
+        )
     assert raised.value.__cause__ is None
     assert "provider-secret-body" not in "".join(traceback.format_exception(raised.value))
 

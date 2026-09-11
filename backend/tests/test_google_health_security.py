@@ -7,8 +7,9 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_SCOPE
-from app.models import GoogleHealthOAuthFlow, User
+from app.google_health.errors import GoogleHealthOAuthError
 from app.google_health.service import complete_google_health_oauth, start_google_health_oauth
+from app.models import GoogleHealthOAuthFlow, User
 
 
 class _Adapter:
@@ -43,14 +44,14 @@ def test_callback_consumes_state_once_and_cross_user_cannot_use_it(db, user: Use
     url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(url).query)["state"][0]
 
-    with pytest.raises(Exception):
+    with pytest.raises(GoogleHealthOAuthError):
         complete_google_health_oauth(
             db, second, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()
         )
     complete_google_health_oauth(
         db, user, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()
     )
-    with pytest.raises(Exception):
+    with pytest.raises(GoogleHealthOAuthError):
         complete_google_health_oauth(
             db, user, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()
         )

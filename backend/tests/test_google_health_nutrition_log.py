@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import ClassVar
 
 import pytest
 
@@ -20,7 +21,7 @@ class Credentials:
 
 class Response:
     status_code = 200
-    headers = {"content-type": "application/json"}
+    headers: ClassVar[dict[str, str]] = {"content-type": "application/json"}
 
     def __init__(self, payload: object) -> None:
         self.payload = payload
@@ -158,12 +159,53 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "hydrationLog": {"interval": interval(1)}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "startTime": "nope"}}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "unexpected": True}}]},
-        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "mealType": "UNKNOWN_MEAL"}}]},
+        {
+            "dataPoints": [
+                {
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
+                    "hydrationLog": {"interval": interval(1)},
+                }
+            ]
+        },
+        {
+            "dataPoints": [
+                {"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {}}
+            ]
+        },
+        {
+            "dataPoints": [
+                {
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
+                    "nutritionLog": {"interval": {**interval(1), "startTime": "nope"}},
+                }
+            ]
+        },
+        {
+            "dataPoints": [
+                {
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
+                    "nutritionLog": {
+                        "interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}
+                    },
+                }
+            ]
+        },
+        {
+            "dataPoints": [
+                {
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
+                    "nutritionLog": {"interval": interval(1), "unexpected": True},
+                }
+            ]
+        },
+        {
+            "dataPoints": [
+                {
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
+                    "nutritionLog": {"interval": interval(1), "mealType": "UNKNOWN_MEAL"},
+                }
+            ]
+        },
         {"dataPoints": "not-a-list"},
     ],
 )
@@ -284,7 +326,6 @@ def test_year_one_negative_offset_underflow_is_rejected() -> None:
 
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
-
 
 
 @pytest.mark.parametrize(

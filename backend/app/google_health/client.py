@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from contextlib import AbstractContextManager
-from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
 import json
 import math
 import re
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time
 from typing import Protocol, cast
 
 import httpx
@@ -75,6 +75,8 @@ class NutritionLog:
 class NutritionLogDataPoint:
     name: str | None
     nutrition_log: NutritionLog
+
+
 @dataclass(frozen=True, slots=True)
 class _PreciseTime:
     value: datetime
@@ -115,6 +117,7 @@ class NutritionLogPage:
             civil_start_time=self.civil_start_time,
             civil_end_time=self.civil_end_time,
         )
+
 
 class GoogleHealthResponse(Protocol):
     status_code: int
@@ -160,6 +163,7 @@ class _HTTPClient(Protocol):
     ) -> AbstractContextManager[GoogleHealthStreamResponse]: ...
 
     def close(self) -> None: ...
+
 
 class GoogleHealthHTTPTransport:
     """A deliberately narrow, fixed-host GET transport for Nutrition Log."""
@@ -233,12 +237,18 @@ class GoogleHealthHTTPTransport:
         ) as response:
             body = bytearray()
             for chunk in response.iter_bytes():
-                if not isinstance(chunk, bytes) or len(body) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
+                if (
+                    not isinstance(chunk, bytes)
+                    or len(body) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES
+                ):
                     raise GoogleHealthInvalidResponseError(
                         "Google Health response is too large or invalid"
                     ) from None
                 body.extend(chunk)
-            return _BufferedResponse(response.status_code, dict(response.headers), bytes(body))
+            return cast(
+                GoogleHealthResponse,
+                _BufferedResponse(response.status_code, dict(response.headers), bytes(body)),
+            )
 
     def close(self) -> None:
         self._http_client.close()
@@ -320,7 +330,9 @@ class GoogleHealthClient:
         if needs_refresh:
             refresh = getattr(credentials, "refresh", None)
             if not callable(refresh):
-                raise GoogleHealthAuthenticationError("Google Health credentials require reauthentication")
+                raise GoogleHealthAuthenticationError(
+                    "Google Health credentials require reauthentication"
+                )
             try:
                 from google.auth.transport.requests import Request
 
@@ -331,7 +343,9 @@ class GoogleHealthClient:
                 ) from None
             token = getattr(credentials, "token", None)
         if not isinstance(token, str) or not token or any(ord(char) < 0x20 for char in token):
-            raise GoogleHealthAuthenticationError("Google Health credentials require reauthentication")
+            raise GoogleHealthAuthenticationError(
+                "Google Health credentials require reauthentication"
+            )
         return token
 
     @staticmethod
@@ -347,11 +361,15 @@ class GoogleHealthClient:
     ) -> NutritionLogPage:
         try:
             status_code = int(response.status_code)
-        except (AttributeError, TypeError, ValueError):
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response") from None
+        except AttributeError, TypeError, ValueError:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response"
+            ) from None
 
         if status_code == 401:
-            raise GoogleHealthAuthenticationError("Google Health credentials require reauthentication")
+            raise GoogleHealthAuthenticationError(
+                "Google Health credentials require reauthentication"
+            )
         if status_code == 403:
             raise GoogleHealthScopeError("Google Health read permission is unavailable")
         if status_code == 429:
@@ -363,11 +381,16 @@ class GoogleHealthClient:
 
         try:
             content_length = response.headers.get("content-length")
-            if content_length is not None and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
+            if (
+                content_length is not None
+                and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES
+            ):
                 raise ValueError
             payload = response.json()
         except Exception:
-            raise GoogleHealthInvalidResponseError("Google Health returned malformed JSON") from None
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned malformed JSON"
+            ) from None
         if not isinstance(payload, dict):
             raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
         if set(payload) - {"dataPoints", "nextPageToken"}:
@@ -384,8 +407,10 @@ class GoogleHealthClient:
                 for item in data_points
                 if _matches_civil_bounds(item, civil_start_time, civil_end_time)
             )
-        except (GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError):
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid Nutrition Log page") from None
+        except GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid Nutrition Log page"
+            ) from None
 
         return NutritionLogPage(
             data_points=data_points,
@@ -492,8 +517,11 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
     token = payload["nextPageToken"]
     if token == "":
         return None
+    if not isinstance(token, str):
+        raise ValueError
     _validate_page_token(token)
-    return cast(str, token)
+    return token
+
 
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict):
@@ -501,9 +529,7 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if set(value) - {"name", "dataSource", "nutritionLog"} or "nutritionLog" not in value:
         raise ValueError
     name = value.get("name")
-    if name is not None and (
-        not isinstance(name, str) or not _RESOURCE_NAME_RE.fullmatch(name)
-    ):
+    if name is not None and (not isinstance(name, str) or not _RESOURCE_NAME_RE.fullmatch(name)):
         raise ValueError
     data_source = value.get("dataSource")
     if data_source is not None:
@@ -511,8 +537,9 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
     nutrition_log = value["nutritionLog"]
     if not isinstance(nutrition_log, dict):
         raise ValueError
+    parsed_name = name if isinstance(name, str) else None
     return NutritionLogDataPoint(
-        name=cast(str | None, name),
+        name=parsed_name,
         nutrition_log=_parse_nutrition_log(nutrition_log),
     )
 
@@ -566,7 +593,11 @@ def _validate_data_source(value: object) -> None:
         raise ValueError
     device = value.get("device")
     if device is not None:
-        if not isinstance(device, dict) or set(device) - {"formFactor", "manufacturer", "displayName"}:
+        if not isinstance(device, dict) or set(device) - {
+            "formFactor",
+            "manufacturer",
+            "displayName",
+        }:
             raise ValueError
         form_factor = device.get("formFactor")
         if form_factor is not None and form_factor not in _FORM_FACTORS:
@@ -583,7 +614,7 @@ def _validate_data_source(value: object) -> None:
             "googleWebClientId",
         }:
             raise ValueError
-        for key, item in application.items():
+        for _key, item in application.items():
             if not isinstance(item, str) or not item or len(item) > 512:
                 raise ValueError
 
@@ -628,7 +659,9 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
     return NutritionLog(
         interval=_parse_interval(interval),
         nutrients=nutrients,
-        energy=_parse_quantity(value.get("energy"), "kcal", _ENERGY_UNITS) if "energy" in value else None,
+        energy=_parse_quantity(value.get("energy"), "kcal", _ENERGY_UNITS)
+        if "energy" in value
+        else None,
         energy_from_fat=(
             _parse_quantity(value.get("energyFromFat"), "kcal", _ENERGY_UNITS)
             if "energyFromFat" in value
@@ -640,7 +673,9 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
             else None
         ),
         total_fat=(
-            _parse_quantity(value.get("totalFat"), "grams", _WEIGHT_UNITS) if "totalFat" in value else None
+            _parse_quantity(value.get("totalFat"), "grams", _WEIGHT_UNITS)
+            if "totalFat" in value
+            else None
         ),
         meal_type=meal_type,
         serving=serving,
@@ -658,7 +693,12 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
         "civilStartTime",
         "civilEndTime",
     }
-    if set(value) - allowed or not {"startTime", "endTime", "startUtcOffset", "endUtcOffset"} <= set(value):
+    if set(value) - allowed or not {
+        "startTime",
+        "endTime",
+        "startUtcOffset",
+        "endUtcOffset",
+    } <= set(value):
         raise ValueError
     start_precise = _parse_timestamp(value["startTime"])
     end_precise = _parse_timestamp(value["endTime"])
@@ -674,7 +714,10 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
         _parse_civil_datetime(value["civilStartTime"]) if "civilStartTime" in value else None
     )
     civil_end = _parse_civil_datetime(value["civilEndTime"]) if "civilEndTime" in value else None
-    if civil_start is not None and _civil_key(civil_start) != _physical_key(start_precise) + start_offset:
+    if (
+        civil_start is not None
+        and _civil_key(civil_start) != _physical_key(start_precise) + start_offset
+    ):
         raise ValueError
     if civil_end is not None and _civil_key(civil_end) != _physical_key(end_precise) + end_offset:
         raise ValueError
@@ -686,6 +729,8 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
         civil_start_time=civil_start.value if civil_start is not None else None,
         civil_end_time=civil_end.value if civil_end is not None else None,
     )
+
+
 def _parse_duration(value: object) -> int:
     if not isinstance(value, str):
         raise ValueError
@@ -722,23 +767,19 @@ def _parse_timestamp(value: object) -> _PreciseTime:
 
 def _physical_key(value: _PreciseTime) -> int:
     try:
-        utc = value.value.astimezone(timezone.utc).replace(microsecond=0, tzinfo=None)
-    except (OverflowError, ValueError):
+        utc = value.value.astimezone(UTC).replace(microsecond=0, tzinfo=None)
+    except OverflowError, ValueError:
         raise ValueError from None
     return (
-        ((utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second)
-        * 1_000_000_000
-        + value.nanos
-    )
+        (utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second
+    ) * 1_000_000_000 + value.nanos
 
 
 def _civil_key(value: _PreciseTime) -> int:
     civil = value.value.replace(tzinfo=None, microsecond=0)
     return (
-        ((civil.toordinal() - 1) * 86_400 + civil.hour * 3_600 + civil.minute * 60 + civil.second)
-        * 1_000_000_000
-        + value.nanos
-    )
+        (civil.toordinal() - 1) * 86_400 + civil.hour * 3_600 + civil.minute * 60 + civil.second
+    ) * 1_000_000_000 + value.nanos
 
 
 def _parse_civil_datetime(value: object) -> _PreciseTime:
@@ -747,28 +788,40 @@ def _parse_civil_datetime(value: object) -> _PreciseTime:
     date_value = value["date"]
     if not isinstance(date_value, dict) or set(date_value) != {"year", "month", "day"}:
         raise ValueError
-    year, month, day = (date_value.get(key) for key in ("year", "month", "day"))
-    if (
-        any(isinstance(item, bool) or not isinstance(item, int) for item in (year, month, day))
-        or year is None
-        or year < 1
-        or not 1 <= month <= 12
-        or not 1 <= day <= 31
-    ):
+    date_parts = tuple(date_value.get(key) for key in ("year", "month", "day"))
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in date_parts):
+        raise ValueError
+    year, month, day = cast(tuple[int, int, int], date_parts)
+    if year < 1 or not 1 <= month <= 12 or not 1 <= day <= 31:
         raise ValueError
     time_value = value.get("time", {})
-    if not isinstance(time_value, dict) or set(time_value) - {"hours", "minutes", "seconds", "nanos"}:
+    if not isinstance(time_value, dict) or set(time_value) - {
+        "hours",
+        "minutes",
+        "seconds",
+        "nanos",
+    }:
         raise ValueError
     hours = time_value.get("hours", 0)
     minutes = time_value.get("minutes", 0)
     seconds = time_value.get("seconds", 0)
     nanos = time_value.get("nanos", 0)
-    if any(isinstance(item, bool) or not isinstance(item, int) for item in (hours, minutes, seconds, nanos)):
+    if any(
+        isinstance(item, bool) or not isinstance(item, int)
+        for item in (hours, minutes, seconds, nanos)
+    ):
         raise ValueError
-    if not 0 <= hours <= 23 or not 0 <= minutes <= 59 or not 0 <= seconds <= 59 or not 0 <= nanos <= 999_999_999:
+    if (
+        not 0 <= hours <= 23
+        or not 0 <= minutes <= 59
+        or not 0 <= seconds <= 59
+        or not 0 <= nanos <= 999_999_999
+    ):
         raise ValueError
     try:
-        return _PreciseTime(datetime(year, month, day, hours, minutes, seconds, nanos // 1000), nanos)
+        return _PreciseTime(
+            datetime(year, month, day, hours, minutes, seconds, nanos // 1000), nanos
+        )
     except ValueError:
         raise ValueError from None
 
@@ -788,7 +841,7 @@ def _parse_quantity(
     unit = value.get("userProvidedUnit")
     try:
         number_value = float(number)
-    except (OverflowError, TypeError, ValueError):
+    except OverflowError, TypeError, ValueError:
         raise ValueError from None
     if (
         isinstance(number, bool)
@@ -808,7 +861,9 @@ def _parse_nutrient(value: object) -> NutritionNutrient:
     if not isinstance(nutrient, str) or nutrient not in _NUTRIENTS:
         raise ValueError
     quantity = value["quantity"]
-    return NutritionNutrient(nutrient=nutrient, quantity=_parse_quantity(quantity, "grams", _WEIGHT_UNITS))
+    return NutritionNutrient(
+        nutrient=nutrient, quantity=_parse_quantity(quantity, "grams", _WEIGHT_UNITS)
+    )
 
 
 def _parse_serving(value: object) -> NutritionServing:
@@ -831,9 +886,13 @@ def _parse_serving(value: object) -> NutritionServing:
     if amount is not None:
         try:
             amount_value = float(amount)
-        except (OverflowError, TypeError, ValueError):
+        except OverflowError, TypeError, ValueError:
             raise ValueError from None
-        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount_value):
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount_value)
+        ):
             raise ValueError
     return NutritionServing(
         food_measurement_unit=unit,
@@ -874,6 +933,7 @@ def _matches_civil_bounds(
         end is None or civil_start < _civil_boundary(end)
     )
 
+
 def _validate_page_size(page_size: int, *, maximum: int = GOOGLE_HEALTH_MAX_PAGE_SIZE) -> None:
     if isinstance(page_size, bool) or not isinstance(page_size, int):
         raise ValueError("page_size must be an integer")
@@ -886,6 +946,8 @@ def _validate_page_size_limit(maximum: int) -> None:
         raise ValueError("max_page_size must be an integer")
     if not 1 <= maximum <= GOOGLE_HEALTH_MAX_PAGE_SIZE:
         raise ValueError("max_page_size is outside the allowed range")
+
+
 def _validate_page_token(page_token: str | None) -> None:
     if page_token is None:
         return
@@ -929,11 +991,13 @@ def _validate_civil_bounds(
         _civil_boundary(end)
     if start is not None and end is not None and _civil_boundary(start) > _civil_boundary(end):
         raise ValueError("civil_start_time must not be after civil_end_time")
+
+
 def _retry_after(headers: Mapping[str, str]) -> int:
     try:
         raw_value = headers.get("retry-after") or headers.get("Retry-After") or "0"
         value = int(raw_value)
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return 0
     return max(0, min(value, 300))
 

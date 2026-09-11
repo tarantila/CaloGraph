@@ -13,7 +13,9 @@ from sqlalchemy import create_engine, inspect
 from app.database import Base
 
 _REVISION_ID = "20260910_0029"
-_REVISION_PATH = Path(__file__).parents[1] / "alembic" / "versions" / "20260910_0029_google_health_oauth.py"
+_REVISION_PATH = (
+    Path(__file__).parents[1] / "alembic" / "versions" / "20260910_0029_google_health_oauth.py"
+)
 _GOOGLE_TABLES = {"google_health_connections", "google_health_oauth_flows"}
 _NUTRITION_TABLE_PREFIX = "nutrition_"
 
@@ -27,8 +29,9 @@ def _revision_module():
 
 
 def _apply(engine, revision, operation: str) -> None:
-    with engine.begin() as connection, Operations.context(
-        MigrationContext.configure(connection=connection)
+    with (
+        engine.begin() as connection,
+        Operations.context(MigrationContext.configure(connection=connection)),
     ):
         getattr(revision, operation)()
 
@@ -78,11 +81,10 @@ def _schema_signature(connection, table_names: set[str]) -> dict[str, object]:
                 ],
                 key=repr,
             ),
-
         }
         for table in sorted(table_names)
-
     }
+
 
 def _sqlite_baseline(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'google-health.sqlite'}")
@@ -131,7 +133,9 @@ def test_upgrade_has_expected_columns_constraints_and_indexes(tmp_path) -> None:
     _apply(engine, _revision_module(), "upgrade")
     inspector = inspect(engine)
 
-    connection_columns = {column["name"]: column for column in inspector.get_columns("google_health_connections")}
+    connection_columns = {
+        column["name"]: column for column in inspector.get_columns("google_health_connections")
+    }
     assert connection_columns["encrypted_refresh_token"]["nullable"] is False
     assert isinstance(connection_columns["encrypted_refresh_token"]["type"], sa.LargeBinary)
     assert connection_columns["granted_scopes"]["nullable"] is False
@@ -147,16 +151,20 @@ def test_upgrade_has_expected_columns_constraints_and_indexes(tmp_path) -> None:
         for fk in inspector.get_foreign_keys("google_health_connections")
     } == {"CASCADE"}
     assert {
-        constraint["name"] for constraint in inspector.get_unique_constraints("google_health_connections")
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("google_health_connections")
     } == {"uq_google_health_connections_user_id"}
     assert {
-        constraint["name"] for constraint in inspector.get_check_constraints("google_health_connections")
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("google_health_connections")
     } == {"ck_google_health_connections_state"}
-    assert {
-        index["name"] for index in inspector.get_indexes("google_health_connections")
-    } == {"ix_google_health_connections_user_id"}
+    assert {index["name"] for index in inspector.get_indexes("google_health_connections")} == {
+        "ix_google_health_connections_user_id"
+    }
 
-    flow_columns = {column["name"]: column for column in inspector.get_columns("google_health_oauth_flows")}
+    flow_columns = {
+        column["name"]: column for column in inspector.get_columns("google_health_oauth_flows")
+    }
     assert flow_columns["encrypted_pkce_verifier"]["nullable"] is False
     assert isinstance(flow_columns["encrypted_pkce_verifier"]["type"], sa.LargeBinary)
     assert flow_columns["state_hash"]["nullable"] is False
@@ -171,9 +179,7 @@ def test_upgrade_has_expected_columns_constraints_and_indexes(tmp_path) -> None:
         constraint["name"]
         for constraint in inspector.get_unique_constraints("google_health_oauth_flows")
     } == {"uq_google_health_oauth_flows_state_hash"}
-    assert {
-        index["name"] for index in inspector.get_indexes("google_health_oauth_flows")
-    } == {
+    assert {index["name"] for index in inspector.get_indexes("google_health_oauth_flows")} == {
         "ix_google_health_oauth_flows_user_id",
         "ix_google_health_oauth_flows_state_hash",
         "ix_google_health_oauth_flows_expires_at",
@@ -190,6 +196,3 @@ def test_upgrade_has_expected_columns_constraints_and_indexes(tmp_path) -> None:
         "raw_payload",
         "nutrition_data",
     }
-
-
-

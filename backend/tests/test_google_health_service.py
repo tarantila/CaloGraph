@@ -8,16 +8,15 @@ from sqlalchemy import select
 from app.config import settings
 from app.google_health import service as google_health_service
 from app.google_health.constants import GOOGLE_HEALTH_SCOPE
-from app.google_health.errors import GoogleHealthTokenExchangeError
 from app.google_health.oauth import hash_oauth_state
-from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
-from app.services.credential_crypto import decrypt_credential
 from app.google_health.service import (
     GoogleHealthOAuthError,
     complete_google_health_oauth,
     google_health_status,
     start_google_health_oauth,
 )
+from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
+from app.services.credential_crypto import decrypt_credential
 
 
 class TokenAdapter:
@@ -26,13 +25,15 @@ class TokenAdapter:
         self.calls = []
 
     def exchange(self, *, code, redirect_uri, client_id, client_secret, code_verifier):
-        self.calls.append({
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "code_verifier": code_verifier,
-        })
+        self.calls.append(
+            {
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code_verifier": code_verifier,
+            }
+        )
         if isinstance(self.payload, Exception):
             raise self.payload
         return self.payload
@@ -131,7 +132,12 @@ def test_scope_and_refresh_token_are_required(db, user: User, monkeypatch):
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
     result = complete_google_health_oauth(
-        db, user, state=state, code="code", error=None, now=now,
+        db,
+        user,
+        state=state,
+        code="code",
+        error=None,
+        now=now,
         oauth_adapter=TokenAdapter({"refresh_token": "x", "scope": "other"}),
     )
     assert result.state == "scope_missing"
@@ -140,7 +146,12 @@ def test_scope_and_refresh_token_are_required(db, user: User, monkeypatch):
     start_url = start_google_health_oauth(db, user, now=now + timedelta(seconds=1))
     state = parse_qs(urlsplit(start_url).query)["state"][0]
     result = complete_google_health_oauth(
-        db, user, state=state, code="code", error=None, now=now,
+        db,
+        user,
+        state=state,
+        code="code",
+        error=None,
+        now=now,
         oauth_adapter=TokenAdapter({"scope": GOOGLE_HEALTH_SCOPE}),
     )
     assert result.state == "reauth_required"
@@ -173,17 +184,13 @@ def test_callback_revalidates_active_user_after_lock(db, user: User, monkeypatch
             code="code",
             error=None,
             now=now,
-            oauth_adapter=TokenAdapter(
-                {"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}
-            ),
+            oauth_adapter=TokenAdapter({"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}),
         )
     flow = db.scalar(select(GoogleHealthOAuthFlow))
     assert flow is not None and flow.consumed_at is None
 
 
-def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(
-    db, user: User, monkeypatch
-):
+def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(db, user: User, monkeypatch):
     _configure(monkeypatch)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
@@ -201,9 +208,7 @@ def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(
             code="code",
             error=None,
             now=now,
-            oauth_adapter=TokenAdapter(
-                {"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}
-            ),
+            oauth_adapter=TokenAdapter({"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}),
         )
     flow = db.scalar(select(GoogleHealthOAuthFlow))
     assert flow is not None and flow.consumed_at is not None
@@ -216,9 +221,7 @@ def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(
             code="code",
             error=None,
             now=now,
-            oauth_adapter=TokenAdapter(
-                {"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}
-            ),
+            oauth_adapter=TokenAdapter({"refresh_token": "secret", "scope": GOOGLE_HEALTH_SCOPE}),
         )
 
 

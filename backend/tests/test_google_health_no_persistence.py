@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import ClassVar
 
 from app.google_health.client import GoogleHealthClient
 
@@ -13,7 +14,7 @@ class Credentials:
 
 class Response:
     status_code = 200
-    headers = {"content-type": "application/json"}
+    headers: ClassVar[dict[str, str]] = {"content-type": "application/json"}
 
     def json(self) -> object:
         return {
@@ -87,7 +88,9 @@ def test_page_does_not_call_hydration_or_domain_persistence_paths(monkeypatch) -
 
     page = GoogleHealthClient(transport, Credentials()).get_nutrition_log_page(page_size=10)
 
-    assert page.data_points[0].nutrition_log.interval.start_time == datetime(2026, 1, 1, 8, tzinfo=__import__("datetime").UTC)
+    assert page.data_points[0].nutrition_log.interval.start_time == datetime(
+        2026, 1, 1, 8, tzinfo=__import__("datetime").UTC
+    )
     assert hydration_calls == []
     assert orm_calls == []
     assert not hasattr(transport, "persist")

@@ -23,7 +23,9 @@ def google_health_redirect_uri(public_url: str) -> str:
     try:
         parsed = urlsplit(normalized)
         hostname = parsed.hostname
-        parsed.port
+        port = parsed.port
+        if port is not None and not 0 <= port <= 65_535:
+            raise ValueError
     except ValueError:
         raise ValueError("CALOGRAPH_PUBLIC_URL must be an absolute HTTP(S) origin") from None
     if (
@@ -73,11 +75,7 @@ def normalize_granted_scopes(scopes: object) -> tuple[str, ...]:
     else:
         return ()
     normalized = {
-        part
-        for value in values
-        if isinstance(value, str)
-        for part in value.split()
-        if part
+        part for value in values if isinstance(value, str) for part in value.split() if part
     }
     return tuple(sorted(normalized))
 
@@ -106,11 +104,7 @@ def build_authorization_url(
         "code_challenge_method": "S256",
     }
     should_prompt = (
-        reauthorize
-        or initial
-        or missing_refresh
-        or scope_change
-        or intent in _CONSENT_INTENTS
+        reauthorize or initial or missing_refresh or scope_change or intent in _CONSENT_INTENTS
     )
     if should_prompt:
         query["prompt"] = "consent"

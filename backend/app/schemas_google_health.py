@@ -5,7 +5,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-
 GoogleHealthState = Literal[
     "disabled",
     "not_connected",

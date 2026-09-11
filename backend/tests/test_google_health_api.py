@@ -2,6 +2,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+
 from app.api.google_health import _oauth_error
 from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
@@ -37,6 +38,7 @@ def test_google_health_start_requires_csrf_and_rejects_bad_origin(
         headers={"X-CSRF-Token": csrf, "Origin": "https://evil.example"},
     )
     assert response.status_code == 403
+
 
 def test_google_health_status_and_start_contract(client: TestClient, user: User, monkeypatch):
     monkeypatch.setattr(settings, "google_health_enabled", True)

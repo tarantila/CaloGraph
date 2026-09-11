@@ -9,6 +9,7 @@ from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import _revalidate_locked_session
 from app.config import settings
 from app.google_health.constants import (
     GOOGLE_HEALTH_AUTH_URI,
@@ -28,7 +29,6 @@ from app.google_health.oauth import (
     hash_oauth_state,
     normalize_granted_scopes,
 )
-from app.auth.dependencies import _revalidate_locked_session
 from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
 from app.schemas_google_health import GoogleHealthStatus
 from app.security_events import log_security_event, security_reference
@@ -65,7 +65,7 @@ class _GoogleOAuthAdapter:
         client_secret: str,
         code_verifier: str,
     ) -> Mapping[str, Any]:
-        from google_auth_oauthlib.flow import Flow
+        from google_auth_oauthlib.flow import Flow  # type: ignore[import-untyped]
 
         flow = Flow.from_client_config(
             {
@@ -292,6 +292,7 @@ def _record_failure(
             connection.state = "reauth_required"
     return connection
 
+
 def complete_google_health_oauth(
     db: Session,
     user: User,
@@ -351,7 +352,11 @@ def complete_google_health_oauth(
                 reason="reauth_required",
                 actor_user_id=user.id,
             )
-            return _status_from_connection(connection) if connection else _status_for_error("reauth_required")
+            return (
+                _status_from_connection(connection)
+                if connection
+                else _status_for_error("reauth_required")
+            )
 
         adapter = oauth_adapter or _GoogleOAuthAdapter()
         redirect_uri = google_health_redirect_uri(settings.calograph_public_url)
@@ -393,7 +398,11 @@ def complete_google_health_oauth(
                 reason="scope_missing",
                 actor_user_id=user.id,
             )
-            return _status_from_connection(connection) if connection else _status_for_error("scope_missing")
+            return (
+                _status_from_connection(connection)
+                if connection
+                else _status_for_error("scope_missing")
+            )
         refresh_token = _token_value(payload, "refresh_token", "refreshToken")
         if not isinstance(refresh_token, str) or not refresh_token:
             connection = _record_failure(db, user, timestamp, "reauth_required")
@@ -405,7 +414,11 @@ def complete_google_health_oauth(
                 reason="reauth_required",
                 actor_user_id=user.id,
             )
-            return _status_from_connection(connection) if connection else _status_for_error("reauth_required")
+            return (
+                _status_from_connection(connection)
+                if connection
+                else _status_for_error("reauth_required")
+            )
         try:
             encrypted_refresh_token = encrypt_credential(refresh_token)
         except CredentialEncryptionError as exc:
@@ -428,7 +441,9 @@ def complete_google_health_oauth(
         connection.last_error = None
         refresh_expiry = _token_value(payload, "refresh_token_expires_at", "refresh_token_expiry")
         refresh_expires_in = _token_value(payload, "refresh_token_expires_in")
-        if isinstance(refresh_expires_in, (int, float)) and not isinstance(refresh_expires_in, bool):
+        if isinstance(refresh_expires_in, (int, float)) and not isinstance(
+            refresh_expires_in, bool
+        ):
             connection.refresh_token_expires_at = timestamp + timedelta(seconds=refresh_expires_in)
         elif isinstance(refresh_expiry, datetime):
             connection.refresh_token_expires_at = refresh_expiry

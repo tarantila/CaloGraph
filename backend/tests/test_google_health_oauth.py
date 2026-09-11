@@ -19,6 +19,7 @@ from app.google_health.oauth import (
     pkce_challenge,
 )
 
+
 def test_oauth_state_is_random_url_safe_and_hash_is_one_way() -> None:
     first = create_oauth_state()
     second = create_oauth_state()
@@ -34,7 +35,9 @@ def test_oauth_state_is_random_url_safe_and_hash_is_one_way() -> None:
 def test_pkce_verifier_is_random_and_challenge_is_rfc7636_s256() -> None:
     first = create_pkce_verifier()
     second = create_pkce_verifier()
-    expected = base64.urlsafe_b64encode(hashlib.sha256(first.encode()).digest()).rstrip(b"=").decode()
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(first.encode()).digest()).rstrip(b"=").decode()
+    )
 
     assert first != second
     assert 43 <= len(first) <= 128
