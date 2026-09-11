@@ -31,7 +31,7 @@ class FakeResponse:
     def __init__(self, status_code: int = 200, payload: object | None = None) -> None:
         self.status_code = status_code
         self.headers = {"content-type": "application/json"}
-        self._payload = payload if payload is not None else {"nutritionLog": []}
+        self._payload = payload if payload is not None else {"dataPoints": []}
         self.text = '{"secret":"do-not-leak"}'
 
     def json(self) -> object:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import math
 import re
@@ -42,7 +42,7 @@ class NutritionNutrient:
 
 @dataclass(frozen=True, slots=True)
 class NutritionServing:
-    food_measurement_unit: str
+    food_measurement_unit: str | None = None
     food_measurement_unit_display_name: str | None = None
     amount: float | None = None
 
@@ -364,14 +364,11 @@ class GoogleHealthClient:
             raise GoogleHealthInvalidResponseError("Google Health returned malformed JSON") from None
         if not isinstance(payload, dict):
             raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
-        if set(payload) - {"dataPoints", "nextPageToken", "nutritionLog"}:
+        if set(payload) - {"dataPoints", "nextPageToken"}:
             raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
 
         try:
             points_payload = payload.get("dataPoints")
-            # Keep the old empty fixture useful while the transport contract changes.
-            if points_payload is None and payload == {"nutritionLog": []}:
-                points_payload = []
             if not isinstance(points_payload, list) or len(points_payload) > page_size:
                 raise ValueError
             next_page_token = _parse_response_page_token(payload)
@@ -412,6 +409,66 @@ _MEAL_TYPES = {
     "SNACK",
     "ANYTIME",
 }
+_WEIGHT_UNITS = {
+    "WEIGHT_UNIT_UNSPECIFIED",
+    "GRAM",
+    "KILOGRAM",
+    "OUNCE",
+    "POUND",
+    "STONE",
+    "MILLIGRAM",
+    "MICROGRAM",
+    "NANOGRAM",
+}
+_ENERGY_UNITS = {
+    "ENERGY_UNIT_UNSPECIFIED",
+    "JOULE",
+    "KILOJOULE",
+    "KILOCALORIE",
+    "SMALL_CALORIE",
+    "CALORIE",
+}
+_NUTRIENTS = {
+    "NUTRIENT_UNSPECIFIED",
+    "BIOTIN",
+    "CAFFEINE",
+    "CALCIUM",
+    "CHLORIDE",
+    "CARBOHYDRATES",
+    "CHOLESTEROL",
+    "CHROMIUM",
+    "COPPER",
+    "DIETARY_FIBER",
+    "FOLIC_ACID",
+    "IODINE",
+    "IRON",
+    "MAGNESIUM",
+    "MANGANESE",
+    "MOLYBDENUM",
+    "MONOUNSATURATED_FAT",
+    "NIACIN",
+    "PANTOTHENIC_ACID",
+    "PHOSPHORUS",
+    "POLYUNSATURATED_FAT",
+    "POTASSIUM",
+    "PROTEIN",
+    "RIBOFLAVIN",
+    "SATURATED_FAT",
+    "SELENIUM",
+    "SODIUM",
+    "SUGAR",
+    "THIAMIN",
+    "TRANS_FAT",
+    "UNSATURATED_FAT",
+    "VITAMIN_A",
+    "VITAMIN_B12",
+    "VITAMIN_B6",
+    "VITAMIN_C",
+    "VITAMIN_D",
+    "VITAMIN_E",
+    "VITAMIN_K",
+    "ZINC",
+}
 
 
 def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
@@ -424,17 +481,24 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
     return cast(str, token)
 
 
+_RESOURCE_NAME_RE = re.compile(
+    r"^users/[A-Za-z0-9._~-]+/dataTypes/nutrition-log/dataPoints/[a-z0-9-]{4,63}$"
+)
+
+
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict):
         raise ValueError
     if set(value) - {"name", "dataSource", "nutritionLog"} or "nutritionLog" not in value:
         raise ValueError
     name = value.get("name")
-    if name is not None and (not isinstance(name, str) or not name):
+    if name is not None and (
+        not isinstance(name, str) or not _RESOURCE_NAME_RE.fullmatch(name)
+    ):
         raise ValueError
     data_source = value.get("dataSource")
-    if data_source is not None and not isinstance(data_source, dict):
-        raise ValueError
+    if data_source is not None:
+        _validate_data_source(data_source)
     nutrition_log = value["nutritionLog"]
     if not isinstance(nutrition_log, dict):
         raise ValueError
@@ -442,6 +506,67 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
         name=cast(str | None, name),
         nutrition_log=_parse_nutrition_log(nutrition_log),
     )
+
+
+_RECORDING_METHODS = {
+    "RECORDING_METHOD_UNSPECIFIED",
+    "MANUAL",
+    "PASSIVELY_MEASURED",
+    "DERIVED",
+    "ACTIVELY_MEASURED",
+    "UNKNOWN",
+}
+_FORM_FACTORS = {
+    "FORM_FACTOR_UNSPECIFIED",
+    "FITNESS_BAND",
+    "WATCH",
+    "PHONE",
+    "RING",
+    "CHEST_STRAP",
+    "SCALE",
+    "TABLET",
+    "HEAD_MOUNTED",
+    "SMART_DISPLAY",
+}
+_PLATFORMS = {"PLATFORM_UNSPECIFIED", "FITBIT", "HEALTH_CONNECT", "HEALTH_KIT", "FIT"}
+
+
+def _validate_data_source(value: object) -> None:
+    if not isinstance(value, dict) or set(value) - {
+        "recordingMethod",
+        "device",
+        "application",
+        "platform",
+    }:
+        raise ValueError
+    recording_method = value.get("recordingMethod")
+    if recording_method is not None and recording_method not in _RECORDING_METHODS:
+        raise ValueError
+    platform = value.get("platform")
+    if platform is not None and platform not in _PLATFORMS:
+        raise ValueError
+    device = value.get("device")
+    if device is not None:
+        if not isinstance(device, dict) or set(device) - {"formFactor", "manufacturer", "displayName"}:
+            raise ValueError
+        form_factor = device.get("formFactor")
+        if form_factor is not None and form_factor not in _FORM_FACTORS:
+            raise ValueError
+        for key in ("manufacturer", "displayName"):
+            item = device.get(key)
+            if item is not None and (not isinstance(item, str) or not item or len(item) > 512):
+                raise ValueError
+    application = value.get("application")
+    if application is not None:
+        if not isinstance(application, dict) or set(application) - {
+            "packageName",
+            "webClientId",
+            "googleWebClientId",
+        }:
+            raise ValueError
+        for key, item in application.items():
+            if not isinstance(item, str) or not item or len(item) > 512:
+                raise ValueError
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
@@ -482,19 +607,19 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
     return NutritionLog(
         interval=_parse_interval(interval),
         nutrients=nutrients,
-        energy=_parse_quantity(value.get("energy"), "kcal") if "energy" in value else None,
+        energy=_parse_quantity(value.get("energy"), "kcal", _ENERGY_UNITS) if "energy" in value else None,
         energy_from_fat=(
-            _parse_quantity(value.get("energyFromFat"), "kcal")
+            _parse_quantity(value.get("energyFromFat"), "kcal", _ENERGY_UNITS)
             if "energyFromFat" in value
             else None
         ),
         total_carbohydrate=(
-            _parse_quantity(value.get("totalCarbohydrate"), "grams")
+            _parse_quantity(value.get("totalCarbohydrate"), "grams", _WEIGHT_UNITS)
             if "totalCarbohydrate" in value
             else None
         ),
         total_fat=(
-            _parse_quantity(value.get("totalFat"), "grams") if "totalFat" in value else None
+            _parse_quantity(value.get("totalFat"), "grams", _WEIGHT_UNITS) if "totalFat" in value else None
         ),
         meal_type=meal_type,
         serving=serving,
@@ -518,29 +643,39 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
     end_time = _parse_timestamp(value["endTime"])
     if start_time >= end_time:
         raise ValueError
-    start_offset = value["startUtcOffset"]
-    end_offset = value["endUtcOffset"]
-    if (
-        not isinstance(start_offset, str)
-        or not isinstance(end_offset, str)
-        or not _DURATION_RE.fullmatch(start_offset)
-        or not _DURATION_RE.fullmatch(end_offset)
-    ):
-        raise ValueError
+    start_offset_text = value["startUtcOffset"]
+    end_offset_text = value["endUtcOffset"]
+    start_offset = _parse_duration(start_offset_text)
+    end_offset = _parse_duration(end_offset_text)
     civil_start = (
         _parse_civil_datetime(value["civilStartTime"]) if "civilStartTime" in value else None
     )
     civil_end = _parse_civil_datetime(value["civilEndTime"]) if "civilEndTime" in value else None
+    if civil_start is not None and civil_start != _civil_from_physical(start_time, start_offset):
+        raise ValueError
+    if civil_end is not None and civil_end != _civil_from_physical(end_time, end_offset):
+        raise ValueError
     if civil_start is not None and civil_end is not None and civil_start > civil_end:
         raise ValueError
     return NutritionLogInterval(
         start_time=start_time,
         end_time=end_time,
-        start_utc_offset=start_offset,
-        end_utc_offset=end_offset,
+        start_utc_offset=cast(str, start_offset_text),
+        end_utc_offset=cast(str, end_offset_text),
         civil_start_time=civil_start,
         civil_end_time=civil_end,
     )
+def _parse_duration(value: object) -> timedelta:
+    if not isinstance(value, str) or not _DURATION_RE.fullmatch(value):
+        raise ValueError
+    seconds = float(value[:-1])
+    if not math.isfinite(seconds) or abs(seconds) > 86_400:
+        raise ValueError
+    return timedelta(seconds=seconds)
+
+
+def _civil_from_physical(value: datetime, offset: timedelta) -> datetime:
+    return value.astimezone(timezone.utc).replace(tzinfo=None) + offset
 
 
 def _parse_timestamp(value: object) -> datetime:
@@ -587,14 +722,22 @@ def _parse_civil_datetime(value: object) -> datetime:
         raise ValueError from None
 
 
-def _parse_quantity(value: object, scalar_key: str) -> NutritionQuantity:
-    if not isinstance(value, dict) or set(value) - {"userProvidedUnit", scalar_key} or scalar_key not in value:
+def _parse_quantity(
+    value: object,
+    scalar_key: str,
+    units: set[str],
+) -> NutritionQuantity:
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"userProvidedUnit", scalar_key}
+        or scalar_key not in value
+    ):
         raise ValueError
     number = value[scalar_key]
     unit = value.get("userProvidedUnit")
     if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
         raise ValueError
-    if unit is not None and (not isinstance(unit, str) or not re.fullmatch(r"[A-Z_]+", unit)):
+    if unit is not None and (not isinstance(unit, str) or unit not in units):
         raise ValueError
     return NutritionQuantity(value=float(number), unit=unit)
 
@@ -603,10 +746,10 @@ def _parse_nutrient(value: object) -> NutritionNutrient:
     if not isinstance(value, dict) or set(value) != {"quantity", "nutrient"}:
         raise ValueError
     nutrient = value["nutrient"]
-    if not isinstance(nutrient, str) or not re.fullmatch(r"[A-Z][A-Z_]+", nutrient):
+    if not isinstance(nutrient, str) or nutrient not in _NUTRIENTS:
         raise ValueError
     quantity = value["quantity"]
-    return NutritionNutrient(nutrient=nutrient, quantity=_parse_quantity(quantity, "grams"))
+    return NutritionNutrient(nutrient=nutrient, quantity=_parse_quantity(quantity, "grams", _WEIGHT_UNITS))
 
 
 def _parse_serving(value: object) -> NutritionServing:
@@ -614,12 +757,14 @@ def _parse_serving(value: object) -> NutritionServing:
         "foodMeasurementUnit",
         "foodMeasurementUnitDisplayName",
         "amount",
-    } or "foodMeasurementUnit" not in value:
+    }:
         raise ValueError
-    unit = value["foodMeasurementUnit"]
+    if not value:
+        raise ValueError
+    unit = value.get("foodMeasurementUnit")
     display_name = value.get("foodMeasurementUnitDisplayName")
     amount = value.get("amount")
-    if not isinstance(unit, str) or not unit:
+    if unit is not None and (not isinstance(unit, str) or not unit):
         raise ValueError
     if display_name is not None and (not isinstance(display_name, str) or not display_name):
         raise ValueError
@@ -646,7 +791,7 @@ def _civil_boundary(value: date | datetime) -> datetime:
 
 def _civil_time_text(value: date | datetime) -> str:
     if isinstance(value, datetime):
-        return value.isoformat(timespec="seconds")
+        return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
     raise ValueError("civil time bounds must be dates or naive datetimes")

@@ -19,7 +19,7 @@ class Response:
         return {
             "dataPoints": [
                 {
-                    "name": "point-1",
+                    "name": "users/u/dataTypes/nutrition-log/dataPoints/point-1",
                     "nutritionLog": {
                         "interval": {
                             "startTime": "2026-01-01T08:00:00Z",

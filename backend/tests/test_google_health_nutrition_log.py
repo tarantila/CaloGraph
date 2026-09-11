@@ -74,13 +74,13 @@ def client(payload: object, *, max_page_size: int = 100) -> tuple[GoogleHealthCl
 
 
 def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
-    nutrition_client, _ = client({"dataPoints": [point("point-1", 1)], "nextPageToken": "next"})
+    nutrition_client, _ = client({"dataPoints": [point("users/u/dataTypes/nutrition-log/dataPoints/point-1", 1)], "nextPageToken": "next"})
 
     page = nutrition_client.get_nutrition_log_page(page_size=10)
 
     assert isinstance(page, NutritionLogPage)
     assert isinstance(page.data_points[0], NutritionLogDataPoint)
-    assert page.data_points[0].name == "point-1"
+    assert page.data_points[0].name == "users/u/dataTypes/nutrition-log/dataPoints/point-1"
     assert page.data_points[0].nutrition_log.food_display_name == "Breakfast"
     assert page.data_points[0].nutrition_log.interval.civil_start_time == datetime(2026, 1, 1, 8)
     assert page.next_page_token == "next"
@@ -121,7 +121,13 @@ def test_next_page_token_can_be_absent_or_empty_but_invalid_tokens_are_rejected(
 
 
 def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
-    payload = {"dataPoints": [point("one", 1), point("two", 2), point("three", 3)]}
+    payload = {
+        "dataPoints": [
+            point("users/u/dataTypes/nutrition-log/dataPoints/one-1", 1),
+            point("users/u/dataTypes/nutrition-log/dataPoints/two-1", 2),
+            point("users/u/dataTypes/nutrition-log/dataPoints/three-1", 3),
+        ]
+    }
     nutrition_client, transport = client(payload)
 
     page = nutrition_client.get_nutrition_log_page(
@@ -130,7 +136,9 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
         civil_end_time=date(2026, 1, 3),
     )
 
-    assert [item.name for item in page.data_points] == ["two"]
+    assert [item.name for item in page.data_points] == [
+        "users/u/dataTypes/nutrition-log/dataPoints/two-1"
+    ]
     assert transport.calls[0]["civil_start_time"] == date(2026, 1, 2)
     assert transport.calls[0]["civil_end_time"] == date(2026, 1, 3)
 
@@ -138,12 +146,12 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"dataPoints": [{"name": "bad", "hydrationLog": {"interval": interval(1)}}]},
-        {"dataPoints": [{"name": "bad", "nutritionLog": {}}]},
-        {"dataPoints": [{"name": "bad", "nutritionLog": {"interval": {**interval(1), "startTime": "nope"}}}]},
-        {"dataPoints": [{"name": "bad", "nutritionLog": {"interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}}}]},
-        {"dataPoints": [{"name": "bad", "nutritionLog": {"interval": interval(1), "unexpected": True}}]},
-        {"dataPoints": [{"name": "bad", "nutritionLog": {"interval": interval(1), "mealType": "BRUNCH"}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "hydrationLog": {"interval": interval(1)}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "startTime": "nope"}}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "unexpected": True}}]},
+        {"dataPoints": [{"name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1", "nutritionLog": {"interval": interval(1), "mealType": "BRUNCH"}}]},
         {"dataPoints": "not-a-list"},
     ],
 )
@@ -163,3 +171,75 @@ def test_civil_bounds_require_ordered_supported_values() -> None:
             civil_start_time=date(2026, 1, 3),
             civil_end_time=date(2026, 1, 2),
         )
+
+
+def test_civil_datetime_filter_preserves_subsecond_precision() -> None:
+    nutrition_client, transport = client({"dataPoints": []})
+    bound = datetime(2026, 1, 2, 3, 4, 5, 123456)
+
+    nutrition_client.get_nutrition_log_page(page_size=1, civil_start_time=bound)
+
+    assert transport.calls[0]["civil_start_time"] == bound
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda item: item.update({"name": "unsafe"}),
+        lambda item: item.update(
+            {
+                "dataSource": {
+                    "device": {"unknown": "value"},
+                }
+            }
+        ),
+        lambda item: item["nutritionLog"].update(
+            {
+                "energy": {
+                    "kcal": 1,
+                    "userProvidedUnit": "POUND",
+                }
+            }
+        ),
+        lambda item: item["nutritionLog"].update(
+            {
+                "totalFat": {
+                    "grams": 1,
+                    "userProvidedUnit": "KILOCALORIE",
+                }
+            }
+        ),
+    ],
+)
+def test_invalid_wrapper_or_cross_type_quantity_is_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/bad-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+def test_serving_amount_without_unit_is_a_valid_typed_value() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/serving-1", 1)
+    value["nutritionLog"]["serving"] = {"amount": 1}
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.serving is not None
+    assert page.data_points[0].nutrition_log.serving.amount == 1
+
+
+def test_contradictory_civil_and_physical_interval_is_rejected() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/bad-2", 1)
+    cast_interval = value["nutritionLog"]["interval"]
+    assert isinstance(cast_interval, dict)
+    cast_interval["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"hours": 9, "minutes": 0, "seconds": 0, "nanos": 0},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
