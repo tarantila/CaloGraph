@@ -438,6 +438,7 @@ _NUTRIENTS = {
     "CHOLESTEROL",
     "CHROMIUM",
     "COPPER",
+    "DIETARY_FIBER",
     "FOLATE",
     "FOLIC_ACID",
     "IODINE",
