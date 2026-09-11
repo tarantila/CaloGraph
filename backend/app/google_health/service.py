@@ -199,7 +199,7 @@ def start_google_health_oauth(
             delete(GoogleHealthOAuthFlow)
             .where(
                 GoogleHealthOAuthFlow.user_id == user.id,
-                GoogleHealthOAuthFlow.expires_at < timestamp,
+                GoogleHealthOAuthFlow.expires_at <= timestamp,
             )
             .execution_options(synchronize_session=False)
         )

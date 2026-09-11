@@ -290,8 +290,8 @@ def test_start_purges_expired_flow_rows(db, user: User, monkeypatch):
     _configure(monkeypatch)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_google_health_oauth(db, user, now=now - timedelta(minutes=11))
+    start_google_health_oauth(db, user, now=now - timedelta(minutes=10))
     start_google_health_oauth(db, user, now=now)
-
     flows = list(db.scalars(select(GoogleHealthOAuthFlow)))
     assert len(flows) == 1
     assert flows[0].expires_at.replace(tzinfo=UTC) > now
