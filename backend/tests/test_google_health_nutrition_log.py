@@ -101,6 +101,322 @@ def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
     assert not hasattr(page, "payload")
 
 
+def test_unknown_meal_type_is_retained_as_a_typed_string() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-meal-1", 1)
+    value["nutritionLog"]["mealType"] = "FUTURE_MEAL_TYPE"
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.meal_type == "FUTURE_MEAL_TYPE"
+    assert len(page.data_points[0].nutrition_log.meal_type) <= 512
+
+
+def test_unknown_nutrient_enum_is_retained_with_a_typed_quantity() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-nutrient-1", 1)
+    value["nutritionLog"]["nutrients"] = [
+        {
+            "nutrient": "FUTURE_NUTRIENT",
+            "quantity": {"grams": 1, "userProvidedUnit": "GRAM"},
+        }
+    ]
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    nutrient = page.data_points[0].nutrition_log.nutrients[0]
+    assert nutrient.nutrient == "FUTURE_NUTRIENT"
+    assert len(nutrient.nutrient) <= 512
+    assert nutrient.quantity.value == 1
+    assert nutrient.quantity.unit == "GRAM"
+    assert len(nutrient.quantity.unit) <= 512
+
+
+def test_unknown_quantity_unit_is_retained_with_a_typed_quantity() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-unit-1", 1)
+    value["nutritionLog"]["nutrients"] = [
+        {
+            "nutrient": "PROTEIN",
+            "quantity": {"grams": 1, "userProvidedUnit": "FUTURE_UNIT"},
+        }
+    ]
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+    quantity = page.data_points[0].nutrition_log.nutrients[0].quantity
+    assert quantity.value == 1
+    assert quantity.unit == "FUTURE_UNIT"
+    assert len(quantity.unit) <= 512
+
+@pytest.mark.parametrize(
+    ("field", "scalar_key", "unit"),
+    [
+        ("energy", "kcal", "FUTURE_ENERGY_UNIT"),
+        ("energy_from_fat", "kcal", "FUTURE_ENERGY_FROM_FAT_UNIT"),
+        ("total_carbohydrate", "grams", "FUTURE_CARBOHYDRATE_UNIT"),
+        ("total_fat", "grams", "FUTURE_FAT_UNIT"),
+    ],
+)
+def test_unknown_top_level_quantity_units_are_retained(
+    field: str,
+    scalar_key: str,
+    unit: str,
+) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/future-top-level-unit-1", 1)
+    payload_field = {
+        "energy": "energy",
+        "energy_from_fat": "energyFromFat",
+        "total_carbohydrate": "totalCarbohydrate",
+        "total_fat": "totalFat",
+    }[field]
+    value["nutritionLog"][payload_field] = {
+        scalar_key: 1,
+        "userProvidedUnit": unit,
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    quantity = getattr(page.data_points[0].nutrition_log, field)
+    assert quantity is not None
+    assert quantity.value == 1
+    assert quantity.unit == unit
+    assert len(quantity.unit) <= 512
+
+
+def test_data_source_exposes_all_allowlisted_fields_as_typed_objects() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-1", 1)
+    value["dataSource"] = {
+        "recordingMethod": "AUTOMATIC",
+        "platform": "ANDROID",
+        "device": {
+            "formFactor": "PHONE",
+            "manufacturer": "Example Manufacturer",
+            "displayName": "Example Device",
+        },
+        "application": {
+            "packageName": "com.example.app",
+            "webClientId": "web-client-id",
+            "googleWebClientId": "google-web-client-id",
+        },
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    data_source = page.data_points[0].data_source
+    assert data_source is not None
+    assert not hasattr(data_source, "payload")
+    assert not hasattr(page.data_points[0], "payload")
+    assert data_source.recording_method == "AUTOMATIC"
+    assert data_source.platform == "ANDROID"
+    assert data_source.device is not None
+    assert data_source.device.form_factor == "PHONE"
+    assert data_source.device.manufacturer == "Example Manufacturer"
+    assert data_source.device.display_name == "Example Device"
+    assert data_source.application is not None
+    assert data_source.application.package_name == "com.example.app"
+    assert data_source.application.web_client_id == "web-client-id"
+    assert data_source.application.google_web_client_id == "google-web-client-id"
+
+
+def test_unknown_data_source_fields_are_not_retained() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-future-1", 1)
+    value["dataSource"] = {
+        "platform": "ANDROID",
+        "device": {"futureDeviceField": {"enabled": True}},
+        "application": {"futureApplicationField": {"enabled": True}},
+        "futureSourceField": {"enabled": True},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    data_source = page.data_points[0].data_source
+    assert data_source is not None
+    assert data_source.platform == "ANDROID"
+    assert data_source.device is not None
+    assert not hasattr(data_source.device, "future_device_field")
+    assert data_source.application is not None
+    assert not hasattr(data_source.application, "future_application_field")
+    assert not hasattr(data_source, "future_source_field")
+    assert not hasattr(data_source, "payload")
+    assert not hasattr(page.data_points[0], "payload")
+
+
+@pytest.mark.parametrize(
+    "data_source",
+    [
+        {"recordingMethod": 1},
+        {"platform": 1},
+        {"device": {"formFactor": 1}},
+        {"device": {"manufacturer": 1}},
+        {"device": {"displayName": 1}},
+        {"application": {"packageName": 1}},
+        {"application": {"webClientId": 1}},
+        {"application": {"googleWebClientId": 1}},
+    ],
+)
+def test_malformed_data_source_scalar_types_are_rejected(
+    data_source: dict[str, object],
+) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-bad-1", 1)
+    value["dataSource"] = data_source
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+@pytest.mark.parametrize(
+    "nutrition_log_update",
+    [
+        {"mealType": 1},
+        {
+            "nutrients": [
+                {
+                    "nutrient": 1,
+                    "quantity": {"grams": 1, "userProvidedUnit": "GRAM"},
+                }
+            ]
+        },
+        {
+            "nutrients": [
+                {
+                    "nutrient": "PROTEIN",
+                    "quantity": {"grams": 1, "userProvidedUnit": 1},
+                }
+            ]
+        },
+    ],
+)
+def test_malformed_nutrition_scalar_types_are_rejected(
+    nutrition_log_update: dict[str, object],
+) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-bad-2", 1)
+    value["nutritionLog"].update(nutrition_log_update)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda value: value["nutritionLog"].update({"mealType": "F" * 513}),
+        lambda value: value["nutritionLog"].update(
+            {
+                "nutrients": [
+                    {
+                        "nutrient": "F" * 513,
+                        "quantity": {"grams": 1, "userProvidedUnit": "GRAM"},
+                    }
+                ]
+            }
+        ),
+        lambda value: value["nutritionLog"].update(
+            {
+                "nutrients": [
+                    {
+                        "nutrient": "PROTEIN",
+                        "quantity": {"grams": 1, "userProvidedUnit": "F" * 513},
+                    }
+                ]
+            }
+        ),
+    ],
+)
+def test_oversized_unknown_optional_strings_are_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-huge-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize(
+    "data_source",
+    [
+        {"recordingMethod": "R" * 513},
+        {"platform": "P" * 513},
+        {"device": {"formFactor": "F" * 513}},
+        {"device": {"manufacturer": "M" * 513}},
+        {"device": {"displayName": "D" * 513}},
+        {"application": {"packageName": "P" * 513}},
+        {"application": {"webClientId": "W" * 513}},
+        {"application": {"googleWebClientId": "G" * 513}},
+    ],
+)
+def test_oversized_data_source_scalar_strings_are_rejected(
+    data_source: dict[str, object],
+) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-huge-2", 1)
+    value["dataSource"] = data_source
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        pytest.param(
+            lambda value: value.update({"dataSource": {"recordingMethod": "é" * 257}}),
+            id="data-source-recording-method",
+        ),
+        pytest.param(
+            lambda value: value.update({"dataSource": {"platform": "é" * 257}}),
+            id="data-source-platform",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"device": {"formFactor": "é" * 257}}}
+            ),
+            id="data-source-device-form-factor",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"device": {"manufacturer": "é" * 257}}}
+            ),
+            id="data-source-device-manufacturer",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"device": {"displayName": "é" * 257}}}
+            ),
+            id="data-source-device-display-name",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"application": {"packageName": "é" * 257}}}
+            ),
+            id="data-source-application-package-name",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"application": {"webClientId": "é" * 257}}}
+            ),
+            id="data-source-application-web-client-id",
+        ),
+        pytest.param(
+            lambda value: value.update(
+                {"dataSource": {"application": {"googleWebClientId": "é" * 257}}}
+            ),
+            id="data-source-application-google-web-client-id",
+        ),
+    ],
+)
+def test_utf8_oversized_optional_strings_are_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/source-utf8-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
 def test_empty_list_response_without_optional_data_points_is_valid() -> None:
     nutrition_client, _ = client({})
 
@@ -119,17 +435,28 @@ def test_unused_page_fields_are_ignored() -> None:
     assert page.next_page_token is None
 
 
-def test_future_data_source_values_and_fields_are_ignored() -> None:
+def test_future_data_source_values_are_retained_but_unknown_fields_are_ignored() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/future-1", 1)
     value["dataSource"] = {
+        "recordingMethod": "FUTURE_RECORDING_METHOD",
         "platform": "FUTURE_PLATFORM",
+        "device": {"formFactor": "FUTURE_FORM_FACTOR"},
         "futureSourceField": {"enabled": True},
     }
     nutrition_client, _ = client({"dataPoints": [value]})
 
     page = nutrition_client.get_nutrition_log_page(page_size=1)
 
-    assert len(page.data_points) == 1
+    data_source = page.data_points[0].data_source
+    assert data_source is not None
+    assert data_source.recording_method == "FUTURE_RECORDING_METHOD"
+    assert len(data_source.recording_method) <= 512
+    assert data_source.platform == "FUTURE_PLATFORM"
+    assert len(data_source.platform) <= 512
+    assert data_source.device is not None
+    assert data_source.device.form_factor == "FUTURE_FORM_FACTOR"
+    assert len(data_source.device.form_factor) <= 512
+    assert not hasattr(data_source, "future_source_field")
 
 
 def test_future_interval_fields_are_ignored() -> None:
@@ -248,14 +575,6 @@ def test_civil_time_filter_is_inclusive_start_and_exclusive_end() -> None:
                     "nutritionLog": {
                         "interval": {**interval(1), "endTime": "2026-01-01T07:00:00Z"}
                     },
-                }
-            ]
-        },
-        {
-            "dataPoints": [
-                {
-                    "name": "users/u/dataTypes/nutrition-log/dataPoints/bad-1",
-                    "nutritionLog": {"interval": interval(1), "mealType": "UNKNOWN_MEAL"},
                 }
             ]
         },

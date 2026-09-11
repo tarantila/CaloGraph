@@ -48,6 +48,28 @@ class NutritionServing:
 
 
 @dataclass(frozen=True, slots=True)
+class NutritionDataSourceDevice:
+    form_factor: str | None = None
+    manufacturer: str | None = None
+    display_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NutritionDataSourceApplication:
+    package_name: str | None = None
+    web_client_id: str | None = None
+    google_web_client_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NutritionDataSource:
+    recording_method: str | None = None
+    platform: str | None = None
+    device: NutritionDataSourceDevice | None = None
+    application: NutritionDataSourceApplication | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NutritionLogInterval:
     start_time: datetime
     end_time: datetime
@@ -75,7 +97,7 @@ class NutritionLog:
 class NutritionLogDataPoint:
     name: str | None
     nutrition_log: NutritionLog
-
+    data_source: NutritionDataSource | None = None
 
 @dataclass(frozen=True, slots=True)
 class _PreciseTime:
@@ -355,7 +377,7 @@ class GoogleHealthClient:
     ) -> NutritionLogPage:
         try:
             status_code = int(response.status_code)
-        except AttributeError, TypeError, ValueError:
+        except (AttributeError, TypeError, ValueError):
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid response"
             ) from None
@@ -399,7 +421,7 @@ class GoogleHealthClient:
                 for item in data_points
                 if _matches_civil_bounds(item, civil_start_time, civil_end_time)
             )
-        except GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError:
+        except (GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError):
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid Nutrition Log page"
             ) from None
@@ -523,46 +545,69 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
         raise ValueError
     if isinstance(name, str) and name and not _RESOURCE_NAME_RE.fullmatch(name):
         raise ValueError
-    data_source = value.get("dataSource")
-    if data_source is not None:
-        _validate_data_source(data_source)
+    data_source_value = value.get("dataSource")
+    data_source = (
+        _parse_data_source(data_source_value) if data_source_value is not None else None
+    )
     nutrition_log = value["nutritionLog"]
     if not isinstance(nutrition_log, dict):
         raise ValueError
     return NutritionLogDataPoint(
         name=name if isinstance(name, str) else None,
         nutrition_log=_parse_nutrition_log(nutrition_log),
+        data_source=data_source,
     )
 
 
-def _validate_data_source(value: object) -> None:
+def _parse_data_source(value: object) -> NutritionDataSource:
     if not isinstance(value, dict):
         raise ValueError
-    recording_method = value.get("recordingMethod")
-    if recording_method is not None and not isinstance(recording_method, str):
+    device_value = value.get("device")
+    application_value = value.get("application")
+    device = _parse_data_source_device(device_value) if device_value is not None else None
+    application = (
+        _parse_data_source_application(application_value)
+        if application_value is not None
+        else None
+    )
+    return NutritionDataSource(
+        recording_method=_optional_bounded_string(value.get("recordingMethod")),
+        platform=_optional_bounded_string(value.get("platform")),
+        device=device,
+        application=application,
+    )
+
+
+def _parse_data_source_device(value: object) -> NutritionDataSourceDevice:
+    if not isinstance(value, dict):
         raise ValueError
-    platform = value.get("platform")
-    if platform is not None and not isinstance(platform, str):
+    return NutritionDataSourceDevice(
+        form_factor=_optional_bounded_string(value.get("formFactor")),
+        manufacturer=_optional_bounded_string(value.get("manufacturer")),
+        display_name=_optional_bounded_string(value.get("displayName")),
+    )
+
+
+def _parse_data_source_application(value: object) -> NutritionDataSourceApplication:
+    if not isinstance(value, dict):
         raise ValueError
-    device = value.get("device")
-    if device is not None:
-        if not isinstance(device, dict):
-            raise ValueError
-        form_factor = device.get("formFactor")
-        if form_factor is not None and not isinstance(form_factor, str):
-            raise ValueError
-        for key in ("manufacturer", "displayName"):
-            item = device.get(key)
-            if item is not None and (not isinstance(item, str) or not item or len(item) > 512):
-                raise ValueError
-    application = value.get("application")
-    if application is not None:
-        if not isinstance(application, dict):
-            raise ValueError
-        for key in ("packageName", "webClientId", "googleWebClientId"):
-            item = application.get(key)
-            if item is not None and (not isinstance(item, str) or not item or len(item) > 512):
-                raise ValueError
+    return NutritionDataSourceApplication(
+        package_name=_optional_bounded_string(value.get("packageName")),
+        web_client_id=_optional_bounded_string(value.get("webClientId")),
+        google_web_client_id=_optional_bounded_string(value.get("googleWebClientId")),
+    )
+
+
+def _bounded_string(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError
+    if len(value.encode("utf-8")) > 512:
+        raise ValueError
+    return value
+
+
+def _optional_bounded_string(value: object) -> str | None:
+    return None if value is None else _bounded_string(value)
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
@@ -575,9 +620,7 @@ def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
     if not isinstance(nutrients_value, list):
         raise ValueError
     nutrients = tuple(_parse_nutrient(item) for item in nutrients_value)
-    meal_type = value.get("mealType")
-    if meal_type is not None and (not isinstance(meal_type, str) or meal_type not in _MEAL_TYPES):
-        raise ValueError
+    meal_type = _optional_bounded_string(value.get("mealType"))
     food = value.get("food")
     food_display_name = value.get("foodDisplayName")
     if food is not None and (
@@ -690,7 +733,7 @@ def _parse_timestamp(value: object) -> _PreciseTime:
 def _physical_key(value: _PreciseTime) -> int:
     try:
         utc = value.value.astimezone(UTC).replace(microsecond=0, tzinfo=None)
-    except OverflowError, ValueError:
+    except (OverflowError, ValueError):
         raise ValueError from None
     return (
         (utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second
@@ -751,10 +794,10 @@ def _parse_quantity(
     if not isinstance(value, dict) or scalar_key not in value:
         raise ValueError
     number = value[scalar_key]
-    unit = value.get("userProvidedUnit")
+    unit = _optional_bounded_string(value.get("userProvidedUnit"))
     try:
         number_value = float(number)
-    except OverflowError, TypeError, ValueError:
+    except (OverflowError, TypeError, ValueError):
         raise ValueError from None
     if (
         isinstance(number, bool)
@@ -762,7 +805,11 @@ def _parse_quantity(
         or not math.isfinite(number_value)
     ):
         raise ValueError
-    if unit is not None and (not isinstance(unit, str) or unit not in units):
+    if (
+        unit is not None
+        and unit in (_WEIGHT_UNITS | _ENERGY_UNITS)
+        and unit not in units
+    ):
         raise ValueError
     return NutritionQuantity(value=number_value, unit=unit)
 
@@ -770,9 +817,7 @@ def _parse_quantity(
 def _parse_nutrient(value: object) -> NutritionNutrient:
     if not isinstance(value, dict) or not {"quantity", "nutrient"} <= set(value):
         raise ValueError
-    nutrient = value["nutrient"]
-    if not isinstance(nutrient, str) or nutrient not in _NUTRIENTS:
-        raise ValueError
+    nutrient = _bounded_string(value["nutrient"])
     quantity = value["quantity"]
     return NutritionNutrient(
         nutrient=nutrient, quantity=_parse_quantity(quantity, "grams", _WEIGHT_UNITS)
@@ -793,7 +838,7 @@ def _parse_serving(value: object) -> NutritionServing:
     if amount is not None:
         try:
             amount_value = float(amount)
-        except OverflowError, TypeError, ValueError:
+        except (OverflowError, TypeError, ValueError):
             raise ValueError from None
         if (
             isinstance(amount, bool)
@@ -858,12 +903,12 @@ def _validate_page_size_limit(maximum: int) -> None:
 def _validate_page_token(page_token: str | None) -> None:
     if page_token is None:
         return
-    if (
-        not isinstance(page_token, str)
-        or not page_token
-        or len(page_token) > GOOGLE_HEALTH_MAX_PAGE_TOKEN_LENGTH
-    ):
+    if not isinstance(page_token, str) or not page_token:
         raise ValueError("page_token is invalid")
+    try:
+        _bounded_string(page_token)
+    except ValueError:
+        raise ValueError("page_token is invalid") from None
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in page_token):
         raise ValueError("page_token is invalid")
 
@@ -889,7 +934,7 @@ def _retry_after(headers: Mapping[str, str]) -> int:
     try:
         raw_value = headers.get("retry-after") or headers.get("Retry-After") or "0"
         value = int(raw_value)
-    except AttributeError, TypeError, ValueError:
+    except (AttributeError, TypeError, ValueError):
         return 0
     return max(0, min(value, 300))
 
@@ -907,6 +952,9 @@ __all__ = [
     "GoogleHealthRateLimitedError",
     "GoogleHealthScopeError",
     "GoogleHealthTransientError",
+    "NutritionDataSource",
+    "NutritionDataSourceApplication",
+    "NutritionDataSourceDevice",
     "NutritionLog",
     "NutritionLogDataPoint",
     "NutritionLogInterval",
