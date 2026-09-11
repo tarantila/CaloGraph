@@ -272,8 +272,8 @@ def test_year_one_negative_offset_underflow_is_rejected() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/year-one-1", 1)
     cast_interval = value["nutritionLog"]["interval"]
     assert isinstance(cast_interval, dict)
-    cast_interval["startTime"] = "0001-01-01T00:00:00+00:00"
-    cast_interval["endTime"] = "0001-01-01T00:00:00.000000001+00:00"
+    cast_interval["startTime"] = "0001-01-01T00:00:00+00:01"
+    cast_interval["endTime"] = "0001-01-01T00:00:00.000000001+00:01"
     cast_interval["startUtcOffset"] = "-0.000000001s"
     cast_interval["endUtcOffset"] = "0s"
     cast_interval["civilStartTime"] = {
