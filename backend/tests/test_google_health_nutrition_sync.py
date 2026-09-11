@@ -309,6 +309,68 @@ def test_sync_distinct_write_session_rolls_back_adapter_failure(
     assert all(not session.in_transaction() for session in sessions)
 
 
+def test_sync_commit_failure_rolls_back_and_closes_distinct_write_session(
+    db: Session, user: User
+) -> None:
+    _connection(db, user)
+    db.rollback()
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log-commit-failure"),), page_token=None, next_page_token=None)},
+    )
+    sessions: list[Session] = []
+
+    class CommitRaisingSession:
+        def __init__(self, inner: Session) -> None:
+            self.inner = inner
+            self.commit_called = False
+            self.rollback_called = False
+            self.close_called = False
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+        def commit(self) -> None:
+            self.commit_called = True
+            raise RuntimeError("synthetic commit failure")
+
+        def rollback(self) -> None:
+            self.rollback_called = True
+            self.inner.rollback()
+
+        def close(self) -> None:
+            self.close_called = True
+            self.inner.close()
+
+    write_session: CommitRaisingSession | None = None
+
+    def session_factory() -> Session:
+        nonlocal write_session
+        session = SessionLocal()
+        sessions.append(session)
+        if len(sessions) == 1:
+            return session
+        write_session = CommitRaisingSession(session)
+        return write_session  # type: ignore[return-value]
+
+    with pytest.raises(GoogleHealthNutritionSyncError) as raised:
+        harness.service(session_factory=session_factory).sync(
+            user_id=user.id,
+            requested_start=DAY,
+            requested_end=DAY,
+        )
+
+    assert raised.value.code == "persistence_error"
+    assert len(sessions) == 2
+    assert write_session is not None
+    assert write_session.inner is not sessions[0]
+    assert write_session.commit_called is True
+    assert write_session.rollback_called is True
+    assert write_session.close_called is True
+    with SessionLocal() as observer:
+        assert _domain_counts(observer) == {model: 0 for model in DOMAIN_MODELS}
+
+
 def test_sync_rejects_repeated_page_token_without_writing_domain_rows(db: Session, user: User) -> None:
     _connection(db, user)
     pages = {
