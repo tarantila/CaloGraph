@@ -157,10 +157,11 @@ class GoogleHealthNutritionSyncService:
         requested_start: date,
         requested_end: date,
     ) -> GoogleHealthNutritionSyncResult:
-        """Fetch all pages, then invoke the adapter exactly once.
+        """Fetch all pages, then persist them in one owned transaction.
 
-        Neither this method nor its injected adapter commits the caller-owned
-        SQLAlchemy session.
+        The read session is released before provider I/O. The write session is
+        created only after pagination and is owned by this orchestration
+        service, including its commit and close.
         """
         if requested_start > requested_end:
             raise _safe_error("invalid_request")
@@ -231,40 +232,52 @@ class GoogleHealthNutritionSyncService:
         except Exception:
             raise _safe_error("provider_error") from None
 
-        # A nested transaction gives the adapter one atomic write boundary
-        # while preserving ownership of the outer transaction and its commit.
+        write_db: Session | None = None
         try:
             write_db = self._session_factory()
-            with write_db.begin_nested():
-                run = self._adapter(
-                    write_db,
-                    user_id=user_id,
-                    source_instance_id=source_instance_id,
-                    requested_start=requested_start,
-                    requested_end=requested_end,
-                    data_points=tuple(points),
-                )
-                persisted_count = int(
-                    write_db.scalar(
-                        select(func.count(NutritionSourceObservation.id)).where(
-                            NutritionSourceObservation.ingestion_run_id == run.id,
-                        )
+            run = self._adapter(
+                write_db,
+                user_id=user_id,
+                source_instance_id=source_instance_id,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                data_points=tuple(points),
+            )
+            persisted_count = int(
+                write_db.scalar(
+                    select(func.count(NutritionSourceObservation.id)).where(
+                        NutritionSourceObservation.ingestion_run_id == run.id,
                     )
-                    or 0
                 )
+                or 0
+            )
+            write_db.commit()
+            return GoogleHealthNutritionSyncResult(
+                status=cast(str, getattr(run, "status", "completed")),
+                fetched_count=len(points),
+                persisted_count=persisted_count,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                covered_start=cast(
+                    date | None,
+                    getattr(run, "covered_start_date", requested_start),
+                ),
+                covered_end=cast(
+                    date | None,
+                    getattr(run, "covered_end_date", requested_end),
+                ),
+                run=run,
+            )
         except Exception:
+            if write_db is not None:
+                try:
+                    write_db.rollback()
+                except Exception:
+                    pass
             raise _safe_error("persistence_error") from None
-
-        return GoogleHealthNutritionSyncResult(
-            status=cast(str, getattr(run, "status", "completed")),
-            fetched_count=len(points),
-            persisted_count=persisted_count,
-            requested_start=requested_start,
-            requested_end=requested_end,
-            covered_start=cast(date | None, getattr(run, "covered_start_date", requested_start)),
-            covered_end=cast(date | None, getattr(run, "covered_end_date", requested_end)),
-            run=run,
-        )
+        finally:
+            if write_db is not None:
+                write_db.close()
 
 
 __all__ = [

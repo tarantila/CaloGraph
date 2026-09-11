@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -8,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.database import SessionLocal
 from app.google_health.client import (
     NutritionLog,
     NutritionLogDataPoint,
@@ -50,6 +52,7 @@ class FakePagedClient:
     db: Session
     events: list[str]
     error: Exception | None = None
+    check_db_idle: bool = True
     page_tokens: list[str | None] = field(default_factory=list)
 
     def get_nutrition_log_page(
@@ -62,7 +65,8 @@ class FakePagedClient:
         civil_start_time: date | datetime | None = None,
         civil_end_time: date | datetime | None = None,
     ) -> NutritionLogPage:
-        assert not self.db.in_transaction()
+        if self.check_db_idle:
+            assert not self.db.in_transaction()
         del page_size, start_time, end_time, civil_start_time, civil_end_time
         self.page_tokens.append(page_token)
         self.events.append(f"read:{page_token}")
@@ -81,8 +85,13 @@ class SyncHarness:
     credentials: list[str] = field(default_factory=list)
     remote_error: Exception | None = None
 
-    def service(self) -> GoogleHealthNutritionSyncService:
-        def session_factory() -> Session:
+    def service(
+        self,
+        *,
+        session_factory: Callable[[], Session] | None = None,
+        adapter: Callable[..., Any] | None = None,
+    ) -> GoogleHealthNutritionSyncService:
+        def default_session_factory() -> Session:
             return self.db
 
         def decrypt_refresh_token(value: bytes) -> str:
@@ -96,23 +105,30 @@ class SyncHarness:
             return {"refresh_token": refresh_token}
 
         def client_factory(credentials: object) -> FakePagedClient:
-            assert not self.db.in_transaction()
+            if session_factory is None:
+                assert not self.db.in_transaction()
             assert credentials == {"refresh_token": "refresh-token-only-in-memory"}
             self.events.append("client")
-            client = FakePagedClient(self.pages, self.db, self.events, error=self.remote_error)
+            client = FakePagedClient(
+                self.pages,
+                self.db,
+                self.events,
+                error=self.remote_error,
+                check_db_idle=session_factory is None,
+            )
             self.clients.append(client)
             return client
 
-        def adapter(session: Session, **kwargs: Any):
+        def default_adapter(session: Session, **kwargs: Any):
             self.events.append("adapter")
             return ingest_google_health_nutrition_logs(session, **kwargs)
 
         return GoogleHealthNutritionSyncService(
-            session_factory=session_factory,
+            session_factory=session_factory or default_session_factory,
             client_factory=client_factory,
             credentials_factory=credentials_factory,
             decrypt_refresh_token=decrypt_refresh_token,
-            adapter=adapter,
+            adapter=adapter or default_adapter,
         )
 
 
@@ -228,6 +244,69 @@ def test_sync_fetches_all_pages_before_one_adapter_write_and_preserves_source_in
     assert run.covered_start_date == DAY
     assert run.covered_end_date == DAY
     assert run.status == "completed"
+
+
+def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, user: User) -> None:
+    _connection(db, user)
+    db.rollback()
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log-distinct-session"),), page_token=None, next_page_token=None)},
+    )
+    sessions: list[Session] = []
+
+    def session_factory() -> Session:
+        session = SessionLocal()
+        sessions.append(session)
+        return session
+
+    result = harness.service(session_factory=session_factory).sync(
+        user_id=user.id,
+        requested_start=DAY,
+        requested_end=DAY,
+    )
+
+    assert getattr(result, "persisted_count") == 1
+    assert len(sessions) == 2
+    with SessionLocal() as observer:
+        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
+    assert all(not session.in_transaction() for session in sessions)
+
+def test_sync_distinct_write_session_rolls_back_adapter_failure(
+    db: Session, user: User
+) -> None:
+    _connection(db, user)
+    db.rollback()
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log-rollback"),), page_token=None, next_page_token=None)},
+    )
+    sessions: list[Session] = []
+
+    def session_factory() -> Session:
+        session = SessionLocal()
+        sessions.append(session)
+        return session
+
+    def failing_adapter(session: Session, **kwargs: Any) -> NutritionIngestionRun:
+        run = ingest_google_health_nutrition_logs(session, **kwargs)
+        raise RuntimeError(f"failure after run {run.id}")
+
+    with pytest.raises(GoogleHealthNutritionSyncError) as raised:
+        harness.service(
+            session_factory=session_factory,
+            adapter=failing_adapter,
+        ).sync(
+            user_id=user.id,
+            requested_start=DAY,
+            requested_end=DAY,
+        )
+
+    assert raised.value.code == "persistence_error"
+    assert len(sessions) == 2
+    with SessionLocal() as observer:
+        assert _domain_counts(observer) == {model: 0 for model in DOMAIN_MODELS}
+    assert all(not session.in_transaction() for session in sessions)
 
 
 def test_sync_rejects_repeated_page_token_without_writing_domain_rows(db: Session, user: User) -> None:
