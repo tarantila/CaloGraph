@@ -837,6 +837,7 @@ def _parse_serving(value: object) -> NutritionServing:
             isinstance(amount, bool)
             or not isinstance(amount, (int, float))
             or not math.isfinite(amount_value)
+            or amount_value < 0
         ):
             raise ValueError
     return NutritionServing(
