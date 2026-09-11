@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import traceback
 from datetime import UTC, datetime
 
 import pytest
 
 from app.google_health.client import (
-    GOOGLE_HEALTH_NUTRITION_LOG_PATH,
+    GOOGLE_HEALTH_API_BASE_URL,
+    GOOGLE_HEALTH_MAX_RESPONSE_BYTES,
     GoogleHealthAuthenticationError,
     GoogleHealthClient,
     GoogleHealthHTTPTransport,
@@ -15,7 +18,7 @@ from app.google_health.client import (
     GoogleHealthScopeError,
     GoogleHealthTransientError,
 )
-from app.google_health.constants import GOOGLE_HEALTH_API_BASE_URL
+
 
 
 class FakeCredentials:
@@ -36,6 +39,24 @@ class FakeResponse:
             raise self._payload
         return self._payload
 
+    def iter_bytes(self):
+        yield json.dumps(self._payload).encode()
+
+
+ 
+
+
+class StreamContext:
+    def __init__(self, response: FakeResponse) -> None:
+        self.response = response
+
+    def __enter__(self) -> FakeResponse:
+        return self.response
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
 class RefreshingCredentials:
     valid = False
     expired = True
@@ -45,6 +66,22 @@ class RefreshingCredentials:
     def refresh(self, request: object) -> None:
         self.request = request
         self.token = "refreshed-access-token"
+
+
+class FailingCredentials:
+    valid = False
+    expired = True
+    token: str | None = None
+
+    def refresh(self, request: object) -> None:
+        raise RuntimeError("refresh-secret")
+
+
+def test_client_suppresses_refresh_failure_cause() -> None:
+    with pytest.raises(GoogleHealthAuthenticationError) as raised:
+        GoogleHealthClient(FakeTransport(), FailingCredentials()).get_nutrition_log_page(page_size=10)
+    assert raised.value.__cause__ is None
+    assert "refresh-secret" not in "".join(traceback.format_exception(raised.value))
 
 
 def test_client_refreshes_expired_google_credentials_in_memory() -> None:
@@ -84,9 +121,9 @@ def test_http_transport_uses_exact_fixed_host_and_path_and_get_only() -> None:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        def get(self, url: str, **kwargs: object) -> FakeResponse:
-            self.calls.append({"url": url, **kwargs})
-            return FakeResponse()
+        def stream(self, method: str, url: str, **kwargs: object) -> StreamContext:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return StreamContext(FakeResponse())
 
     http_client = RecordingHTTPClient()
     transport = GoogleHealthHTTPTransport(http_client=http_client)
@@ -99,8 +136,9 @@ def test_http_transport_uses_exact_fixed_host_and_path_and_get_only() -> None:
         end_time=None,
     )
 
+    assert http_client.calls[0]["method"] == "GET"
     assert http_client.calls[0]["url"] == (
-        f"{GOOGLE_HEALTH_API_BASE_URL}{GOOGLE_HEALTH_NUTRITION_LOG_PATH}"
+        "https://health.googleapis.com/v4/users/me/dataTypes/nutrition-log/dataPoints"
     )
     assert not hasattr(transport, "request")
     assert not hasattr(transport, "post")
@@ -112,9 +150,9 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        def get(self, url: str, **kwargs: object) -> FakeResponse:
-            self.calls.append({"url": url, **kwargs})
-            return FakeResponse()
+        def stream(self, method: str, url: str, **kwargs: object) -> StreamContext:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return StreamContext(FakeResponse())
 
     http_client = RecordingHTTPClient()
     transport = GoogleHealthHTTPTransport(http_client=http_client, connect_timeout=2.0, read_timeout=7.0)
@@ -135,10 +173,38 @@ def test_transport_has_explicit_timeout_and_safe_query_encoding() -> None:
     assert call["params"] == {
         "pageSize": "10",
         "pageToken": "a token/&",
-        "startTime": start.isoformat(),
-        "endTime": end.isoformat(),
+        "filter": (
+            "nutrition_log.interval.start_time >= 2026-01-02T03:04:05+00:00 AND "
+            "nutrition_log.interval.start_time < 2026-01-03T03:04:05+00:00"
+        ),
     }
     assert call["headers"] == {"Authorization": "Bearer access-token"}
+
+
+def test_transport_caps_chunked_response_before_json_buffering() -> None:
+    class OversizedResponse:
+        status_code = 200
+        headers = {"content-length": "1"}
+
+        def iter_bytes(self):
+            yield b"x" * GOOGLE_HEALTH_MAX_RESPONSE_BYTES
+            yield b"raw-provider-body"
+
+    class RecordingHTTPClient:
+        def stream(self, method: str, url: str, **kwargs: object) -> StreamContext:
+            return StreamContext(OversizedResponse())  # type: ignore[arg-type]
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        GoogleHealthHTTPTransport(http_client=RecordingHTTPClient()).get_nutrition_log(
+            access_token="access-token",
+            page_size=10,
+            page_token=None,
+            start_time=None,
+            end_time=None,
+        )
+
+    assert raised.value.__cause__ is None
+    assert "raw-provider-body" not in "".join(traceback.format_exception(raised.value))
 
 
 @pytest.mark.parametrize("page_size", [0, -1, 101])
@@ -182,8 +248,20 @@ def test_client_maps_provider_status_without_response_leakage(status: int, error
         )
     assert "do-not-leak" not in str(raised.value)
     assert "access-token" not in str(raised.value)
+    assert raised.value.__cause__ is None
     if isinstance(raised.value, GoogleHealthRateLimitedError):
         assert 0 <= raised.value.retry_after <= 300
+
+
+def test_client_maps_transport_failure_without_provider_cause() -> None:
+    class FailingTransport:
+        def get_nutrition_log(self, **_: object) -> FakeResponse:
+            raise RuntimeError("provider-secret-body")
+
+    with pytest.raises(GoogleHealthTransientError) as raised:
+        GoogleHealthClient(FailingTransport(), FakeCredentials()).get_nutrition_log_page(page_size=10)
+    assert raised.value.__cause__ is None
+    assert "provider-secret-body" not in "".join(traceback.format_exception(raised.value))
 
 
 def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> None:
@@ -194,4 +272,6 @@ def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> N
         )
     assert "do-not-leak" not in str(raised.value)
     assert "secret" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert "do-not-leak" not in "".join(traceback.format_exception(raised.value))
     assert "do-not-leak" not in caplog.text

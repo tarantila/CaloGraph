@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from types import MappingProxyType
-from typing import Mapping, Protocol, cast
+from typing import Protocol, cast
 
 import httpx
 
@@ -18,7 +21,7 @@ from app.google_health.errors import (
     GoogleHealthTransientError,
 )
 
-GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/nutritionLog"
+GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/dataTypes/nutrition-log/dataPoints"
 GOOGLE_HEALTH_MAX_PAGE_SIZE = 100
 GOOGLE_HEALTH_MAX_PAGE_TOKEN_LENGTH = 512
 GOOGLE_HEALTH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -38,6 +41,23 @@ class GoogleHealthResponse(Protocol):
     def json(self) -> object: ...
 
 
+class GoogleHealthStreamResponse(Protocol):
+    status_code: int
+    headers: Mapping[str, str]
+
+    def iter_bytes(self) -> Iterator[bytes]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _BufferedResponse:
+    status_code: int
+    headers: Mapping[str, str]
+    content: bytes
+
+    def json(self) -> object:
+        return cast(object, json.loads(self.content))
+
+
 class GoogleHealthTransport(Protocol):
     def get_nutrition_log(
         self,
@@ -51,10 +71,11 @@ class GoogleHealthTransport(Protocol):
 
 
 class _HTTPClient(Protocol):
-    def get(self, url: str, **kwargs: object) -> GoogleHealthResponse: ...
+    def stream(
+        self, method: str, url: str, **kwargs: object
+    ) -> AbstractContextManager[GoogleHealthStreamResponse]: ...
 
     def close(self) -> None: ...
-
 
 class GoogleHealthHTTPTransport:
     """A deliberately narrow, fixed-host GET transport for Nutrition Log."""
@@ -98,20 +119,32 @@ class GoogleHealthHTTPTransport:
         params: dict[str, str] = {"pageSize": str(page_size)}
         if page_token is not None:
             params["pageToken"] = page_token
+        filters: list[str] = []
         if start_time is not None:
-            params["startTime"] = start_time.isoformat()
+            filters.append(f"nutrition_log.interval.start_time >= {start_time.isoformat()}")
         if end_time is not None:
-            params["endTime"] = end_time.isoformat()
+            filters.append(f"nutrition_log.interval.start_time < {end_time.isoformat()}")
+        if filters:
+            params["filter"] = " AND ".join(filters)
 
         # The path is a module constant and is never accepted from a caller.
         url = f"{GOOGLE_HEALTH_API_BASE_URL}{GOOGLE_HEALTH_NUTRITION_LOG_PATH}"
-        return self._http_client.get(
+        with self._http_client.stream(
+            "GET",
             url,
             params=params,
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=self._timeout,
             follow_redirects=False,
-        )
+        ) as response:
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                if not isinstance(chunk, bytes) or len(body) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
+                    raise GoogleHealthInvalidResponseError(
+                        "Google Health response is too large or invalid"
+                    ) from None
+                body.extend(chunk)
+            return _BufferedResponse(response.status_code, dict(response.headers), bytes(body))
 
     def close(self) -> None:
         self._http_client.close()
@@ -148,8 +181,19 @@ class GoogleHealthClient:
                 start_time=start_time,
                 end_time=end_time,
             )
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError, TimeoutError, ConnectionError, OSError) as exc:
-            raise GoogleHealthTransientError("Google Health transport failed temporarily") from exc
+        except GoogleHealthClientError:
+            raise
+        except (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RequestError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        ):
+            raise GoogleHealthTransientError("Google Health transport failed temporarily") from None
+        except Exception:
+            raise GoogleHealthTransientError("Google Health transport failed temporarily") from None
         return self._parse_response(response)
 
     def _access_token(self) -> str:
@@ -169,10 +213,10 @@ class GoogleHealthClient:
                 from google.auth.transport.requests import Request
 
                 refresh(Request())
-            except Exception as exc:
+            except Exception:
                 raise GoogleHealthAuthenticationError(
                     "Google Health credentials require reauthentication"
-                ) from exc
+                ) from None
             token = getattr(credentials, "token", None)
         if not isinstance(token, str) or not token or any(ord(char) < 0x20 for char in token):
             raise GoogleHealthAuthenticationError("Google Health credentials require reauthentication")
@@ -182,8 +226,8 @@ class GoogleHealthClient:
     def _parse_response(response: GoogleHealthResponse) -> NutritionLogPage:
         try:
             status_code = int(response.status_code)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response") from exc
+        except (AttributeError, TypeError, ValueError):
+            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response") from None
 
         if status_code == 401:
             raise GoogleHealthAuthenticationError("Google Health credentials require reauthentication")
@@ -201,8 +245,8 @@ class GoogleHealthClient:
             if content_length is not None and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
                 raise ValueError
             payload = response.json()
-        except Exception as exc:
-            raise GoogleHealthInvalidResponseError("Google Health returned malformed JSON") from exc
+        except Exception:
+            raise GoogleHealthInvalidResponseError("Google Health returned malformed JSON") from None
         if not isinstance(payload, dict):
             raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
         return NutritionLogPage(MappingProxyType(cast(dict[str, object], payload)))
