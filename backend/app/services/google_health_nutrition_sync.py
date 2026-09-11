@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -28,6 +28,7 @@ from app.google_health.constants import (
 )
 from app.google_health.errors import GoogleHealthClientError
 from app.models import GoogleHealthConnection
+from app.nutrition.models import NutritionSourceObservation
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_ingestion import (
     ingest_google_health_nutrition_logs,
@@ -164,23 +165,30 @@ class GoogleHealthNutritionSyncService:
         if requested_start > requested_end:
             raise _safe_error("invalid_request")
 
-        db = self._session_factory()
-        connection = db.scalar(
-            select(GoogleHealthConnection).where(
-                GoogleHealthConnection.user_id == user_id,
+        read_db = self._session_factory()
+        try:
+            connection = read_db.scalar(
+                select(GoogleHealthConnection).where(
+                    GoogleHealthConnection.user_id == user_id,
+                )
             )
-        )
-        if connection is None:
-            raise _safe_error("connection_not_configured")
-        if connection.state != "active":
-            raise _safe_error("connection_inactive")
-        if GOOGLE_HEALTH_SCOPE not in (connection.granted_scopes or ()):
-            raise _safe_error("scope_missing")
+            if connection is None:
+                raise _safe_error("connection_not_configured")
+            if connection.state != "active":
+                raise _safe_error("connection_inactive")
+            if GOOGLE_HEALTH_SCOPE not in (connection.granted_scopes or ()):
+                raise _safe_error("scope_missing")
+
+            # Snapshot all values needed after the read session is released.
+            source_instance_id = connection.id
+            encrypted_refresh_token = connection.encrypted_refresh_token
+        finally:
+            read_db.close()
 
         # These are intentionally local variables.  They are never included in
         # a result, exception, log, or provider metadata value.
         try:
-            refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token)
+            refresh_token = self._decrypt_refresh_token(encrypted_refresh_token)
             if not isinstance(refresh_token, str) or not refresh_token:
                 raise ValueError("empty credential")
         except Exception:
@@ -226,14 +234,23 @@ class GoogleHealthNutritionSyncService:
         # A nested transaction gives the adapter one atomic write boundary
         # while preserving ownership of the outer transaction and its commit.
         try:
-            with db.begin_nested():
+            write_db = self._session_factory()
+            with write_db.begin_nested():
                 run = self._adapter(
-                    db,
+                    write_db,
                     user_id=user_id,
-                    source_instance_id=connection.id,
+                    source_instance_id=source_instance_id,
                     requested_start=requested_start,
                     requested_end=requested_end,
                     data_points=tuple(points),
+                )
+                persisted_count = int(
+                    write_db.scalar(
+                        select(func.count(NutritionSourceObservation.id)).where(
+                            NutritionSourceObservation.ingestion_run_id == run.id,
+                        )
+                    )
+                    or 0
                 )
         except Exception:
             raise _safe_error("persistence_error") from None
@@ -241,7 +258,7 @@ class GoogleHealthNutritionSyncService:
         return GoogleHealthNutritionSyncResult(
             status=cast(str, getattr(run, "status", "completed")),
             fetched_count=len(points),
-            persisted_count=len(points),
+            persisted_count=persisted_count,
             requested_start=requested_start,
             requested_end=requested_end,
             covered_start=cast(date | None, getattr(run, "covered_start_date", requested_start)),

@@ -47,6 +47,7 @@ PHYSICAL_END = datetime(2026, 9, 1, 10, 30, tzinfo=UTC)
 @dataclass
 class FakePagedClient:
     pages: dict[str | None, NutritionLogPage]
+    db: Session
     events: list[str]
     error: Exception | None = None
     page_tokens: list[str | None] = field(default_factory=list)
@@ -61,6 +62,7 @@ class FakePagedClient:
         civil_start_time: date | datetime | None = None,
         civil_end_time: date | datetime | None = None,
     ) -> NutritionLogPage:
+        assert not self.db.in_transaction()
         del page_size, start_time, end_time, civil_start_time, civil_end_time
         self.page_tokens.append(page_token)
         self.events.append(f"read:{page_token}")
@@ -94,9 +96,10 @@ class SyncHarness:
             return {"refresh_token": refresh_token}
 
         def client_factory(credentials: object) -> FakePagedClient:
+            assert not self.db.in_transaction()
             assert credentials == {"refresh_token": "refresh-token-only-in-memory"}
             self.events.append("client")
-            client = FakePagedClient(self.pages, self.events, error=self.remote_error)
+            client = FakePagedClient(self.pages, self.db, self.events, error=self.remote_error)
             self.clients.append(client)
             return client
 
@@ -358,4 +361,4 @@ def test_repeating_sync_is_idempotent_for_non_run_domain_rows(db: Session, user:
         if model is not NutritionIngestionRun:
             assert counts_after_second[model] == counts_after_first[model]
     assert getattr(second, "fetched_count") == 1
-    assert getattr(second, "persisted_count") == 1
+    assert getattr(second, "persisted_count") == 0
