@@ -721,7 +721,10 @@ def _parse_timestamp(value: object) -> _PreciseTime:
 
 
 def _physical_key(value: _PreciseTime) -> int:
-    utc = value.value.astimezone(timezone.utc).replace(microsecond=0, tzinfo=None)
+    try:
+        utc = value.value.astimezone(timezone.utc).replace(microsecond=0, tzinfo=None)
+    except (OverflowError, ValueError):
+        raise ValueError from None
     return (
         ((utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second)
         * 1_000_000_000
@@ -924,7 +927,8 @@ def _validate_civil_bounds(
         _civil_boundary(start)
     if end is not None:
         _civil_boundary(end)
-
+    if start is not None and end is not None and _civil_boundary(start) > _civil_boundary(end):
+        raise ValueError("civil_start_time must not be after civil_end_time")
 def _retry_after(headers: Mapping[str, str]) -> int:
     try:
         raw_value = headers.get("retry-after") or headers.get("Retry-After") or "0"

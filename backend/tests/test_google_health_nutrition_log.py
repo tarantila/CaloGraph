@@ -257,6 +257,35 @@ def test_physical_and_civil_bounds_cannot_be_mixed() -> None:
         )
 
 
+def test_reversed_civil_query_bounds_are_rejected() -> None:
+    nutrition_client, _ = client({"dataPoints": []})
+
+    with pytest.raises(ValueError):
+        nutrition_client.get_nutrition_log_page(
+            page_size=1,
+            civil_start_time=date(2026, 1, 2),
+            civil_end_time=date(2026, 1, 1),
+        )
+
+
+def test_year_one_negative_offset_underflow_is_rejected() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/year-one-1", 1)
+    cast_interval = value["nutritionLog"]["interval"]
+    assert isinstance(cast_interval, dict)
+    cast_interval["startTime"] = "0001-01-01T00:00:00+00:00"
+    cast_interval["endTime"] = "0001-01-01T00:00:00.000000001+00:00"
+    cast_interval["startUtcOffset"] = "-0.000000001s"
+    cast_interval["endUtcOffset"] = "0s"
+    cast_interval["civilStartTime"] = {
+        "date": {"year": 1, "month": 1, "day": 1},
+        "time": {"hours": 0, "minutes": 0, "seconds": 0, "nanos": 0},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
 
 @pytest.mark.parametrize(
     "mutator",
