@@ -99,6 +99,7 @@ class NutritionLogDataPoint:
     nutrition_log: NutritionLog
     data_source: NutritionDataSource | None = None
 
+
 @dataclass(frozen=True, slots=True)
 class _PreciseTime:
     value: datetime
@@ -377,7 +378,7 @@ class GoogleHealthClient:
     ) -> NutritionLogPage:
         try:
             status_code = int(response.status_code)
-        except (AttributeError, TypeError, ValueError):
+        except AttributeError, TypeError, ValueError:
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid response"
             ) from None
@@ -421,7 +422,7 @@ class GoogleHealthClient:
                 for item in data_points
                 if _matches_civil_bounds(item, civil_start_time, civil_end_time)
             )
-        except (GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError):
+        except GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError:
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid Nutrition Log page"
             ) from None
@@ -546,9 +547,7 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if isinstance(name, str) and name and not _RESOURCE_NAME_RE.fullmatch(name):
         raise ValueError
     data_source_value = value.get("dataSource")
-    data_source = (
-        _parse_data_source(data_source_value) if data_source_value is not None else None
-    )
+    data_source = _parse_data_source(data_source_value) if data_source_value is not None else None
     nutrition_log = value["nutritionLog"]
     if not isinstance(nutrition_log, dict):
         raise ValueError
@@ -566,9 +565,7 @@ def _parse_data_source(value: object) -> NutritionDataSource:
     application_value = value.get("application")
     device = _parse_data_source_device(device_value) if device_value is not None else None
     application = (
-        _parse_data_source_application(application_value)
-        if application_value is not None
-        else None
+        _parse_data_source_application(application_value) if application_value is not None else None
     )
     return NutritionDataSource(
         recording_method=_optional_bounded_string(value.get("recordingMethod")),
@@ -729,7 +726,7 @@ def _parse_timestamp(value: object) -> _PreciseTime:
 def _physical_key(value: _PreciseTime) -> int:
     try:
         utc = value.value.astimezone(UTC).replace(microsecond=0, tzinfo=None)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         raise ValueError from None
     return (
         (utc.toordinal() - 1) * 86_400 + utc.hour * 3_600 + utc.minute * 60 + utc.second
@@ -793,7 +790,7 @@ def _parse_quantity(
     unit = _optional_bounded_string(value.get("userProvidedUnit"))
     try:
         number_value = float(number)
-    except (OverflowError, TypeError, ValueError):
+    except OverflowError, TypeError, ValueError:
         raise ValueError from None
     if (
         isinstance(number, bool)
@@ -802,11 +799,7 @@ def _parse_quantity(
         or number_value < 0
     ):
         raise ValueError
-    if (
-        unit is not None
-        and unit in (_WEIGHT_UNITS | _ENERGY_UNITS)
-        and unit not in units
-    ):
+    if unit is not None and unit in (_WEIGHT_UNITS | _ENERGY_UNITS) and unit not in units:
         raise ValueError
     return NutritionQuantity(value=number_value, unit=unit)
 
@@ -831,7 +824,7 @@ def _parse_serving(value: object) -> NutritionServing:
     if amount is not None:
         try:
             amount_value = float(amount)
-        except (OverflowError, TypeError, ValueError):
+        except OverflowError, TypeError, ValueError:
             raise ValueError from None
         if (
             isinstance(amount, bool)
@@ -928,7 +921,7 @@ def _retry_after(headers: Mapping[str, str]) -> int:
     try:
         raw_value = headers.get("retry-after") or headers.get("Retry-After") or "0"
         value = int(raw_value)
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return 0
     return max(0, min(value, 300))
 

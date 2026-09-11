@@ -7,6 +7,7 @@ Only bounded DTOs cross into the injected persistence adapter.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Protocol, cast
@@ -270,10 +271,8 @@ class GoogleHealthNutritionSyncService:
             )
         except Exception:
             if write_db is not None:
-                try:
+                with suppress(Exception):
                     write_db.rollback()
-                except Exception:
-                    pass
             raise _safe_error("persistence_error") from None
         finally:
             if write_db is not None:

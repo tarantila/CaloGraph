@@ -19,7 +19,7 @@ from app.google_health.client import (
     NutritionServing,
 )
 from app.models import GoogleHealthConnection, HealthSample, User
-from app.nutrition.enums import CoverageState, LineageState, ObservationKind, ObservationRole, PresenceState
+from app.nutrition.enums import CoverageState, LineageState, ObservationRole, PresenceState
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionExternalIdentity,
@@ -34,7 +34,6 @@ from app.nutrition.models import (
     NutritionSourceTombstone,
 )
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
-
 
 PROVIDER = "google_health"
 DAY = date(2026, 9, 1)
@@ -160,6 +159,7 @@ def _ingest(
 
 def _rows(db, model):
     return db.scalars(select(model).order_by(model.id)).all()
+
 
 DOMAIN_MODELS = (
     NutritionIngestionRun,
@@ -292,10 +292,7 @@ _RETRY_SIGNATURE_FIELDS = {
 
 def _domain_signatures(db):
     return {
-        model: {
-            tuple(getattr(row, field) for field in fields)
-            for row in _rows(db, model)
-        }
+        model: {tuple(getattr(row, field) for field in fields) for row in _rows(db, model)}
         for model, fields in _RETRY_SIGNATURE_FIELDS.items()
     }
 
@@ -366,7 +363,11 @@ def test_event_kind_semantics_and_stable_unnamed_identity(db, user):
 def test_canonical_decimal_metrics_are_not_double_counted(db, user):
     _ingest(db, user, (_point(),))
     fields = _rows(db, NutritionFieldObservation)
-    canonical = {field.metric_key: field for field in fields if field.observation_role == ObservationRole.CANONICAL.value}
+    canonical = {
+        field.metric_key: field
+        for field in fields
+        if field.observation_role == ObservationRole.CANONICAL.value
+    }
     assert set(canonical) == {
         "dietary_energy_kcal",
         "protein_g",
@@ -386,16 +387,22 @@ def test_canonical_decimal_metrics_are_not_double_counted(db, user):
         "saturated_fat_g": Decimal("3"),
     }
     assert all(isinstance(field.canonical_value, Decimal) for field in canonical.values())
-    assert sum(
-        field.metric_key == "carbohydrates_g"
-        and field.observation_role == ObservationRole.CANONICAL.value
-        for field in fields
-    ) == 1
-    assert sum(
-        field.metric_key == "fat_g"
-        and field.observation_role == ObservationRole.CANONICAL.value
-        for field in fields
-    ) == 1
+    assert (
+        sum(
+            field.metric_key == "carbohydrates_g"
+            and field.observation_role == ObservationRole.CANONICAL.value
+            for field in fields
+        )
+        == 1
+    )
+    assert (
+        sum(
+            field.metric_key == "fat_g"
+            and field.observation_role == ObservationRole.CANONICAL.value
+            for field in fields
+        )
+        == 1
+    )
 
 
 def test_energy_user_provided_unit_does_not_convert_canonical_scalar(db, user):
@@ -412,9 +419,6 @@ def test_energy_user_provided_unit_does_not_convert_canonical_scalar(db, user):
     assert energy.provider_raw_unit == "KILOJOULE"
 
 
-
-
-
 def test_civil_date_controls_local_date_and_missing_civil_is_partial(db, user):
     _ingest(db, user, (_point(civil=True),))
     event = db.scalar(select(NutritionConsumptionEvent))
@@ -426,18 +430,26 @@ def test_civil_date_controls_local_date_and_missing_civil_is_partial(db, user):
     db.rollback()
     db.begin()
     _ingest(db, user, (_point(name="missing-civil", civil=False),))
-    missing = db.scalar(select(NutritionConsumptionEvent).where(NutritionConsumptionEvent.logical_event_key == "missing-civil"))
-    missing_source = db.scalar(select(NutritionSourceObservation).where(NutritionSourceObservation.source_record_id == "missing-civil"))
+    missing = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.logical_event_key == "missing-civil"
+        )
+    )
+    missing_source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.source_record_id == "missing-civil"
+        )
+    )
     assert missing.local_date is None
     assert missing_source.local_date is None
     assert missing.coverage_state == CoverageState.PARTIAL.value
     missing_fields = [
-        field for field in _rows(db, NutritionFieldObservation)
+        field
+        for field in _rows(db, NutritionFieldObservation)
         if field.source_observation_id == missing_source.id
     ]
     assert missing_fields
     assert all(field.coverage_state == CoverageState.PARTIAL.value for field in missing_fields)
-
 
 
 def test_overlong_direct_dto_name_is_rejected_before_domain_writes(db, user):
@@ -464,7 +476,9 @@ def test_short_semantic_serving_unit_is_persisted_in_valid_unit_columns(db, user
     assert observations[0].unit == "g"
     assert event.amount == Decimal("2")
     assert event.amount_unit == "g"
-    unit_evidence = [field for field in fields if "foodMeasurementUnit" in field.provider_field_path]
+    unit_evidence = [
+        field for field in fields if "foodMeasurementUnit" in field.provider_field_path
+    ]
     assert len(unit_evidence) == 1
     assert unit_evidence[0].provider_raw_value_text == "g"
 
@@ -476,7 +490,9 @@ def test_energy_from_fat_is_provider_evidence_without_canonical_metric(db, user)
         (_point(energy_from_fat=NutritionQuantity(200.0, "kcal")),),
     )
     fields = _rows(db, NutritionFieldObservation)
-    energy_from_fat = next(field for field in fields if "energyFromFat" in field.provider_field_path)
+    energy_from_fat = next(
+        field for field in fields if "energyFromFat" in field.provider_field_path
+    )
     assert energy_from_fat.observation_role == ObservationRole.PROVIDER.value
     assert energy_from_fat.presence_state == PresenceState.SUPPLIED.value
     assert energy_from_fat.metric_key is None
@@ -487,6 +503,7 @@ def test_energy_from_fat_is_provider_evidence_without_canonical_metric(db, user)
     assert len(energy_metrics) == 1
     assert energy_metrics[0].provider_field_path.endswith("energy")
     assert energy_metrics[0].observation_role == ObservationRole.CANONICAL.value
+
 
 def test_serving_resource_reference_is_kept_as_evidence_not_unit(db, user):
     serving = NutritionServing(
@@ -502,9 +519,14 @@ def test_serving_resource_reference_is_kept_as_evidence_not_unit(db, user):
     assert observations[0].quantity == Decimal("2")
     assert observations[0].label == "1 bowl"
     assert observations[0].unit is None
-    unit_evidence = [field for field in fields if "foodMeasurementUnit" in field.provider_field_path]
+    unit_evidence = [
+        field for field in fields if "foodMeasurementUnit" in field.provider_field_path
+    ]
     assert len(unit_evidence) == 1
-    assert unit_evidence[0].provider_raw_value_text == "users/me/dataTypes/foodMeasurementUnit/dataPoints/unit-1"
+    assert (
+        unit_evidence[0].provider_raw_value_text
+        == "users/me/dataTypes/foodMeasurementUnit/dataPoints/unit-1"
+    )
     assert event.amount_unit is None
 
 
@@ -512,9 +534,18 @@ def test_unknown_supplied_nutrient_is_presence_evidence_without_canonical_value(
     _ingest(
         db,
         user,
-        (_point(nutrients=(NutritionNutrient("MYSTERY_NUTRIENT", NutritionQuantity(7.0, "g")),), energy=None),),
+        (
+            _point(
+                nutrients=(NutritionNutrient("MYSTERY_NUTRIENT", NutritionQuantity(7.0, "g")),),
+                energy=None,
+            ),
+        ),
     )
-    field = db.scalar(select(NutritionFieldObservation).where(NutritionFieldObservation.provider_field_path.like("%MYSTERY%")))
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path.like("%MYSTERY%")
+        )
+    )
     assert field is not None
     assert field.presence_state == PresenceState.SUPPLIED.value
     assert field.metric_key is None
@@ -522,6 +553,8 @@ def test_unknown_supplied_nutrient_is_presence_evidence_without_canonical_value(
     assert field.provider_raw_value_decimal == Decimal("7")
     assert len(field.provider_field_path) <= 255
     assert field.provider_raw_value_text is None or len(field.provider_raw_value_text) <= 4096
+
+
 def test_metadata_is_allowlisted_and_raw_payload_is_not_persisted(db, user):
     _ingest(db, user, (_point(),))
     sensitive_terms = (
@@ -566,7 +599,10 @@ def test_metadata_is_allowlisted_and_raw_payload_is_not_persisted(db, user):
         "web-client-id",
         "google-web-client-id",
     } <= set(persisted_metadata_scalars)
-    assert all(source.payload_hash is None or len(source.payload_hash) == 64 for source in _rows(db, NutritionSourceObservation))
+    assert all(
+        source.payload_hash is None or len(source.payload_hash) == 64
+        for source in _rows(db, NutritionSourceObservation)
+    )
 
 
 def test_named_revision_and_retry_are_idempotent(db, user):
@@ -578,7 +614,9 @@ def test_named_revision_and_retry_are_idempotent(db, user):
 
     changed = _point(name="revision-log", energy=NutritionQuantity(600.0, "kcal"))
     _ingest(db, user, (changed,), connection=connection)
-    events = db.scalars(select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision)).all()
+    events = db.scalars(
+        select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision)
+    ).all()
     assert [event.revision for event in events] == [1, 2]
     assert events[1].supersedes_event_id == events[0].id
     assert events[1].supersedes_revision == 1
@@ -589,7 +627,11 @@ def test_every_domain_target_has_exactly_one_provenance_with_lineage(db, user):
     _ingest(
         db,
         user,
-        (_point(serving=NutritionServing(amount=1.0, food_measurement_unit_display_name="portion")),),
+        (
+            _point(
+                serving=NutritionServing(amount=1.0, food_measurement_unit_display_name="portion")
+            ),
+        ),
         connection=connection,
     )
     sources = _rows(db, NutritionSourceObservation)
@@ -604,8 +646,7 @@ def test_every_domain_target_has_exactly_one_provenance_with_lineage(db, user):
         "field_observation_id",
     )
     target_counts = [
-        sum(getattr(item, target) is not None for target in target_columns)
-        for item in provenance
+        sum(getattr(item, target) is not None for target in target_columns) for item in provenance
     ]
     assert provenance
     assert target_counts == [1] * len(provenance)
@@ -667,8 +708,7 @@ def test_food_reference_alone_does_not_create_empty_profile_or_tombstone(db, use
     )
     assert identity.namespace
     assert any(
-        link.external_identity_id == identity.id
-        and link.consumption_event_id == event.id
+        link.external_identity_id == identity.id and link.consumption_event_id == event.id
         for link in _rows(db, NutritionExternalIdentityLink)
     )
     assert not _rows(db, NutritionFoodProfile)
@@ -683,12 +723,12 @@ def test_source_and_user_scope_are_enforced(db, user):
     db.add(other)
     db.flush()
     before_counts = _domain_counts(db)
-    with pytest.raises(ValueError, match="source_instance_id|user"):
+    with pytest.raises(ValueError, match=r"source_instance_id|user"):
         _ingest(db, other, (_point(),), connection=connection)
     assert _domain_counts(db) == before_counts
 
     before_missing_source_counts = _domain_counts(db)
-    with pytest.raises(ValueError, match="source_instance_id|user"):
+    with pytest.raises(ValueError, match=r"source_instance_id|user"):
         _ingest(db, user, (_point(),), source_instance_id=uuid4())
     assert _domain_counts(db) == before_missing_source_counts
 

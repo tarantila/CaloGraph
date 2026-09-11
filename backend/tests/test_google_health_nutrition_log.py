@@ -148,6 +148,7 @@ def test_unknown_quantity_unit_is_retained_with_a_typed_quantity() -> None:
     assert quantity.unit == "FUTURE_UNIT"
     assert len(quantity.unit) <= 512
 
+
 @pytest.mark.parametrize(
     ("field", "scalar_key", "unit"),
     [
@@ -267,6 +268,7 @@ def test_malformed_data_source_scalar_types_are_rejected(
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
 
+
 @pytest.mark.parametrize(
     "nutrition_log_update",
     [
@@ -299,6 +301,7 @@ def test_malformed_nutrition_scalar_types_are_rejected(
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
 
+
 @pytest.mark.parametrize(
     ("field", "payload_field", "scalar_key"),
     [
@@ -306,7 +309,9 @@ def test_malformed_nutrition_scalar_types_are_rejected(
         ("nutrient", "nutrients", "grams"),
     ],
 )
-def test_negative_energy_or_nutrient_quantity_is_rejected(field: str, payload_field: str, scalar_key: str) -> None:
+def test_negative_energy_or_nutrient_quantity_is_rejected(
+    field: str, payload_field: str, scalar_key: str
+) -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/negative-quantity-1", 1)
     if field == "energy":
         value["nutritionLog"][payload_field] = {
@@ -324,7 +329,6 @@ def test_negative_energy_or_nutrient_quantity_is_rejected(field: str, payload_fi
 
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
-
 
 
 @pytest.mark.parametrize(
@@ -395,8 +399,6 @@ def test_oversized_food_and_serving_strings_are_rejected(mutator) -> None:
 
     with pytest.raises(GoogleHealthInvalidResponseError):
         nutrition_client.get_nutrition_log_page(page_size=1)
-
-
 
 
 @pytest.mark.parametrize(
@@ -470,33 +472,23 @@ def test_oversized_data_source_scalar_strings_are_rejected(
             id="data-source-platform",
         ),
         pytest.param(
-            lambda value: value.update(
-                {"dataSource": {"device": {"formFactor": "é" * 257}}}
-            ),
+            lambda value: value.update({"dataSource": {"device": {"formFactor": "é" * 257}}}),
             id="data-source-device-form-factor",
         ),
         pytest.param(
-            lambda value: value.update(
-                {"dataSource": {"device": {"manufacturer": "é" * 257}}}
-            ),
+            lambda value: value.update({"dataSource": {"device": {"manufacturer": "é" * 257}}}),
             id="data-source-device-manufacturer",
         ),
         pytest.param(
-            lambda value: value.update(
-                {"dataSource": {"device": {"displayName": "é" * 257}}}
-            ),
+            lambda value: value.update({"dataSource": {"device": {"displayName": "é" * 257}}}),
             id="data-source-device-display-name",
         ),
         pytest.param(
-            lambda value: value.update(
-                {"dataSource": {"application": {"packageName": "é" * 257}}}
-            ),
+            lambda value: value.update({"dataSource": {"application": {"packageName": "é" * 257}}}),
             id="data-source-application-package-name",
         ),
         pytest.param(
-            lambda value: value.update(
-                {"dataSource": {"application": {"webClientId": "é" * 257}}}
-            ),
+            lambda value: value.update({"dataSource": {"application": {"webClientId": "é" * 257}}}),
             id="data-source-application-web-client-id",
         ),
         pytest.param(
@@ -846,6 +838,7 @@ def test_serving_amount_without_unit_is_a_valid_typed_value() -> None:
 
     assert page.data_points[0].nutrition_log.serving is not None
     assert page.data_points[0].nutrition_log.serving.amount == 1
+
 
 def test_negative_serving_amount_is_rejected() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/serving-negative-1", 1)

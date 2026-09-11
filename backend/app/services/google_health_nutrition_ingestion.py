@@ -5,9 +5,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -31,7 +32,6 @@ from app.nutrition.enums import (
     ServingScope,
 )
 from app.nutrition.models import (
-    NutritionConsumptionEvent,
     NutritionFieldObservation,
     NutritionIngestionRun,
     NutritionProvenance,
@@ -129,7 +129,10 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, Mapping):
-        return {str(key): _json_value(nested) for key, nested in sorted(value.items(), key=lambda item: str(item[0]))}
+        return {
+            str(key): _json_value(nested)
+            for key, nested in sorted(value.items(), key=lambda item: str(item[0]))
+        }
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
@@ -142,7 +145,9 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _safe_metadata(metadata: Mapping[str, Any] | None) -> dict[str, str | int | float | bool | None]:
+def _safe_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, str | int | float | bool | None]:
     """Keep only bounded scalar metadata and reject sensitive names/values."""
 
     if not metadata:
@@ -319,7 +324,12 @@ def _field(
         existing.coverage_state = coverage_state
         existing.provider_metadata = _safe_metadata(metadata)
     db.flush()
-    _provenance(db, user_id=user_id, source_observation_id=source_observation_id, field_observation_id=existing.id)
+    _provenance(
+        db,
+        user_id=user_id,
+        source_observation_id=source_observation_id,
+        field_observation_id=existing.id,
+    )
     return existing
 
 
@@ -332,7 +342,9 @@ def _serving(
     serving: NutritionServing,
     metadata: Mapping[str, Any],
 ) -> NutritionServingObservation:
-    quantity = _decimal(NutritionQuantity(serving.amount, None)) if serving.amount is not None else None
+    quantity = (
+        _decimal(NutritionQuantity(serving.amount, None)) if serving.amount is not None else None
+    )
     unit = _serving_unit(serving.food_measurement_unit)
     existing = db.scalar(
         select(NutritionServingObservation).where(
@@ -355,7 +367,12 @@ def _serving(
         )
         db.add(existing)
     db.flush()
-    _provenance(db, user_id=user_id, source_observation_id=source_observation_id, serving_observation_id=existing.id)
+    _provenance(
+        db,
+        user_id=user_id,
+        source_observation_id=source_observation_id,
+        serving_observation_id=existing.id,
+    )
     return existing
 
 
@@ -383,7 +400,9 @@ def _field_observations(
         metric_key="dietary_energy_kcal" if energy is not None else None,
         canonical_value=energy,
         canonical_unit="kcal" if energy is not None else None,
-        role=ObservationRole.CANONICAL.value if energy is not None else ObservationRole.PROVIDER.value,
+        role=ObservationRole.CANONICAL.value
+        if energy is not None
+        else ObservationRole.PROVIDER.value,
         metadata=metadata,
         coverage_state=coverage_state,
     )
@@ -446,7 +465,9 @@ def _field_observations(
             metric_key=None if overridden or canonical is None else canonical[0],
             canonical_value=None if overridden or canonical is None else value,
             canonical_unit=None if overridden or canonical is None else canonical[1],
-            role=ObservationRole.PROVIDER.value if overridden or canonical is None else ObservationRole.CANONICAL.value,
+            role=ObservationRole.PROVIDER.value
+            if overridden or canonical is None
+            else ObservationRole.CANONICAL.value,
             metadata=metadata,
             coverage_state=coverage_state,
         )
@@ -580,7 +601,10 @@ def _persist_point(
         source_instance_id=source_instance_id,
         logical_event_key=logical_event_key,
     )
-    if latest_event is not None and (latest_event.provider_metadata or {}).get("content_hash") == fingerprint:
+    if (
+        latest_event is not None
+        and (latest_event.provider_metadata or {}).get("content_hash") == fingerprint
+    ):
         event = latest_event
     else:
         event = get_or_create_consumption_event(
@@ -597,11 +621,15 @@ def _persist_point(
             canonical_start_at=interval.start_time,
             canonical_end_at=interval.end_time,
             local_date=local_date,
-            amount=Decimal(str(log.serving.amount)) if log.serving and log.serving.amount is not None else None,
+            amount=Decimal(str(log.serving.amount))
+            if log.serving and log.serving.amount is not None
+            else None,
             amount_unit=_serving_unit(log.serving.food_measurement_unit) if log.serving else None,
             presence_state=PresenceState.SUPPLIED.value,
             coverage_state=point_coverage,
-            resolution_state=ResolutionState.UNRESOLVED.value if log.food else ResolutionState.RESOLVED.value,
+            resolution_state=ResolutionState.UNRESOLVED.value
+            if log.food
+            else ResolutionState.RESOLVED.value,
             lineage_state=LineageState.CONFIRMED.value,
             content_hash=fingerprint,
             provider_metadata=metadata,
@@ -644,7 +672,9 @@ def _persist_point(
         )
 
 
-def _validate_point_names(data_points: tuple[NutritionLogDataPoint, ...] | list[NutritionLogDataPoint]) -> None:
+def _validate_point_names(
+    data_points: tuple[NutritionLogDataPoint, ...] | list[NutritionLogDataPoint],
+) -> None:
     for point in data_points:
         if point.name and len(point.name.encode("utf-8")) > _MAX_PATH:
             raise ValueError("point.name exceeds the 255-byte UTF-8 limit")
@@ -688,7 +718,9 @@ def ingest_google_health_nutrition_logs(
     # write.  Generic provider validation does not know Google connection rows.
     _validate_source_owner(db, user_id=user_id, source_instance_id=source_instance_id)
     fingerprints = tuple(_fingerprint(point) for point in data_points)
-    has_missing_civil_date = any(point.nutrition_log.interval.civil_start_time is None for point in data_points)
+    has_missing_civil_date = any(
+        point.nutrition_log.interval.civil_start_time is None for point in data_points
+    )
     effective_coverage = CoverageState.PARTIAL.value if has_missing_civil_date else coverage_state
     run = create_ingestion_run(
         db,

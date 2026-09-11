@@ -39,7 +39,6 @@ from app.services.google_health_nutrition_sync import (
     GoogleHealthNutritionSyncService,
 )
 
-
 DAY = date(2026, 9, 1)
 NEXT_DAY = DAY + timedelta(days=1)
 PHYSICAL_START = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
@@ -132,7 +131,9 @@ class SyncHarness:
         )
 
 
-def _point(name: str, *, food: str = "users/me/dataTypes/food/dataPoints/food-1") -> NutritionLogDataPoint:
+def _point(
+    name: str, *, food: str = "users/me/dataTypes/food/dataPoints/food-1"
+) -> NutritionLogDataPoint:
     return NutritionLogDataPoint(
         name=name,
         nutrition_log=NutritionLog(
@@ -205,8 +206,7 @@ DOMAIN_MODELS = (
 
 def _domain_counts(db: Session) -> dict[type[Any], int]:
     return {
-        model: db.scalar(select(func.count()).select_from(model)) or 0
-        for model in DOMAIN_MODELS
+        model: db.scalar(select(func.count()).select_from(model)) or 0 for model in DOMAIN_MODELS
     }
 
 
@@ -223,7 +223,11 @@ def test_sync_fetches_all_pages_before_one_adapter_write_and_preserves_source_in
     events: list[str] = []
     pages = {
         None: _page((_point("google-log-page-1"),), page_token=None, next_page_token="page-2"),
-        "page-2": _page((_point("google-log-page-2", food="users/me/dataTypes/food/dataPoints/food-2"),), page_token="page-2", next_page_token=None),
+        "page-2": _page(
+            (_point("google-log-page-2", food="users/me/dataTypes/food/dataPoints/food-2"),),
+            page_token="page-2",
+            next_page_token=None,
+        ),
     }
     harness = SyncHarness(db, pages, events)
 
@@ -251,7 +255,11 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
     db.rollback()
     harness = SyncHarness(
         db,
-        {None: _page((_point("google-log-distinct-session"),), page_token=None, next_page_token=None)},
+        {
+            None: _page(
+                (_point("google-log-distinct-session"),), page_token=None, next_page_token=None
+            )
+        },
     )
     sessions: list[Session] = []
 
@@ -266,15 +274,14 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
         requested_end=DAY,
     )
 
-    assert getattr(result, "persisted_count") == 1
+    assert result.persisted_count == 1
     assert len(sessions) == 2
     with SessionLocal() as observer:
         assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
     assert all(not session.in_transaction() for session in sessions)
 
-def test_sync_distinct_write_session_rolls_back_adapter_failure(
-    db: Session, user: User
-) -> None:
+
+def test_sync_distinct_write_session_rolls_back_adapter_failure(db: Session, user: User) -> None:
     _connection(db, user)
     db.rollback()
     harness = SyncHarness(
@@ -316,7 +323,11 @@ def test_sync_commit_failure_rolls_back_and_closes_distinct_write_session(
     db.rollback()
     harness = SyncHarness(
         db,
-        {None: _page((_point("google-log-commit-failure"),), page_token=None, next_page_token=None)},
+        {
+            None: _page(
+                (_point("google-log-commit-failure"),), page_token=None, next_page_token=None
+            )
+        },
     )
     sessions: list[Session] = []
 
@@ -371,11 +382,19 @@ def test_sync_commit_failure_rolls_back_and_closes_distinct_write_session(
         assert _domain_counts(observer) == {model: 0 for model in DOMAIN_MODELS}
 
 
-def test_sync_rejects_repeated_page_token_without_writing_domain_rows(db: Session, user: User) -> None:
+def test_sync_rejects_repeated_page_token_without_writing_domain_rows(
+    db: Session, user: User
+) -> None:
     _connection(db, user)
     pages = {
-        None: _page((_point("google-log-page-1"),), page_token=None, next_page_token="repeat-token"),
-        "repeat-token": _page((_point("google-log-page-2"),), page_token="repeat-token", next_page_token="repeat-token"),
+        None: _page(
+            (_point("google-log-page-1"),), page_token=None, next_page_token="repeat-token"
+        ),
+        "repeat-token": _page(
+            (_point("google-log-page-2"),),
+            page_token="repeat-token",
+            next_page_token="repeat-token",
+        ),
     }
     harness = SyncHarness(db, pages)
 
@@ -418,7 +437,9 @@ def test_sync_requires_active_connection_and_exact_nutrition_scope(
     assert "adapter" not in harness.events
 
 
-def test_sync_requires_connection_owned_by_requested_user_without_writes(db: Session, user: User) -> None:
+def test_sync_requires_connection_owned_by_requested_user_without_writes(
+    db: Session, user: User
+) -> None:
     other_user = User(username="other", password_hash="not-used", timezone="Europe/Berlin")
     db.add(other_user)
     db.commit()
@@ -437,7 +458,9 @@ def test_sync_requires_connection_owned_by_requested_user_without_writes(db: Ses
     assert "adapter" not in harness.events
 
 
-def test_sync_remote_error_is_safe_and_leaves_no_partial_domain_rows(db: Session, user: User) -> None:
+def test_sync_remote_error_is_safe_and_leaves_no_partial_domain_rows(
+    db: Session, user: User
+) -> None:
     _connection(db, user)
     provider_error = GoogleHealthProviderUnavailableError(
         "provider payload includes Secret Food Name and token=secret-token-123"
@@ -470,13 +493,13 @@ def test_sync_result_summary_contains_counts_and_coverage_only(db: Session, user
     result = harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
     rendered = repr(result)
 
-    assert getattr(result, "status") == "completed"
-    assert getattr(result, "fetched_count") == 1
-    assert getattr(result, "persisted_count") == 1
-    assert getattr(result, "requested_start") == DAY
-    assert getattr(result, "requested_end") == DAY
-    assert getattr(result, "covered_start") == DAY
-    assert getattr(result, "covered_end") == DAY
+    assert result.status == "completed"
+    assert result.fetched_count == 1
+    assert result.persisted_count == 1
+    assert result.requested_start == DAY
+    assert result.requested_end == DAY
+    assert result.covered_start == DAY
+    assert result.covered_end == DAY
     assert _sync_result_run(result).source_instance_id == connection.id
     for secret in ("google-log-secret", "Secret Food Name", "secret-token-123", "987654.321"):
         assert secret not in rendered
@@ -497,9 +520,11 @@ def test_repeating_sync_is_idempotent_for_non_run_domain_rows(db: Session, user:
 
     assert _sync_result_run(first).source_instance_id == connection.id
     assert _sync_result_run(second).source_instance_id == connection.id
-    assert counts_after_second[NutritionIngestionRun] == counts_after_first[NutritionIngestionRun] + 1
+    assert (
+        counts_after_second[NutritionIngestionRun] == counts_after_first[NutritionIngestionRun] + 1
+    )
     for model in DOMAIN_MODELS:
         if model is not NutritionIngestionRun:
             assert counts_after_second[model] == counts_after_first[model]
-    assert getattr(second, "fetched_count") == 1
-    assert getattr(second, "persisted_count") == 0
+    assert second.fetched_count == 1
+    assert second.persisted_count == 0
