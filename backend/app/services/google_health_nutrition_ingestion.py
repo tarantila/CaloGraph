@@ -277,6 +277,7 @@ def _field(
     canonical_value: Decimal | None = None,
     canonical_unit: str | None = None,
     role: str = ObservationRole.PROVIDER.value,
+    coverage_state: str = CoverageState.COMPLETE.value,
     metadata: Mapping[str, Any] | None = None,
 ) -> NutritionFieldObservation:
     provider_field_path = _safe_path(provider_field_path)
@@ -301,7 +302,7 @@ def _field(
             canonical_unit=canonical_unit,
             observation_role=role,
             presence_state=_presence(value),
-            coverage_state=CoverageState.COMPLETE.value,
+            coverage_state=coverage_state,
             resolution_state=ResolutionState.RESOLVED.value,
             lineage_state=LineageState.CONFIRMED.value,
             provider_metadata=_safe_metadata(metadata),
@@ -315,6 +316,7 @@ def _field(
         existing.canonical_value = canonical_value
         existing.canonical_unit = canonical_unit
         existing.presence_state = _presence(value)
+        existing.coverage_state = coverage_state
         existing.provider_metadata = _safe_metadata(metadata)
     db.flush()
     _provenance(db, user_id=user_id, source_observation_id=source_observation_id, field_observation_id=existing.id)
@@ -363,6 +365,7 @@ def _field_observations(
     user_id: UUID,
     source_observation_id: UUID,
     point: NutritionLogDataPoint,
+    coverage_state: str,
     metadata: Mapping[str, Any],
 ) -> None:
     log = point.nutrition_log
@@ -382,6 +385,7 @@ def _field_observations(
         canonical_unit="kcal" if energy is not None else None,
         role=ObservationRole.CANONICAL.value if energy is not None else ObservationRole.PROVIDER.value,
         metadata=metadata,
+        coverage_state=coverage_state,
     )
     energy_from_fat = _decimal(log.energy_from_fat)
     if log.energy_from_fat is not None:
@@ -393,6 +397,7 @@ def _field_observations(
             value=energy_from_fat,
             raw_unit=log.energy_from_fat.unit,
             metadata=metadata,
+            coverage_state=coverage_state,
         )
 
     direct_totals = (
@@ -416,6 +421,7 @@ def _field_observations(
             canonical_unit="g",
             role=ObservationRole.CANONICAL.value,
             metadata=metadata,
+            coverage_state=coverage_state,
         )
 
     for index, nutrient in enumerate(log.nutrients):
@@ -442,6 +448,7 @@ def _field_observations(
             canonical_unit=None if overridden or canonical is None else canonical[1],
             role=ObservationRole.PROVIDER.value if overridden or canonical is None else ObservationRole.CANONICAL.value,
             metadata=metadata,
+            coverage_state=coverage_state,
         )
 
     if log.serving is not None:
@@ -456,6 +463,7 @@ def _field_observations(
                 raw_text=serving.food_measurement_unit,
                 raw_unit=None,
                 metadata=metadata,
+                coverage_state=coverage_state,
             )
         if serving.amount is not None:
             amount = Decimal(str(serving.amount))
@@ -467,6 +475,7 @@ def _field_observations(
                 value=amount,
                 raw_unit=_serving_unit(serving.food_measurement_unit),
                 metadata=metadata,
+                coverage_state=coverage_state,
             )
 
 
@@ -546,6 +555,7 @@ def _persist_point(
         user_id=user_id,
         source_observation_id=source.id,
         point=point,
+        coverage_state=point_coverage,
         metadata=metadata,
     )
 
@@ -634,6 +644,12 @@ def _persist_point(
         )
 
 
+def _validate_point_names(data_points: tuple[NutritionLogDataPoint, ...] | list[NutritionLogDataPoint]) -> None:
+    for point in data_points:
+        if point.name and len(point.name.encode("utf-8")) > _MAX_PATH:
+            raise ValueError("point.name exceeds the 255-byte UTF-8 limit")
+
+
 def _validate_source_owner(db: Session, *, user_id: UUID, source_instance_id: UUID) -> None:
     owned = db.scalar(
         select(GoogleHealthConnection.id).where(
@@ -666,6 +682,7 @@ def ingest_google_health_nutrition_logs(
         not isinstance(point, NutritionLogDataPoint) for point in data_points
     ):
         raise ValueError("data_points must contain NutritionLogDataPoint DTOs")
+    _validate_point_names(data_points)
 
     # This direct query is intentionally before run creation and every other
     # write.  Generic provider validation does not know Google connection rows.

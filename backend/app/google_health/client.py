@@ -799,6 +799,7 @@ def _parse_quantity(
         isinstance(number, bool)
         or not isinstance(number, (int, float))
         or not math.isfinite(number_value)
+        or number_value < 0
     ):
         raise ValueError
     if (
