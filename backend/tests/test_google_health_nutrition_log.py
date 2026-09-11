@@ -34,10 +34,14 @@ class Transport:
     def __init__(self, payload: object) -> None:
         self.response = Response(payload)
         self.calls: list[dict[str, object]] = []
+        self.close_called = False
 
     def get_nutrition_log(self, **kwargs: object) -> Response:
         self.calls.append(kwargs)
         return self.response
+
+    def close(self) -> None:
+        self.close_called = True
 
 
 def interval(day: int, *, civil_day: int | None = None) -> dict[str, object]:
@@ -72,6 +76,14 @@ def point(name: str, day: int) -> dict[str, object]:
 def client(payload: object, *, max_page_size: int = 100) -> tuple[GoogleHealthClient, Transport]:
     transport = Transport(payload)
     return GoogleHealthClient(transport, Credentials(), max_page_size=max_page_size), transport
+
+
+def test_client_close_closes_transport() -> None:
+    nutrition_client, transport = client({"dataPoints": []})
+
+    nutrition_client.close()
+
+    assert transport.close_called is True
 
 
 def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:

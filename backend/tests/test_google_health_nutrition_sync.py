@@ -43,6 +43,7 @@ DAY = date(2026, 9, 1)
 NEXT_DAY = DAY + timedelta(days=1)
 PHYSICAL_START = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
 PHYSICAL_END = datetime(2026, 9, 1, 10, 30, tzinfo=UTC)
+DEFAULT_MAX_SYNC_PAGES = 100
 
 
 @dataclass
@@ -53,6 +54,7 @@ class FakePagedClient:
     error: Exception | None = None
     check_db_idle: bool = True
     page_tokens: list[str | None] = field(default_factory=list)
+    close_called: bool = False
 
     def get_nutrition_log_page(
         self,
@@ -72,6 +74,10 @@ class FakePagedClient:
         if self.error is not None:
             raise self.error
         return self.pages[page_token]
+
+    def close(self) -> None:
+        self.close_called = True
+        self.events.append("client-close")
 
 
 @dataclass
@@ -238,7 +244,8 @@ def test_sync_fetches_all_pages_before_one_adapter_write_and_preserves_source_in
     )
 
     assert harness.clients[0].page_tokens == [None, "page-2"]
-    assert events.index("adapter") > events.index("read:page-2")
+    assert events.index("client-close") > events.index("read:page-2")
+    assert events.index("adapter") > events.index("client-close")
     assert events.count("adapter") == 1
     run = _sync_result_run(result)
     assert run.source_instance_id == connection.id
@@ -248,6 +255,7 @@ def test_sync_fetches_all_pages_before_one_adapter_write_and_preserves_source_in
     assert run.covered_start_date == DAY
     assert run.covered_end_date == DAY
     assert run.status == "completed"
+    assert harness.clients[0].close_called is True
 
 
 def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, user: User) -> None:
@@ -403,8 +411,35 @@ def test_sync_rejects_repeated_page_token_without_writing_domain_rows(
 
     assert raised.value.code == "pagination_error"
     assert "repeat-token" not in str(raised.value)
+    assert harness.clients[0].close_called is True
     assert _domain_counts(db) == {model: 0 for model in DOMAIN_MODELS}
     assert harness.clients[0].page_tokens == [None, "repeat-token"]
+    assert "adapter" not in harness.events
+
+
+def test_sync_rejects_unique_pages_beyond_default_bound_without_writes(
+    db: Session, user: User
+) -> None:
+    _connection(db, user)
+    pages: dict[str | None, NutritionLogPage] = {}
+    page_token: str | None = None
+    for index in range(DEFAULT_MAX_SYNC_PAGES + 1):
+        next_page_token = (
+            f"page-{index + 1}" if index < DEFAULT_MAX_SYNC_PAGES else None
+        )
+        pages[page_token] = _page(
+            (_point(f"google-log-page-{index}"),),
+            page_token=page_token,
+            next_page_token=next_page_token,
+        )
+        page_token = next_page_token
+    harness = SyncHarness(db, pages)
+
+    with pytest.raises(GoogleHealthNutritionSyncError) as raised:
+        harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    assert raised.value.code == "pagination_error"
+    assert _domain_counts(db) == {model: 0 for model in DOMAIN_MODELS}
     assert "adapter" not in harness.events
 
 
@@ -480,6 +515,7 @@ def test_sync_remote_error_is_safe_and_leaves_no_partial_domain_rows(
     assert "secret-token-123" not in safe_error
     assert "987654.321" not in safe_error
     assert _domain_counts(db) == {model: 0 for model in DOMAIN_MODELS}
+    assert harness.clients[0].close_called is True
     assert "adapter" not in harness.events
 
 

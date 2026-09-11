@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -8,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.google_health.client import (
+    GoogleHealthClient,
     NutritionDataSource,
     NutritionDataSourceApplication,
     NutritionDataSourceDevice,
@@ -34,6 +36,39 @@ from app.nutrition.models import (
     NutritionSourceTombstone,
 )
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
+
+PROVIDER = "google_health"
+DAY = date(2026, 9, 1)
+PHYSICAL_START = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+PHYSICAL_END = datetime(2026, 9, 1, 10, 30, tzinfo=UTC)
+CIVIL_START = datetime(2026, 9, 1, 12, 0)
+CIVIL_END = datetime(2026, 9, 1, 12, 30)
+
+
+class _JsonResponse:
+    status_code = 200
+    headers = {"content-type": "application/json"}
+
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    def json(self) -> object:
+        return json.loads(self.payload, parse_float=Decimal)
+
+
+class _JsonTransport:
+    def __init__(self, payload: str) -> None:
+        self.response = _JsonResponse(payload)
+
+    def get_nutrition_log(self, **kwargs: object) -> _JsonResponse:
+        del kwargs
+        return self.response
+
+
+class _Credentials:
+    valid = True
+    expired = False
+    token = "token"
 
 PROVIDER = "google_health"
 DAY = date(2026, 9, 1)
@@ -403,6 +438,36 @@ def test_canonical_decimal_metrics_are_not_double_counted(db, user):
         )
         == 1
     )
+
+
+def test_high_precision_json_quantity_survives_google_dto_ingestion(db, user):
+    raw_value = "8996.632807816541"
+    expected = Decimal(raw_value)
+    payload = (
+        '{"dataPoints":[{"name":"users/me/dataTypes/nutrition-log/dataPoints/precision-1",'
+        '"nutritionLog":{"interval":{"startTime":"2026-09-01T10:00:00Z",'
+        '"endTime":"2026-09-01T10:30:00Z","startUtcOffset":"0s","endUtcOffset":"0s"},'
+        '"energy":{"kcal":%s}}}]}' % raw_value
+    )
+    google_client = GoogleHealthClient(_JsonTransport(payload), _Credentials())
+
+    page = google_client.get_nutrition_log_page(page_size=1)
+    assert len(page.data_points) == 1
+    point = page.data_points[0]
+    energy = point.nutrition_log.energy
+    assert energy is not None
+
+    _ingest(db, user, page.data_points)
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.metric_key == "dietary_energy_kcal",
+            NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
+        )
+    )
+    assert field is not None
+    assert energy.value == expected
+    assert field.provider_raw_value_decimal == expected
+    assert field.canonical_value == expected
 
 
 def test_energy_user_provided_unit_does_not_convert_canonical_scalar(db, user):

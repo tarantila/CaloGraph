@@ -35,6 +35,8 @@ from app.services.google_health_nutrition_ingestion import (
     ingest_google_health_nutrition_logs,
 )
 
+DEFAULT_MAX_SYNC_PAGES = 100
+
 
 class GoogleHealthNutritionSyncError(RuntimeError):
     """A safe, typed failure from Google Health Nutrition synchronization."""
@@ -129,6 +131,13 @@ def _safe_error(code: str) -> GoogleHealthNutritionSyncError:
     return GoogleHealthNutritionSyncError(safe_code, _ERROR_MESSAGES[safe_code])
 
 
+def _close_client(client: _PagedClient | None) -> None:
+    with suppress(Exception):
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
 class GoogleHealthNutritionSyncService:
     """Orchestrate a complete, read-before-write Google Nutrition sync."""
 
@@ -209,14 +218,18 @@ class GoogleHealthNutritionSyncService:
         page_token: str | None = None
         seen_tokens: set[str | None] = {None}
         civil_end = requested_end + timedelta(days=1)
+        pages_read = 0
         try:
             while True:
+                if pages_read >= DEFAULT_MAX_SYNC_PAGES:
+                    raise _safe_error("pagination_error")
                 page = client.get_nutrition_log_page(
                     page_size=self._page_size,
                     page_token=page_token,
                     civil_start_time=requested_start,
                     civil_end_time=civil_end,
                 )
+                pages_read += 1
                 points.extend(page.data_points)
                 next_page_token = page.next_page_token
                 if next_page_token is None:
@@ -232,6 +245,8 @@ class GoogleHealthNutritionSyncService:
             raise _safe_error(code if code in _PROVIDER_ERROR_CODES else "provider_error") from None
         except Exception:
             raise _safe_error("provider_error") from None
+        finally:
+            _close_client(client)
 
         write_db: Session | None = None
         try:

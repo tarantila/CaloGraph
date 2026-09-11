@@ -7,6 +7,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from typing import Protocol, cast
 
 import httpx
@@ -30,7 +31,7 @@ GOOGLE_HEALTH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class NutritionQuantity:
-    value: float
+    value: Decimal | float
     unit: str | None = None
 
 
@@ -44,7 +45,7 @@ class NutritionNutrient:
 class NutritionServing:
     food_measurement_unit: str | None = None
     food_measurement_unit_display_name: str | None = None
-    amount: float | None = None
+    amount: Decimal | float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +164,7 @@ class _BufferedResponse:
     content: bytes
 
     def json(self) -> object:
-        return cast(object, json.loads(self.content))
+        return cast(object, json.loads(self.content, parse_float=Decimal))
 
 
 class GoogleHealthTransport(Protocol):
@@ -178,6 +179,7 @@ class GoogleHealthTransport(Protocol):
         civil_start_time: date | datetime | None = None,
         civil_end_time: date | datetime | None = None,
     ) -> GoogleHealthResponse: ...
+    def close(self) -> None: ...
 
 
 class _HTTPClient(Protocol):
@@ -334,6 +336,12 @@ class GoogleHealthClient:
             civil_start_time=civil_start_time,
             civil_end_time=civil_end_time,
         )
+
+    def close(self) -> None:
+        close = getattr(self._transport, "close", None)
+        if callable(close):
+            close()
+
 
     def _access_token(self) -> str:
         credentials = self._credentials
@@ -789,14 +797,15 @@ def _parse_quantity(
     number = value[scalar_key]
     unit = _optional_bounded_string(value.get("userProvidedUnit"))
     try:
-        number_value = float(number)
+        number_value = number if isinstance(number, Decimal) else float(number)
+        finite_value = float(number)
     except OverflowError, TypeError, ValueError:
         raise ValueError from None
     if (
         isinstance(number, bool)
-        or not isinstance(number, (int, float))
-        or not math.isfinite(number_value)
-        or number_value < 0
+        or not isinstance(number, (int, float, Decimal))
+        or not math.isfinite(finite_value)
+        or finite_value < 0
     ):
         raise ValueError
     if unit is not None and unit in (_WEIGHT_UNITS | _ENERGY_UNITS) and unit not in units:
@@ -820,17 +829,18 @@ def _parse_serving(value: object) -> NutritionServing:
     unit = _optional_bounded_string(value.get("foodMeasurementUnit"))
     display_name = _optional_bounded_string(value.get("foodMeasurementUnitDisplayName"))
     amount = value.get("amount")
-    amount_value: float | None = None
+    amount_value: Decimal | float | None = None
     if amount is not None:
         try:
-            amount_value = float(amount)
+            amount_value = amount if isinstance(amount, Decimal) else float(amount)
+            finite_value = float(amount)
         except OverflowError, TypeError, ValueError:
             raise ValueError from None
         if (
             isinstance(amount, bool)
-            or not isinstance(amount, (int, float))
-            or not math.isfinite(amount_value)
-            or amount_value < 0
+            or not isinstance(amount, (int, float, Decimal))
+            or not math.isfinite(finite_value)
+            or finite_value < 0
         ):
             raise ValueError
     return NutritionServing(
