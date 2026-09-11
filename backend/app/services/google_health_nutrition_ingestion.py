@@ -443,6 +443,9 @@ def _field_observations(
             coverage_state=coverage_state,
         )
 
+    emitted_canonical_metrics = {
+        metric for _, quantity, metric in direct_totals if quantity is not None
+    }
     for index, nutrient in enumerate(log.nutrients):
         value = _decimal(nutrient.quantity)
         provider_path = f"nutritionLog.nutrients[{index}].{nutrient.nutrient}"
@@ -455,6 +458,8 @@ def _field_observations(
             (nutrient.nutrient == "CARBOHYDRATES" and "totalCarbohydrate" in direct_metric_names)
             or (nutrient.nutrient == "FAT" and "totalFat" in direct_metric_names)
         )
+        duplicate = canonical is not None and canonical[0] in emitted_canonical_metrics
+        provider_only = overridden or canonical is None or duplicate
         _field(
             db,
             user_id=user_id,
@@ -462,15 +467,17 @@ def _field_observations(
             provider_field_path=provider_path,
             value=value,
             raw_unit=nutrient.quantity.unit,
-            metric_key=None if overridden or canonical is None else canonical[0],
-            canonical_value=None if overridden or canonical is None else value,
-            canonical_unit=None if overridden or canonical is None else canonical[1],
+            metric_key=None if provider_only else canonical[0],
+            canonical_value=None if provider_only else value,
+            canonical_unit=None if provider_only else canonical[1],
             role=ObservationRole.PROVIDER.value
-            if overridden or canonical is None
+            if provider_only
             else ObservationRole.CANONICAL.value,
             metadata=metadata,
             coverage_state=coverage_state,
         )
+        if canonical is not None and not provider_only:
+            emitted_canonical_metrics.add(canonical[0])
 
     if log.serving is not None:
         serving = log.serving

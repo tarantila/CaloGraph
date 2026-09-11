@@ -342,7 +342,6 @@ class GoogleHealthClient:
         if callable(close):
             close()
 
-
     def _access_token(self) -> str:
         credentials = self._credentials
         token = getattr(credentials, "token", None)
@@ -603,16 +602,39 @@ def _parse_data_source_application(value: object) -> NutritionDataSourceApplicat
     )
 
 
-def _bounded_string(value: object) -> str:
+def _bounded_string(value: object, *, max_bytes: int = 512) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError
-    if len(value.encode("utf-8")) > 512:
+    if len(value.encode("utf-8")) > max_bytes:
         raise ValueError
     return value
 
 
-def _optional_bounded_string(value: object) -> str | None:
-    return None if value is None else _bounded_string(value)
+def _optional_bounded_string(value: object, *, max_bytes: int = 512) -> str | None:
+    return None if value is None else _bounded_string(value, max_bytes=max_bytes)
+
+
+_PERSISTED_NUMERIC_MAX = Decimal("999999999999.999999999999")
+
+
+def _parse_nonnegative_number(value: object) -> Decimal | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError
+    try:
+        number_value = value if isinstance(value, Decimal) else float(value)
+        finite_value = float(number_value)
+        decimal_value = (
+            number_value if isinstance(number_value, Decimal) else Decimal(str(number_value))
+        )
+    except OverflowError, TypeError, ValueError:
+        raise ValueError from None
+    if (
+        not math.isfinite(finite_value)
+        or finite_value < 0
+        or decimal_value > _PERSISTED_NUMERIC_MAX
+    ):
+        raise ValueError
+    return number_value
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
@@ -794,20 +816,8 @@ def _parse_quantity(
 ) -> NutritionQuantity:
     if not isinstance(value, dict) or scalar_key not in value:
         raise ValueError
-    number = value[scalar_key]
-    unit = _optional_bounded_string(value.get("userProvidedUnit"))
-    try:
-        number_value = number if isinstance(number, Decimal) else float(number)
-        finite_value = float(number)
-    except OverflowError, TypeError, ValueError:
-        raise ValueError from None
-    if (
-        isinstance(number, bool)
-        or not isinstance(number, (int, float, Decimal))
-        or not math.isfinite(finite_value)
-        or finite_value < 0
-    ):
-        raise ValueError
+    number_value = _parse_nonnegative_number(value[scalar_key])
+    unit = _optional_bounded_string(value.get("userProvidedUnit"), max_bytes=64)
     if unit is not None and unit in (_WEIGHT_UNITS | _ENERGY_UNITS) and unit not in units:
         raise ValueError
     return NutritionQuantity(value=number_value, unit=unit)
@@ -826,23 +836,12 @@ def _parse_nutrient(value: object) -> NutritionNutrient:
 def _parse_serving(value: object) -> NutritionServing:
     if not isinstance(value, dict) or not value:
         raise ValueError
-    unit = _optional_bounded_string(value.get("foodMeasurementUnit"))
+    unit = _optional_bounded_string(value.get("foodMeasurementUnit"), max_bytes=64)
     display_name = _optional_bounded_string(value.get("foodMeasurementUnitDisplayName"))
     amount = value.get("amount")
-    amount_value: Decimal | float | None = None
-    if amount is not None:
-        try:
-            amount_value = amount if isinstance(amount, Decimal) else float(amount)
-            finite_value = float(amount)
-        except OverflowError, TypeError, ValueError:
-            raise ValueError from None
-        if (
-            isinstance(amount, bool)
-            or not isinstance(amount, (int, float, Decimal))
-            or not math.isfinite(finite_value)
-            or finite_value < 0
-        ):
-            raise ValueError
+    amount_value: Decimal | float | None = (
+        None if amount is None else _parse_nonnegative_number(amount)
+    )
     return NutritionServing(
         food_measurement_unit=unit,
         food_measurement_unit_display_name=display_name,

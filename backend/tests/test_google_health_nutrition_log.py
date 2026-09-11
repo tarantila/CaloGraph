@@ -347,6 +347,84 @@ def test_negative_energy_or_nutrient_quantity_is_rejected(
     "mutator",
     [
         pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {"energy": {"kcal": 1_000_000_000_000, "userProvidedUnit": "KILOCALORIE"}}
+            ),
+            id="energy",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "nutrients": [
+                        {
+                            "nutrient": "PROTEIN",
+                            "quantity": {"grams": 1_000_000_000_000, "userProvidedUnit": "GRAM"},
+                        }
+                    ]
+                }
+            ),
+            id="nutrient",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "serving": {
+                        "amount": 1_000_000_000_000,
+                        "foodMeasurementUnit": "GRAM",
+                        "foodMeasurementUnitDisplayName": "grams",
+                    }
+                }
+            ),
+            id="serving",
+        ),
+    ],
+)
+def test_numeric_values_exceeding_persistence_range_are_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/oversized-quantity-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {"energy": {"kcal": 1, "userProvidedUnit": "U" * 65}}
+            ),
+            id="energy",
+        ),
+        pytest.param(
+            lambda value: value["nutritionLog"].update(
+                {
+                    "nutrients": [
+                        {
+                            "nutrient": "PROTEIN",
+                            "quantity": {"grams": 1, "userProvidedUnit": "U" * 65},
+                        }
+                    ]
+                }
+            ),
+            id="nutrient",
+        ),
+    ],
+)
+def test_quantity_units_exceeding_persistence_bound_are_rejected(mutator) -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/oversized-unit-1", 1)
+    mutator(value)
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        nutrition_client.get_nutrition_log_page(page_size=1)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        pytest.param(
             lambda value: value["nutritionLog"].update({"foodDisplayName": "A" * 513}),
             id="food-display-name-ascii",
         ),

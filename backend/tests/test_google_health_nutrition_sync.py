@@ -424,9 +424,7 @@ def test_sync_rejects_unique_pages_beyond_default_bound_without_writes(
     pages: dict[str | None, NutritionLogPage] = {}
     page_token: str | None = None
     for index in range(DEFAULT_MAX_SYNC_PAGES + 1):
-        next_page_token = (
-            f"page-{index + 1}" if index < DEFAULT_MAX_SYNC_PAGES else None
-        )
+        next_page_token = f"page-{index + 1}" if index < DEFAULT_MAX_SYNC_PAGES else None
         pages[page_token] = _page(
             (_point(f"google-log-page-{index}"),),
             page_token=page_token,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import ClassVar
 from uuid import uuid4
 
 import pytest
@@ -47,7 +48,7 @@ CIVIL_END = datetime(2026, 9, 1, 12, 30)
 
 class _JsonResponse:
     status_code = 200
-    headers = {"content-type": "application/json"}
+    headers: ClassVar[dict[str, str]] = {"content-type": "application/json"}
 
     def __init__(self, payload: str) -> None:
         self.payload = payload
@@ -69,6 +70,7 @@ class _Credentials:
     valid = True
     expired = False
     token = "token"
+
 
 PROVIDER = "google_health"
 DAY = date(2026, 9, 1)
@@ -440,6 +442,44 @@ def test_canonical_decimal_metrics_are_not_double_counted(db, user):
     )
 
 
+def test_duplicate_known_nutrients_keep_one_canonical_observation(db, user):
+    _ingest(
+        db,
+        user,
+        (
+            _point(
+                energy=None,
+                total_carbohydrate=None,
+                total_fat=None,
+                nutrients=(
+                    NutritionNutrient("PROTEIN", NutritionQuantity(30.0, "g")),
+                    NutritionNutrient("PROTEIN", NutritionQuantity(31.0, "g")),
+                ),
+            ),
+        ),
+    )
+    fields = _rows(db, NutritionFieldObservation)
+    protein_fields = [
+        field for field in fields if field.provider_field_path.startswith("nutritionLog.nutrients")
+    ]
+    canonical_fields = [field for field in protein_fields if field.metric_key == "protein_g"]
+    provider_fields = [field for field in protein_fields if field.metric_key is None]
+    assert (
+        sum(field.observation_role == ObservationRole.CANONICAL.value for field in canonical_fields)
+        == 1
+    )
+    assert (
+        sum(field.observation_role == ObservationRole.PROVIDER.value for field in provider_fields)
+        == 1
+    )
+    canonical = next(
+        field
+        for field in canonical_fields
+        if field.observation_role == ObservationRole.CANONICAL.value
+    )
+    assert canonical.canonical_value == Decimal("30")
+
+
 def test_high_precision_json_quantity_survives_google_dto_ingestion(db, user):
     raw_value = "8996.632807816541"
     expected = Decimal(raw_value)
@@ -447,7 +487,7 @@ def test_high_precision_json_quantity_survives_google_dto_ingestion(db, user):
         '{"dataPoints":[{"name":"users/me/dataTypes/nutrition-log/dataPoints/precision-1",'
         '"nutritionLog":{"interval":{"startTime":"2026-09-01T10:00:00Z",'
         '"endTime":"2026-09-01T10:30:00Z","startUtcOffset":"0s","endUtcOffset":"0s"},'
-        '"energy":{"kcal":%s}}}]}' % raw_value
+        '"energy":{"kcal":' + raw_value + "}}}]}"
     )
     google_client = GoogleHealthClient(_JsonTransport(payload), _Credentials())
 
