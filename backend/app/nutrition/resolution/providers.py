@@ -61,10 +61,36 @@ class YazioProviderResolver:
             metric_key=metric_key,
         )
 
+class GoogleHealthProviderResolver:
+    provider_key = "google_health"
+
+    def resolve_metric(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+        local_date: date,
+        metric_key: str,
+    ) -> ProviderCandidate:
+        from app.services.google_health_nutrition_resolution import resolve_google_health_metric
+
+        return resolve_google_health_metric(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+            metric_key=metric_key,
+        )
+
 
 PROVIDER_RESOLVERS: Mapping[str, NutritionProviderResolver] = MappingProxyType(
-    {"yazio": YazioProviderResolver()}
+    {
+        "yazio": YazioProviderResolver(),
+        "google_health": GoogleHealthProviderResolver(),
+    }
 )
+
 
 
 def _registry_or_default(

@@ -197,11 +197,11 @@ def test_yazio_registry_calls_existing_b2_resolver_once(monkeypatch: pytest.Monk
 
 def test_unknown_provider_fails_closed() -> None:
     with pytest.raises(ProviderNotAvailableError):
-        _request(provider_key="google_health")
+        _request(provider_key="fitbit")
 
 
-def test_production_registry_contains_only_yazio() -> None:
-    assert tuple(PROVIDER_RESOLVERS) == ("yazio",)
+def test_production_registry_contains_google_health_and_yazio() -> None:
+    assert set(PROVIDER_RESOLVERS) == {"google_health", "yazio"}
 
 
 def test_provider_scope_mismatch_fails_closed() -> None:

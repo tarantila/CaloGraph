@@ -23,6 +23,7 @@ from app.nutrition.models import (
 from app.nutrition.resolution.contracts import MetricContribution, ProviderCandidate
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.nutrition.resolution.providers import (
+    PROVIDER_RESOLVERS,
     NutritionProviderResolver,
     collect_provider_candidates,
 )
@@ -58,7 +59,7 @@ from .tokens import (
 )
 
 _PROVIDER_KEY: Final = "yazio"
-_PROVIDER_KEYS: Final = (_PROVIDER_KEY,)
+_PROVIDER_KEYS: Final = tuple(PROVIDER_RESOLVERS)
 _MAX_ATTEMPTS: Final = 3
 _PROJECTION_VERSION_CONSTRAINT: Final = "uq_nutrition_projections_user_date_version"
 
@@ -125,6 +126,7 @@ def _resolve_provider_sources(
         db,
         user_id=user_id,
         provider_keys=_PROVIDER_KEYS,
+        resolver_registry=None,
     )
     if not bindings:
         raise ValueError("YAZIO source instance is not configured")
@@ -310,10 +312,18 @@ def _load_relevant_tokens(
         for event in event_rows
         if scope_allowed(event.provider_key, event.source_instance_id)
     }
-    if not event_ids.issubset(events_by_id):
-        raise ValueError("manifest event evidence is outside the source scope")
-    if any(event.local_date != local_date for event in events_by_id.values()):
-        raise ValueError("manifest event evidence is outside the date scope")
+    current_event_ids = set(event_ids)
+    current_event_ids.update(
+        event.id
+        for event in events_by_id.values()
+        if event.source_observation_id in source_ids and event.local_date == local_date
+    )
+    if any(
+        events_by_id[event_id].local_date != local_date
+        for event_id in current_event_ids
+        if event_id in events_by_id
+    ):
+        raise ValueError("manifest current event evidence is outside the date scope")
     for item in scoped_contributions:
         contribution = item.contribution
         if contribution.evidence_kind is not EvidenceKind.CONSUMPTION_EVENT:
@@ -328,6 +338,19 @@ def _load_relevant_tokens(
         ):
             raise ValueError("manifest event evidence has inconsistent source lineage")
     source_ids.update(event.source_observation_id for event in events_by_id.values())
+    historical_event_source_ids: set[UUID] = set()
+    for current_event_id in current_event_ids:
+        cursor = events_by_id.get(current_event_id)
+        visited: set[UUID] = set()
+        while cursor is not None and cursor.supersedes_event_id is not None:
+            if cursor.id in visited:
+                break
+            visited.add(cursor.id)
+            previous = events_by_id.get(cursor.supersedes_event_id)
+            if previous is None:
+                break
+            historical_event_source_ids.add(previous.source_observation_id)
+            cursor = previous
 
     fields = (
         list(
@@ -445,7 +468,9 @@ def _load_relevant_tokens(
             )
         )
         or (
-            source.id not in global_reference_source_ids and source.local_date != local_date
+            source.id not in global_reference_source_ids
+            and source.id not in historical_event_source_ids
+            and source.local_date != local_date
         )
         for source in source_by_id.values()
     ):

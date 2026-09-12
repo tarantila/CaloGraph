@@ -108,11 +108,42 @@ class YazioSourceInstanceResolver:
             )
             is not None
         )
+class GoogleHealthSourceInstanceResolver:
+    provider_key = "google_health"
+
+    def resolve_source_instance_id(self, db: Session, *, user_id: UUID) -> UUID | None:
+        from app.models import GoogleHealthConnection
+
+        return db.scalar(select(GoogleHealthConnection.id).where(GoogleHealthConnection.user_id == user_id))
+
+    def owns_source_instance_id(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+    ) -> bool:
+        from app.models import GoogleHealthConnection
+
+        return (
+            db.scalar(
+                select(GoogleHealthConnection.id).where(
+                    GoogleHealthConnection.id == source_instance_id,
+                    GoogleHealthConnection.user_id == user_id,
+                )
+            )
+            is not None
+        )
 
 
 DEFAULT_SOURCE_RESOLVERS: Mapping[str, ProviderSourceResolver] = MappingProxyType(
-    {"yazio": YazioSourceInstanceResolver()}
+    {
+        "yazio": YazioSourceInstanceResolver(),
+        "google_health": GoogleHealthSourceInstanceResolver(),
+    }
 )
+
+
 
 
 def normalize_provider_sources(

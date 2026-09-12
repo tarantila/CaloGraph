@@ -214,6 +214,16 @@ def _civil(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=None) if value is not None else None
 
 
+def _point_in_requested_date_range(
+    point: NutritionLogDataPoint,
+    *,
+    requested_start: date,
+    requested_end: date,
+) -> bool:
+    civil_start = point.nutrition_log.interval.civil_start_time
+    return civil_start is None or requested_start <= civil_start.date() <= requested_end
+
+
 def _safe_path(path: str) -> str:
     if len(path) <= _MAX_PATH:
         return path
@@ -730,11 +740,23 @@ def ingest_google_health_nutrition_logs(
     # This direct query is intentionally before run creation and every other
     # write.  Generic provider validation does not know Google connection rows.
     _validate_source_owner(db, user_id=user_id, source_instance_id=source_instance_id)
-    fingerprints = tuple(_fingerprint(point) for point in data_points)
+    accepted_points = tuple(
+        point
+        for point in data_points
+        if _point_in_requested_date_range(
+            point,
+            requested_start=requested_start,
+            requested_end=requested_end,
+        )
+    )
     has_missing_civil_date = any(
-        point.nutrition_log.interval.civil_start_time is None for point in data_points
+        point.nutrition_log.interval.civil_start_time is None for point in accepted_points
     )
     effective_coverage = CoverageState.PARTIAL.value if has_missing_civil_date else coverage_state
+    fingerprints = tuple(
+        _fingerprint({"point": point, "coverage_state": effective_coverage})
+        for point in accepted_points
+    )
     run = create_ingestion_run(
         db,
         user_id=user_id,
@@ -749,12 +771,12 @@ def ingest_google_health_nutrition_logs(
         coverage_state=effective_coverage,
         provider_metadata=_safe_metadata(
             {
-                "connector_variant": connector_variant,
-                "covered_item_count": len(data_points),
+                "covered_item_count": len(accepted_points),
+                "discarded_out_of_range_item_count": len(data_points) - len(accepted_points),
             }
         ),
     )
-    for point, fingerprint in zip(data_points, fingerprints, strict=True):
+    for point, fingerprint in zip(accepted_points, fingerprints, strict=True):
         _persist_point(
             db,
             user_id=user_id,

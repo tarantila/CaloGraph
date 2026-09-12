@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import ClassVar
@@ -36,10 +37,14 @@ from app.nutrition.models import (
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
+from app.nutrition.projection import ProjectionPersistenceStatus
+from app.nutrition.projection.orchestration import rebuild_nutrition_day
+from app.nutrition.resolution import resolve_provider_metric
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
 
 PROVIDER = "google_health"
-DAY = date(2026, 9, 1)
 PHYSICAL_START = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
 PHYSICAL_END = datetime(2026, 9, 1, 10, 30, tzinfo=UTC)
 CIVIL_START = datetime(2026, 9, 1, 12, 0)
@@ -557,6 +562,30 @@ def test_civil_date_controls_local_date_and_missing_civil_is_partial(db, user):
     assert all(field.coverage_state == CoverageState.PARTIAL.value for field in missing_fields)
 
 
+def test_out_of_range_points_are_discarded_before_persistence(db, user):
+    outside = _point(name="outside-range")
+    outside_interval = replace(
+        outside.nutrition_log.interval,
+        civil_start_time=datetime(2026, 9, 2, 12),
+        civil_end_time=datetime(2026, 9, 2, 12, 30),
+    )
+    outside = replace(
+        outside,
+        nutrition_log=replace(outside.nutrition_log, interval=outside_interval),
+    )
+
+    run = _ingest(db, user, (_point(name="in-range"), outside))
+
+    assert run.coverage_state == CoverageState.COMPLETE.value
+    assert run.status == "completed"
+    assert run.provider_metadata["covered_item_count"] == 1
+    assert run.provider_metadata["discarded_out_of_range_item_count"] == 1
+    assert {
+        source.source_record_id
+        for source in _rows(db, NutritionSourceObservation)
+    } == {"in-range"}
+
+
 def test_overlong_direct_dto_name_is_rejected_before_domain_writes(db, user):
     before_counts = _domain_counts(db)
     with pytest.raises(ValueError):
@@ -820,6 +849,96 @@ def test_food_reference_alone_does_not_create_empty_profile_or_tombstone(db, use
     assert not _rows(db, NutritionFoodSnapshot)
     assert not _rows(db, NutritionSourceTombstone)
     assert not _rows(db, HealthSample)
+
+
+
+def test_food_linked_direct_canonical_fields_resolve_without_product_profile(db, user):
+    connection = _connection(db, user)
+    _ingest(db, user, (_point(),), connection=connection)
+
+    candidate = resolve_provider_metric(
+        db,
+        provider_key=PROVIDER,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="protein_g",
+    )
+    assert candidate.value == Decimal("30")
+
+
+def test_coverage_transitions_version_google_evidence_and_projection(db, user):
+    connection = _connection(db, user)
+    create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, PROVIDER, 1),),
+    )
+    db.commit()
+
+    _ingest(db, user, (_point(),), connection=connection)
+    db.commit()
+    first = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=DAY,
+        policy_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+
+    _ingest(
+        db,
+        user,
+        (
+            _point(),
+            _point(name="missing-civil", food=None, civil=False),
+        ),
+        connection=connection,
+    )
+    db.commit()
+    second = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=DAY,
+        policy_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+    partial = resolve_provider_metric(
+        db,
+        provider_key=PROVIDER,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="protein_g",
+    )
+
+    db.commit()
+    _ingest(db, user, (_point(),), connection=connection)
+    db.commit()
+    third = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=DAY,
+        policy_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+    complete = resolve_provider_metric(
+        db,
+        provider_key=PROVIDER,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="protein_g",
+    )
+    db.commit()
+
+    assert first.status is ProjectionPersistenceStatus.CREATED
+    assert second.status is ProjectionPersistenceStatus.CREATED
+    assert third.status is ProjectionPersistenceStatus.CREATED
+    assert len({first.input_watermark, second.input_watermark, third.input_watermark}) == 3
+    assert partial.value == Decimal("30")
+    assert partial.coverage_state.value == "partial"
+    assert complete.value == Decimal("30")
+    assert complete.coverage_state.value == "complete"
 
 
 def test_source_and_user_scope_are_enforced(db, user):
