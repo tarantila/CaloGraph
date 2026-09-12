@@ -28,6 +28,8 @@ dependencies = [
   "yazio-exporter==0.2.0",
   "yazio-sdk==0.4.0",
   "zstandard==0.25.0",
+  "google-auth>=2.58.0",
+  "google-auth-oauthlib>=1.4.1",
 ]
 
 [project.optional-dependencies]

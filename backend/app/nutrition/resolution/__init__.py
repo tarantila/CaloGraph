@@ -35,6 +35,7 @@ from .providers import (
 )
 from .reasons import EvidenceKind, ReasonCode
 from .resolver import resolve_event_vs_summary
+from .sources import ProviderSourceBindings, ProviderSourceInstance
 
 __all__ = [
     "CANONICAL_METRICS",
@@ -49,6 +50,8 @@ __all__ = [
     "ProviderCandidate",
     "ProviderCandidateContractError",
     "ProviderNotAvailableError",
+    "ProviderSourceBindings",
+    "ProviderSourceInstance",
     "ReasonCode",
     "SummaryCandidate",
     "YazioProviderResolver",

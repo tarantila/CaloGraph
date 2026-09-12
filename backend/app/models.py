@@ -61,6 +61,12 @@ class User(Base):
     yazio_connection: Mapped[YazioConnection | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
+    google_health_connection: Mapped[GoogleHealthConnection | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    google_health_oauth_flows: Mapped[list[GoogleHealthOAuthFlow]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
@@ -183,6 +189,55 @@ class YazioConnection(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="yazio_connection")
+
+
+class GoogleHealthConnection(Base):
+    __tablename__ = "google_health_connections"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_google_health_connections_user_id"),
+        CheckConstraint(
+            "state IN ('active', 'reauth_required')",
+            name="ck_google_health_connections_state",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    granted_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    user: Mapped[User] = relationship(back_populates="google_health_connection")
+
+
+class GoogleHealthOAuthFlow(Base):
+    __tablename__ = "google_health_oauth_flows"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_google_health_oauth_flows_state_hash"),
+        Index("ix_google_health_oauth_flows_state_hash", "state_hash"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_pkce_verifier: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="google_health_oauth_flows")
 
 
 class UserInvitation(Base):

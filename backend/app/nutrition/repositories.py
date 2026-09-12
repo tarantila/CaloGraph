@@ -487,7 +487,18 @@ def validate_source_instance(
         )
         if owned is None:
             raise ValueError("source_instance_id must belong to the same user")
+        return
+    if provider_key == "google_health":
+        from app.models import GoogleHealthConnection
 
+        owned = db.scalar(
+            select(GoogleHealthConnection.id).where(
+                GoogleHealthConnection.id == source_instance_id,
+                GoogleHealthConnection.user_id == user_id,
+            )
+        )
+        if owned is None:
+            raise ValueError("source_instance_id must belong to the same user")
 
 def create_source_observation(
     db: Session,

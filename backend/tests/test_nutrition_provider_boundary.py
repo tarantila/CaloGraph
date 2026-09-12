@@ -19,6 +19,7 @@ from app.nutrition.resolution import (
     EvidenceKind,
     MetricContribution,
     ProviderCandidate,
+    ProviderSourceInstance,
     ReasonCode,
 )
 from app.nutrition.resolution.providers import (
@@ -196,11 +197,11 @@ def test_yazio_registry_calls_existing_b2_resolver_once(monkeypatch: pytest.Monk
 
 def test_unknown_provider_fails_closed() -> None:
     with pytest.raises(ProviderNotAvailableError):
-        _request(provider_key="google_health")
+        _request(provider_key="fitbit")
 
 
-def test_production_registry_contains_only_yazio() -> None:
-    assert tuple(PROVIDER_RESOLVERS) == ("yazio",)
+def test_production_registry_contains_google_health_and_yazio() -> None:
+    assert set(PROVIDER_RESOLVERS) == {"google_health", "yazio"}
 
 
 def test_provider_scope_mismatch_fails_closed() -> None:
@@ -249,9 +250,11 @@ def test_two_providers_are_collected_without_selection() -> None:
 
     result = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry=registry,
@@ -268,9 +271,11 @@ def test_partial_and_complete_candidates_are_both_preserved() -> None:
     complete = _candidate(coverage_state=CoverageState.COMPLETE)
     result = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry={
@@ -290,9 +295,11 @@ def test_uncertain_and_confirmed_candidates_are_both_preserved() -> None:
     confirmed = _candidate(lineage_state=LineageState.CONFIRMED)
     result = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry={
@@ -310,9 +317,11 @@ def test_missing_and_value_candidates_remain_distinguishable() -> None:
     valued = _candidate(value=Decimal("20"))
     result = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry={
@@ -386,18 +395,22 @@ def test_collection_is_deterministic_for_same_inputs() -> None:
 
     result_a = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry=registry,
     )
     result_b = collect_provider_candidates(
         object(),
-        provider_keys=["fake", "yazio"],
+        provider_sources=(
+            ProviderSourceInstance("fake", SOURCE_A),
+            ProviderSourceInstance("yazio", SOURCE_B),
+        ),
         user_id=USER_ID,
-        source_instance_id=SOURCE_A,
         local_date=LOCAL_DATE,
         metric_key=METRIC_KEY,
         resolver_registry=registry,

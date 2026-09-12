@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 
 from .contracts import ProviderCandidate
 from .metrics import CANONICAL_METRICS, UNSUPPORTED_METRIC_KEYS
+from .sources import (
+    ProviderSourceBindings,
+    ProviderSourceInstance,
+    normalize_provider_sources,
+)
 
 
 class ProviderNotAvailableError(LookupError):
@@ -56,16 +61,51 @@ class YazioProviderResolver:
             metric_key=metric_key,
         )
 
+class GoogleHealthProviderResolver:
+    provider_key = "google_health"
+
+    def resolve_metric(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+        local_date: date,
+        metric_key: str,
+    ) -> ProviderCandidate:
+        from app.services.google_health_nutrition_resolution import resolve_google_health_metric
+
+        return resolve_google_health_metric(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+            metric_key=metric_key,
+        )
+
 
 PROVIDER_RESOLVERS: Mapping[str, NutritionProviderResolver] = MappingProxyType(
-    {"yazio": YazioProviderResolver()}
+    {
+        "yazio": YazioProviderResolver(),
+        "google_health": GoogleHealthProviderResolver(),
+    }
 )
+
 
 
 def _registry_or_default(
     resolver_registry: Mapping[str, NutritionProviderResolver] | None,
 ) -> Mapping[str, NutritionProviderResolver]:
     return PROVIDER_RESOLVERS if resolver_registry is None else resolver_registry
+
+
+def _normalize_provider_key(provider_key: str) -> str:
+    if not isinstance(provider_key, str):
+        raise ValueError("provider_key must be a string")
+    normalized = provider_key.strip().lower()
+    if not normalized or any(character.isspace() for character in normalized):
+        raise ValueError("provider_key must be a non-empty token")
+    return normalized
 
 
 def _validate_metric_key(metric_key: str) -> None:
@@ -104,10 +144,13 @@ def resolve_provider_metric(
     metric_key: str,
     resolver_registry: Mapping[str, NutritionProviderResolver] | None = None,
 ) -> ProviderCandidate:
+    normalized_provider_key = _normalize_provider_key(provider_key)
     registry = _registry_or_default(resolver_registry)
-    resolver = registry.get(provider_key)
+    resolver = registry.get(normalized_provider_key)
     if resolver is None:
-        raise ProviderNotAvailableError(f"provider resolver is not registered: {provider_key}")
+        raise ProviderNotAvailableError(
+            f"provider resolver is not registered: {normalized_provider_key}"
+        )
     _validate_metric_key(metric_key)
     candidate = resolver.resolve_metric(
         db,
@@ -118,35 +161,68 @@ def resolve_provider_metric(
     )
     return _validate_candidate_scope(
         candidate,
-        provider_key=provider_key,
+        provider_key=normalized_provider_key,
         user_id=user_id,
         local_date=local_date,
         metric_key=metric_key,
     )
 
 
+def _requested_source_bindings(
+    *,
+    provider_keys: Sequence[str] | None,
+    provider_sources: ProviderSourceBindings | Sequence[ProviderSourceInstance] | None,
+    source_instance_id: UUID | None,
+) -> ProviderSourceBindings:
+    if provider_sources is not None:
+        if source_instance_id is not None:
+            raise ValueError("provider_sources and source_instance_id are mutually exclusive")
+        bindings = normalize_provider_sources(provider_sources)
+        if provider_keys is not None:
+            requested_keys = tuple(_normalize_provider_key(key) for key in provider_keys)
+            if set(requested_keys) != {binding.provider_key for binding in bindings}:
+                raise ValueError("provider_keys do not match provider source bindings")
+        return bindings
+
+    if provider_keys is None:
+        raise ValueError("provider_sources are required")
+    requested_keys = tuple(_normalize_provider_key(key) for key in provider_keys)
+    if len(requested_keys) != len(set(requested_keys)):
+        raise ValueError("duplicate provider key")
+    if source_instance_id is None:
+        raise ValueError("provider_sources are required")
+    if len(requested_keys) != 1:
+        raise ValueError("legacy source_instance_id can bind only one provider")
+    return ProviderSourceBindings(
+        (ProviderSourceInstance(requested_keys[0], source_instance_id),)
+    )
+
+
 def collect_provider_candidates(
     db: Session,
     *,
-    provider_keys: Sequence[str],
+    provider_keys: Sequence[str] | None = None,
+    provider_sources: ProviderSourceBindings | Sequence[ProviderSourceInstance] | None = None,
     user_id: UUID,
-    source_instance_id: UUID,
+    source_instance_id: UUID | None = None,
     local_date: date,
     metric_key: str,
     resolver_registry: Mapping[str, NutritionProviderResolver] | None = None,
 ) -> Mapping[str, ProviderCandidate]:
-    requested_keys = tuple(provider_keys)
-    if len(requested_keys) != len(set(requested_keys)):
-        raise ValueError("duplicate provider key")
+    bindings = _requested_source_bindings(
+        provider_keys=provider_keys,
+        provider_sources=provider_sources,
+        source_instance_id=source_instance_id,
+    )
     return {
-        provider_key: resolve_provider_metric(
+        binding.provider_key: resolve_provider_metric(
             db,
-            provider_key=provider_key,
+            provider_key=binding.provider_key,
             user_id=user_id,
-            source_instance_id=source_instance_id,
+            source_instance_id=binding.source_instance_id,
             local_date=local_date,
             metric_key=metric_key,
             resolver_registry=resolver_registry,
         )
-        for provider_key in requested_keys
+        for binding in bindings
     }

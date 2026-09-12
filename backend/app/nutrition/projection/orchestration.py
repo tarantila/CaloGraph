@@ -1,28 +1,40 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Final
+from typing import Final, cast
 from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import YazioConnection
 from app.nutrition.enums import ObservationKind
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionExternalIdentityLink,
     NutritionFieldObservation,
+    NutritionFoodProfile,
     NutritionFoodSnapshot,
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
 from app.nutrition.resolution.contracts import MetricContribution, ProviderCandidate
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
-from app.nutrition.resolution.providers import collect_provider_candidates
+from app.nutrition.resolution.providers import (
+    PROVIDER_RESOLVERS,
+    NutritionProviderResolver,
+    collect_provider_candidates,
+)
 from app.nutrition.resolution.reasons import EvidenceKind
+from app.nutrition.resolution.sources import (
+    ProviderSourceBindings,
+    ProviderSourceInstance,
+    normalize_provider_sources,
+    resolve_default_provider_sources,
+    validate_provider_source_bindings,
+)
 from app.source_priority.application import get_effective_policy_snapshot
 from app.source_priority.contracts import PriorityPolicySnapshot, PrioritySelection
 from app.source_priority.selection import select_by_source_priority
@@ -47,7 +59,7 @@ from .tokens import (
 )
 
 _PROVIDER_KEY: Final = "yazio"
-_PROVIDER_KEYS: Final = (_PROVIDER_KEY,)
+_PROVIDER_KEYS: Final = tuple(PROVIDER_RESOLVERS)
 _MAX_ATTEMPTS: Final = 3
 _PROJECTION_VERSION_CONSTRAINT: Final = "uq_nutrition_projections_user_date_version"
 
@@ -72,45 +84,73 @@ def _utc_datetime(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _source_instance_id(
+@dataclass(frozen=True, slots=True)
+class _ScopedContribution:
+    binding: ProviderSourceInstance
+    contribution: MetricContribution
+
+
+def _resolve_provider_sources(
     db: Session,
     *,
     user_id: UUID,
+    explicit_provider_sources: ProviderSourceBindings
+    | Sequence[ProviderSourceInstance]
+    | None,
     explicit_source_instance_id: UUID | None,
-) -> UUID:
-    source_instance_id = explicit_source_instance_id or db.scalar(
-        select(YazioConnection.id).where(YazioConnection.user_id == user_id)
-    )
-    if source_instance_id is None:
-        raise ValueError("YAZIO source instance is not configured")
-    owned = db.scalar(
-        select(YazioConnection.id).where(
-            YazioConnection.id == source_instance_id,
-            YazioConnection.user_id == user_id,
+    resolver_registry: Mapping[str, NutritionProviderResolver] | None,
+) -> ProviderSourceBindings:
+    if explicit_provider_sources is not None and explicit_source_instance_id is not None:
+        raise ValueError("provider_sources and source_instance_id are mutually exclusive")
+    if explicit_provider_sources is not None:
+        bindings = normalize_provider_sources(explicit_provider_sources)
+        validate_provider_source_bindings(
+            db,
+            user_id=user_id,
+            bindings=bindings,
+            resolver_registry=resolver_registry,
         )
+        return bindings
+    if explicit_source_instance_id is not None:
+        bindings = ProviderSourceBindings(
+            (ProviderSourceInstance(_PROVIDER_KEY, explicit_source_instance_id),)
+        )
+        validate_provider_source_bindings(
+            db,
+            user_id=user_id,
+            bindings=bindings,
+            resolver_registry=resolver_registry,
+        )
+        return bindings
+    bindings = resolve_default_provider_sources(
+        db,
+        user_id=user_id,
+        provider_keys=_PROVIDER_KEYS,
+        resolver_registry=None,
     )
-    if owned is None:
-        raise ValueError("source_instance_id must belong to the same user")
-    return source_instance_id
+    if not bindings:
+        raise ValueError("YAZIO source instance is not configured")
+    return bindings
 
 
 def _collect_selections(
     db: Session,
     *,
     user_id: UUID,
-    source_instance_id: UUID,
+    provider_sources: ProviderSourceBindings,
     local_date: date,
     policy: PriorityPolicySnapshot | None,
+    resolver_registry: Mapping[str, NutritionProviderResolver] | None,
 ) -> tuple[PrioritySelection, ...]:
     selections: list[PrioritySelection] = []
     for metric_key in CANONICAL_METRICS:
         candidates = collect_provider_candidates(
             db,
-            provider_keys=_PROVIDER_KEYS,
+            provider_sources=provider_sources,
             user_id=user_id,
-            source_instance_id=source_instance_id,
             local_date=local_date,
             metric_key=metric_key,
+            resolver_registry=resolver_registry,
         )
         selections.append(
             select_by_source_priority(
@@ -126,20 +166,31 @@ def _collect_selections(
 
 def _path_contributions(
     selections: Iterable[PrioritySelection],
-) -> tuple[MetricContribution, ...]:
-    contributions: list[MetricContribution] = []
-    seen: set[tuple[UUID, UUID, str]] = set()
+    *,
+    provider_sources: ProviderSourceBindings,
+) -> tuple[_ScopedContribution, ...]:
+    contributions: list[_ScopedContribution] = []
+    seen: set[tuple[str, UUID, UUID, UUID, str]] = set()
     for selection in selections:
         for disposition in selection.dispositions:
             if disposition.rule_id is None or disposition.candidate is None:
                 continue
             candidate: ProviderCandidate = disposition.candidate
+            binding = provider_sources.for_provider(candidate.provider_key)
+            if binding is None:
+                raise ValueError("candidate provider has no source instance binding")
             candidate_evidence = (*candidate.source_lineage, *candidate.diagnostic_evidence)
             for contribution in candidate_evidence:
-                identity = (contribution.evidence_id, contribution.source_observation_id, contribution.metric_key)
+                identity = (
+                    binding.provider_key,
+                    binding.source_instance_id,
+                    contribution.evidence_id,
+                    contribution.source_observation_id,
+                    contribution.metric_key,
+                )
                 if identity not in seen:
                     seen.add(identity)
-                    contributions.append(contribution)
+                    contributions.append(_ScopedContribution(binding, contribution))
     return tuple(contributions)
 
 
@@ -148,20 +199,46 @@ def _load_relevant_tokens(
     *,
     user_id: UUID,
     local_date: date,
-    source_instance_id: UUID,
-    contributions: tuple[MetricContribution, ...],
+    source_instance_id: UUID | None = None,
+    contributions: tuple[_ScopedContribution | MetricContribution, ...],
 ) -> tuple[TechnicalEvidenceToken, ...]:
-    source_ids = {contribution.source_observation_id for contribution in contributions}
+    if source_instance_id is None:
+        scoped_contributions = tuple(
+            contribution
+            for contribution in contributions
+            if isinstance(contribution, _ScopedContribution)
+        )
+        if len(scoped_contributions) != len(contributions):
+            raise ValueError("manifest contributions must include provider/source scope")
+    else:
+        if any(isinstance(contribution, _ScopedContribution) for contribution in contributions):
+            raise ValueError("manifest contributions cannot mix legacy and scoped values")
+        scoped_contributions = tuple(
+            _ScopedContribution(
+                ProviderSourceInstance(_PROVIDER_KEY, source_instance_id),
+                cast(MetricContribution, contribution),
+            )
+            for contribution in contributions
+        )
+    source_ids = {item.contribution.source_observation_id for item in scoped_contributions}
     event_ids = {
-        contribution.evidence_id
-        for contribution in contributions
-        if contribution.evidence_kind is EvidenceKind.CONSUMPTION_EVENT
+        item.contribution.evidence_id
+        for item in scoped_contributions
+        if item.contribution.evidence_kind is EvidenceKind.CONSUMPTION_EVENT
     }
     field_ids = {
-        contribution.evidence_id
-        for contribution in contributions
-        if contribution.evidence_kind is EvidenceKind.FIELD_OBSERVATION
+        item.contribution.evidence_id
+        for item in scoped_contributions
+        if item.contribution.evidence_kind is EvidenceKind.FIELD_OBSERVATION
     }
+    allowed_scopes = {
+        (item.binding.provider_key, item.binding.source_instance_id)
+        for item in scoped_contributions
+    }
+
+    def scope_allowed(provider_key: str, source_instance_id: UUID) -> bool:
+        return (provider_key, source_instance_id) in allowed_scopes
+
     source_rows = (
         list(
             db.scalars(
@@ -178,12 +255,24 @@ def _load_relevant_tokens(
     if set(source_by_id) != source_ids:
         raise ValueError("manifest source evidence is outside the user scope")
     if any(
-        source.source_instance_id != source_instance_id
-        or source.provider_key != _PROVIDER_KEY
-        or source.local_date != local_date
+        not scope_allowed(source.provider_key, source.source_instance_id)
         for source in source_by_id.values()
     ):
         raise ValueError("manifest source evidence is outside the date/provider scope")
+    for item in scoped_contributions:
+        source = source_by_id.get(item.contribution.source_observation_id)
+        if source is None:
+            continue
+        if (
+            source.provider_key != item.binding.provider_key
+            or source.source_instance_id != item.binding.source_instance_id
+        ):
+            raise ValueError("manifest source evidence has inconsistent provider/source lineage")
+        if (
+            item.contribution.evidence_kind is EvidenceKind.SOURCE_OBSERVATION
+            and item.contribution.evidence_id != item.contribution.source_observation_id
+        ):
+            raise ValueError("manifest source evidence has inconsistent evidence identity")
 
     event_filters = []
     if event_ids:
@@ -195,9 +284,6 @@ def _load_relevant_tokens(
             db.scalars(
                 select(NutritionConsumptionEvent).where(
                     NutritionConsumptionEvent.user_id == user_id,
-                    NutritionConsumptionEvent.provider_key == _PROVIDER_KEY,
-                    NutritionConsumptionEvent.source_instance_id == source_instance_id,
-                    NutritionConsumptionEvent.local_date == local_date,
                     or_(*event_filters),
                 )
             )
@@ -205,27 +291,66 @@ def _load_relevant_tokens(
         if event_filters
         else []
     )
-    event_keys = {
-        event.logical_event_key
+    event_keys_by_scope = {
+        (event.provider_key, event.source_instance_id, event.logical_event_key)
         for event in event_rows
         if event.logical_event_key is not None
+        and scope_allowed(event.provider_key, event.source_instance_id)
     }
-    if event_keys:
-        event_rows = list(
+    if event_keys_by_scope:
+        logical_keys = {key for _, _, key in event_keys_by_scope}
+        event_rows.extend(
             db.scalars(
                 select(NutritionConsumptionEvent).where(
                     NutritionConsumptionEvent.user_id == user_id,
-                    NutritionConsumptionEvent.provider_key == _PROVIDER_KEY,
-                    NutritionConsumptionEvent.source_instance_id == source_instance_id,
-                    NutritionConsumptionEvent.local_date == local_date,
-                    NutritionConsumptionEvent.logical_event_key.in_(event_keys),
+                    NutritionConsumptionEvent.logical_event_key.in_(logical_keys),
                 )
             )
         )
-    events_by_id = {event.id: event for event in event_rows}
-    if not event_ids.issubset(events_by_id):
-        raise ValueError("manifest event evidence is outside the source scope")
+    events_by_id = {
+        event.id: event
+        for event in event_rows
+        if scope_allowed(event.provider_key, event.source_instance_id)
+    }
+    current_event_ids = set(event_ids)
+    current_event_ids.update(
+        event.id
+        for event in events_by_id.values()
+        if event.source_observation_id in source_ids and event.local_date == local_date
+    )
+    if any(
+        events_by_id[event_id].local_date != local_date
+        for event_id in current_event_ids
+        if event_id in events_by_id
+    ):
+        raise ValueError("manifest current event evidence is outside the date scope")
+    for item in scoped_contributions:
+        contribution = item.contribution
+        if contribution.evidence_kind is not EvidenceKind.CONSUMPTION_EVENT:
+            continue
+        event = events_by_id.get(contribution.evidence_id)
+        if event is None:
+            continue
+        if (
+            event.source_observation_id != contribution.source_observation_id
+            or event.provider_key != item.binding.provider_key
+            or event.source_instance_id != item.binding.source_instance_id
+        ):
+            raise ValueError("manifest event evidence has inconsistent source lineage")
     source_ids.update(event.source_observation_id for event in events_by_id.values())
+    historical_event_source_ids: set[UUID] = set()
+    for current_event_id in current_event_ids:
+        cursor = events_by_id.get(current_event_id)
+        visited: set[UUID] = set()
+        while cursor is not None and cursor.supersedes_event_id is not None:
+            if cursor.id in visited:
+                break
+            visited.add(cursor.id)
+            previous = events_by_id.get(cursor.supersedes_event_id)
+            if previous is None:
+                break
+            historical_event_source_ids.add(previous.source_observation_id)
+            cursor = previous
 
     fields = (
         list(
@@ -259,6 +384,15 @@ def _load_relevant_tokens(
     fields_by_id = {field.id: field for field in (*fields, *parents)}
     if not field_ids.issubset(fields_by_id):
         raise ValueError("manifest field evidence is outside the user scope")
+    for item in scoped_contributions:
+        contribution = item.contribution
+        if contribution.evidence_kind is not EvidenceKind.FIELD_OBSERVATION:
+            continue
+        field = fields_by_id.get(contribution.evidence_id)
+        if field is None:
+            continue
+        if field.source_observation_id != contribution.source_observation_id:
+            raise ValueError("manifest field evidence has inconsistent source lineage")
     source_ids.update(field.source_observation_id for field in fields_by_id.values())
 
     snapshot_ids = {
@@ -281,40 +415,62 @@ def _load_relevant_tokens(
     snapshots_by_id = {snapshot.id: snapshot for snapshot in snapshots}
     if not snapshot_ids.issubset(snapshots_by_id):
         raise ValueError("manifest snapshot evidence is outside the user scope")
+    profile_ids = {snapshot.food_profile_id for snapshot in snapshots_by_id.values()}
+    profiles = (
+        list(
+            db.scalars(
+                select(NutritionFoodProfile).where(
+                    NutritionFoodProfile.user_id == user_id,
+                    NutritionFoodProfile.id.in_(profile_ids),
+                )
+            )
+        )
+        if profile_ids
+        else []
+    )
+    profiles_by_id = {profile.id: profile for profile in profiles}
+    if set(profiles_by_id) != profile_ids:
+        raise ValueError("manifest snapshot profile is outside the user scope")
+    if any(
+        not scope_allowed(profile.provider_key, profile.source_instance_id)
+        for profile in profiles_by_id.values()
+    ):
+        raise ValueError("manifest snapshot profile is outside the date/provider scope")
     source_ids.update(snapshot.source_observation_id for snapshot in snapshots)
     global_reference_source_ids = {
-        snapshot.source_observation_id
-        for snapshot in snapshots_by_id.values()
+        snapshot.source_observation_id for snapshot in snapshots_by_id.values()
     }
 
     if source_ids != set(source_by_id):
-        extra_sources = list(
-            db.scalars(
-                select(NutritionSourceObservation).where(
-                    NutritionSourceObservation.user_id == user_id,
-                    NutritionSourceObservation.id.in_(source_ids - set(source_by_id)),
+        extra_sources = (
+            list(
+                db.scalars(
+                    select(NutritionSourceObservation).where(
+                        NutritionSourceObservation.user_id == user_id,
+                        NutritionSourceObservation.id.in_(source_ids - set(source_by_id)),
+                    )
                 )
             )
-        ) if source_ids - set(source_by_id) else []
+            if source_ids - set(source_by_id)
+            else []
+        )
         source_rows.extend(extra_sources)
         source_by_id = {source.id: source for source in source_rows}
     if set(source_by_id) != source_ids:
         raise ValueError("manifest derived source evidence is outside the user scope")
     if any(
-        source.source_instance_id != source_instance_id
-        or source.provider_key != _PROVIDER_KEY
+        not scope_allowed(source.provider_key, source.source_instance_id)
         or (
-            (
-                source.id in global_reference_source_ids
-                and (
-                    source.observation_kind != ObservationKind.PRODUCT_PROFILE.value
-                    or source.local_date is not None
-                )
+            source.id in global_reference_source_ids
+            and (
+                source.observation_kind != ObservationKind.PRODUCT_PROFILE.value
+                or source.local_date is not None
             )
-            or (
-                source.id not in global_reference_source_ids
-                and source.local_date != local_date
-            )
+        )
+        or (
+            source.id not in global_reference_source_ids
+            and source.id not in historical_event_source_ids
+            and source.local_date != local_date
         )
         for source in source_by_id.values()
     ):
@@ -337,23 +493,24 @@ def _load_relevant_tokens(
         db.scalars(
             select(NutritionSourceTombstone).where(
                 NutritionSourceTombstone.user_id == user_id,
-                NutritionSourceTombstone.provider_key == _PROVIDER_KEY,
-                NutritionSourceTombstone.source_instance_id == source_instance_id,
             )
         )
     )
     relevant_tombstones = [
         tombstone
         for tombstone in tombstones
-        if tombstone.source_observation_id in source_ids
-        or tombstone.external_identity_id in identity_ids
-        or (
-            tombstone.source_observation_id is None
-            and any(
-                source.source_namespace == tombstone.source_namespace
-                and source.source_record_id is not None
-                and source.source_record_id == tombstone.source_record_id
-                for source in source_by_id.values()
+        if scope_allowed(tombstone.provider_key, tombstone.source_instance_id)
+        and (
+            tombstone.source_observation_id in source_ids
+            or tombstone.external_identity_id in identity_ids
+            or (
+                tombstone.source_observation_id is None
+                and any(
+                    source.source_namespace == tombstone.source_namespace
+                    and source.source_record_id is not None
+                    and source.source_record_id == tombstone.source_record_id
+                    for source in source_by_id.values()
+                )
             )
         )
     ]
@@ -377,14 +534,17 @@ def _load_relevant_tokens(
         for event in events_by_id.values()
     )
     tokens.extend(
-        FieldObservationToken(field_observation_id=field.id, provider_key=_PROVIDER_KEY)
+        FieldObservationToken(
+            field_observation_id=field.id,
+            provider_key=source_by_id[field.source_observation_id].provider_key,
+        )
         for field in fields_by_id.values()
     )
     tokens.extend(
         FoodSnapshotToken(
             snapshot_id=snapshot.id,
             content_hash=snapshot.content_hash,
-            provider_key=_PROVIDER_KEY,
+            provider_key=profiles_by_id[snapshot.food_profile_id].provider_key,
         )
         for snapshot in snapshots_by_id.values()
     )
@@ -392,15 +552,17 @@ def _load_relevant_tokens(
         IdentityLinkToken(
             link_id=link.id,
             link_revision=link.link_revision,
-            provider_key=_PROVIDER_KEY,
+            provider_key=events_by_id[link.consumption_event_id].provider_key,
         )
         for link in links
+        if link.consumption_event_id is not None
+        and link.consumption_event_id in events_by_id
     )
     tokens.extend(
         TombstoneToken(
             tombstone_id=tombstone.id,
             observed_at=_utc_datetime(tombstone.observed_at),
-            provider_key=_PROVIDER_KEY,
+            provider_key=tombstone.provider_key,
         )
         for tombstone in relevant_tombstones
     )
@@ -412,7 +574,7 @@ def _build_manifest(
     *,
     user_id: UUID,
     local_date: date,
-    source_instance_id: UUID,
+    provider_sources: ProviderSourceBindings,
     policy: PriorityPolicySnapshot | None,
     selections: tuple[PrioritySelection, ...],
 ) -> ProjectionInputManifest:
@@ -427,12 +589,22 @@ def _build_manifest(
         if policy is not None
         else ()
     )
-    contributions = _path_contributions(selections)
+    relevant_provider_keys = {rule.provider_key for rule in relevant_rules}
+    relevant_provider_sources = ProviderSourceBindings(
+        tuple(
+            binding
+            for binding in provider_sources
+            if binding.provider_key in relevant_provider_keys
+        )
+    )
+    contributions = _path_contributions(
+        selections,
+        provider_sources=provider_sources,
+    )
     tokens = _load_relevant_tokens(
         db,
         user_id=user_id,
         local_date=local_date,
-        source_instance_id=source_instance_id,
         contributions=contributions,
     )
     source_token_ids = {
@@ -440,7 +612,9 @@ def _build_manifest(
         for token in tokens
         if isinstance(token, SourceObservationToken)
     }
-    required_source_ids = {contribution.source_observation_id for contribution in contributions}
+    required_source_ids = {
+        item.contribution.source_observation_id for item in contributions
+    }
     if not required_source_ids.issubset(source_token_ids):
         raise ValueError("manifest is missing candidate lineage source evidence")
     return ProjectionInputManifest(
@@ -451,6 +625,7 @@ def _build_manifest(
         watermark_format_version=WATERMARK_FORMAT_VERSION,
         policy=policy,
         relevant_rules=relevant_rules,
+        relevant_provider_sources=relevant_provider_sources,
         technical_evidence=tokens,
     )
 
@@ -462,25 +637,32 @@ def _run_attempt(
     local_date: date,
     policy_at: datetime,
     source_instance_id: UUID | None,
+    provider_sources: ProviderSourceBindings
+    | Sequence[ProviderSourceInstance]
+    | None,
+    resolver_registry: Mapping[str, NutritionProviderResolver] | None,
 ) -> ProjectionPersistenceResult:
-    resolved_source_instance_id = _source_instance_id(
+    resolved_provider_sources = _resolve_provider_sources(
         db,
         user_id=user_id,
+        explicit_provider_sources=provider_sources,
         explicit_source_instance_id=source_instance_id,
+        resolver_registry=resolver_registry,
     )
     policy = get_effective_policy_snapshot(db, user_id, policy_at)
     selections = _collect_selections(
         db,
         user_id=user_id,
-        source_instance_id=resolved_source_instance_id,
+        provider_sources=resolved_provider_sources,
         local_date=local_date,
         policy=policy,
+        resolver_registry=resolver_registry,
     )
     manifest = _build_manifest(
         db,
         user_id=user_id,
         local_date=local_date,
-        source_instance_id=resolved_source_instance_id,
+        provider_sources=resolved_provider_sources,
         policy=policy,
         selections=selections,
     )
@@ -528,7 +710,6 @@ def _begin_attempt(db: Session) -> None:
     else:
         db.connection()
 
-
 def rebuild_nutrition_day(
     db: Session,
     *,
@@ -536,6 +717,10 @@ def rebuild_nutrition_day(
     local_date: date,
     policy_at: datetime,
     source_instance_id: UUID | None = None,
+    provider_sources: ProviderSourceBindings
+    | Sequence[ProviderSourceInstance]
+    | None = None,
+    resolver_registry: Mapping[str, NutritionProviderResolver] | None = None,
 ) -> ProjectionPersistenceResult:
     """Build and persist exactly one user's canonical nutrition day."""
     if db.in_transaction():
@@ -551,6 +736,8 @@ def rebuild_nutrition_day(
                 local_date=local_date,
                 policy_at=normalized_policy_at,
                 source_instance_id=source_instance_id,
+                provider_sources=provider_sources,
+                resolver_registry=resolver_registry,
             )
             db.commit()
             return result

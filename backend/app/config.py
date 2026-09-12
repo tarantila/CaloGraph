@@ -31,6 +31,11 @@ YAZIO_LEGACY_DEPRECATION_MESSAGE = (
     "Migrate to YAZIO_PROVIDER=sdk. "
     "It will be removed no later than CaloGraph 1.0."
 )
+GOOGLE_HEALTH_API_BASE_URL = "https://health.googleapis.com/v4"
+GOOGLE_HEALTH_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_HEALTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_HEALTH_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
+GOOGLE_HEALTH_CALLBACK_PATH = "/api/v1/google-health/oauth/callback"
 
 KNOWN_INSECURE_SECRETS = frozenset(
     {
@@ -133,6 +138,27 @@ class Settings(BaseSettings):
     calograph_timezone: str = "Europe/Berlin"
     initial_admin_setup_enabled: bool = False
     calograph_public_url: str = "http://localhost:8180"
+    google_health_enabled: bool = False
+    google_health_client_id: str = Field(
+        default="",
+        min_length=0,
+        max_length=512,
+        exclude=True,
+        repr=False,
+    )
+    google_health_client_secret: str = Field(
+        default="",
+        min_length=0,
+        max_length=512,
+        exclude=True,
+        repr=False,
+    )
+    google_health_client_secret_file: str | None = Field(
+        default=None,
+        max_length=4096,
+        exclude=True,
+        repr=False,
+    )
     cookie_secure: bool = False
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
@@ -310,6 +336,12 @@ class Settings(BaseSettings):
                 "mfa_encryption_key",
                 "mfa_encryption_key_file",
                 "MFA_ENCRYPTION_KEY_FILE",
+                False,
+            ),
+            (
+                "google_health_client_secret",
+                "google_health_client_secret_file",
+                "GOOGLE_HEALTH_CLIENT_SECRET_FILE",
                 False,
             ),
         )
