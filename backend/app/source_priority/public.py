@@ -152,6 +152,11 @@ def get_nutrition_priority_state(
 
     all_nutrition_rules = list_rules(db, user_id, active_policy.id, data_area="nutrition")
     configured_provider_keys = {rule.provider_key for rule in all_nutrition_rules}
+    wildcard_ranks = {
+        rule.provider_key: rule.priority_rank
+        for rule in all_nutrition_rules
+        if rule.metric_key is None
+    }
     has_metric_specific_rules = any(rule.metric_key is not None for rule in all_nutrition_rules)
     refresh_required = _projection_refresh_required(db, user_id, active_policy.id)
 
@@ -165,11 +170,10 @@ def get_nutrition_priority_state(
         )
 
     if _is_public_global_policy(all_nutrition_rules, available_provider_keys):
-        ranks = {rule.provider_key: rule.priority_rank for rule in all_nutrition_rules}
         return NutritionPriorityState(
             status="configured",
             version=version,
-            sources=_source_list(available_provider_keys, configured_provider_keys, ranks),
+            sources=_source_list(available_provider_keys, configured_provider_keys, wildcard_ranks),
             configuration_mode="global",
             projection_refresh_required=refresh_required,
         )
@@ -177,7 +181,7 @@ def get_nutrition_priority_state(
     return NutritionPriorityState(
         status="configuration_required",
         version=version,
-        sources=_source_list(available_provider_keys, configured_provider_keys),
+        sources=_source_list(available_provider_keys, configured_provider_keys, wildcard_ranks),
         configuration_mode="none",
         projection_refresh_required=refresh_required,
     )
