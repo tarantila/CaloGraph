@@ -10,7 +10,6 @@ from app.config import (
     YAZIO_API_BASE_URL_DEFAULT,
     YAZIO_LEGACY_DEPRECATION_MESSAGE,
     YAZIO_SDK_CLIENT_ID_DEFAULT,
-    YAZIO_SDK_CLIENT_SECRET_DEFAULT,
     YAZIO_SDK_USER_AGENT_DEFAULT,
     ProductionConfigurationError,
     Settings,
@@ -38,6 +37,7 @@ def valid_production_settings(**overrides) -> Settings:
         "mfa_encryption_key": Fernet.generate_key().decode(),
         "yazio_enabled": True,
         "yazio_provider": "sdk",
+        "yazio_sdk_client_secret": "test-only-yazio-sdk-secret",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -135,14 +135,88 @@ def test_enabled_yazio_rejects_missing_or_empty_provider(provider: str | None) -
 
 @pytest.mark.parametrize("provider", ["sdk", "legacy"])
 def test_enabled_yazio_accepts_supported_provider(provider: str) -> None:
+    values = {
+        "environment": "development",
+        "yazio_enabled": True,
+        "yazio_provider": provider,
+    }
+    if provider == "sdk":
+        values["yazio_sdk_client_secret"] = "test-only-yazio-sdk-secret"
+
+    configured = Settings(_env_file=None, **values)
+
+    assert configured.yazio_provider == provider
+
+
+def test_yazio_disabled_allows_missing_sdk_client_secret() -> None:
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=False,
+    )
+
+    assert configured.yazio_sdk_client_secret == ""
+
+
+def test_yazio_legacy_allows_missing_sdk_client_secret() -> None:
     configured = Settings(
         _env_file=None,
         environment="development",
         yazio_enabled=True,
-        yazio_provider=provider,
+        yazio_provider="legacy",
     )
 
-    assert configured.yazio_provider == provider
+    assert configured.yazio_sdk_client_secret == ""
+
+
+def test_yazio_sdk_requires_explicit_client_secret() -> None:
+    with pytest.raises(ValidationError) as captured:
+        Settings(
+            _env_file=None,
+            environment="development",
+            yazio_enabled=True,
+            yazio_provider="sdk",
+        )
+
+    message = str(captured.value)
+    assert "YAZIO_SDK_CLIENT_SECRET" in message
+    assert "test-only-yazio-sdk-secret" not in message
+
+def test_yazio_sdk_rejects_whitespace_only_client_secret() -> None:
+    with pytest.raises(ValidationError, match="YAZIO_SDK_CLIENT_SECRET"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            yazio_enabled=True,
+            yazio_provider="sdk",
+            yazio_sdk_client_secret="   ",
+        )
+
+
+def test_yazio_sdk_accepts_explicit_client_secret_without_exposing_it() -> None:
+    secret = "test-only-yazio-sdk-secret"
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+        yazio_provider="sdk",
+        yazio_sdk_client_secret=secret,
+    )
+
+    assert configured.yazio_sdk_client_secret == secret
+    assert "yazio_sdk_client_secret" not in configured.model_dump()
+    assert secret not in repr(configured)
+
+
+def test_yazio_sdk_non_secret_defaults_are_internal_and_stable() -> None:
+    configured = Settings(_env_file=None, environment="development")
+
+    assert configured.yazio_enabled is False
+    assert configured.yazio_provider is None
+    assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
+    assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
+    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
+    assert configured.yazio_sdk_client_secret == ""
 
 
 def test_yazio_provider_rejects_unknown_value() -> None:
@@ -154,15 +228,6 @@ def test_yazio_provider_rejects_unknown_value() -> None:
         )
 
 
-def test_yazio_sdk_defaults_are_internal_and_stable() -> None:
-    configured = Settings(_env_file=None, environment="development")
-
-    assert configured.yazio_enabled is False
-    assert configured.yazio_provider is None
-    assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
-    assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
-    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
-    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
 def test_legacy_yazio_provider_warning_is_operator_facing(
@@ -193,17 +258,25 @@ def test_yazio_templates_and_compose_require_explicit_provider() -> None:
 
     assert "YAZIO_ENABLED=true" in development
     assert "YAZIO_PROVIDER=sdk" in development
+    assert [
+        line for line in development.splitlines() if line.startswith("YAZIO_SDK_CLIENT_SECRET=")
+    ] == ["YAZIO_SDK_CLIENT_SECRET="]
     assert "YAZIO_ENABLED=false" in production
     assert "YAZIO_PROVIDER=sdk" in production
+    assert [
+        line for line in production.splitlines() if line.startswith("YAZIO_SDK_CLIENT_SECRET=")
+    ] == ["YAZIO_SDK_CLIENT_SECRET="]
     for content in (development, production):
         assert "YAZIO_API_BASE_URL" not in content
         assert "YAZIO_SDK_USER_AGENT" not in content
         assert "YAZIO_SDK_CLIENT_ID" not in content
-        assert "YAZIO_SDK_CLIENT_SECRET" not in content
     assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
     assert compose.count("YAZIO_PROVIDER: ${YAZIO_PROVIDER-}") == 2
+    assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
     assert "${YAZIO_PROVIDER:-legacy}" not in compose
     assert "YAZIO_PROVIDER: \"sdk\"" in development_compose
+    assert "${YAZIO_SDK_CLIENT_SECRET:-" not in compose
+    assert "${YAZIO_SDK_CLIENT_SECRET:-" not in development_compose
 
 
 def test_validation_errors_do_not_echo_sensitive_inputs() -> None:
@@ -250,6 +323,7 @@ def clear_direct_secret_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "RATE_LIMIT_SECRET",
         "CREDENTIAL_ENCRYPTION_KEY",
         "MFA_ENCRYPTION_KEY",
+        "YAZIO_SDK_CLIENT_SECRET",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -445,6 +519,7 @@ def test_scheduler_production_validation_only_requires_its_own_secrets(
         credential_encryption_key_file=str(credential_secret),
         rate_limit_secret_file=str(rate_limit_secret),
         yazio_enabled=True,
+        yazio_sdk_client_secret="test-only-yazio-sdk-secret",
         yazio_provider="sdk",
     )
 
@@ -471,6 +546,7 @@ def test_scheduler_rejects_default_rate_limit_secret(
             write_secret(tmp_path / "credential-key", Fernet.generate_key())
         ),
         yazio_enabled=True,
+        yazio_sdk_client_secret="test-only-yazio-sdk-secret",
         yazio_provider="sdk",
     )
 
