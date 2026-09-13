@@ -13,6 +13,8 @@ from app.nutrition.models import (
     NutritionIngestionRun,
     NutritionSourceObservation,
 )
+from app.nutrition.projection.contracts import ProjectionPersistenceStatus
+from app.nutrition.projection.orchestration import rebuild_nutrition_day
 
 
 class NutritionProjectionLifecycleError(RuntimeError):
@@ -33,7 +35,8 @@ class NutritionProjectionLifecycleResult:
 
 _MISSING_RUN_ERROR = "nutrition ingestion run is unavailable for this user"
 _MALFORMED_ANCESTRY_ERROR = "nutrition consumption event ancestry is inconsistent"
-_LIFECYCLE_UNAVAILABLE_ERROR = "nutrition projection lifecycle orchestration is unavailable"
+_RESOLUTION_ERROR = "nutrition projection lifecycle resolution failed for ingestion run"
+_REBUILD_ERROR = "nutrition projection lifecycle rebuild failed for ingestion run"
 
 
 def _load_ancestor(
@@ -153,5 +156,66 @@ def rebuild_affected_nutrition_days(
     ingestion_run_id: UUID,
     policy_at: datetime,
 ) -> NutritionProjectionLifecycleResult:
-    """Lifecycle orchestration is implemented by the subsequent D1B task."""
-    raise NutritionProjectionLifecycleError(_LIFECYCLE_UNAVAILABLE_ERROR)
+    """Resolve and rebuild every affected nutrition date independently."""
+    if policy_at.tzinfo is None or policy_at.utcoffset() is None:
+        raise ValueError("policy_at must be timezone-aware")
+
+    resolver_session = session_factory()
+    try:
+        try:
+            affected_dates = resolve_affected_nutrition_dates(
+                resolver_session,
+                user_id=user_id,
+                ingestion_run_id=ingestion_run_id,
+            )
+        except NutritionProjectionLifecycleError:
+            raise
+        except Exception:
+            raise NutritionProjectionLifecycleError(
+                f"{_RESOLUTION_ERROR} {ingestion_run_id}"
+            ) from None
+    finally:
+        resolver_session.close()
+
+    sorted_dates = tuple(sorted(affected_dates))
+    created_dates: list[date] = []
+    unchanged_dates: list[date] = []
+    policy_missing_dates: list[date] = []
+
+    for local_date in sorted_dates:
+        projection_session = session_factory()
+        try:
+            projection_result = rebuild_nutrition_day(
+                projection_session,
+                user_id=user_id,
+                local_date=local_date,
+                policy_at=policy_at,
+            )
+            status = projection_result.status
+            if status == ProjectionPersistenceStatus.CREATED:
+                created_dates.append(local_date)
+            elif status == ProjectionPersistenceStatus.UNCHANGED:
+                unchanged_dates.append(local_date)
+            elif status == ProjectionPersistenceStatus.POLICY_MISSING:
+                policy_missing_dates.append(local_date)
+            else:
+                raise NutritionProjectionLifecycleError(
+                    f"{_REBUILD_ERROR} {ingestion_run_id} on {local_date.isoformat()}"
+                )
+        except NutritionProjectionLifecycleError:
+            raise
+        except Exception:
+            raise NutritionProjectionLifecycleError(
+                f"{_REBUILD_ERROR} {ingestion_run_id} on {local_date.isoformat()}"
+            ) from None
+        finally:
+            projection_session.close()
+
+    return NutritionProjectionLifecycleResult(
+        user_id=user_id,
+        ingestion_run_id=ingestion_run_id,
+        affected_dates=sorted_dates,
+        created_dates=tuple(created_dates),
+        unchanged_dates=tuple(unchanged_dates),
+        policy_missing_dates=tuple(policy_missing_dates),
+    )
