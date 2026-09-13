@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
-from typing import TypeVar
 from uuid import UUID
 
 from sqlalchemy import case, select
@@ -62,7 +61,6 @@ class CanonicalNutritionDay:
     calorie_usable: bool
 
 
-_EnumT = TypeVar("_EnumT", bound=StrEnum)
 _EXPECTED_METRIC_KEYS = tuple(CANONICAL_METRICS)
 _METRIC_ORDER = {metric_key: index for index, metric_key in enumerate(_EXPECTED_METRIC_KEYS)}
 
@@ -71,7 +69,9 @@ def _read_error(message: str) -> NutritionProjectionReadError:
     return NutritionProjectionReadError(message)
 
 
-def _enum_from_persisted(enum_type: type[_EnumT], value: object, field_name: str) -> _EnumT:
+def _enum_from_persisted[EnumT: StrEnum](
+    enum_type: type[EnumT], value: object, field_name: str
+) -> EnumT:
     if not isinstance(value, str):
         raise _read_error(f"{field_name} is not a known enum value")
     try:

@@ -314,9 +314,8 @@ def test_unknown_persisted_enum_values_fail_closed(db, user, field_name):
     ).one()
     setattr(fact, field_name, "not-a-known-enum-value")
 
-    with db.no_autoflush:
-        with pytest.raises(NutritionProjectionReadError):
-            read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
+    with db.no_autoflush, pytest.raises(NutritionProjectionReadError):
+        read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
 
 
@@ -430,7 +429,6 @@ def test_decimal_precision_and_identity_are_preserved_without_float_conversion(d
 def test_returned_contract_exposes_no_source_lineage_or_metadata_fields(db, user):
     _ready_projection(db, user)
 
-    day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
     day_fields = {field.name for field in fields(CanonicalNutritionDay)}
     fact_fields = {field.name for field in fields(CanonicalNutritionFact)}
 
