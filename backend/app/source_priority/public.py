@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Final
+from typing import ClassVar, Final
 from uuid import UUID
 
+
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models import User
 from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHead
 from app.nutrition.resolution.sources import DEFAULT_SOURCE_RESOLVERS, resolve_default_provider_sources
-from app.schemas_source_priority import NutritionPrioritySource, NutritionPriorityState
-from app.source_priority.contracts import validate_aware_datetime
+from app.schemas_source_priority import NutritionPrioritySource, NutritionPriorityState, NutritionPriorityUpdateRequest
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec, validate_aware_datetime
 from app.source_priority.models import SourcePriorityRule
 from app.source_priority.repositories import get_effective_policy, list_policies, list_rules
 
@@ -175,4 +179,151 @@ def get_nutrition_priority_state(
     )
 
 
-__all__ = ["PUBLIC_NUTRITION_SOURCES", "get_nutrition_priority_state"]
+class NutritionPriorityUpdateConflict(ValueError):
+    code: ClassVar[str]
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or self.code)
+
+
+class StalePolicyConflict(NutritionPriorityUpdateConflict):
+    code = "stale_policy"
+
+    def __init__(self, *, current_version: int | None) -> None:
+        self.current_version = current_version
+        super().__init__()
+
+
+class ProviderSetChangedConflict(NutritionPriorityUpdateConflict):
+    code = "provider_set_changed"
+
+
+class InvalidSourceOrderConflict(NutritionPriorityUpdateConflict):
+    code = "invalid_source_order"
+
+
+class AdvancedConfigurationConflict(NutritionPriorityUpdateConflict):
+    code = "advanced_configuration"
+
+
+_EXPECTED_POLICY_UNIQUENESS_CONSTRAINTS = frozenset(
+    {
+        "uq_source_priority_policies_user_version",
+        "uq_source_priority_policies_user_effective_from",
+    }
+)
+_SQLITE_POLICY_UNIQUENESS_MESSAGES = frozenset(
+    {
+        "UNIQUE constraint failed: source_priority_policies.user_id, "
+        "source_priority_policies.version",
+        "UNIQUE constraint failed: source_priority_policies.user_id, "
+        "source_priority_policies.effective_from",
+    }
+)
+
+
+def _is_expected_policy_uniqueness_error(error: IntegrityError) -> bool:
+    original = getattr(error, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    if getattr(diagnostic, "constraint_name", None) in _EXPECTED_POLICY_UNIQUENESS_CONSTRAINTS:
+        return True
+    return (
+        getattr(original, "sqlite_errorname", None) == "SQLITE_CONSTRAINT_UNIQUE"
+        and str(original) in _SQLITE_POLICY_UNIQUENESS_MESSAGES
+    )
+
+
+def _latest_policy(policies):
+    return max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
+
+
+def _raise_stale_after_race(
+    db: Session,
+    user_id: UUID,
+    expected_version: int | None,
+) -> None:
+    latest = _latest_policy(list_policies(db, user_id))
+    latest_version = latest.version if latest is not None else None
+    if latest_version != expected_version:
+        raise StalePolicyConflict(current_version=latest_version)
+
+
+def update_nutrition_priority(
+    db: Session,
+    user_id: UUID,
+    payload: NutritionPriorityUpdateRequest,
+) -> tuple[NutritionPriorityState, bool]:
+    """Apply a public Nutrition source ordering as an immutable policy version."""
+    db.scalar(select(User).where(User.id == user_id).with_for_update())
+
+    source_order = list(payload.source_order)
+    if not source_order or len(source_order) != len(set(source_order)):
+        raise InvalidSourceOrderConflict()
+    if any(source_id not in PUBLIC_NUTRITION_SOURCES for source_id in source_order):
+        raise InvalidSourceOrderConflict()
+
+    evaluation_time = datetime.now(UTC)
+    bindings = resolve_default_provider_sources(
+        db,
+        user_id=user_id,
+        provider_keys=DEFAULT_SOURCE_RESOLVERS.keys(),
+    )
+    available_provider_keys = {binding.provider_key for binding in bindings} & set(
+        PUBLIC_NUTRITION_SOURCES
+    )
+    if set(source_order) != available_provider_keys:
+        raise ProviderSetChangedConflict()
+
+    policies = list_policies(db, user_id)
+    latest_policy = _latest_policy(policies)
+    latest_version = latest_policy.version if latest_policy is not None else None
+    if payload.expected_version != latest_version:
+        raise StalePolicyConflict(current_version=latest_version)
+
+    active_policy = get_effective_policy(db, user_id, evaluation_time)
+    active_rules = (
+        list_rules(db, user_id, active_policy.id, data_area="nutrition")
+        if active_policy is not None
+        else []
+    )
+    if active_policy is not None and any(rule.metric_key is not None for rule in active_rules):
+        raise AdvancedConfigurationConflict()
+
+    if active_policy is not None and _is_public_global_policy(active_rules):
+        configured_order = tuple(
+            rule.provider_key
+            for rule in sorted(active_rules, key=lambda rule: rule.priority_rank)
+        )
+        if configured_order == tuple(source_order):
+            state = get_nutrition_priority_state(db, user_id, at=evaluation_time)
+            return state.model_copy(update={"projection_refresh_required": False}), False
+
+    next_version = (latest_version or 0) + 1
+    rules = tuple(
+        PriorityRuleSpec("nutrition", None, provider_key, rank)
+        for rank, provider_key in enumerate(source_order, start=1)
+    )
+    try:
+        create_policy_with_rules(db, user_id, next_version, evaluation_time, rules)
+        db.commit()
+    except IntegrityError as exc:
+        if not _is_expected_policy_uniqueness_error(exc):
+            raise
+        db.rollback()
+        _raise_stale_after_race(db, user_id, payload.expected_version)
+        raise
+
+    state = get_nutrition_priority_state(db, user_id, at=evaluation_time)
+    return state.model_copy(update={"projection_refresh_required": True}), True
+
+
+__all__ = [
+    "AdvancedConfigurationConflict",
+    "InvalidSourceOrderConflict",
+    "NutritionPriorityUpdateConflict",
+    "PUBLIC_NUTRITION_SOURCES",
+    "ProviderSetChangedConflict",
+    "StalePolicyConflict",
+    "get_nutrition_priority_state",
+    "update_nutrition_priority",
+]
