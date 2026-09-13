@@ -466,5 +466,3 @@ def test_existing_google_policy_is_immutable_when_yazio_becomes_available(db, us
     rules_after = _rule_snapshot(db, user)
     assert rules_after == rules_before
     assert all(row[5] != "yazio" for row in rules_after)
-
-
