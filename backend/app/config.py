@@ -25,7 +25,6 @@ YAZIO_SDK_USER_AGENT_DEFAULT = (
     "YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor"
 )
 YAZIO_SDK_CLIENT_ID_DEFAULT = "3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw"
-YAZIO_SDK_CLIENT_SECRET_DEFAULT = "25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k"
 YAZIO_LEGACY_DEPRECATION_MESSAGE = (
     "The legacy YAZIO provider is deprecated. "
     "Migrate to YAZIO_PROVIDER=sdk. "
@@ -263,8 +262,8 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_sdk_client_secret: str = Field(
-        default=YAZIO_SDK_CLIENT_SECRET_DEFAULT,
-        min_length=1,
+        default="",
+        min_length=0,
         max_length=512,
         exclude=True,
         repr=False,
@@ -403,6 +402,19 @@ class Settings(BaseSettings):
                 "Set YAZIO_PROVIDER=sdk (recommended) or "
                 "YAZIO_PROVIDER=legacy (deprecated compatibility provider). "
                 "The legacy provider will be removed no later than CaloGraph 1.0."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def require_yazio_sdk_client_secret_when_sdk_enabled(self) -> Settings:
+        if (
+            self.yazio_enabled
+            and self.yazio_provider == "sdk"
+            and not self.yazio_sdk_client_secret.strip()
+        ):
+            raise ValueError(
+                "YAZIO_SDK_CLIENT_SECRET is required when "
+                "YAZIO_ENABLED is true and YAZIO_PROVIDER=sdk."
             )
         return self
 

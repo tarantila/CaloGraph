@@ -156,11 +156,12 @@ the next authenticated bootstrap or explicit import.
 Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Set
 `YAZIO_PROVIDER=sdk` explicitly for enabled installations. The legacy provider
 remains only as a deprecated compatibility rollback and will be removed no
-later than CaloGraph 1.0. API URL, User-Agent, SDK client values, and provider
-timeout/concurrency settings use versioned defaults and do not need to be
-copied into the operator configuration. Set `YAZIO_SYNC_INTERVAL_HOURS` and
-`YAZIO_SYNC_DAYS` to the deployment-wide rolling-sync defaults; connections
-without individual overrides inherit them.
+later than CaloGraph 1.0. SDK mode additionally requires an explicit,
+non-empty `YAZIO_SDK_CLIENT_SECRET`; disabled YAZIO and the legacy provider do
+not require this SDK secret. The API URL, User-Agent, SDK client ID, and
+provider timeout/concurrency settings retain their versioned defaults.
+Set `YAZIO_SYNC_INTERVAL_HOURS` and `YAZIO_SYNC_DAYS` to the deployment-wide
+rolling-sync defaults; connections without individual overrides inherit them.
 Before public operation, keep the default explicit 3.05-second connect timeout,
 15-second read timeout, 25-second login deadline, and five-minute
 full-operation deadline unless measured provider behavior requires a change.

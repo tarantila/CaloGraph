@@ -50,25 +50,22 @@ polling/jitter are advanced operational tuning:
 `YAZIO_CIRCUIT_FAILURE_LIMIT`, `YAZIO_CIRCUIT_WINDOW_SECONDS`,
 `YAZIO_SCHEDULER_POLL_SECONDS`, and `YAZIO_SCHEDULER_JITTER_MINUTES`.
 
-`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
-`YAZIO_SDK_CLIENT_SECRET` are internal provider details. CaloGraph supplies
-tested, versioned defaults; normal installations do not need to set them.
-The API origin remains fixed to `https://yzapi.yazio.com`. Maintainers may
-override these settings through the application environment when validating a
-compatible provider revision, but they are not personal credentials and are
-not generated per installation.
+`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, and `YAZIO_SDK_CLIENT_ID` are
+internal provider details. CaloGraph supplies tested, versioned defaults for
+these non-secret values. The API origin remains fixed to
+`https://yzapi.yazio.com`. Maintainers may override these settings through the
+application environment when validating a compatible provider revision, but
+they are not personal credentials and are not generated per installation.
 
-The SDK defaults use the publicly documented YAZIO mobile-app OAuth client.
-All SDK-mode CaloGraph installations therefore share that client pair. If
-YAZIO disables or changes it, multiple installations can be affected at once.
-Generating random local values would not create a registered YAZIO client and
-would not solve this upstream dependency. CaloGraph does not add an instance
-ID or telemetry to YAZIO requests.
+`YAZIO_SDK_CLIENT_SECRET` is not shipped with CaloGraph and has no built-in
+default. SDK mode requires an explicit, non-empty installation-side value. A
+disabled YAZIO installation and the deprecated `legacy-v15` provider do not
+require this SDK secret. Never commit the value or put it in logs.
 
 The normal user configures only a personal YAZIO email address and password
 through CaloGraph. Those credentials remain in the existing per-user
 connection flow and are stored encrypted; they are unrelated to the SDK
-client defaults.
+client configuration.
 
 If YAZIO responds with `403 {"error":"version_blocked"}`, CaloGraph reports:
 “Der von CaloGraph verwendete YAZIO-Client wird von YAZIO nicht mehr
@@ -128,9 +125,9 @@ For a temporary rollback or compatibility window, use:
 YAZIO_PROVIDER=legacy
 ```
 
-`legacy` is deprecated and will be removed no later than CaloGraph 1.0.
-Normal operators do not need to configure API URLs, User-Agent strings, SDK
-client values, or timeout, worker, and circuit-breaker settings.
+Normal operators do not need to configure API URLs, User-Agent strings, the
+SDK client ID, or timeout, worker, and circuit-breaker settings. SDK mode
+requires `YAZIO_SDK_CLIENT_SECRET` as described above.
 
 ## Automatic synchronization
 

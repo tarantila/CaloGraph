@@ -65,11 +65,10 @@ migration requirement.
 
 New production templates use `YAZIO_ENABLED=false` and `YAZIO_PROVIDER=sdk`.
 YAZIO therefore remains disabled by default for new production installations.
-The internal, versioned provider defaults (`YAZIO_API_BASE_URL`,
-`YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
-`YAZIO_SDK_CLIENT_SECRET`) do not need to be configured by normal operators.
-The SDK client values are not personal YAZIO credentials and are not generated
-per CaloGraph installation. Personal YAZIO email addresses and passwords
+The SDK client secret is no longer shipped with CaloGraph. SDK mode requires
+an explicit `YAZIO_SDK_CLIENT_SECRET`; disabled YAZIO and the legacy provider
+do not require it. The API URL, User-Agent, and SDK client ID retain their
+non-secret internal defaults. Personal YAZIO email addresses and passwords
 continue to be configured only through the existing CaloGraph web/API flow and
 remain encrypted per user.
 
