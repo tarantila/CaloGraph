@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -44,13 +45,22 @@ def _bootstrap(user: User, *, effective_from: datetime = BOOTSTRAP_AT):
 
 
 class _TrackedSession:
-    def __init__(self) -> None:
+    def __init__(self, *, on_commit: Callable[[], None] | None = None) -> None:
         self.db = SessionLocal()
         self.closed = False
+        self._on_commit = on_commit
 
     def __enter__(self):
         self.db.__enter__()
-        return self.db
+        return self
+
+    def __getattr__(self, name: str):
+        return getattr(self.db, name)
+
+    def commit(self) -> None:
+        self.db.commit()
+        if self._on_commit is not None:
+            self._on_commit()
 
     def __exit__(self, *args):
         try:
@@ -59,8 +69,12 @@ class _TrackedSession:
             self.closed = True
 
 
-def _tracked_session_factory(sessions: list[_TrackedSession]) -> _TrackedSession:
-    session = _TrackedSession()
+def _tracked_session_factory(
+    sessions: list[_TrackedSession],
+    *,
+    on_commit: Callable[[], None] | None = None,
+) -> _TrackedSession:
+    session = _TrackedSession(on_commit=on_commit)
     sessions.append(session)
     return session
 
@@ -569,6 +583,68 @@ def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
     assert len(rules) == 1
     assert rules[0].policy_id == policies[0].id
     assert rules[0].provider_key == "yazio"
+    assert all(session.closed for session in sessions)
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL bootstrap race tests are not explicitly enabled",
+)
+def test_bootstrap_postgres_earlier_effective_loser_is_existing_policy(
+    db,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert engine.dialect.name == "postgresql"
+    _add_yazio(db, user)
+    early = BOOTSTRAP_AT
+    late = BOOTSTRAP_AT + timedelta(days=1)
+    original_create = bootstrap_module.create_policy_with_rules
+    barrier = Barrier(2)
+    later_committed = Event()
+
+    def gated_create(db, user_id, version, effective_from, rules):
+        barrier.wait(timeout=30)
+        if effective_from == early:
+            assert later_committed.wait(timeout=30)
+        return original_create(db, user_id, version, effective_from, rules)
+
+    monkeypatch.setattr(bootstrap_module, "create_policy_with_rules", gated_create)
+    sessions: list[_TrackedSession] = []
+
+    def attempt(effective_from: datetime):
+        def on_commit() -> None:
+            if effective_from == late:
+                later_committed.set()
+
+        return bootstrap_nutrition_priority(
+            session_factory=lambda: _tracked_session_factory(
+                sessions,
+                on_commit=on_commit,
+            ),
+            user_id=user.id,
+            effective_from=effective_from,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, (early, late)))
+
+    assert sorted(result.status for result in results) == [
+        NutritionPriorityBootstrapStatus.CREATED,
+        NutritionPriorityBootstrapStatus.EXISTING_POLICY,
+    ]
+    winner = next(
+        result
+        for result in results
+        if result.status is NutritionPriorityBootstrapStatus.CREATED
+    )
+    loser = next(
+        result
+        for result in results
+        if result.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
+    )
+    assert loser.policy_id == winner.policy_id
+    assert loser.policy_version == winner.policy_version == 1
     assert all(session.closed for session in sessions)
 
 

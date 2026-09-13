@@ -126,10 +126,11 @@ def _existing_policy_result(
     user_id: UUID,
     effective_from: datetime,
     available_provider_keys: tuple[str, ...],
+    race_winner: bool = False,
 ) -> NutritionPriorityBootstrapResult:
     policy = _reported_policy(policies, effective_from)
     configured = False
-    if _policy_timestamp(policy) <= effective_from:
+    if race_winner or _policy_timestamp(policy) <= effective_from:
         configured = _nutrition_is_configured(list_rules(db, user_id, policy.id))
     status = (
         NutritionPriorityBootstrapStatus.EXISTING_POLICY
@@ -217,6 +218,7 @@ def bootstrap_nutrition_priority(
                 user_id=user_id,
                 effective_from=normalized_effective_from,
                 available_provider_keys=available_provider_keys,
+                race_winner=True,
             )
         return NutritionPriorityBootstrapResult(
             status=NutritionPriorityBootstrapStatus.CREATED,
