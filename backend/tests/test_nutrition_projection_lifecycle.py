@@ -372,6 +372,7 @@ def _event_with_malformed_ancestor(
         current_source,
         logical_event_key=ancestor_logical_key,
         local_date=DAY_TWO,
+        revision=2,
     )
     _break_supersedes_fk(
         db,
