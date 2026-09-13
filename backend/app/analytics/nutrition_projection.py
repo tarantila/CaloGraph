@@ -48,6 +48,8 @@ class CanonicalNutritionFact:
 @dataclass(frozen=True, slots=True)
 class CanonicalNutritionDay:
     state: NutritionProjectionReadState
+    user_id: UUID
+    local_date: date
     projection_id: UUID | None
     projection_version: int | None
     projection_status: ProjectionStatus | None
@@ -78,9 +80,11 @@ def _enum_from_persisted(enum_type: type[_EnumT], value: object, field_name: str
         raise _read_error(f"{field_name} is not a known enum value") from exc
 
 
-def _not_projected() -> CanonicalNutritionDay:
+def _not_projected(user_id: UUID, local_date: date) -> CanonicalNutritionDay:
     return CanonicalNutritionDay(
         state=NutritionProjectionReadState.NOT_PROJECTED,
+        user_id=user_id,
+        local_date=local_date,
         projection_id=None,
         projection_version=None,
         projection_status=None,
@@ -102,7 +106,7 @@ def read_canonical_nutrition_day(
     """Read the user/date current projection as an immutable canonical contract."""
     projection = get_current_projection(db, user_id, local_date)
     if projection is None:
-        return _not_projected()
+        return _not_projected(user_id, local_date)
 
     if projection.user_id != user_id:
         raise _read_error("projection is outside the requested user scope")
@@ -206,6 +210,8 @@ def read_canonical_nutrition_day(
     calorie_resolution_resolved = canonical_facts_tuple[0].resolution_state is ResolutionState.RESOLVED
     return CanonicalNutritionDay(
         state=NutritionProjectionReadState.READY,
+        user_id=user_id,
+        local_date=local_date,
         projection_id=projection.id,
         projection_version=projection.projection_version,
         projection_status=projection_status,
