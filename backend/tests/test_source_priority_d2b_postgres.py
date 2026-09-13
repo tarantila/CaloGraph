@@ -16,10 +16,9 @@ from app.schemas_source_priority import NutritionPriorityUpdateRequest
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.public import StalePolicyConflict, update_nutrition_priority
 
-POSTGRES_TESTS_ENABLED = (
-    os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
-    and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
-)
+POSTGRES_TESTS_ENABLED = os.environ.get(
+    "CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS"
+) == "1" and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
 
 
@@ -115,7 +114,11 @@ def test_postgres_concurrent_updates_serialize_and_preserve_prior_policy(user) -
         )
         assert [policy.version for policy in policies] == [1, 2]
         rules_by_policy = {
-            policy.id: [(rule.provider_key, rule.priority_rank) for rule in rules if rule.policy_id == policy.id]
+            policy.id: [
+                (rule.provider_key, rule.priority_rank)
+                for rule in rules
+                if rule.policy_id == policy.id
+            ]
             for policy in policies
         }
         assert rules_by_policy[policies[0].id] == [("yazio", 1), ("google_health", 2)]

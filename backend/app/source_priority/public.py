@@ -92,7 +92,10 @@ def _is_public_global_policy(
     if len(set(ranks)) != len(ranks) or set(ranks) != set(range(1, len(ranks) + 1)):
         return False
     configured_provider_keys = {rule.provider_key for rule in wildcard_rules}
-    return configured_provider_keys <= set(PUBLIC_NUTRITION_SOURCES) and available_provider_keys <= configured_provider_keys
+    return (
+        configured_provider_keys <= set(PUBLIC_NUTRITION_SOURCES)
+        and available_provider_keys <= configured_provider_keys
+    )
 
 
 def _projection_refresh_required(
@@ -135,7 +138,9 @@ def get_nutrition_priority_state(
     )
     available_provider_keys = {binding.provider_key for binding in bindings}
     policies = list_policies(db, user_id)
-    latest_policy = max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
+    latest_policy = (
+        max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
+    )
     active_policy = get_effective_policy(db, user_id, evaluation_time)
     version = latest_policy.version if latest_policy is not None else None
 
@@ -303,10 +308,11 @@ def update_nutrition_priority(
     if active_policy is not None and any(rule.metric_key is not None for rule in active_rules):
         raise AdvancedConfigurationConflict()
 
-    if active_policy is not None and _is_public_global_policy(active_rules, available_provider_keys):
+    if active_policy is not None and _is_public_global_policy(
+        active_rules, available_provider_keys
+    ):
         configured_order = tuple(
-            rule.provider_key
-            for rule in sorted(active_rules, key=lambda rule: rule.priority_rank)
+            rule.provider_key for rule in sorted(active_rules, key=lambda rule: rule.priority_rank)
         )
         if configured_order == tuple(source_order):
             state = get_nutrition_priority_state(db, user_id, at=evaluation_time)

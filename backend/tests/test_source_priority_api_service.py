@@ -77,7 +77,9 @@ def _add_google(db, user: User) -> GoogleHealthConnection:
     return connection
 
 
-def _policy(db, user: User, *rules: PriorityRuleSpec, effective_from: datetime = AT, version: int = 1):
+def _policy(
+    db, user: User, *rules: PriorityRuleSpec, effective_from: datetime = AT, version: int = 1
+):
     snapshot = create_policy_with_rules(db, user.id, version, effective_from, rules)
     db.commit()
     return snapshot
@@ -105,7 +107,9 @@ def test_public_models_are_strict_and_update_request_has_only_public_fields() ->
     }
     assert NutritionPriorityUpdateRequest(expected_version=None, source_order=["yazio"])
     with pytest.raises(ValidationError):
-        NutritionPrioritySource(id="yazio", label="YAZIO", available=True, rank=1, policy_id="secret")
+        NutritionPrioritySource(
+            id="yazio", label="YAZIO", available=True, rank=1, policy_id="secret"
+        )
     with pytest.raises(ValidationError):
         NutritionPriorityState(
             status="configured",
@@ -334,9 +338,9 @@ def test_put_without_policy_creates_version_one_for_exact_provider_order(db, use
     assert state.projection_refresh_required is True
     policies = _policy_rows(db, user)
     assert len(policies) == 1
-    assert [(rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, policies[0].id)] == [
-        ("yazio", 1)
-    ]
+    assert [
+        (rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, policies[0].id)
+    ] == [("yazio", 1)]
 
 
 def test_put_reorder_creates_immutable_next_version_and_requires_refresh(db, user) -> None:
@@ -345,15 +349,21 @@ def test_put_reorder_creates_immutable_next_version_and_requires_refresh(db, use
     first_state, first_changed = update_nutrition_priority(
         db,
         user.id,
-        NutritionPriorityUpdateRequest(expected_version=None, source_order=["yazio", "google_health"]),
+        NutritionPriorityUpdateRequest(
+            expected_version=None, source_order=["yazio", "google_health"]
+        ),
     )
     first_policy = _policy_rows(db, user)[0]
-    first_rules = [(rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, first_policy.id)]
+    first_rules = [
+        (rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, first_policy.id)
+    ]
 
     second_state, changed = update_nutrition_priority(
         db,
         user.id,
-        NutritionPriorityUpdateRequest(expected_version=first_state.version, source_order=["google_health", "yazio"]),
+        NutritionPriorityUpdateRequest(
+            expected_version=first_state.version, source_order=["google_health", "yazio"]
+        ),
     )
 
     assert first_changed is True
@@ -362,8 +372,12 @@ def test_put_reorder_creates_immutable_next_version_and_requires_refresh(db, use
     assert second_state.projection_refresh_required is True
     policies = _policy_rows(db, user)
     assert [policy.version for policy in policies] == [1, 2]
-    assert [(rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, first_policy.id)] == first_rules
-    assert [(rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, policies[1].id)] == [
+    assert [
+        (rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, first_policy.id)
+    ] == first_rules
+    assert [
+        (rule.provider_key, rule.priority_rank) for rule in _rule_rows(db, user, policies[1].id)
+    ] == [
         ("google_health", 1),
         ("yazio", 2),
     ]
@@ -375,7 +389,9 @@ def test_put_identical_current_order_is_noop_and_does_not_commit(db, user, monke
     state, _ = update_nutrition_priority(
         db,
         user.id,
-        NutritionPriorityUpdateRequest(expected_version=None, source_order=["google_health", "yazio"]),
+        NutritionPriorityUpdateRequest(
+            expected_version=None, source_order=["google_health", "yazio"]
+        ),
     )
     commit_calls = 0
     original_commit = db.commit
@@ -389,7 +405,9 @@ def test_put_identical_current_order_is_noop_and_does_not_commit(db, user, monke
     result, changed = update_nutrition_priority(
         db,
         user.id,
-        NutritionPriorityUpdateRequest(expected_version=state.version, source_order=["google_health", "yazio"]),
+        NutritionPriorityUpdateRequest(
+            expected_version=state.version, source_order=["google_health", "yazio"]
+        ),
     )
 
     assert changed is False
@@ -426,7 +444,6 @@ def test_put_rejects_provider_set_changes(db, user, source_order: list[str]) -> 
     assert raised.value.code == "provider_set_changed"
 
 
-
 def test_put_rejects_added_provider_as_provider_set_change(db, user) -> None:
     _add_yazio(db, user)
 
@@ -434,9 +451,12 @@ def test_put_rejects_added_provider_as_provider_set_change(db, user) -> None:
         update_nutrition_priority(
             db,
             user.id,
-            NutritionPriorityUpdateRequest(expected_version=None, source_order=["yazio", "google_health"]),
+            NutritionPriorityUpdateRequest(
+                expected_version=None, source_order=["yazio", "google_health"]
+            ),
         )
     assert raised.value.code == "provider_set_changed"
+
 
 def test_put_rejects_stale_expected_version(db, user) -> None:
     _add_yazio(db, user)
@@ -465,7 +485,9 @@ def test_put_protects_advanced_active_policy(db, user) -> None:
         update_nutrition_priority(
             db,
             user.id,
-            NutritionPriorityUpdateRequest(expected_version=1, source_order=["google_health", "yazio"]),
+            NutritionPriorityUpdateRequest(
+                expected_version=1, source_order=["google_health", "yazio"]
+            ),
         )
     assert raised.value.code == "advanced_configuration"
     assert [policy.version for policy in _policy_rows(db, user)] == [1]

@@ -75,10 +75,15 @@ def _assert_public_state(payload: dict[str, object]) -> None:
 
 def test_source_priority_anonymous_get_and_put_are_rejected(client: TestClient) -> None:
     assert client.get(PATH).status_code == 401
-    assert client.put(PATH, json={"expected_version": None, "source_order": ["yazio"]}).status_code == 401
+    assert (
+        client.put(PATH, json={"expected_version": None, "source_order": ["yazio"]}).status_code
+        == 401
+    )
 
 
-def test_source_priority_get_returns_authenticated_authoritative_state(client: TestClient, user: User, db) -> None:
+def test_source_priority_get_returns_authenticated_authoritative_state(
+    client: TestClient, user: User, db
+) -> None:
     _add_yazio(db, user)
     _login(client)
 
@@ -114,7 +119,9 @@ def test_source_priority_put_rejects_missing_and_invalid_csrf(
     assert missing.json()["type"] == "urn:calograph:problem:csrf-validation-failed"
 
 
-def test_source_priority_put_returns_complete_state_and_refresh_flag(client: TestClient, user: User, db) -> None:
+def test_source_priority_put_returns_complete_state_and_refresh_flag(
+    client: TestClient, user: User, db
+) -> None:
     _add_yazio(db, user)
     csrf = _login(client)
 
@@ -264,7 +271,6 @@ def test_source_priority_isolates_authenticated_users(client: TestClient, user: 
     _assert_public_state(response.json())
 
 
-
 def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     client: TestClient, user: User, db
 ) -> None:
@@ -358,4 +364,3 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     db.refresh(historical_projection)
     assert historical_projection.projection_version == 1
     assert historical_projection.priority_policy_id == policy_v1.id
-
