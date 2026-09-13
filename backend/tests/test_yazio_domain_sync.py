@@ -9,9 +9,10 @@ from sqlalchemy import func, select
 
 from app.config import Settings, settings
 from app.database import SessionLocal
-from app.models import HealthSample, ImportBatch, YazioConnection
+from app.models import GoogleHealthConnection, HealthSample, ImportBatch, YazioConnection
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionDailyProjection,
     NutritionIngestionRun,
     NutritionSourceObservation,
 )
@@ -24,6 +25,9 @@ from app.nutrition.projection.lifecycle import NutritionProjectionLifecycleResul
 from app.schemas import ImportSummary
 from app.services import yazio_sync, yazio_transport
 from app.services.credential_crypto import encrypt_credential
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
     YazioFoodDiary,
@@ -366,3 +370,136 @@ def test_disabled_legacy_path_never_constructs_food_diary_provider(
     assert isinstance(result, ImportSummary)
     assert called is False
     assert lifecycle_called is False
+
+
+def _yazio_policy_snapshot(db, user) -> tuple[tuple[object, ...], ...]:
+    db.expire_all()
+    return tuple(
+        (policy.id, policy.version, policy.effective_from)
+        for policy in db.scalars(
+            select(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == user.id)
+            .order_by(SourcePriorityPolicy.version)
+        )
+    )
+
+
+def test_sdk_v22_bootstraps_single_provider_before_lifecycle_and_repeats_idempotently(
+    db, user, monkeypatch
+) -> None:
+    _connection(db, user)
+    events: list[str] = []
+    _enable_sdk_rollout(monkeypatch, events)
+    lifecycle_results: list[NutritionProjectionLifecycleResult] = []
+    original_bootstrap = yazio_sync.bootstrap_nutrition_priority
+    original_lifecycle = yazio_sync.rebuild_affected_nutrition_days
+
+    def bootstrap(**kwargs):
+        events.append("bootstrap")
+        return original_bootstrap(**kwargs)
+
+    def lifecycle(**kwargs):
+        events.append("lifecycle")
+        result = original_lifecycle(**kwargs)
+        lifecycle_results.append(result)
+        return result
+
+    monkeypatch.setattr(yazio_sync, "bootstrap_nutrition_priority", bootstrap)
+    monkeypatch.setattr(yazio_sync, "rebuild_affected_nutrition_days", lifecycle)
+    now = datetime(2026, 9, 1, 12, tzinfo=UTC)
+
+    run_manual_yazio_sync(user.id, now=now)
+    db.expire_all()
+    first_projection = db.scalar(
+        select(NutritionDailyProjection).where(NutritionDailyProjection.user_id == user.id)
+    )
+    assert first_projection is not None
+    assert first_projection.projection_version == 1
+    assert _yazio_policy_snapshot(db, user)
+    assert events.index("bootstrap") < events.index("lifecycle")
+    assert lifecycle_results[0].created_dates == (DAY,)
+
+    run_manual_yazio_sync(user.id, now=now)
+    db.expire_all()
+    assert len(_yazio_policy_snapshot(db, user)) == 1
+    projections = db.scalars(
+        select(NutritionDailyProjection)
+        .where(NutritionDailyProjection.user_id == user.id)
+        .order_by(NutritionDailyProjection.projection_version)
+    ).all()
+    assert [projection.projection_version for projection in projections] == [1]
+    assert lifecycle_results[1].affected_dates == ()
+
+
+def test_sdk_v22_multi_provider_requires_selection_without_policy(db, user, monkeypatch) -> None:
+    _connection(db, user)
+    db.add(
+        GoogleHealthConnection(
+            user_id=user.id,
+            encrypted_refresh_token=b"encrypted-refresh-token",
+            granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
+            state="active",
+        )
+    )
+    db.commit()
+    _enable_sdk_rollout(monkeypatch, [])
+    lifecycle_results: list[NutritionProjectionLifecycleResult] = []
+    original_lifecycle = yazio_sync.rebuild_affected_nutrition_days
+
+    def lifecycle(**kwargs):
+        result = original_lifecycle(**kwargs)
+        lifecycle_results.append(result)
+        return result
+
+    monkeypatch.setattr(yazio_sync, "rebuild_affected_nutrition_days", lifecycle)
+    run_manual_yazio_sync(user.id, now=datetime(2026, 9, 1, 12, tzinfo=UTC))
+    assert _yazio_policy_snapshot(db, user) == ()
+    assert lifecycle_results[0].policy_missing_dates == (DAY,)
+    assert db.scalar(select(func.count()).select_from(NutritionDailyProjection)) == 0
+
+
+def test_sdk_v22_existing_policy_is_immutable_and_projection_uses_it(db, user, monkeypatch) -> None:
+    _connection(db, user)
+    effective_from = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        effective_from,
+        (
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="yazio",
+                priority_rank=1,
+            ),
+        ),
+    )
+    db.commit()
+    before = _yazio_policy_snapshot(db, user)
+    _enable_sdk_rollout(monkeypatch, [])
+    run_manual_yazio_sync(user.id, now=effective_from)
+    db.expire_all()
+    assert _yazio_policy_snapshot(db, user) == before
+    projection = db.scalar(
+        select(NutritionDailyProjection).where(NutritionDailyProjection.user_id == user.id)
+    )
+    assert projection is not None
+    assert projection.priority_policy_id == snapshot.policy_id
+
+
+def test_legacy_v15_never_calls_domain_bootstrap(db, user, monkeypatch) -> None:
+    _connection(db, user)
+    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", False)
+    monkeypatch.setattr(settings, "yazio_provider", "legacy")
+
+    def forbidden_bootstrap(**kwargs):
+        raise AssertionError("priority bootstrap must not run for legacy-v15")
+
+    monkeypatch.setattr(yazio_sync, "bootstrap_nutrition_priority", forbidden_bootstrap)
+    run_manual_yazio_sync(
+        user.id,
+        fetcher=lambda *_args: _aggregate(),
+        now=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+    assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 0

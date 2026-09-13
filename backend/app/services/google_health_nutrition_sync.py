@@ -31,6 +31,7 @@ from app.google_health.errors import GoogleHealthClientError
 from app.models import GoogleHealthConnection
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
+from app.source_priority.bootstrap import bootstrap_nutrition_priority
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_ingestion import (
     ingest_google_health_nutrition_logs,
@@ -295,6 +296,11 @@ class GoogleHealthNutritionSyncService:
                 write_db.close()
 
         policy_at = datetime.now(UTC)
+        bootstrap_nutrition_priority(
+            session_factory=self._session_factory,
+            user_id=user_id,
+            effective_from=policy_at,
+        )
         rebuild_affected_nutrition_days(
             session_factory=self._session_factory,
             user_id=user_id,

@@ -20,9 +20,10 @@ from app.google_health.client import (
 )
 from app.google_health.constants import GOOGLE_HEALTH_SCOPE
 from app.google_health.errors import GoogleHealthProviderUnavailableError
-from app.models import GoogleHealthConnection, User
+from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionDailyProjection,
     NutritionExternalIdentity,
     NutritionExternalIdentityLink,
     NutritionFieldObservation,
@@ -45,6 +46,9 @@ from app.services.google_health_nutrition_sync import (
     GoogleHealthNutritionSyncError,
     GoogleHealthNutritionSyncService,
 )
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy
 
 POLICY_AT = datetime(2026, 9, 13, 12, 34, 56, 789, tzinfo=UTC)
 
@@ -358,8 +362,7 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
         requested_end=DAY,
     )
 
-    assert result.persisted_count == 1
-    assert len(sessions) == 4
+    assert len(sessions) == 5
     with SessionLocal() as observer:
         assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
     assert all(not session.in_transaction() for session in sessions)
@@ -659,3 +662,137 @@ def test_repeating_sync_is_idempotent_for_non_run_domain_rows(
     assert second.fetched_count == 1
     assert second.persisted_count == 0
     assert b6_dates == [DAY]
+
+
+def _google_policy_snapshot(db, user) -> tuple[tuple[object, ...], ...]:
+    db.expire_all()
+    return tuple(
+        (policy.id, policy.version, policy.effective_from)
+        for policy in db.scalars(
+            select(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == user.id)
+            .order_by(SourcePriorityPolicy.version)
+        )
+    )
+
+
+def test_google_single_provider_bootstraps_before_lifecycle_and_repeats_idempotently(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connection(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-bootstrap"),), page_token=None, next_page_token=None)},
+    )
+    events: list[str] = []
+    lifecycle_results: list[Any] = []
+    original_bootstrap = google_sync.bootstrap_nutrition_priority
+    original_lifecycle = google_sync.rebuild_affected_nutrition_days
+
+    def bootstrap(**kwargs: Any) -> Any:
+        events.append("bootstrap")
+        return original_bootstrap(**kwargs)
+
+    def lifecycle(**kwargs: Any) -> Any:
+        events.append("lifecycle")
+        result = original_lifecycle(**kwargs)
+        lifecycle_results.append(result)
+        return result
+
+    monkeypatch.setattr(google_sync, "bootstrap_nutrition_priority", bootstrap)
+    monkeypatch.setattr(google_sync, "rebuild_affected_nutrition_days", lifecycle)
+    service = harness.service(session_factory=SessionLocal)
+
+    first = service.sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+    db.expire_all()
+    first_run = _sync_result_run(first)
+    projections = db.scalars(
+        select(NutritionDailyProjection).where(NutritionDailyProjection.user_id == user.id)
+    ).all()
+    assert len(projections) == 1
+    assert projections[0].projection_version == 1
+    assert _google_policy_snapshot(db, user)
+    assert events.index("bootstrap") < events.index("lifecycle")
+    assert lifecycle_results[0].created_dates == (DAY,)
+
+    second = service.sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+    db.expire_all()
+    assert _sync_result_run(second).id != first_run.id
+    assert len(_google_policy_snapshot(db, user)) == 1
+    projections = db.scalars(
+        select(NutritionDailyProjection)
+        .where(NutritionDailyProjection.user_id == user.id)
+        .order_by(NutritionDailyProjection.projection_version)
+    ).all()
+    assert [projection.projection_version for projection in projections] == [1]
+    assert lifecycle_results[1].affected_dates == ()
+
+
+def test_google_multi_provider_requires_selection_without_policy(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connection(db, user)
+    db.add(
+        YazioConnection(
+            user_id=user.id,
+            encrypted_email=b"encrypted-email",
+            encrypted_password=b"encrypted-password",
+            source_identifier="yazio-account",
+        )
+    )
+    db.commit()
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-selection"),), page_token=None, next_page_token=None)},
+    )
+    lifecycle_results: list[Any] = []
+    original_lifecycle = google_sync.rebuild_affected_nutrition_days
+
+    def lifecycle(**kwargs: Any) -> Any:
+        result = original_lifecycle(**kwargs)
+        lifecycle_results.append(result)
+        return result
+
+    monkeypatch.setattr(google_sync, "rebuild_affected_nutrition_days", lifecycle)
+    harness.service(session_factory=SessionLocal).sync(
+        user_id=user.id, requested_start=DAY, requested_end=DAY
+    )
+    assert _google_policy_snapshot(db, user) == ()
+    assert lifecycle_results[0].policy_missing_dates == (DAY,)
+    assert db.scalar(select(func.count()).select_from(NutritionDailyProjection)) == 0
+
+
+def test_google_existing_policy_is_immutable_and_projection_uses_it(
+    db: Session, user: User
+) -> None:
+    _connection(db, user)
+    snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        POLICY_AT,
+        (
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="google_health",
+                priority_rank=1,
+            ),
+        ),
+    )
+    db.commit()
+    before = _google_policy_snapshot(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-existing"),), page_token=None, next_page_token=None)},
+    )
+    harness.service(session_factory=SessionLocal).sync(
+        user_id=user.id, requested_start=DAY, requested_end=DAY
+    )
+    db.expire_all()
+    assert _google_policy_snapshot(db, user) == before
+    projection = db.scalar(
+        select(NutritionDailyProjection).where(NutritionDailyProjection.user_id == user.id)
+    )
+    assert projection is not None
+    assert projection.priority_policy_id == snapshot.policy_id
