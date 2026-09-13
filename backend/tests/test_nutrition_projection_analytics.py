@@ -198,7 +198,10 @@ def test_explicit_zero_is_preserved_as_decimal_value_and_primary_evidence(db, us
     projection = _ready_projection(
         db,
         user,
-        values={**{metric_key: None for metric_key in CANONICAL_METRICS}, "protein_g": Decimal("0")},
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "protein_g": Decimal("0"),
+        },
         fact_overrides={"protein_g": {"presence_state": PresenceState.EXPLICIT_ZERO.value}},
     )
 
@@ -213,7 +216,9 @@ def test_explicit_zero_is_preserved_as_decimal_value_and_primary_evidence(db, us
     assert day.has_any_nutrition_value is True
 
 
-def test_partial_coverage_unresolved_resolution_and_uncertain_lineage_are_typed_and_preserved(db, user):
+def test_partial_coverage_unresolved_resolution_and_uncertain_lineage_are_typed_and_preserved(
+    db, user
+):
     _ready_projection(
         db,
         user,
@@ -258,10 +263,14 @@ def test_mixed_metric_providers_are_preserved_without_a_day_level_provider(db, u
 def test_structural_projection_boundaries_fail_closed(db, user, boundary):
     if boundary == "missing":
         projection = _ready_projection(db, user)
-        fact = db.query(NutritionDailyProjectionFact).filter_by(
-            projection_id=projection.id,
-            metric_key="protein_g",
-        ).one()
+        fact = (
+            db.query(NutritionDailyProjectionFact)
+            .filter_by(
+                projection_id=projection.id,
+                metric_key="protein_g",
+            )
+            .one()
+        )
         db.delete(fact)
         db.commit()
     elif boundary == "extra":
@@ -283,10 +292,14 @@ def test_structural_projection_boundaries_fail_closed(db, user, boundary):
         db.commit()
     elif boundary == "wrong_unit":
         projection = _ready_projection(db, user)
-        fact = db.query(NutritionDailyProjectionFact).filter_by(
-            projection_id=projection.id,
-            metric_key="protein_g",
-        ).one()
+        fact = (
+            db.query(NutritionDailyProjectionFact)
+            .filter_by(
+                projection_id=projection.id,
+                metric_key="protein_g",
+            )
+            .one()
+        )
         fact.unit = "kcal"
         db.commit()
     else:
@@ -308,29 +321,37 @@ def test_structural_projection_boundaries_fail_closed(db, user, boundary):
 )
 def test_unknown_persisted_enum_values_fail_closed(db, user, field_name):
     projection = _ready_projection(db, user)
-    fact = db.query(NutritionDailyProjectionFact).filter_by(
-        projection_id=projection.id,
-        metric_key="protein_g",
-    ).one()
+    fact = (
+        db.query(NutritionDailyProjectionFact)
+        .filter_by(
+            projection_id=projection.id,
+            metric_key="protein_g",
+        )
+        .one()
+    )
     setattr(fact, field_name, "not-a-known-enum-value")
 
     with db.no_autoflush, pytest.raises(NutritionProjectionReadError):
         read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
 
-
-@pytest.mark.parametrize("invalid_value", (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")))
+@pytest.mark.parametrize(
+    "invalid_value", (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"))
+)
 def test_non_finite_persisted_decimal_values_fail_closed(db, user, invalid_value):
     projection = _ready_projection(db, user)
-    fact = db.query(NutritionDailyProjectionFact).filter_by(
-        projection_id=projection.id,
-        metric_key="dietary_energy_kcal",
-    ).one()
+    fact = (
+        db.query(NutritionDailyProjectionFact)
+        .filter_by(
+            projection_id=projection.id,
+            metric_key="dietary_energy_kcal",
+        )
+        .one()
+    )
     fact.value = invalid_value
 
     with db.no_autoflush, pytest.raises(NutritionProjectionReadError):
         read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
-
 
 
 def test_wrong_user_and_wrong_date_never_return_another_day(db, user):
@@ -365,9 +386,6 @@ def test_facts_from_another_projection_scope_are_not_returned(db, user):
     db.commit()
 
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
-
-
-
 
     assert day.projection_id == first.id
     assert len(day.facts) == 7
@@ -405,7 +423,6 @@ def test_projection_fact_query_excludes_wrong_user_rows(db, user):
     assert day.state is NutritionProjectionReadState.READY
     assert len(day.facts) == len(CANONICAL_METRICS)
     assert tuple(fact.metric_key for fact in day.facts) == tuple(CANONICAL_METRICS)
-
 
 
 def test_projection_and_fact_scope_cannot_cross_users(db, user):

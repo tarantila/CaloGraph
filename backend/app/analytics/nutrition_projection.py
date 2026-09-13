@@ -167,7 +167,9 @@ def read_canonical_nutrition_day(
             validated_value = validate_projection_decimal(fact.value, f"{metric_key}.value")
         except ValueError as exc:
             raise _read_error(f"projection fact has an invalid value for {metric_key}") from exc
-        if fact.selected_provider_key is not None and not isinstance(fact.selected_provider_key, str):
+        if fact.selected_provider_key is not None and not isinstance(
+            fact.selected_provider_key, str
+        ):
             raise _read_error(f"projection fact has an invalid provider for {metric_key}")
 
         canonical_facts.append(
@@ -231,9 +233,7 @@ def read_canonical_nutrition_day(
         calorie_coverage_complete=calorie_coverage_complete,
         calorie_resolution_resolved=calorie_resolution_resolved,
         calorie_usable=(
-            calorie_value_available
-            and calorie_coverage_complete
-            and calorie_resolution_resolved
+            calorie_value_available and calorie_coverage_complete and calorie_resolution_resolved
         ),
     )
 
