@@ -7,9 +7,15 @@ from fastapi.testclient import TestClient
 
 from app.auth.security import hash_password
 from app.main import app
-from app.models import GoogleHealthConnection, User, YazioConnection
-from app.source_priority.application import create_policy_with_rules
-from app.source_priority.contracts import PriorityRuleSpec
+from app.models import (
+    GoogleHealthConnection,
+    NutritionDailyProjection,
+    NutritionProjectionHead,
+    SourcePriorityPolicy,
+    User,
+    YazioConnection,
+)
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
 PASSWORD = "correct-horse-battery-staple"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
@@ -255,4 +261,99 @@ def test_source_priority_isolates_authenticated_users(client: TestClient, user: 
     assert response.json()["projection_refresh_required"] is False
     _assert_public_state(response.json())
 
+
+
+def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
+    client: TestClient, user: User, db
+) -> None:
+    _add_yazio(db, user)
+    bootstrap_nutrition_priority(
+        session_factory=lambda: db,
+        user_id=user.id,
+        effective_from=datetime.now(UTC),
+    )
+    csrf = _login(client)
+
+    initial = client.get(PATH)
+    assert initial.status_code == 200
+    assert initial.json() == {
+        "status": "configured",
+        "version": 1,
+        "sources": [{"id": "yazio", "label": "YAZIO", "available": True, "rank": 1}],
+        "configuration_mode": "global",
+        "projection_refresh_required": False,
+    }
+
+    _add_google(db, user)
+    second_provider = client.get(PATH)
+    assert second_provider.status_code == 200
+    assert second_provider.json() == {
+        "status": "configured",
+        "version": 1,
+        "sources": [
+            {"id": "yazio", "label": "YAZIO", "available": True, "rank": 1},
+            {"id": "google_health", "label": "Google Health", "available": True, "rank": None},
+        ],
+        "configuration_mode": "global",
+        "projection_refresh_required": False,
+    }
+
+    policy_v1 = db.query(SourcePriorityPolicy).one()
+    rules_v1 = [
+        (rule.provider_key, rule.priority_rank)
+        for rule in db.query(SourcePriorityRule)
+        .filter_by(policy_id=policy_v1.id)
+        .order_by(SourcePriorityRule.priority_rank)
+        .all()
+    ]
+    historical_projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=datetime(2026, 9, 12, tzinfo=UTC).date(),
+        projection_version=1,
+        projection_algorithm_version="test",
+        priority_policy_id=policy_v1.id,
+        input_watermark="historical-watermark",
+        projection_status="ready",
+    )
+    db.add(historical_projection)
+    db.flush()
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=historical_projection.local_date,
+            current_projection_id=historical_projection.id,
+        )
+    )
+    db.commit()
+
+    updated = client.put(
+        PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1, "source_order": ["google_health", "yazio"]},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json() == {
+        "status": "configured",
+        "version": 2,
+        "sources": [
+            {"id": "google_health", "label": "Google Health", "available": True, "rank": 1},
+            {"id": "yazio", "label": "YAZIO", "available": True, "rank": 2},
+        ],
+        "configuration_mode": "global",
+        "projection_refresh_required": True,
+    }
+    policies = db.query(SourcePriorityPolicy).order_by(SourcePriorityPolicy.version).all()
+    assert [policy.version for policy in policies] == [1, 2]
+    assert [
+        (rule.provider_key, rule.priority_rank)
+        for rule in db.query(SourcePriorityRule)
+        .filter_by(policy_id=policies[0].id)
+        .order_by(SourcePriorityRule.priority_rank)
+        .all()
+    ] == rules_v1
+    assert db.query(NutritionDailyProjection).count() == 1
+    db.refresh(historical_projection)
+    assert historical_projection.projection_version == 1
+    assert historical_projection.priority_policy_id == policy_v1.id
 

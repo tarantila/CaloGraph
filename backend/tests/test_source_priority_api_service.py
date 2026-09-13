@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from hashlib import sha256
 from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.database import SessionLocal
 from app.models import GoogleHealthConnection, User, YazioConnection
-from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHead
+from app.nutrition.enums import (
+    ConsumptionEventKind,
+    CoverageState,
+    LineageState,
+    ObservationKind,
+    ObservationRole,
+    PresenceState,
+    ResolutionState,
+)
+from app.nutrition.models import (
+    NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionFieldObservation,
+    NutritionIngestionRun,
+    NutritionSourceObservation,
+)
+from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
 from app.schemas_source_priority import (
     NutritionPrioritySource,
     NutritionPriorityState,
@@ -515,3 +534,122 @@ def test_put_propagates_unrelated_integrity_error(db, user, monkeypatch) -> None
             NutritionPriorityUpdateRequest(expected_version=None, source_order=["yazio"]),
         )
     assert raised.value is error
+
+
+
+def test_put_v2_is_used_by_d1b_lifecycle_for_new_ingestion_date(db, user) -> None:
+    _add_yazio(db, user)
+    bootstrap_nutrition_priority(
+        session_factory=lambda: db,
+        user_id=user.id,
+        effective_from=datetime.now(UTC),
+    )
+    google = _add_google(db, user)
+    state, changed = update_nutrition_priority(
+        db,
+        user.id,
+        NutritionPriorityUpdateRequest(expected_version=1, source_order=["google_health", "yazio"]),
+    )
+    assert changed is True
+    assert state.version == 2
+    policy_v2 = _policy_rows(db, user)[-1]
+
+    run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="google_health",
+        source_instance_id=google.id,
+        connector_variant="google-health-api-v4",
+        requested_start_date=AT.date(),
+        requested_end_date=AT.date(),
+        covered_start_date=AT.date(),
+        covered_end_date=AT.date(),
+        status="completed",
+        coverage_state=CoverageState.COMPLETE.value,
+    )
+    db.add(run)
+    db.flush()
+    source = NutritionSourceObservation(
+        user_id=user.id,
+        ingestion_run_id=run.id,
+        provider_key="google_health",
+        source_instance_id=google.id,
+        connector_variant="google-health-api-v4",
+        observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
+        source_namespace="google_health.nutrition_log",
+        source_record_id="d1b-transition",
+        source_revision=1,
+        observation_fingerprint=sha256(b"d1b-transition").hexdigest(),
+        local_date=AT.date(),
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    db.add(source)
+    db.flush()
+    db.add(
+        NutritionConsumptionEvent(
+            user_id=user.id,
+            source_observation_id=source.id,
+            provider_key="google_health",
+            source_instance_id=google.id,
+            event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value,
+            logical_event_key="d1b-transition",
+            revision=1,
+            local_date=AT.date(),
+            amount=1,
+            amount_unit="serving",
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.add(
+        NutritionFieldObservation(
+            user_id=user.id,
+            source_observation_id=source.id,
+            provider_field_path="nutritionLog.protein",
+            provider_raw_value_decimal=30,
+            provider_raw_unit="g",
+            metric_key="protein_g",
+            canonical_value=30,
+            canonical_unit="g",
+            observation_role=ObservationRole.CANONICAL.value,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.commit()
+
+    lifecycle = rebuild_affected_nutrition_days(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        ingestion_run_id=run.id,
+        policy_at=policy_v2.effective_from.replace(tzinfo=UTC)
+        if policy_v2.effective_from.tzinfo is None
+        else policy_v2.effective_from,
+    )
+
+    assert lifecycle.affected_dates == (AT.date(),)
+    assert lifecycle.created_dates == (AT.date(),)
+    db.expire_all()
+    projection = db.scalar(
+        select(NutritionDailyProjection).where(
+            NutritionDailyProjection.user_id == user.id,
+            NutritionDailyProjection.local_date == AT.date(),
+        )
+    )
+    assert projection is not None
+    assert projection.priority_policy_id == policy_v2.id
+    fact = db.scalar(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == projection.id,
+            NutritionDailyProjectionFact.metric_key == "protein_g",
+        )
+    )
+    assert fact is not None
+    assert fact.selected_provider_key == "google_health"
+    assert fact.value == 30
