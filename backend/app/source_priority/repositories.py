@@ -71,6 +71,20 @@ def get_policy(db: Session, user_id: UUID, policy_id: UUID) -> SourcePriorityPol
     )
 
 
+def list_policies(db: Session, user_id: UUID) -> list[SourcePriorityPolicy]:
+    return list(
+        db.scalars(
+            select(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == user_id)
+            .order_by(
+                SourcePriorityPolicy.effective_from,
+                SourcePriorityPolicy.version,
+                SourcePriorityPolicy.id,
+            )
+        )
+    )
+
+
 def get_effective_policy(
     db: Session,
     user_id: UUID,
