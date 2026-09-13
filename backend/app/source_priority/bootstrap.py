@@ -163,5 +163,3 @@ def bootstrap_nutrition_priority(
             policy_version=snapshot.version,
             available_provider_keys=available_provider_keys,
         )
-
-
