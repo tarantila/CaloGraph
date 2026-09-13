@@ -25,10 +25,9 @@ from app.source_priority.bootstrap import (
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
-POSTGRES_TESTS_ENABLED = (
-    os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
-    and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
-)
+POSTGRES_TESTS_ENABLED = os.environ.get(
+    "CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS"
+) == "1" and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
 
 BOOTSTRAP_AT = datetime(2026, 9, 13, 12, tzinfo=UTC)
 
@@ -128,6 +127,7 @@ def _rules(db, user: User) -> list[SourcePriorityRule]:
         )
     )
 
+
 def _policy_snapshot(db, user: User) -> tuple[tuple[object, ...], ...]:
     return tuple(
         (
@@ -176,6 +176,7 @@ def _create_existing_policy(
     policy = db.get(SourcePriorityPolicy, snapshot.policy_id)
     assert policy is not None
     return policy
+
 
 def _assert_utc_effective_from(
     policy: SourcePriorityPolicy,
@@ -257,6 +258,7 @@ def test_bootstrap_creates_v1_wildcard_for_only_google_health(db, user) -> None:
     )
     assert rules[0].priority_rank == 1
 
+
 def test_bootstrap_normalizes_equivalent_non_utc_effective_from_to_utc(db, user) -> None:
     _add_yazio(db, user)
     local_effective = datetime(2026, 9, 13, 14, tzinfo=timezone(timedelta(hours=2)))
@@ -318,6 +320,8 @@ def test_bootstrap_classifies_existing_valid_wildcard_without_new_version(db, us
         ("google_health", 2),
         ("yazio", 1),
     ]
+
+
 def test_any_existing_version_two_policy_blocks_auto_v1(db, user) -> None:
     _add_yazio(db, user)
     policy = _create_existing_policy(
@@ -423,7 +427,9 @@ def test_incomplete_nutrition_policy_is_not_repaired(db, user) -> None:
     ]
 
 
-def test_metric_specific_rules_covering_every_canonical_metric_are_existing_policy(db, user) -> None:
+def test_metric_specific_rules_covering_every_canonical_metric_are_existing_policy(
+    db, user
+) -> None:
     _add_yazio(db, user)
     rules = tuple(
         PriorityRuleSpec(
@@ -445,8 +451,11 @@ def test_metric_specific_rules_covering_every_canonical_metric_are_existing_poli
     persisted_rules = _rules(db, user)
     assert len(persisted_rules) == len(CANONICAL_METRICS)
     assert {item.metric_key for item in persisted_rules} == set(CANONICAL_METRICS)
-    assert all(item.data_area == "nutrition" and item.provider_key == "yazio" for item in persisted_rules)
+    assert all(
+        item.data_area == "nutrition" and item.provider_key == "yazio" for item in persisted_rules
+    )
     assert all(item.priority_rank == 1 for item in persisted_rules)
+
 
 def test_near_complete_metric_specific_policy_requires_configuration_without_mutation(
     db, user
@@ -557,9 +566,7 @@ def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
         NutritionPriorityBootstrapStatus.EXISTING_POLICY,
     ]
     winner = next(
-        result
-        for result in results
-        if result.status is NutritionPriorityBootstrapStatus.CREATED
+        result for result in results if result.status is NutritionPriorityBootstrapStatus.CREATED
     )
     loser = next(
         result
@@ -575,9 +582,7 @@ def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
             )
         )
         rules = list(
-            check.scalars(
-                select(SourcePriorityRule).where(SourcePriorityRule.user_id == user.id)
-            )
+            check.scalars(select(SourcePriorityRule).where(SourcePriorityRule.user_id == user.id))
         )
     assert len(policies) == 1
     assert len(rules) == 1
@@ -634,9 +639,7 @@ def test_bootstrap_postgres_earlier_effective_loser_is_existing_policy(
         NutritionPriorityBootstrapStatus.EXISTING_POLICY,
     ]
     winner = next(
-        result
-        for result in results
-        if result.status is NutritionPriorityBootstrapStatus.CREATED
+        result for result in results if result.status is NutritionPriorityBootstrapStatus.CREATED
     )
     loser = next(
         result
