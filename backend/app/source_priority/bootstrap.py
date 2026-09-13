@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
@@ -18,6 +19,34 @@ from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec, validate_aware_datetime
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.repositories import list_policies, list_rules
+
+
+_EXPECTED_POLICY_UNIQUENESS_CONSTRAINTS = frozenset(
+    {
+        "uq_source_priority_policies_user_version",
+        "uq_source_priority_policies_user_effective_from",
+    }
+)
+_SQLITE_POLICY_UNIQUENESS_MESSAGES = frozenset(
+    {
+        "UNIQUE constraint failed: source_priority_policies.user_id, "
+        "source_priority_policies.version",
+        "UNIQUE constraint failed: source_priority_policies.user_id, "
+        "source_priority_policies.effective_from",
+    }
+)
+
+
+def _is_expected_policy_uniqueness_error(error: IntegrityError) -> bool:
+    original = getattr(error, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    if constraint_name in _EXPECTED_POLICY_UNIQUENESS_CONSTRAINTS:
+        return True
+    return (
+        getattr(original, "sqlite_errorname", None) == "SQLITE_CONSTRAINT_UNIQUE"
+        and str(original) in _SQLITE_POLICY_UNIQUENESS_MESSAGES
+    )
 
 
 class NutritionPriorityBootstrapStatus(StrEnum):
@@ -90,6 +119,31 @@ def _reported_policy(
     )
 
 
+def _existing_policy_result(
+    db: Session,
+    policies: list[SourcePriorityPolicy],
+    *,
+    user_id: UUID,
+    effective_from: datetime,
+    available_provider_keys: tuple[str, ...],
+) -> NutritionPriorityBootstrapResult:
+    policy = _reported_policy(policies, effective_from)
+    configured = False
+    if _policy_timestamp(policy) <= effective_from:
+        configured = _nutrition_is_configured(list_rules(db, user_id, policy.id))
+    status = (
+        NutritionPriorityBootstrapStatus.EXISTING_POLICY
+        if configured
+        else NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED
+    )
+    return NutritionPriorityBootstrapResult(
+        status=status,
+        policy_id=policy.id,
+        policy_version=policy.version,
+        available_provider_keys=available_provider_keys,
+    )
+
+
 def bootstrap_nutrition_priority(
     *,
     session_factory: Callable[[], Session],
@@ -111,19 +165,11 @@ def bootstrap_nutrition_priority(
         policies = list_policies(db, user_id)
 
         if policies:
-            policy = _reported_policy(policies, normalized_effective_from)
-            configured = False
-            if _policy_timestamp(policy) <= normalized_effective_from:
-                configured = _nutrition_is_configured(list_rules(db, user_id, policy.id))
-            status = (
-                NutritionPriorityBootstrapStatus.EXISTING_POLICY
-                if configured
-                else NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED
-            )
-            return NutritionPriorityBootstrapResult(
-                status=status,
-                policy_id=policy.id,
-                policy_version=policy.version,
+            return _existing_policy_result(
+                db,
+                policies,
+                user_id=user_id,
+                effective_from=normalized_effective_from,
                 available_provider_keys=available_provider_keys,
             )
 
@@ -142,21 +188,36 @@ def bootstrap_nutrition_priority(
                 available_provider_keys=available_provider_keys,
             )
 
-        snapshot = create_policy_with_rules(
-            db,
-            user_id,
-            1,
-            normalized_effective_from,
-            (
-                PriorityRuleSpec(
-                    data_area="nutrition",
-                    metric_key=None,
-                    provider_key=bindings.bindings[0].provider_key,
-                    priority_rank=1,
+        try:
+            snapshot = create_policy_with_rules(
+                db,
+                user_id,
+                1,
+                normalized_effective_from,
+                (
+                    PriorityRuleSpec(
+                        data_area="nutrition",
+                        metric_key=None,
+                        provider_key=bindings.bindings[0].provider_key,
+                        priority_rank=1,
+                    ),
                 ),
-            ),
-        )
-        db.commit()
+            )
+            db.commit()
+        except IntegrityError as exc:
+            if not _is_expected_policy_uniqueness_error(exc):
+                raise
+            db.rollback()
+            policies = list_policies(db, user_id)
+            if not policies:
+                raise
+            return _existing_policy_result(
+                db,
+                policies,
+                user_id=user_id,
+                effective_from=normalized_effective_from,
+                available_provider_keys=available_provider_keys,
+            )
         return NutritionPriorityBootstrapResult(
             status=NutritionPriorityBootstrapStatus.CREATED,
             policy_id=snapshot.policy_id,

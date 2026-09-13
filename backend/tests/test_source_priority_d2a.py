@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
+from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionLocal
+import app.source_priority.bootstrap as bootstrap_module
+from app.database import SessionLocal, engine
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.source_priority.application import create_policy_with_rules
@@ -18,7 +24,13 @@ from app.source_priority.bootstrap import (
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
+POSTGRES_TESTS_ENABLED = (
+    os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
+    and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
+)
+
 BOOTSTRAP_AT = datetime(2026, 9, 13, 12, tzinfo=UTC)
+
 EXPECTED_PROVIDER_ORDER = ("google_health", "yazio")
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
 
@@ -29,6 +41,28 @@ def _bootstrap(user: User, *, effective_from: datetime = BOOTSTRAP_AT):
         user_id=user.id,
         effective_from=effective_from,
     )
+
+
+class _TrackedSession:
+    def __init__(self) -> None:
+        self.db = SessionLocal()
+        self.closed = False
+
+    def __enter__(self):
+        self.db.__enter__()
+        return self.db
+
+    def __exit__(self, *args):
+        try:
+            return self.db.__exit__(*args)
+        finally:
+            self.closed = True
+
+
+def _tracked_session_factory(sessions: list[_TrackedSession]) -> _TrackedSession:
+    session = _TrackedSession()
+    sessions.append(session)
+    return session
 
 
 def _add_yazio(db, user: User) -> YazioConnection:
@@ -466,3 +500,107 @@ def test_existing_google_policy_is_immutable_when_yazio_becomes_available(db, us
     rules_after = _rule_snapshot(db, user)
     assert rules_after == rules_before
     assert all(row[5] != "yazio" for row in rules_after)
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL bootstrap race tests are not explicitly enabled",
+)
+def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
+    db,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert engine.dialect.name == "postgresql"
+    _add_yazio(db, user)
+
+    original_create = bootstrap_module.create_policy_with_rules
+    barrier = Barrier(2)
+
+    def gated_create(*args, **kwargs):
+        barrier.wait(timeout=30)
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap_module, "create_policy_with_rules", gated_create)
+
+    sessions: list[_TrackedSession] = []
+
+    def session_factory() -> _TrackedSession:
+        return _tracked_session_factory(sessions)
+
+    def attempt() -> object:
+        return bootstrap_nutrition_priority(
+            session_factory=session_factory,
+            user_id=user.id,
+            effective_from=BOOTSTRAP_AT,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: attempt(), range(2)))
+
+    assert sorted(result.status for result in results) == [
+        NutritionPriorityBootstrapStatus.CREATED,
+        NutritionPriorityBootstrapStatus.EXISTING_POLICY,
+    ]
+    winner = next(
+        result
+        for result in results
+        if result.status is NutritionPriorityBootstrapStatus.CREATED
+    )
+    loser = next(
+        result
+        for result in results
+        if result.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
+    )
+    assert loser.policy_id == winner.policy_id
+    assert loser.policy_version == winner.policy_version == 1
+    with SessionLocal() as check:
+        policies = list(
+            check.scalars(
+                select(SourcePriorityPolicy).where(SourcePriorityPolicy.user_id == user.id)
+            )
+        )
+        rules = list(
+            check.scalars(
+                select(SourcePriorityRule).where(SourcePriorityRule.user_id == user.id)
+            )
+        )
+    assert len(policies) == 1
+    assert len(rules) == 1
+    assert rules[0].policy_id == policies[0].id
+    assert rules[0].provider_key == "yazio"
+    assert all(session.closed for session in sessions)
+
+
+def test_bootstrap_propagates_unrelated_integrity_error_and_closes_session(
+    db,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_yazio(db, user)
+    error = IntegrityError(
+        "INSERT",
+        {},
+        SimpleNamespace(
+            diag=SimpleNamespace(constraint_name="some_other_constraint"),
+        ),
+    )
+
+    def fail_create(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(bootstrap_module, "create_policy_with_rules", fail_create)
+
+    sessions: list[_TrackedSession] = []
+
+    def session_factory() -> _TrackedSession:
+        return _tracked_session_factory(sessions)
+
+    with pytest.raises(IntegrityError) as raised:
+        bootstrap_nutrition_priority(
+            session_factory=session_factory,
+            user_id=user.id,
+            effective_from=BOOTSTRAP_AT,
+        )
+    assert raised.value is error
+    assert all(session.closed for session in sessions)
