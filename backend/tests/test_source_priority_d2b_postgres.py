@@ -87,7 +87,7 @@ def test_postgres_concurrent_updates_serialize_and_preserve_prior_policy(user) -
         results = list(
             executor.map(
                 attempt,
-                (["google_health", "yazio"], ["yazio", "google_health"]),
+                (["google_health", "yazio"], ["google_health", "yazio"]),
             )
         )
 

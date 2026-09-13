@@ -392,14 +392,10 @@ def test_put_rejects_invalid_source_order(db, user, source_order: list[str]) -> 
     assert raised.value.code == "invalid_source_order"
 
 
-@pytest.mark.parametrize("source_order", [["yazio"], ["google_health", "yazio"]])
+@pytest.mark.parametrize("source_order", [["yazio"], ["google_health"]])
 def test_put_rejects_provider_set_changes(db, user, source_order: list[str]) -> None:
     _add_yazio(db, user)
     _add_google(db, user)
-    if source_order == ["google_health", "yazio"]:
-        source_order = ["yazio"]
-    else:
-        source_order = ["yazio", "google_health"]
 
     with pytest.raises(ProviderSetChangedConflict) as raised:
         update_nutrition_priority(
@@ -485,7 +481,7 @@ def test_put_uses_latest_future_version_for_monotonic_next_version(db, user) -> 
         db,
         user,
         PriorityRuleSpec("nutrition", None, "google_health", 1),
-        effective_from=AT + timedelta(days=1),
+        effective_from=datetime.now(UTC) + timedelta(days=1),
         version=7,
     )
 
