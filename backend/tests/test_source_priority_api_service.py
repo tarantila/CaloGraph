@@ -27,6 +27,7 @@ from app.nutrition.models import (
     NutritionDailyProjectionFact,
     NutritionFieldObservation,
     NutritionIngestionRun,
+    NutritionProjectionHead,
     NutritionSourceObservation,
 )
 from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days

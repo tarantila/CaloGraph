@@ -11,10 +11,12 @@ from app.models import (
     GoogleHealthConnection,
     NutritionDailyProjection,
     NutritionProjectionHead,
-    SourcePriorityPolicy,
     User,
     YazioConnection,
 )
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.bootstrap import bootstrap_nutrition_priority
+from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
 PASSWORD = "correct-horse-battery-staple"
