@@ -8,6 +8,7 @@ from app.api import (
     google_health,
     imports,
     settings,
+    source_priority,
     users,
     yazio,
 )
@@ -22,3 +23,4 @@ api_router.include_router(yazio.router)
 api_router.include_router(admin.router)
 api_router.include_router(users.router)
 api_router.include_router(google_health.router)
+api_router.include_router(source_priority.router)
