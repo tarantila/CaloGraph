@@ -22,7 +22,7 @@ from app.schemas_source_priority import (
 )
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec, validate_aware_datetime
-from app.source_priority.models import SourcePriorityRule
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.repositories import get_effective_policy, list_policies, list_rules
 
 PUBLIC_NUTRITION_SOURCES: Final = MappingProxyType(
@@ -247,7 +247,7 @@ def _is_expected_policy_uniqueness_error(error: IntegrityError) -> bool:
     )
 
 
-def _latest_policy(policies):
+def _latest_policy(policies: list[SourcePriorityPolicy]) -> SourcePriorityPolicy | None:
     return max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
 
 
