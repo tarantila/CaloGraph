@@ -319,6 +319,19 @@ def test_unknown_persisted_enum_values_fail_closed(db, user, field_name):
 
 
 
+@pytest.mark.parametrize("invalid_value", (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")))
+def test_non_finite_persisted_decimal_values_fail_closed(db, user, invalid_value):
+    projection = _ready_projection(db, user)
+    fact = db.query(NutritionDailyProjectionFact).filter_by(
+        projection_id=projection.id,
+        metric_key="dietary_energy_kcal",
+    ).one()
+    fact.value = invalid_value
+
+    with db.no_autoflush, pytest.raises(NutritionProjectionReadError):
+        read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
+
+
 
 def test_wrong_user_and_wrong_date_never_return_another_day(db, user):
     projection = _ready_projection(db, user)

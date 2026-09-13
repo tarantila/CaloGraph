@@ -18,6 +18,7 @@ from app.nutrition.enums import (
     ResolutionState,
 )
 from app.nutrition.models import NutritionDailyProjectionFact
+from app.nutrition.projection.contracts import validate_projection_decimal
 from app.nutrition.repositories import get_current_projection
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 
@@ -162,6 +163,10 @@ def read_canonical_nutrition_day(
             raise _read_error(f"projection fact has an invalid unit for {metric_key}")
         if fact.value is not None and not isinstance(fact.value, Decimal):
             raise _read_error(f"projection fact has an invalid value for {metric_key}")
+        try:
+            validated_value = validate_projection_decimal(fact.value, f"{metric_key}.value")
+        except ValueError as exc:
+            raise _read_error(f"projection fact has an invalid value for {metric_key}") from exc
         if fact.selected_provider_key is not None and not isinstance(fact.selected_provider_key, str):
             raise _read_error(f"projection fact has an invalid provider for {metric_key}")
 
@@ -169,7 +174,7 @@ def read_canonical_nutrition_day(
             CanonicalNutritionFact(
                 metric_key=metric_key,
                 unit=fact.unit,
-                value=fact.value,
+                value=validated_value,
                 presence_state=_enum_from_persisted(
                     PresenceState,
                     fact.presence_state,
