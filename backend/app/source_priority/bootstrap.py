@@ -20,7 +20,6 @@ from app.source_priority.contracts import PriorityRuleSpec, validate_aware_datet
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.repositories import list_policies, list_rules
 
-
 _EXPECTED_POLICY_UNIQUENESS_CONSTRAINTS = frozenset(
     {
         "uq_source_priority_policies_user_version",

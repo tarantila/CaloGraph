@@ -16,7 +16,6 @@ from app.database import SessionLocal
 from app.importers.yazio import parse_yazio_export
 from app.models import User, YazioConnection
 from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
-from app.source_priority.bootstrap import bootstrap_nutrition_priority
 from app.schemas import ImportSummary
 from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import (
@@ -60,6 +59,7 @@ from app.services.yazio_transport import (
     fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
+from app.source_priority.bootstrap import bootstrap_nutrition_priority
 
 YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)

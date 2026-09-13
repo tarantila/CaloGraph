@@ -356,7 +356,7 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
         sessions.append(session)
         return session
 
-    result = harness.service(session_factory=session_factory).sync(
+    harness.service(session_factory=session_factory).sync(
         user_id=user.id,
         requested_start=DAY,
         requested_end=DAY,

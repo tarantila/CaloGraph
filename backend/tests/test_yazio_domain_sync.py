@@ -25,9 +25,6 @@ from app.nutrition.projection.lifecycle import NutritionProjectionLifecycleResul
 from app.schemas import ImportSummary
 from app.services import yazio_sync, yazio_transport
 from app.services.credential_crypto import encrypt_credential
-from app.source_priority.application import create_policy_with_rules
-from app.source_priority.contracts import PriorityRuleSpec
-from app.source_priority.models import SourcePriorityPolicy
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
     YazioFoodDiary,
@@ -35,6 +32,9 @@ from app.services.yazio_provider import (
     YazioProviderInvalidResponseError,
 )
 from app.services.yazio_sync import YazioSyncError, run_manual_yazio_sync
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy
 
 DAY = date(2026, 9, 1)
 

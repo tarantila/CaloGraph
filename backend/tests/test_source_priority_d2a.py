@@ -18,8 +18,8 @@ from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import (
-    NutritionPriorityBootstrapStatus,
     NutritionPriorityBootstrapResult,
+    NutritionPriorityBootstrapStatus,
     bootstrap_nutrition_priority,
 )
 from app.source_priority.contracts import PriorityRuleSpec
