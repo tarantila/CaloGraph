@@ -33,11 +33,20 @@ from app.nutrition.models import (
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
+import app.services.google_health_nutrition_sync as google_sync
+from app.nutrition.projection import lifecycle as projection_lifecycle
+from app.nutrition.projection.contracts import (
+    ProjectionPersistenceResult,
+    ProjectionPersistenceStatus,
+)
+from app.nutrition.projection.lifecycle import NutritionProjectionLifecycleError
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.google_health_nutrition_sync import (
     GoogleHealthNutritionSyncError,
     GoogleHealthNutritionSyncService,
 )
+
+POLICY_AT = datetime(2026, 9, 13, 12, 34, 56, 789, tzinfo=UTC)
 
 DAY = date(2026, 9, 1)
 NEXT_DAY = DAY + timedelta(days=1)
@@ -258,6 +267,73 @@ def test_sync_fetches_all_pages_before_one_adapter_write_and_preserves_source_in
     assert harness.clients[0].close_called is True
 
 
+def test_sync_invokes_lifecycle_after_commit_with_committed_evidence(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = _connection(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log-lifecycle"),), page_token=None, next_page_token=None)},
+    )
+    lifecycle_calls: list[dict[str, Any]] = []
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            assert tz is UTC
+            return POLICY_AT
+
+    def lifecycle(**kwargs: Any) -> None:
+        lifecycle_calls.append(kwargs)
+        with SessionLocal() as observer:
+            run = observer.get(NutritionIngestionRun, kwargs["ingestion_run_id"])
+            assert run is not None
+            assert run.user_id == kwargs["user_id"]
+            assert run.source_instance_id == connection.id
+            assert observer.scalar(
+                select(func.count()).select_from(NutritionSourceObservation).where(
+                    NutritionSourceObservation.ingestion_run_id == run.id,
+                )
+            ) == 1
+
+    monkeypatch.setattr(google_sync, "datetime", FixedDateTime)
+    monkeypatch.setattr(google_sync, "rebuild_affected_nutrition_days", lifecycle)
+
+    result = harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    assert result.status == "completed"
+    assert len(lifecycle_calls) == 1
+    call = lifecycle_calls[0]
+    assert set(call) == {"session_factory", "user_id", "ingestion_run_id", "policy_at"}
+    assert call["user_id"] == user.id
+    assert call["ingestion_run_id"] == _sync_result_run(result).id
+    assert call["policy_at"] == POLICY_AT
+    assert call["policy_at"].tzinfo is UTC
+
+
+def test_lifecycle_hard_failure_preserves_committed_evidence_and_is_distinct(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connection(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log-lifecycle-failure"),), page_token=None, next_page_token=None)},
+    )
+
+    def lifecycle(**kwargs: Any) -> None:
+        del kwargs
+        raise NutritionProjectionLifecycleError("synthetic lifecycle failure")
+
+    monkeypatch.setattr(google_sync, "rebuild_affected_nutrition_days", lifecycle)
+
+    with pytest.raises(NutritionProjectionLifecycleError, match="synthetic lifecycle failure"):
+        harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    with SessionLocal() as observer:
+        assert observer.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 1
+        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
+
+
 def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, user: User) -> None:
     _connection(db, user)
     db.rollback()
@@ -283,7 +359,7 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
     )
 
     assert result.persisted_count == 1
-    assert len(sessions) == 2
+    assert len(sessions) == 4
     with SessionLocal() as observer:
         assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
     assert all(not session.in_transaction() for session in sessions)
@@ -539,10 +615,30 @@ def test_sync_result_summary_contains_counts_and_coverage_only(db: Session, user
         assert secret not in rendered
 
 
-def test_repeating_sync_is_idempotent_for_non_run_domain_rows(db: Session, user: User) -> None:
+def test_repeating_sync_is_idempotent_for_non_run_domain_rows(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
     connection = _connection(db, user)
     pages = {None: _page((_point("google-log-stable"),), page_token=None, next_page_token=None)}
     harness = SyncHarness(db, pages)
+    b6_dates: list[date] = []
+
+    def policy_missing(
+        db: Session, *, user_id: Any, local_date: date, policy_at: datetime
+    ) -> ProjectionPersistenceResult:
+        del db, policy_at
+        b6_dates.append(local_date)
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=None,
+            projection_version=None,
+            input_watermark=None,
+            created=False,
+            status=ProjectionPersistenceStatus.POLICY_MISSING,
+        )
+
+    monkeypatch.setattr(projection_lifecycle, "rebuild_nutrition_day", policy_missing)
     service = harness.service()
 
     first = service.sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
@@ -562,3 +658,4 @@ def test_repeating_sync_is_idempotent_for_non_run_domain_rows(db: Session, user:
             assert counts_after_second[model] == counts_after_first[model]
     assert second.fetched_count == 1
     assert second.persisted_count == 0
+    assert b6_dates == [DAY]
