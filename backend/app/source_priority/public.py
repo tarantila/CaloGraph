@@ -5,15 +5,21 @@ from types import MappingProxyType
 from typing import ClassVar, Final
 from uuid import UUID
 
-
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import User
 from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHead
-from app.nutrition.resolution.sources import DEFAULT_SOURCE_RESOLVERS, resolve_default_provider_sources
-from app.schemas_source_priority import NutritionPrioritySource, NutritionPriorityState, NutritionPriorityUpdateRequest
+from app.nutrition.resolution.sources import (
+    DEFAULT_SOURCE_RESOLVERS,
+    resolve_default_provider_sources,
+)
+from app.schemas_source_priority import (
+    NutritionPrioritySource,
+    NutritionPriorityState,
+    NutritionPriorityUpdateRequest,
+)
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec, validate_aware_datetime
 from app.source_priority.models import SourcePriorityRule
@@ -326,10 +332,10 @@ def update_nutrition_priority(
 
 
 __all__ = [
+    "PUBLIC_NUTRITION_SOURCES",
     "AdvancedConfigurationConflict",
     "InvalidSourceOrderConflict",
     "NutritionPriorityUpdateConflict",
-    "PUBLIC_NUTRITION_SOURCES",
     "ProviderSetChangedConflict",
     "StalePolicyConflict",
     "get_nutrition_priority_state",

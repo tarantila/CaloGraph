@@ -5,17 +5,16 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from uuid import uuid4
 
+import conftest
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-import conftest
 from app.database import SessionLocal, engine
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.schemas_source_priority import NutritionPriorityUpdateRequest
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.public import StalePolicyConflict, update_nutrition_priority
-
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
