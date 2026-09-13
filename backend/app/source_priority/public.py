@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHead
 from app.nutrition.resolution.sources import DEFAULT_SOURCE_RESOLVERS, resolve_default_provider_sources
+from app.schemas_source_priority import NutritionPrioritySource, NutritionPriorityState
 from app.source_priority.contracts import validate_aware_datetime
 from app.source_priority.models import SourcePriorityRule
 from app.source_priority.repositories import get_effective_policy, list_policies, list_rules
