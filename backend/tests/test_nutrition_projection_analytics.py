@@ -296,6 +296,31 @@ def test_structural_projection_boundaries_fail_closed(db, user, boundary):
         read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "presence_state",
+        "coverage_state",
+        "resolution_state",
+        "lineage_state",
+        "selected_granularity",
+    ),
+)
+def test_unknown_persisted_enum_values_fail_closed(db, user, field_name):
+    projection = _ready_projection(db, user)
+    fact = db.query(NutritionDailyProjectionFact).filter_by(
+        projection_id=projection.id,
+        metric_key="protein_g",
+    ).one()
+    setattr(fact, field_name, "not-a-known-enum-value")
+
+    with db.no_autoflush:
+        with pytest.raises(NutritionProjectionReadError):
+            read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
+
+
+
+
 def test_wrong_user_and_wrong_date_never_return_another_day(db, user):
     projection = _ready_projection(db, user)
     other_user = _other_user(db)
@@ -329,9 +354,46 @@ def test_facts_from_another_projection_scope_are_not_returned(db, user):
 
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
+
+
+
     assert day.projection_id == first.id
     assert len(day.facts) == 7
     assert all(fact.value == Decimal("10.25") for fact in day.facts)
+
+
+def test_projection_fact_query_excludes_wrong_user_rows(db, user):
+    projection = _ready_projection(db, user)
+    other_user = _other_user(db)
+    db.commit()
+
+    connection = db.connection()
+    connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    db.add(
+        NutritionDailyProjectionFact(
+            user_id=other_user.id,
+            projection_id=projection.id,
+            metric_key="salt",
+            value=Decimal("999"),
+            unit="g",
+            selected_provider_key="other",
+            selected_granularity=ProjectionGranularity.SUMMARY.value,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.flush()
+    db.commit()
+    db.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
+
+    day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
+
+    assert day.state is NutritionProjectionReadState.READY
+    assert len(day.facts) == len(CANONICAL_METRICS)
+    assert tuple(fact.metric_key for fact in day.facts) == tuple(CANONICAL_METRICS)
+
 
 
 def test_projection_and_fact_scope_cannot_cross_users(db, user):

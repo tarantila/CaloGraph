@@ -204,10 +204,11 @@ def read_canonical_nutrition_day(
         )
 
     canonical_facts_tuple = tuple(canonical_facts)
-    calorie = facts_by_metric["dietary_energy_kcal"]
+    canonical_facts_by_metric = {fact.metric_key: fact for fact in canonical_facts_tuple}
+    calorie = canonical_facts_by_metric["dietary_energy_kcal"]
     calorie_value_available = calorie.value is not None
-    calorie_coverage_complete = canonical_facts_tuple[0].coverage_state is CoverageState.COMPLETE
-    calorie_resolution_resolved = canonical_facts_tuple[0].resolution_state is ResolutionState.RESOLVED
+    calorie_coverage_complete = calorie.coverage_state is CoverageState.COMPLETE
+    calorie_resolution_resolved = calorie.resolution_state is ResolutionState.RESOLVED
     return CanonicalNutritionDay(
         state=NutritionProjectionReadState.READY,
         user_id=user_id,
