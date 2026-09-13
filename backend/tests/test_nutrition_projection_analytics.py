@@ -131,6 +131,8 @@ def _other_user(db) -> User:
 def test_missing_projection_head_is_not_projected_and_has_no_identity_or_facts(db, user):
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
+    assert day.user_id == user.id
+    assert day.local_date == LOCAL_DATE
     assert day.state is NutritionProjectionReadState.NOT_PROJECTED
     assert day.facts == ()
     assert day.projection_id is None
@@ -149,6 +151,8 @@ def test_ready_projection_returns_exactly_registry_metrics_in_order_with_identit
 
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
+    assert day.user_id == user.id
+    assert day.local_date == LOCAL_DATE
     assert day.state is NutritionProjectionReadState.READY
     assert day.projection_id == projection.id
     assert day.projection_version == projection.projection_version == 1
@@ -369,6 +373,8 @@ def test_returned_contract_exposes_no_source_lineage_or_metadata_fields(db, user
     fact_fields = {field.name for field in fields(CanonicalNutritionFact)}
 
     assert day_fields == {
+        "user_id",
+        "local_date",
         "state",
         "projection_id",
         "projection_version",
