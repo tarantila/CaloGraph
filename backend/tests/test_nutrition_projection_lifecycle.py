@@ -206,6 +206,24 @@ def test_resolver_ignores_observation_without_date_and_without_consumption_event
     assert resolve_affected_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == ()
 
 
+def test_resolver_includes_event_date_when_source_observation_is_undated(
+    db: Session, user: User
+) -> None:
+    run = _run(db, user.id)
+    source = _source(db, user.id, run, key="undated-event", local_date=None)
+    _event(
+        db,
+        user.id,
+        source,
+        logical_event_key="undated-event-key",
+        local_date=DAY_TWO,
+    )
+
+    assert resolve_affected_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_TWO,
+    )
+
+
 def test_resolver_includes_both_dates_for_event_revision_moved_between_days(
     db: Session, user: User
 ) -> None:

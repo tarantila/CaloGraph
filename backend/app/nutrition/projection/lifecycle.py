@@ -133,6 +133,8 @@ def resolve_affected_nutrition_dates(
         )
     ).all()
     for event in events:
+        if event.local_date is not None:
+            dates.add(event.local_date)
         if not isinstance(event.revision, int) or event.revision < 1:
             raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
         if event.supersedes_event_id is None:
