@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -23,11 +23,11 @@ EXPECTED_PROVIDER_ORDER = ("google_health", "yazio")
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
 
 
-def _bootstrap(user: User):
+def _bootstrap(user: User, *, effective_from: datetime = BOOTSTRAP_AT):
     return bootstrap_nutrition_priority(
         session_factory=SessionLocal,
         user_id=user.id,
-        effective_from=BOOTSTRAP_AT,
+        effective_from=effective_from,
     )
 
 
@@ -80,6 +80,34 @@ def _rules(db, user: User) -> list[SourcePriorityRule]:
         )
     )
 
+def _policy_snapshot(db, user: User) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            policy.id,
+            policy.user_id,
+            policy.version,
+            policy.effective_from,
+            policy.created_at,
+        )
+        for policy in _policies(db, user)
+    )
+
+
+def _rule_snapshot(db, user: User) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            rule.id,
+            rule.user_id,
+            rule.policy_id,
+            rule.data_area,
+            rule.metric_key,
+            rule.provider_key,
+            rule.priority_rank,
+            rule.created_at,
+        )
+        for rule in _rules(db, user)
+    )
+
 
 def _create_existing_policy(
     db,
@@ -101,12 +129,16 @@ def _create_existing_policy(
     assert policy is not None
     return policy
 
-
-def _assert_utc_effective_from(policy: SourcePriorityPolicy) -> None:
+def _assert_utc_effective_from(
+    policy: SourcePriorityPolicy,
+    expected: datetime = BOOTSTRAP_AT,
+) -> None:
     stored = policy.effective_from
     if stored.tzinfo is None:
         stored = stored.replace(tzinfo=UTC)
-    assert stored == BOOTSTRAP_AT
+    assert stored == expected
+    if policy.effective_from.tzinfo is not None:
+        assert policy.effective_from.utcoffset() == timedelta(0)
     assert stored.utcoffset() == timedelta(0)
 
 
@@ -177,6 +209,19 @@ def test_bootstrap_creates_v1_wildcard_for_only_google_health(db, user) -> None:
     )
     assert rules[0].priority_rank == 1
 
+def test_bootstrap_normalizes_equivalent_non_utc_effective_from_to_utc(db, user) -> None:
+    _add_yazio(db, user)
+    local_effective = datetime(2026, 9, 13, 14, tzinfo=timezone(timedelta(hours=2)))
+
+    result = _bootstrap(user, effective_from=local_effective)
+
+    assert result.status is NutritionPriorityBootstrapStatus.CREATED
+    assert result.policy_id is not None
+    policies = _policies(db, user)
+    assert len(policies) == 1
+    assert policies[0].id == result.policy_id
+    _assert_utc_effective_from(policies[0], BOOTSTRAP_AT)
+
 
 def test_bootstrap_requires_selection_for_yazio_and_google_without_policy(db, user) -> None:
     _add_yazio(db, user)
@@ -194,6 +239,7 @@ def test_bootstrap_requires_selection_for_yazio_and_google_without_policy(db, us
 def test_bootstrap_classifies_existing_valid_wildcard_without_new_version(db, user) -> None:
     _add_yazio(db, user)
     _add_google(db, user)
+
     policy = _create_existing_policy(
         db,
         user,
@@ -224,6 +270,30 @@ def test_bootstrap_classifies_existing_valid_wildcard_without_new_version(db, us
         ("google_health", 2),
         ("yazio", 1),
     ]
+def test_any_existing_version_two_policy_blocks_auto_v1(db, user) -> None:
+    _add_yazio(db, user)
+    policy = _create_existing_policy(
+        db,
+        user,
+        version=2,
+        rules=(
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="yazio",
+                priority_rank=1,
+            ),
+        ),
+    )
+
+    result = _bootstrap(user)
+
+    assert result.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
+    assert result.policy_id == policy.id
+    assert result.policy_version == 2
+    assert result.available_provider_keys == ("yazio",)
+    assert [item.version for item in _policies(db, user)] == [2]
+    assert len(_rules(db, user)) == 1
 
 
 def test_future_dated_policy_blocks_auto_v1_and_requires_configuration(db, user) -> None:
@@ -330,46 +400,71 @@ def test_metric_specific_rules_covering_every_canonical_metric_are_existing_poli
     assert all(item.data_area == "nutrition" and item.provider_key == "yazio" for item in persisted_rules)
     assert all(item.priority_rank == 1 for item in persisted_rules)
 
+def test_near_complete_metric_specific_policy_requires_configuration_without_mutation(
+    db, user
+) -> None:
+    _add_yazio(db, user)
+    metric_keys = tuple(CANONICAL_METRICS)
+    rules = tuple(
+        PriorityRuleSpec(
+            data_area="nutrition",
+            metric_key=metric_key,
+            provider_key="yazio",
+            priority_rank=1,
+        )
+        for metric_key in metric_keys[:-1]
+    )
+    policy = _create_existing_policy(db, user, rules=rules)
+    policies_before = _policy_snapshot(db, user)
+    rules_before = _rule_snapshot(db, user)
+
+    result = _bootstrap(user)
+
+    assert result.status is NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED
+    assert result.policy_id == policy.id
+    assert result.policy_version == 1
+    assert result.available_provider_keys == ("yazio",)
+    assert _policy_snapshot(db, user) == policies_before
+    assert _rule_snapshot(db, user) == rules_before
+
 
 def test_existing_yazio_policy_is_immutable_when_google_becomes_available(db, user) -> None:
     _add_yazio(db, user)
     first = _bootstrap(user)
     assert first.status is NutritionPriorityBootstrapStatus.CREATED
-    policy_before = _policies(db, user)
-    rules_before = _rules(db, user)
+    policy_before = _policy_snapshot(db, user)
+    rules_before = _rule_snapshot(db, user)
     _add_google(db, user)
 
     second = _bootstrap(user)
 
     assert second.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
-    assert second.policy_id == first.policy_id == policy_before[0].id
+    assert second.policy_id == first.policy_id == policy_before[0][0]
     assert second.policy_version == 1
     assert second.available_provider_keys == EXPECTED_PROVIDER_ORDER
-    assert [item.version for item in _policies(db, user)] == [1]
-    rules_after = _rules(db, user)
-    assert [(item.provider_key, item.priority_rank) for item in rules_after] == [
-        (item.provider_key, item.priority_rank) for item in rules_before
-    ]
-    assert "google_health" not in {item.provider_key for item in rules_after}
+    assert _policy_snapshot(db, user) == policy_before
+    rules_after = _rule_snapshot(db, user)
+    assert rules_after == rules_before
+    assert all(row[5] != "google_health" for row in rules_after)
 
 
 def test_existing_google_policy_is_immutable_when_yazio_becomes_available(db, user) -> None:
     _add_google(db, user)
     first = _bootstrap(user)
     assert first.status is NutritionPriorityBootstrapStatus.CREATED
-    policy_before = _policies(db, user)
-    rules_before = _rules(db, user)
+    policy_before = _policy_snapshot(db, user)
+    rules_before = _rule_snapshot(db, user)
     _add_yazio(db, user)
 
     second = _bootstrap(user)
 
     assert second.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
-    assert second.policy_id == first.policy_id == policy_before[0].id
+    assert second.policy_id == first.policy_id == policy_before[0][0]
     assert second.policy_version == 1
     assert second.available_provider_keys == EXPECTED_PROVIDER_ORDER
-    assert [item.version for item in _policies(db, user)] == [1]
-    rules_after = _rules(db, user)
-    assert [(item.provider_key, item.priority_rank) for item in rules_after] == [
-        (item.provider_key, item.priority_rank) for item in rules_before
-    ]
-    assert "yazio" not in {item.provider_key for item in rules_after}
+    assert _policy_snapshot(db, user) == policy_before
+    rules_after = _rule_snapshot(db, user)
+    assert rules_after == rules_before
+    assert all(row[5] != "yazio" for row in rules_after)
+
+
