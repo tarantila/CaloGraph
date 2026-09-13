@@ -9,7 +9,6 @@ from uuid import UUID
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from app.models import NutritionDailyProjectionFact
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -18,6 +17,7 @@ from app.nutrition.enums import (
     ProjectionStatus,
     ResolutionState,
 )
+from app.nutrition.models import NutritionDailyProjectionFact
 from app.nutrition.repositories import get_current_projection
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 
