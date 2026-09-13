@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models import User
@@ -23,8 +22,7 @@ from app.nutrition.models import (
     NutritionIngestionRun,
     NutritionSourceObservation,
 )
-from app.nutrition.projection import ProjectionPersistenceStatus
-from app.nutrition.projection import lifecycle
+from app.nutrition.projection import ProjectionPersistenceStatus, lifecycle
 from app.nutrition.projection.lifecycle import (
     NutritionProjectionLifecycleError,
     NutritionProjectionLifecycleResult,
@@ -536,7 +534,7 @@ def test_resolver_rejects_missing_supersedes_ancestry(db: Session, user: User) -
 
 
 class _FakeSession:
-    def __init__(self, events: list[tuple[str, "_FakeSession"]]) -> None:
+    def __init__(self, events: list[tuple[str, _FakeSession]]) -> None:
         self.closed = False
         self.events = events
 

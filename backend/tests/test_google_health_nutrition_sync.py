@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+import app.services.google_health_nutrition_sync as google_sync
 from app.database import SessionLocal
 from app.google_health.client import (
     NutritionLog,
@@ -33,7 +34,6 @@ from app.nutrition.models import (
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
-import app.services.google_health_nutrition_sync as google_sync
 from app.nutrition.projection import lifecycle as projection_lifecycle
 from app.nutrition.projection.contracts import (
     ProjectionPersistenceResult,
