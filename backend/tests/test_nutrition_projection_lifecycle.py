@@ -448,6 +448,52 @@ def test_resolver_rejects_malformed_supersedes_revision(db: Session, user: User)
         _resolve_malformed_ancestor(db, user, supersedes_revision_delta=1)
 
 
+def test_resolver_rejects_revision_without_supersedes_ancestry(
+    db: Session, user: User
+) -> None:
+    run = _run(db, user.id)
+    source = _source(db, user.id, run, key="truncated-root", local_date=DAY_ONE)
+    _event(
+        db,
+        user.id,
+        source,
+        logical_event_key="truncated-root-meal",
+        local_date=DAY_ONE,
+        revision=2,
+    )
+
+    with pytest.raises(NutritionProjectionLifecycleError):
+        resolve_affected_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id)
+
+
+def test_resolver_rejects_truncated_revision_chain(db: Session, user: User) -> None:
+    ancestor_run = _run(db, user.id)
+    ancestor_source = _source(db, user.id, ancestor_run, key="truncated-v2", local_date=DAY_ONE)
+    ancestor = _event(
+        db,
+        user.id,
+        ancestor_source,
+        logical_event_key="truncated-chain",
+        local_date=DAY_ONE,
+        revision=2,
+    )
+
+    current_run = _run(db, user.id)
+    current_source = _source(db, user.id, current_run, key="truncated-v3", local_date=DAY_TWO)
+    _event(
+        db,
+        user.id,
+        current_source,
+        logical_event_key="truncated-chain",
+        local_date=DAY_TWO,
+        revision=3,
+        supersedes=ancestor,
+    )
+
+    with pytest.raises(NutritionProjectionLifecycleError):
+        resolve_affected_nutrition_dates(db, user_id=user.id, ingestion_run_id=current_run.id)
+
+
 def test_resolver_rejects_missing_supersedes_ancestry(db: Session, user: User) -> None:
     run = _run(db, user.id)
     source = _source(db, user.id, run, key="missing-ancestor", local_date=DAY_TWO)

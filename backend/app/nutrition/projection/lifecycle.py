@@ -83,6 +83,9 @@ def _load_ancestor(
             dates.add(ancestor.local_date)
         cursor = ancestor
 
+    if cursor.revision != 1:
+        raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+
 
 def resolve_affected_nutrition_dates(
     db: Session,
@@ -132,12 +135,10 @@ def resolve_affected_nutrition_dates(
     for event in events:
         if not isinstance(event.revision, int) or event.revision < 1:
             raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
-        if event.local_date is not None:
-            dates.add(event.local_date)
-
-        if event.supersedes_event_id is None and event.supersedes_revision is not None:
-            raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
-        if event.supersedes_event_id is not None:
+        if event.supersedes_event_id is None:
+            if event.supersedes_revision is not None or event.revision != 1:
+                raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+        else:
             _load_ancestor(db, event, user_id=user_id, dates=dates)
 
     return tuple(sorted(dates))
