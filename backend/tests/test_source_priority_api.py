@@ -288,13 +288,13 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     second_provider = client.get(PATH)
     assert second_provider.status_code == 200
     assert second_provider.json() == {
-        "status": "configured",
+        "status": "configuration_required",
         "version": 1,
         "sources": [
             {"id": "yazio", "label": "YAZIO", "available": True, "rank": 1},
             {"id": "google_health", "label": "Google Health", "available": True, "rank": None},
         ],
-        "configuration_mode": "global",
+        "configuration_mode": "none",
         "projection_refresh_required": False,
     }
 

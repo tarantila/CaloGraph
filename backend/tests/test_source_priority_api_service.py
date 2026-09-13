@@ -536,9 +536,8 @@ def test_put_propagates_unrelated_integrity_error(db, user, monkeypatch) -> None
     assert raised.value is error
 
 
-
 def test_put_v2_is_used_by_d1b_lifecycle_for_new_ingestion_date(db, user) -> None:
-    _add_yazio(db, user)
+    yazio = _add_yazio(db, user)
     bootstrap_nutrition_priority(
         session_factory=lambda: db,
         user_id=user.id,
@@ -622,6 +621,75 @@ def test_put_v2_is_used_by_d1b_lifecycle_for_new_ingestion_date(db, user) -> Non
             lineage_state=LineageState.CONFIRMED.value,
         )
     )
+    yazio_run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="yazio",
+        source_instance_id=yazio.id,
+        connector_variant="yazio-sdk-v22",
+        requested_start_date=AT.date(),
+        requested_end_date=AT.date(),
+        covered_start_date=AT.date(),
+        covered_end_date=AT.date(),
+        status="completed",
+        coverage_state=CoverageState.COMPLETE.value,
+    )
+    db.add(yazio_run)
+    db.flush()
+    yazio_source = NutritionSourceObservation(
+        user_id=user.id,
+        ingestion_run_id=yazio_run.id,
+        provider_key="yazio",
+        source_instance_id=yazio.id,
+        connector_variant="yazio-sdk-v22",
+        observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
+        source_namespace="yazio.daily_summary",
+        source_record_id="yazio-transition",
+        source_revision=1,
+        observation_fingerprint=sha256(b"yazio-transition").hexdigest(),
+        local_date=AT.date(),
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    db.add(yazio_source)
+    db.flush()
+    db.add(
+        NutritionConsumptionEvent(
+            user_id=user.id,
+            source_observation_id=yazio_source.id,
+            provider_key="yazio",
+            source_instance_id=yazio.id,
+            event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value,
+            logical_event_key="yazio-transition",
+            revision=1,
+            local_date=AT.date(),
+            amount=1,
+            amount_unit="serving",
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.add(
+        NutritionFieldObservation(
+            user_id=user.id,
+            source_observation_id=yazio_source.id,
+            provider_field_path="dailySummary.nutrient.protein",
+            provider_raw_value_decimal=20,
+            provider_raw_unit="g",
+            metric_key="protein_g",
+            canonical_value=20,
+            canonical_unit="g",
+            observation_role=ObservationRole.CANONICAL.value,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+
     db.commit()
 
     lifecycle = rebuild_affected_nutrition_days(

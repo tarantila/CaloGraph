@@ -75,14 +75,18 @@ def _source_list(
     ]
 
 
-def _is_public_global_policy(nutrition_rules: list[SourcePriorityRule]) -> bool:
+def _is_public_global_policy(
+    nutrition_rules: list[SourcePriorityRule],
+    available_provider_keys: set[str],
+) -> bool:
     wildcard_rules = [rule for rule in nutrition_rules if rule.metric_key is None]
     if not wildcard_rules or any(rule.metric_key is not None for rule in nutrition_rules):
         return False
     ranks = [rule.priority_rank for rule in wildcard_rules]
     if len(set(ranks)) != len(ranks) or set(ranks) != set(range(1, len(ranks) + 1)):
         return False
-    return all(rule.provider_key in PUBLIC_NUTRITION_SOURCES for rule in wildcard_rules)
+    configured_provider_keys = {rule.provider_key for rule in wildcard_rules}
+    return configured_provider_keys <= set(PUBLIC_NUTRITION_SOURCES) and available_provider_keys <= configured_provider_keys
 
 
 def _projection_refresh_required(
@@ -160,7 +164,7 @@ def get_nutrition_priority_state(
             projection_refresh_required=refresh_required,
         )
 
-    if _is_public_global_policy(all_nutrition_rules):
+    if _is_public_global_policy(all_nutrition_rules, available_provider_keys):
         ranks = {rule.provider_key: rule.priority_rank for rule in all_nutrition_rules}
         return NutritionPriorityState(
             status="configured",
@@ -289,7 +293,7 @@ def update_nutrition_priority(
     if active_policy is not None and any(rule.metric_key is not None for rule in active_rules):
         raise AdvancedConfigurationConflict()
 
-    if active_policy is not None and _is_public_global_policy(active_rules):
+    if active_policy is not None and _is_public_global_policy(active_rules, available_provider_keys):
         configured_order = tuple(
             rule.provider_key
             for rule in sorted(active_rules, key=lambda rule: rule.priority_rank)
