@@ -665,3 +665,24 @@ def test_unsafe_production_configuration_reports_all_variable_names() -> None:
     ):
         assert variable in message
     assert secret not in message
+
+def test_daily_shadow_settings_default_and_bounds() -> None:
+    configured = Settings(_env_file=None, environment="test")
+
+    assert configured.analytics_daily_shadow_read_enabled is False
+    assert configured.analytics_daily_shadow_max_days == 31
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, environment="test", analytics_daily_shadow_max_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, environment="test", analytics_daily_shadow_max_days=367)
+
+
+def test_daily_shadow_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANALYTICS_DAILY_SHADOW_READ_ENABLED", "true")
+    monkeypatch.setenv("ANALYTICS_DAILY_SHADOW_MAX_DAYS", "42")
+
+    configured = Settings(_env_file=None, environment="test")
+
+    assert configured.analytics_daily_shadow_read_enabled is True
+    assert configured.analytics_daily_shadow_max_days == 42

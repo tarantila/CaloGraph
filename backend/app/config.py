@@ -211,6 +211,8 @@ class Settings(BaseSettings):
     rate_limit_retention_hours: int = Field(default=24, ge=1, le=720)
     security_audit_retention_days: int = Field(default=90, ge=1, le=3_650)
     release_status_enabled: bool = False
+    analytics_daily_shadow_read_enabled: bool = False
+    analytics_daily_shadow_max_days: int = Field(default=31, ge=1, le=366)
     security_audit_geoip_provider: Literal["disabled", "ipwhois"] = "disabled"
     security_audit_geoip_timeout_seconds: float = Field(default=2.0, ge=0.2, le=10.0)
     security_audit_geoip_cache_seconds: int = Field(default=3_600, ge=60, le=86_400)

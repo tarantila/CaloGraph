@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.analytics import daily_shadow
 from app.api import analytics
 from app.auth import security
 from app.config import settings
@@ -1258,3 +1259,164 @@ def test_csrf_problem_types_distinguish_origin_and_token_failures(
     )
     assert invalid_token.status_code == 403
     assert invalid_token.json()["type"] == "urn:calograph:problem:csrf-validation-failed"
+
+
+def _daily_response(client: TestClient, query: str = ""):
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    return client.get(f"/api/v1/analytics/daily?start=2026-08-11&end=2026-08-11{query}")
+
+
+def test_daily_shadow_keeps_legacy_response_isolated(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del user
+    settings.analytics_daily_shadow_read_enabled = False
+    baseline = _daily_response(client)
+
+    calls = 0
+
+    def shadow_call(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(analytics, "run_daily_shadow", shadow_call)
+    settings.analytics_daily_shadow_read_enabled = True
+    shadowed = _daily_response(client)
+
+    assert baseline.status_code == 200
+    assert shadowed.status_code == baseline.status_code
+    assert shadowed.json() == baseline.json()
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "&source=apple",
+        "&tracking=complete",
+        "&weekday=2",
+        "?start=2020-01-01&end=2021-01-01",
+    ],
+)
+def test_daily_shadow_skips_filtered_or_oversized_requests(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    del user
+    settings.analytics_daily_shadow_read_enabled = True
+    calls = 0
+
+    def compare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("ineligible request must not compare")
+
+    monkeypatch.setattr(daily_shadow, "compare_daily_point_range", compare)
+    if query.startswith("?"):
+        url = f"/api/v1/analytics/daily{query}"
+    else:
+        url = f"/api/v1/analytics/daily?start=2026-08-11&end=2026-08-11{query}"
+    response = client.get(url)
+
+    assert response.status_code == 200
+    assert calls == 0
+
+
+def test_daily_shadow_failure_is_fail_open_and_does_not_change_response(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del user
+    settings.analytics_daily_shadow_read_enabled = True
+
+    def shadow_failure(*args, **kwargs):
+        raise RuntimeError("SENTINEL shadow failure")
+
+    monkeypatch.setattr(analytics, "run_daily_shadow", shadow_failure)
+    response = _daily_response(client)
+
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
+
+def test_daily_shadow_does_not_replace_period_all_achievement_behavior(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del user
+    settings.analytics_daily_shadow_read_enabled = True
+    achievements = 0
+    shadows = 0
+
+    def unlock(*args, **kwargs):
+        nonlocal achievements
+        achievements += 1
+
+    def shadow_call(*args, **kwargs):
+        nonlocal shadows
+        shadows += 1
+
+    monkeypatch.setattr(analytics, "_unlock_big_picture_if_requested", unlock)
+    monkeypatch.setattr(analytics, "run_daily_shadow", shadow_call)
+    response = _daily_response(client, "&period=all")
+
+    assert response.status_code == 200
+    assert achievements == 1
+    assert shadows == 1
+
+
+def test_daily_shadow_read_does_not_mutate_user_or_target_rows(
+    client: TestClient,
+    user: User,
+    db,
+) -> None:
+    settings.analytics_daily_shadow_read_enabled = True
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+
+    before_user = (user.username, user.timezone, user.is_active)
+    before_targets = [
+        (target.id, target.valid_from, target.calories_kcal, target.protein_g)
+        for target in db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.id)
+        ).all()
+    ]
+
+    response = client.get(
+        "/api/v1/analytics/daily?start=2026-08-11&end=2026-08-11"
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    refreshed_user = db.get(User, user.id)
+    assert refreshed_user is not None
+    after_targets = [
+        (target.id, target.valid_from, target.calories_kcal, target.protein_g)
+        for target in db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.id)
+        ).all()
+    ]
+    assert (refreshed_user.username, refreshed_user.timezone, refreshed_user.is_active) == before_user
+    assert after_targets == before_targets

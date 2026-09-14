@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analytics.daily_shadow import run_daily_shadow
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     budget_balance_for_user,
@@ -19,6 +20,7 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.auth.dependencies import current_user
+from app.config import settings
 from app.database import get_db
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample, ImportBatch, User
@@ -90,6 +92,20 @@ def daily(
         points = [point for point in points if point.tracking_status in statuses]
     if weekday is not None:
         points = [point for point in points if point.date.weekday() == weekday]
+    try:
+        run_daily_shadow(
+            user.id,
+            start,
+            end,
+            source,
+            tracking,
+            weekday,
+            enabled=settings.analytics_daily_shadow_read_enabled,
+            max_days=settings.analytics_daily_shadow_max_days,
+        )
+    except Exception:
+        # The shadow read is strictly observational and must never affect Legacy.
+        pass
     return points
 
 @router.get("/analytics/micronutrients")
