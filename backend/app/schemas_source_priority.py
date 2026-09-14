@@ -55,9 +55,9 @@ class NutritionPriorityRefreshResponse(BaseModel):
 
 
 __all__ = [
+    "NutritionPriorityRefreshRequest",
+    "NutritionPriorityRefreshResponse",
     "NutritionPrioritySource",
     "NutritionPriorityState",
     "NutritionPriorityUpdateRequest",
-    "NutritionPriorityRefreshRequest",
-    "NutritionPriorityRefreshResponse",
 ]

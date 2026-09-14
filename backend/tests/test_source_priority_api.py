@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
-
 import pytest
+from fastapi.testclient import TestClient
 
 from app.auth.security import hash_password
 from app.database import SessionLocal
 from app.main import app
-
-from app.nutrition.projection.refresh import (
-    NutritionProjectionRefreshError,
-    NutritionProjectionRefreshResult,
-)
-
 from app.models import (
     GoogleHealthConnection,
     NutritionDailyProjection,
@@ -25,6 +17,10 @@ from app.models import (
     NutritionSourceObservation,
     User,
     YazioConnection,
+)
+from app.nutrition.projection.refresh import (
+    NutritionProjectionRefreshError,
+    NutritionProjectionRefreshResult,
 )
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import bootstrap_nutrition_priority

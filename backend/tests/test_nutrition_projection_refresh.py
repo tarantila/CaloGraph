@@ -6,15 +6,13 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import select
 
 from app.analytics.nutrition_projection import (
     NutritionProjectionReadError,
     NutritionProjectionReadState,
     read_canonical_nutrition_day,
 )
-from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
-from app.services.yazio_provider import YazioDailyNutrientSummary, YazioFoodDiary, YazioNutrientValues
-from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.enums import (
@@ -45,6 +43,12 @@ from app.nutrition.projection.refresh import (
     NutritionProjectionRefreshResult,
     list_stale_nutrition_projection_dates,
     refresh_stale_nutrition_projections,
+)
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import (
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
 )
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -786,7 +790,7 @@ def test_refresh_real_b6_rebuilds_cross_provider_policy_lineage_with_equal_value
     _field(db, user.id, yazio_source, value=Decimal("7"))
     _field(db, user.id, google_source, value=Decimal("7"))
 
-    v1_snapshot = create_policy_with_rules(
+    create_policy_with_rules(
         db,
         user.id,
         1,

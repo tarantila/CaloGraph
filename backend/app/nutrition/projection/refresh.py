@@ -18,7 +18,10 @@ from app.nutrition.models import (
 )
 from app.nutrition.projection.contracts import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
-from app.nutrition.resolution.sources import DEFAULT_SOURCE_RESOLVERS, resolve_default_provider_sources
+from app.nutrition.resolution.sources import (
+    DEFAULT_SOURCE_RESOLVERS,
+    resolve_default_provider_sources,
+)
 from app.source_priority.models import SourcePriorityPolicy
 from app.source_priority.repositories import get_effective_policy, list_policies, list_rules
 
