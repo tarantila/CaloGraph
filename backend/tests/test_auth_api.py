@@ -1335,22 +1335,47 @@ def test_daily_shadow_skips_filtered_or_oversized_requests(
     assert calls == 0
 
 
-def test_daily_shadow_failure_is_fail_open_and_does_not_change_response(
+def test_daily_shadow_failure_is_fail_open_and_matches_disabled_baseline(
     client: TestClient,
     user: User,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     del user
-    settings.analytics_daily_shadow_read_enabled = True
+    comparator_calls = 0
+    session_calls = 0
+
+    def no_compare(*args, **kwargs):
+        nonlocal comparator_calls
+        comparator_calls += 1
+        raise AssertionError("disabled shadow must not compare")
+
+    def no_session():
+        nonlocal session_calls
+        session_calls += 1
+        raise AssertionError("disabled shadow must not open a session")
+
+    monkeypatch.setattr(daily_shadow, "compare_daily_point_range", no_compare)
+    monkeypatch.setattr(daily_shadow, "SessionLocal", no_session)
+    settings.analytics_daily_shadow_read_enabled = False
+    baseline = _daily_response(client)
 
     def shadow_failure(*args, **kwargs):
         raise RuntimeError("SENTINEL shadow failure")
 
     monkeypatch.setattr(analytics, "run_daily_shadow", shadow_failure)
-    response = _daily_response(client)
+    settings.analytics_daily_shadow_read_enabled = True
+    failed_shadow = _daily_response(client)
 
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+    assert comparator_calls == 0
+    assert session_calls == 0
+    assert failed_shadow.status_code == baseline.status_code
+    assert failed_shadow.json() == baseline.json()
+
+    def stable_headers(response):
+        return {
+            key: value for key, value in response.headers.items() if key.lower() != "x-request-id"
+        }
+    assert stable_headers(failed_shadow) == stable_headers(baseline)
 
 
 def test_daily_shadow_does_not_replace_period_all_achievement_behavior(

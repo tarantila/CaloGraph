@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import date, timedelta
 from uuid import UUID
@@ -171,6 +172,19 @@ def test_collapse_unexplained_mismatch_beats_expected_difference() -> None:
     assert result.state is DailyShadowState.UNEXPLAINED_MISMATCH
 
 
+def test_collapse_not_comparable_later_beats_unexplained_mismatch() -> None:
+    result = collapse_daily_point_range(
+        FakeRange(
+            days=(
+                FakeDay(True, DailyPointParityClassification.UNEXPLAINED_MISMATCH),
+                FakeDay(False, DailyPointParityClassification.NOT_COMPARABLE),
+            )
+        )
+    )
+
+    assert result.state is DailyShadowState.NOT_COMPARABLE
+
+
 def test_daily_shadow_outcome_is_frozen_and_slot_backed() -> None:
     assert DailyShadowOutcome.__dataclass_params__.frozen
     assert DailyShadowOutcome.__slots__
@@ -204,14 +218,16 @@ class SentinelFailure(RuntimeError):
 
 def test_run_daily_shadow_failure_rolls_back_closes_and_fails_open(monkeypatch, caplog) -> None:
     session = RecordingSession()
+    exception_text = (
+        "SENTINEL exception details nutrition=9876.54321 date=2026-01-01 "
+        "uuid=01234567-89ab-cdef-0123-456789abcdef provider=provider-secret "
+        "source=source-secret request_id=request-secret"
+    )
 
     monkeypatch.setattr(shadow, "SessionLocal", lambda: session)
 
     def fail(*args, **kwargs):
-        raise SentinelFailure(
-            "SENTINEL nutrition=123.45 date=2026-01-01 uuid=01234567-89ab-cdef-0123-456789abcdef "
-            "provider=secret request_id=req-123"
-        )
+        raise SentinelFailure(exception_text)
 
     monkeypatch.setattr(shadow, "compare_daily_point_range", fail)
 
@@ -231,15 +247,48 @@ def test_run_daily_shadow_failure_rolls_back_closes_and_fails_open(monkeypatch, 
     assert session.rollback_count == 1
     assert session.commit_count == 0
     assert session.close_count == 1
-    rendered = " ".join(record.getMessage() for record in caplog.records)
-    assert "SENTINEL" not in rendered
-    assert "123.45" not in rendered
-    assert "2026-01-01" not in rendered
-    assert "01234567-89ab-cdef" not in rendered
-    assert "secret" not in rendered
-    assert "req-123" not in rendered
-    assert "nutrition" not in rendered
-    assert all(record.exc_info is None for record in caplog.records)
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    baseline_record = logging.LogRecord(
+        name="baseline",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="",
+        args=(),
+        exc_info=None,
+    )
+    standard_keys = set(vars(baseline_record))
+    handler_keys = {"message", "asctime"}
+    telemetry = set(vars(record)) - standard_keys - handler_keys
+    allowed_keys = {
+        "event",
+        "version",
+        "outcome",
+        "range_bucket",
+        "duration_bucket",
+        "exception_class",
+    }
+    assert telemetry == allowed_keys
+    assert record.event == shadow.TELEMETRY_EVENT
+    assert record.version == shadow.TELEMETRY_VERSION
+    assert record.outcome == DailyShadowState.ERROR.value
+    assert record.range_bucket in {"1", "2-7", "8-31", "32-366", "367+"}
+    assert record.duration_bucket in {"<10ms", "10-49ms", "50-199ms", "200ms+"}
+    assert record.exception_class == "SentinelFailure"
+    assert len(record.exception_class) <= 64
+    serialized = repr(vars(record))
+    for sentinel in (
+        "9876.54321",
+        "2026-01-01",
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "provider-secret",
+        "source-secret",
+        "request-secret",
+        exception_text,
+    ):
+        assert sentinel not in serialized
+    assert record.exc_info is None
 
 
 def test_run_daily_shadow_success_never_commits_and_passes_bounded_inputs(monkeypatch) -> None:

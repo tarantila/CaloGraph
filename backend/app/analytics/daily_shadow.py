@@ -98,15 +98,21 @@ def is_daily_shadow_eligible(
 
 def collapse_daily_point_range(parity: DailyPointRangeParity) -> DailyShadowOutcome:
     """Collapse immutable D3B day results, preserving day-level precedence."""
+    has_not_comparable = False
+    has_unexplained_mismatch = False
     has_expected_difference = False
     for day in parity.days:
         classification = day.classification
         if not day.comparable or classification == DailyPointParityClassification.NOT_COMPARABLE:
-            return DailyShadowOutcome(DailyShadowState.NOT_COMPARABLE)
-        if classification == DailyPointParityClassification.UNEXPLAINED_MISMATCH:
-            return DailyShadowOutcome(DailyShadowState.UNEXPLAINED_MISMATCH)
-        if classification != DailyPointParityClassification.MATCH:
+            has_not_comparable = True
+        elif classification == DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+            has_unexplained_mismatch = True
+        elif classification != DailyPointParityClassification.MATCH:
             has_expected_difference = True
+    if has_not_comparable:
+        return DailyShadowOutcome(DailyShadowState.NOT_COMPARABLE)
+    if has_unexplained_mismatch:
+        return DailyShadowOutcome(DailyShadowState.UNEXPLAINED_MISMATCH)
     if has_expected_difference:
         return DailyShadowOutcome(DailyShadowState.EXPECTED_DIFFERENCE)
     return DailyShadowOutcome(DailyShadowState.MATCH)
