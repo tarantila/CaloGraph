@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -186,6 +187,64 @@ class NutritionDayParity:
         return self.projection_state
 
 
+@dataclass(frozen=True, slots=True)
+class NutritionRangeParity:
+    """An immutable, identifier-free aggregate for a bounded date range."""
+
+    start: date
+    end: date
+    days: tuple[NutritionDayParity, ...]
+    days_compared: int
+    days_not_comparable: int
+    match_counts: Mapping[str, int]
+    mismatch_counts: Mapping[str, int]
+    expected_difference_counts: Mapping[str, int]
+
+    @property
+    def day_results(self) -> tuple[NutritionDayParity, ...]:
+        return self.days
+
+
+def _read_legacy_nutrition_range(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+) -> tuple[NutritionLegacyDay, ...]:
+    """Read all legacy parity samples in one user/date-scoped query."""
+    samples = db.scalars(
+        select(HealthSample)
+        .where(
+            HealthSample.user_id == user_id,
+            HealthSample.local_date >= start,
+            HealthSample.local_date <= end,
+            HealthSample.metric_type.in_(CANONICAL_PARITY_METRICS),
+        )
+        .order_by(HealthSample.local_date)
+    ).all()
+
+    values_by_date: dict[date, dict[tuple[str, str], Decimal]] = {}
+    for sample in samples:
+        values_by_metric_and_source = values_by_date.setdefault(sample.local_date, {})
+        key = (sample.metric_type, sample.source_type)
+        values_by_metric_and_source[key] = values_by_metric_and_source.get(
+            key, Decimal("0")
+        ) + sample.value
+
+    return tuple(
+        NutritionLegacyDay(
+            user_id=user_id,
+            local_date=local_date,
+            metrics=tuple(
+                _legacy_metric(metric_key, values_by_metric_and_source)
+                for metric_key in CANONICAL_PARITY_METRICS
+            ),
+        )
+        for local_date, values_by_metric_and_source in sorted(values_by_date.items())
+    )
+
+
 # Only source names confirmed by repository provider/import contracts are aliases.
 # In particular, legacy import names are not normalized by fuzzy matching.
 _LEGACY_PROVIDER_ALIASES = MappingProxyType(
@@ -309,16 +368,16 @@ def _day_with_unavailable_projection(
     )
 
 
-def compare_nutrition_day(
+def _compare_nutrition_day_with_legacy(
     db: Session,
-    *,
-    user_id: UUID,
-    local_date: date,
+    legacy_day: NutritionLegacyDay,
 ) -> NutritionDayParity:
-    """Compare one day's legacy totals with its validated current projection."""
-    legacy_day = read_legacy_nutrition_day(db, user_id=user_id, local_date=local_date)
     try:
-        projection_day = read_canonical_nutrition_day(db, user_id, local_date)
+        projection_day = read_canonical_nutrition_day(
+            db,
+            legacy_day.user_id,
+            legacy_day.local_date,
+        )
     except NutritionProjectionReadError:
         return _day_with_unavailable_projection(
             legacy_day,
@@ -373,15 +432,99 @@ def compare_nutrition_day(
     )
 
 
+def compare_nutrition_day(
+    db: Session,
+    *,
+    user_id: UUID,
+    local_date: date,
+) -> NutritionDayParity:
+    """Compare one day's legacy totals with its validated current projection."""
+    legacy_day = read_legacy_nutrition_day(db, user_id=user_id, local_date=local_date)
+    return _compare_nutrition_day_with_legacy(db, legacy_day)
+
+
+
+def _validate_nutrition_range(
+    start: date,
+    end: date,
+    max_days: int,
+) -> None:
+    if not isinstance(start, date) or isinstance(start, datetime):
+        raise ValueError("start must be a date")
+    if not isinstance(end, date) or isinstance(end, datetime):
+        raise ValueError("end must be a date")
+    if start > end:
+        raise ValueError("start must not be after end")
+    if type(max_days) is not int or max_days < 1 or max_days > MAX_PARITY_DAYS:
+        raise ValueError(f"max_days must be between 1 and {MAX_PARITY_DAYS}")
+
+    requested_days = (end - start).days + 1
+    if requested_days > MAX_PARITY_DAYS:
+        raise ValueError(f"date range must not exceed {MAX_PARITY_DAYS} days")
+    if requested_days > max_days:
+        raise ValueError("date range exceeds max_days")
+
+
+def compare_nutrition_range(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+    max_days: int = MAX_PARITY_DAYS,
+) -> NutritionRangeParity:
+    """Compare legacy and canonical nutrition parity for a bounded date range."""
+    _validate_nutrition_range(start, end, max_days)
+    legacy_days = _read_legacy_nutrition_range(
+        db,
+        user_id=user_id,
+        start=start,
+        end=end,
+    )
+    days = tuple(
+        _compare_nutrition_day_with_legacy(db, legacy_day) for legacy_day in legacy_days
+    )
+
+    match_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
+    mismatch_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
+    expected_difference_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
+    for day in days:
+        for metric in day.metrics:
+            if metric.classification in {
+                NutritionParityClassification.MATCH,
+                NutritionParityClassification.BOTH_MISSING,
+            }:
+                match_counts[metric.metric_key] += 1
+            elif metric.classification in {
+                NutritionParityClassification.LEGACY_ONLY,
+                NutritionParityClassification.PROJECTION_ONLY,
+                NutritionParityClassification.VALUE_MISMATCH,
+            }:
+                mismatch_counts[metric.metric_key] += 1
+            elif metric.classification is NutritionParityClassification.LEGACY_MULTI_SOURCE:
+                expected_difference_counts[metric.metric_key] += 1
+
+    return NutritionRangeParity(
+        start=start,
+        end=end,
+        days=days,
+        days_compared=sum(day.comparable for day in days),
+        days_not_comparable=sum(not day.comparable for day in days),
+        match_counts=MappingProxyType(match_counts),
+        mismatch_counts=MappingProxyType(mismatch_counts),
+        expected_difference_counts=MappingProxyType(expected_difference_counts),
+    )
+
+
 __all__ = [
     "CANONICAL_PARITY_METRICS",
     "MAX_PARITY_DAYS",
-    "NutritionDayParity",
+    "NutritionRangeParity",
     "NutritionLegacyDay",
     "NutritionLegacyMetric",
     "NutritionLegacySourceBreakdown",
     "NutritionMetricParity",
     "NutritionParityClassification",
-    "compare_nutrition_day",
+    "compare_nutrition_range",
     "read_legacy_nutrition_day",
 ]

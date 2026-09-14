@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -16,8 +16,10 @@ from app.analytics.nutrition_parity import (
     NutritionLegacyMetric,
     NutritionMetricParity,
     NutritionParityClassification,
+    NutritionRangeParity,
     NutritionLegacySourceBreakdown,
     compare_nutrition_day,
+    compare_nutrition_range,
     read_legacy_nutrition_day,
 )
 from app.analytics.nutrition_projection import NutritionProjectionReadError
@@ -684,3 +686,186 @@ def test_projection_and_legacy_reads_are_user_scoped(db: Session, user: User) ->
         metric.classification is NutritionParityClassification.NOT_PROJECTED
         for metric in result.metrics
     )
+
+
+def test_nutrition_range_is_immutable_and_empty_ranges_are_safe(
+    db: Session, user: User
+) -> None:
+    result = compare_nutrition_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE + timedelta(days=1),
+    )
+
+    assert isinstance(result, NutritionRangeParity)
+    assert result.days == ()
+    assert result.days_compared == 0
+    assert result.days_not_comparable == 0
+    assert dict(result.match_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
+    assert dict(result.mismatch_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
+    assert dict(result.expected_difference_counts) == dict.fromkeys(
+        CANONICAL_PARITY_METRICS, 0
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        result.days_compared = 1  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        result.match_counts["protein_g"] = 1  # type: ignore[index]
+
+
+def test_nutrition_range_rejects_reversed_and_oversized_ranges() -> None:
+    with pytest.raises(ValueError):
+        compare_nutrition_range(
+            object(),  # type: ignore[arg-type]
+            user_id=object(),  # type: ignore[arg-type]
+            start=LOCAL_DATE + timedelta(days=1),
+            end=LOCAL_DATE,
+        )
+
+    with pytest.raises(ValueError):
+        compare_nutrition_range(
+            object(),  # type: ignore[arg-type]
+            user_id=object(),  # type: ignore[arg-type]
+            start=LOCAL_DATE,
+            end=LOCAL_DATE + timedelta(days=MAX_PARITY_DAYS),
+        )
+
+
+def test_nutrition_range_sorts_days_and_aggregates_metric_counts(
+    db: Session, user: User
+) -> None:
+    next_date = LOCAL_DATE + timedelta(days=1)
+    batch = _batch(db, user, source_type="yazio_export_v1")
+    _sample(
+        db,
+        user=user,
+        batch=batch,
+        metric_type="dietary_energy_kcal",
+        value="10",
+        source_type="yazio_export_v1",
+        local_date=LOCAL_DATE,
+        suffix="range-energy-yazio",
+    )
+    _sample(
+        db,
+        user=user,
+        batch=batch,
+        metric_type="dietary_energy_kcal",
+        value="10",
+        source_type="google",
+        local_date=LOCAL_DATE,
+        suffix="range-energy-google",
+    )
+    _sample(
+        db,
+        user=user,
+        batch=batch,
+        metric_type="protein_g",
+        value="20",
+        source_type="yazio_export_v1",
+        local_date=LOCAL_DATE,
+        suffix="range-protein",
+    )
+    _sample(
+        db,
+        user=user,
+        batch=batch,
+        metric_type="dietary_energy_kcal",
+        value="7",
+        source_type="yazio_export_v1",
+        local_date=next_date,
+        suffix="range-not-projected",
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            "dietary_energy_kcal": Decimal("10"),
+            "protein_g": Decimal("10"),
+            **{
+                metric_key: None
+                for metric_key in CANONICAL_METRICS
+                if metric_key not in {"dietary_energy_kcal", "protein_g"}
+            },
+        },
+        providers={"dietary_energy_kcal": "yazio"},
+    )
+
+    result = compare_nutrition_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=next_date,
+    )
+
+    assert tuple(day.local_date for day in result.days) == (LOCAL_DATE, next_date)
+    assert result.days_compared == 1
+    assert result.days_not_comparable == 1
+    assert result.match_counts["dietary_energy_kcal"] == 0
+    assert result.expected_difference_counts["dietary_energy_kcal"] == 1
+    assert result.mismatch_counts["dietary_energy_kcal"] == 0
+    assert result.match_counts["protein_g"] == 0
+    assert result.expected_difference_counts["protein_g"] == 0
+    assert result.mismatch_counts["protein_g"] == 1
+    for metric_key in (
+        "carbohydrates_g",
+        "fat_g",
+        "fiber_g",
+        "sugar_g",
+        "saturated_fat_g",
+    ):
+        assert result.match_counts[metric_key] == 1
+        assert result.expected_difference_counts[metric_key] == 0
+        assert result.mismatch_counts[metric_key] == 0
+
+
+def test_nutrition_range_excludes_another_users_identical_rows(
+    db: Session, user: User
+) -> None:
+    other = _other_user(db)
+    target_batch = _batch(db, user, source_type="yazio_export_v1")
+    other_batch = _batch(db, other, source_type="yazio_export_v1")
+    _sample(
+        db,
+        user=user,
+        batch=target_batch,
+        metric_type="dietary_energy_kcal",
+        value="10",
+        source_type="yazio_export_v1",
+        suffix="range-target",
+    )
+    _sample(
+        db,
+        user=other,
+        batch=other_batch,
+        metric_type="dietary_energy_kcal",
+        value="999",
+        source_type="yazio_export_v1",
+        suffix="range-other",
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            "dietary_energy_kcal": Decimal("10"),
+            **{
+                metric_key: None
+                for metric_key in CANONICAL_METRICS
+                if metric_key != "dietary_energy_kcal"
+            },
+        },
+    )
+
+    result = compare_nutrition_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    assert tuple(day.local_date for day in result.days) == (LOCAL_DATE,)
+    assert result.days_compared == 1
+    assert result.days_not_comparable == 0
+    assert result.match_counts["dietary_energy_kcal"] == 1
+    assert result.mismatch_counts["dietary_energy_kcal"] == 0
