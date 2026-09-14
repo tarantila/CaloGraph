@@ -519,12 +519,13 @@ def compare_nutrition_range(
 __all__ = [
     "CANONICAL_PARITY_METRICS",
     "MAX_PARITY_DAYS",
+    "NutritionDayParity",
     "NutritionRangeParity",
     "NutritionLegacyDay",
     "NutritionLegacyMetric",
     "NutritionLegacySourceBreakdown",
     "NutritionMetricParity",
-    "NutritionParityClassification",
+    "compare_nutrition_day",
     "compare_nutrition_range",
     "read_legacy_nutrition_day",
 ]
