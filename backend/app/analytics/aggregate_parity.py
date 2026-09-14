@@ -842,9 +842,13 @@ def compare_historical_budget_balance(
                 }
                 for difference in parity.fields.differences
             )
-            if nutrition_field_cause:
-                has_nutrition_cause = True
-            elif parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+            unexplained_calorie_cause = any(
+                difference.field_name == "calories_kcal"
+                and difference.classification
+                is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+                for difference in parity.fields.differences
+            )
+            if unexplained_calorie_cause:
                 if (
                     canonical_result.point.calories_kcal is None
                     and legacy.calories_kcal is not None
@@ -854,13 +858,21 @@ def compare_historical_budget_balance(
                     has_tracking_cause = True
                 else:
                     projection_only = any(
-                        metric.classification.value == "projection_only"
+                        metric.metric_key == "dietary_energy_kcal"
+                        and metric.classification.value == "projection_only"
                         for metric in parity.nutrition.metrics
                     )
                     if projection_only and legacy.tracking_status == "no_data":
                         has_nutrition_cause = True
                     else:
                         has_unexplained_cause = True
+            if nutrition_field_cause:
+                has_nutrition_cause = True
+            elif (
+                parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+                and not unexplained_calorie_cause
+            ):
+                has_unexplained_cause = True
             elif parity.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE:
                 has_tracking_cause = True
 

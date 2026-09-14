@@ -1047,6 +1047,68 @@ def test_historical_budget_balance_incomplete_value_mismatch_is_unexplained(
     assert result.classification is HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
 
 
+
+def test_historical_budget_balance_unexplained_calorie_mismatch_wins_over_nutrition_cause(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    db.add(
+        NutritionTarget(
+            user_id=user.id,
+            valid_from=local_date,
+            calories_kcal=2000,
+            maintenance_kcal=2500,
+            protein_g=120,
+        )
+    )
+    _legacy_sample(db, user, local_date, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, local_date, calories=Decimal("2200"))
+    original_compare = aggregate_module._compare_daily_point_results
+
+    def compare_daily_point_results(**kwargs: object) -> DailyPointParity:
+        parity = original_compare(**kwargs)  # type: ignore[arg-type]
+        if kwargs["local_date"] != local_date:
+            return parity
+        fields = DailyPointFieldParity(
+            local_date=local_date,
+            differences=(
+                DailyPointFieldDifference(
+                    field_name="protein_g",
+                    legacy_value=Decimal("100"),
+                    canonical_value=Decimal("1"),
+                    classification=(
+                        DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+                    ),
+                ),
+                DailyPointFieldDifference(
+                    field_name="calories_kcal",
+                    legacy_value=Decimal("1900"),
+                    canonical_value=Decimal("2200"),
+                    classification=DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+                ),
+            ),
+            comparable=True,
+            classification=DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+        )
+        return DailyPointParity(
+            local_date=parity.local_date,
+            tracking=parity.tracking,
+            fields=fields,
+            nutrition=parity.nutrition,
+            comparable=True,
+            classification=DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+        )
+
+    monkeypatch.setattr(
+        aggregate_module,
+        "_compare_daily_point_results",
+        compare_daily_point_results,
+    )
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.classification is HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+
 def test_historical_budget_balance_uses_historical_target_and_activity_source(
     db: Session, user: User
 ) -> None:
