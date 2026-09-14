@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -87,6 +87,41 @@ def _policy(
 
 def _public_dump(state: NutritionPriorityState) -> dict[str, object]:
     return state.model_dump(mode="json")
+
+
+def _add_nutrition_date(db, user: User, local_date: date) -> None:
+    run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="yazio",
+        source_instance_id=uuid4(),
+        connector_variant="refresh-state-test",
+        status="completed",
+        coverage_state=CoverageState.COMPLETE.value,
+    )
+    db.add(run)
+    db.flush()
+    db.add(
+        NutritionSourceObservation(
+            user_id=user.id,
+            ingestion_run_id=run.id,
+            provider_key="yazio",
+            source_instance_id=run.source_instance_id,
+            connector_variant="refresh-state-test",
+            observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
+            source_namespace="refresh-state-test",
+            source_record_id=str(local_date),
+            source_revision=1,
+            observation_fingerprint=sha256(str(local_date).encode()).hexdigest(),
+            local_date=local_date,
+            timezone_source="provider",
+            time_confidence="exact",
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.flush()
 
 
 def test_public_models_are_strict_and_update_request_has_only_public_fields() -> None:
@@ -273,6 +308,7 @@ def test_get_state_refresh_flag_only_when_current_projection_uses_other_policy(d
         effective_from=AT - timedelta(days=1),
         version=2,
     )
+    _add_nutrition_date(db, user, AT.date())
     projection = NutritionDailyProjection(
         user_id=user.id,
         local_date=AT.date(),
@@ -297,6 +333,65 @@ def test_get_state_refresh_flag_only_when_current_projection_uses_other_policy(d
 
     assert state.projection_refresh_required is True
     assert "policy_id" not in str(_public_dump(state))
+
+
+def test_get_state_marks_missing_head_stale_when_existing_heads_are_current(db, user) -> None:
+    _add_yazio(db, user)
+    policy = _policy(db, user, PriorityRuleSpec("nutrition", None, "yazio", 1))
+    _add_nutrition_date(db, user, AT.date())
+    _add_nutrition_date(db, user, (AT - timedelta(days=1)).date())
+    current_projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=(AT - timedelta(days=1)).date(),
+        projection_version=1,
+        projection_algorithm_version="test",
+        priority_policy_id=policy.policy_id,
+        input_watermark="test-watermark",
+        projection_status="ready",
+    )
+    db.add(current_projection)
+    db.flush()
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=(AT - timedelta(days=1)).date(),
+            current_projection_id=current_projection.id,
+        )
+    )
+    db.commit()
+
+    state = get_nutrition_priority_state(db, user.id, at=AT)
+
+    assert state.projection_refresh_required is True
+
+
+def test_get_state_keeps_current_no_value_ready_head_fresh(db, user) -> None:
+    _add_yazio(db, user)
+    policy = _policy(db, user, PriorityRuleSpec("nutrition", None, "yazio", 1))
+    _add_nutrition_date(db, user, AT.date())
+    projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=AT.date(),
+        projection_version=1,
+        projection_algorithm_version="test",
+        priority_policy_id=policy.policy_id,
+        input_watermark="test-watermark",
+        projection_status="ready",
+    )
+    db.add(projection)
+    db.flush()
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=AT.date(),
+            current_projection_id=projection.id,
+        )
+    )
+    db.commit()
+
+    state = get_nutrition_priority_state(db, user.id, at=AT)
+
+    assert state.projection_refresh_required is False
     assert "projection_id" not in str(_public_dump(state))
 
 

@@ -5,12 +5,15 @@ from types import MappingProxyType
 from typing import ClassVar, Final
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import User
-from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHead
+from app.nutrition.projection.refresh import (
+    DEFAULT_REFRESH_BATCH_SIZE,
+    list_stale_nutrition_projection_dates,
+)
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     resolve_default_provider_sources,
@@ -105,23 +108,22 @@ def _projection_refresh_required(
 ) -> bool:
     if active_policy_id is None:
         return False
-    statement = (
-        select(NutritionProjectionHead.user_id)
-        .join(
-            NutritionDailyProjection,
-            and_(
-                NutritionDailyProjection.id == NutritionProjectionHead.current_projection_id,
-                NutritionDailyProjection.user_id == NutritionProjectionHead.user_id,
-                NutritionDailyProjection.local_date == NutritionProjectionHead.local_date,
-            ),
+    active_policy = db.scalar(
+        select(SourcePriorityPolicy).where(
+            SourcePriorityPolicy.id == active_policy_id,
+            SourcePriorityPolicy.user_id == user_id,
         )
-        .where(
-            NutritionProjectionHead.user_id == user_id,
-            NutritionDailyProjection.priority_policy_id != active_policy_id,
-        )
-        .limit(1)
     )
-    return db.scalar(statement) is not None
+    if active_policy is None:
+        return False
+    return bool(
+        list_stale_nutrition_projection_dates(
+            db,
+            user_id=user_id,
+            policy=active_policy,
+            limit=DEFAULT_REFRESH_BATCH_SIZE,
+        )
+    )
 
 
 def get_nutrition_priority_state(
