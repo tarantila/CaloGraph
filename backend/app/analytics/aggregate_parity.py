@@ -633,6 +633,212 @@ def compare_moving_average_range(
     )
 
 
+def _validate_data_quality_range(start_date: date, end_date: date) -> None:
+    _validate_date_bound(start_date, "start_date")
+    _validate_date_bound(end_date, "end_date")
+    if not isinstance(start_date, date) or isinstance(start_date, datetime):
+        raise ValueError("start_date must be a date")
+    if not isinstance(end_date, date) or isinstance(end_date, datetime):
+        raise ValueError("end_date must be a date")
+    if start_date > end_date:
+        raise ValueError("start_date must not be after end_date")
+    if (end_date - start_date).days + 1 > MAX_PARITY_DAYS:
+        raise ValueError(f"date range must not exceed {MAX_PARITY_DAYS} days")
+
+
+def compare_data_quality_range(
+    db: Session,
+    user_id: UUID,
+    start_date: date,
+    end_date: date,
+) -> DataQualityParity:
+    """Compare legacy and canonical tracking quality over an inclusive range."""
+    _validate_data_quality_range(start_date, end_date)
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+
+    requested_dates = _calendar_dates(start_date, end_date)
+    legacy_points = daily_points(db, user, start_date, end_date)
+    legacy_points_by_date = {point.date: point for point in legacy_points}
+    (
+        _totals_by_date,
+        _nutrition_counts_by_date,
+        active_energy_by_source,
+        active_energy_sources_by_day,
+        legacy_nutrition_days,
+        targets,
+        overrides,
+    ) = _read_daily_point_range_inputs(
+        db,
+        user_id=user_id,
+        start=start_date,
+        end=end_date,
+    )
+
+    recorded_days = sum(point.tracking_status != "no_data" for point in legacy_points)
+    missing_days = sum(point.tracking_status == "no_data" for point in legacy_points)
+    incomplete_days = sum(
+        point.tracking_status in {"probably_incomplete", "incomplete"}
+        for point in legacy_points
+    )
+    total_days = len(requested_dates)
+    coverage_ratio = Decimal(recorded_days) / Decimal(total_days)
+    comparable_days = 0
+    not_comparable_days = 0
+    has_tracking_cause = False
+    has_nutrition_cause = False
+    has_unexplained_cause = False
+
+    for local_date in requested_dates:
+        canonical_result = _build_canonical_daily_point_with_inputs(
+            db,
+            user_id,
+            local_date,
+            targets=targets,
+            active_energy_by_source=active_energy_by_source,
+            active_energy_sources_by_day=active_energy_sources_by_day,
+            override=overrides.get(local_date),
+        )
+        if (
+            canonical_result.state is not CanonicalDailyPointResultState.READY
+            or canonical_result.point is None
+        ):
+            not_comparable_days += 1
+            continue
+
+        comparable_days += 1
+        nutrition = _compare_nutrition_day_with_legacy(
+            db,
+            legacy_nutrition_days.get(
+                local_date,
+                _empty_legacy_nutrition_day(local_date),
+            ),
+            user_id=user_id,
+        )
+        parity = _compare_daily_point_results(
+            local_date=local_date,
+            legacy=legacy_points_by_date[local_date],
+            nutrition=nutrition,
+            canonical_result=canonical_result,
+        )
+        if not parity.comparable:
+            has_unexplained_cause = True
+        elif parity.classification in {
+            DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE,
+            DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE,
+        }:
+            has_nutrition_cause = True
+        elif parity.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE:
+            has_tracking_cause = True
+        elif parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+            has_unexplained_cause = True
+
+    if not_comparable_days:
+        classification = DataQualityParityClassification.NOT_COMPARABLE
+    elif has_unexplained_cause:
+        classification = DataQualityParityClassification.UNEXPLAINED_MISMATCH
+    elif has_nutrition_cause:
+        classification = DataQualityParityClassification.EXPECTED_NUTRITION_DIFFERENCE
+    elif has_tracking_cause:
+        classification = DataQualityParityClassification.EXPECTED_TRACKING_DIFFERENCE
+    else:
+        classification = DataQualityParityClassification.MATCH
+
+    return DataQualityParity(
+        start_date=start_date,
+        end_date=end_date,
+        total_days=total_days,
+        recorded_days=recorded_days,
+        missing_days=missing_days,
+        incomplete_days=incomplete_days,
+        coverage_ratio=coverage_ratio,
+        comparable_days=comparable_days,
+        comparable_coverage_ratio=(
+            Decimal(recorded_days) / Decimal(comparable_days) if comparable_days else None
+        ),
+        not_comparable_days=not_comparable_days,
+        classification=classification,
+    )
+
+
+def canonical_history_summary(
+    db: Session,
+    user_id: UUID,
+    *,
+    chunk_size: int = CANONICAL_HISTORY_CHUNK_SIZE,
+) -> CanonicalHistorySummary:
+    """Summarize canonical history without materializing a calendar."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+
+    data_start_date: date | None = None
+    data_end_date: date | None = None
+    data_day_count = 0
+    explicit_zero_days = 0
+    incomplete_days = 0
+    not_comparable_days = 0
+
+    for date_chunk in iter_canonical_history_date_chunks(
+        db,
+        user_id,
+        chunk_size=chunk_size,
+    ):
+        (
+            _totals_by_date,
+            _nutrition_counts_by_date,
+            active_energy_by_source,
+            active_energy_sources_by_day,
+            _legacy_nutrition_days,
+            targets,
+            overrides,
+        ) = _read_daily_point_chunk_inputs(
+            db,
+            user_id=user_id,
+            date_chunk=date_chunk,
+        )
+        for local_date in date_chunk:
+            canonical_result = _build_canonical_daily_point_with_inputs(
+                db,
+                user_id,
+                local_date,
+                targets=targets,
+                active_energy_by_source=active_energy_by_source,
+                active_energy_sources_by_day=active_energy_sources_by_day,
+                override=overrides.get(local_date),
+            )
+            if (
+                canonical_result.state is not CanonicalDailyPointResultState.READY
+                or canonical_result.point is None
+            ):
+                not_comparable_days += 1
+                continue
+
+            point = canonical_result.point
+            if point.tracking_status == "no_data":
+                continue
+
+            if data_start_date is None:
+                data_start_date = local_date
+            data_end_date = local_date
+            data_day_count += 1
+            explicit_zero_days += point.calories_kcal == Decimal("0")
+            incomplete_days += point.tracking_status in {
+                "probably_incomplete",
+                "incomplete",
+            }
+
+    return CanonicalHistorySummary(
+        data_start_date=data_start_date,
+        data_end_date=data_end_date,
+        data_day_count=data_day_count,
+        explicit_zero_days=explicit_zero_days,
+        incomplete_days=incomplete_days,
+        not_comparable_days=not_comparable_days,
+    )
+
+
 def _has_legacy_only_budget_history(db: Session, user_id: UUID) -> bool:
     """Return whether a positive legacy budget candidate has no canonical date."""
     observation_date = select(NutritionSourceObservation.id).where(
@@ -924,6 +1130,8 @@ __all__ = [
     "MovingAverageParity",
     "MovingAverageParityClassification",
     "MovingAverageRangeParity",
+    "canonical_history_summary",
+    "compare_data_quality_range",
     "compare_historical_budget_balance",
     "compare_moving_average_range",
     "iter_canonical_history_date_chunks",

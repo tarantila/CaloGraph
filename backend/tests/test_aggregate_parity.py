@@ -42,6 +42,8 @@ from app.analytics.aggregate_parity import (
     MovingAverageParity,
     MovingAverageParityClassification,
     MovingAverageRangeParity,
+    canonical_history_summary,
+    compare_data_quality_range,
     compare_historical_budget_balance,
     compare_moving_average_range,
     iter_canonical_history_date_chunks,
@@ -1316,3 +1318,175 @@ def test_nonpositive_overridden_noncomparable_date_does_not_escalate_mismatch(
     assert result.classification is (
         HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
     )
+
+
+def test_compare_data_quality_range_preserves_calendar_and_comparable_denominators(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    outside_date = _DATE_0
+    _legacy_sample(db, user, outside_date, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, outside_date, calories=Decimal("1900"))
+
+    _legacy_sample(db, user, _DATE_1, value=Decimal("1900"))
+    _legacy_sample(
+        db,
+        user,
+        _DATE_3,
+        metric_type="protein_g",
+        value=Decimal("10"),
+    )
+    _canonical_projection(db, user, policy, _DATE_1, calories=Decimal("1900"))
+    _canonical_projection(db, user, policy, _DATE_3, calories=Decimal("1900"))
+
+    result = compare_data_quality_range(db, user.id, _DATE_1, _DATE_3)
+
+    assert result.start_date == _DATE_1
+    assert result.total_days == 3
+    assert result.recorded_days == 2
+    assert result.incomplete_days == 1
+    assert result.coverage_ratio == Decimal(2) / Decimal(3)
+    assert result.comparable_days == 2
+    assert result.comparable_coverage_ratio == Decimal(1)
+    assert result.not_comparable_days == 1
+    assert result.classification is DataQualityParityClassification.NOT_COMPARABLE
+
+
+def test_compare_data_quality_range_classifies_explicit_zero_as_nutrition_difference(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    _legacy_sample(db, user, _DATE_1, value=Decimal("0"))
+    projection = _canonical_projection(db, user, policy, _DATE_1, calories=Decimal("0"))
+    for fact in db.scalars(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == projection.id,
+            NutritionDailyProjectionFact.metric_key != "dietary_energy_kcal",
+        )
+    ):
+        fact.value = None
+        fact.selected_provider_key = None
+        fact.selected_granularity = None
+        fact.presence_state = PresenceState.MISSING.value
+        fact.coverage_state = CoverageState.UNKNOWN.value
+        fact.resolution_state = ResolutionState.UNRESOLVED.value
+    db.flush()
+
+    result = compare_data_quality_range(db, user.id, _DATE_1, _DATE_1)
+
+    assert result.recorded_days == 0
+    assert result.missing_days == 1
+    assert result.incomplete_days == 0
+    assert result.comparable_days == 1
+    assert result.not_comparable_days == 0
+    assert result.classification is DataQualityParityClassification.EXPECTED_NUTRITION_DIFFERENCE
+
+
+def test_canonical_history_summary_counts_only_canonical_data_days(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    _legacy_sample(db, user, _DATE_0, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, _DATE_1, calories=Decimal("1900"))
+    _canonical_projection(db, user, policy, _DATE_2, calories=Decimal("0"))
+    _canonical_projection(db, user, policy, _DATE_3, calories=None)
+    no_data_projection = _canonical_projection(db, user, policy, _DATE_4, calories=None)
+    for fact in db.scalars(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == no_data_projection.id,
+        )
+    ):
+        fact.value = None
+        fact.selected_provider_key = None
+        fact.selected_granularity = None
+        fact.presence_state = PresenceState.MISSING.value
+        fact.coverage_state = CoverageState.UNKNOWN.value
+        fact.resolution_state = ResolutionState.UNRESOLVED.value
+    not_ready_projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=_DATE_5,
+        projection_version=1,
+        projection_algorithm_version="nutrition-daily-v1",
+        priority_policy_id=policy.policy_id,
+        input_watermark="aggregate-parity-test",
+        projection_status="ready",
+    )
+    db.add(not_ready_projection)
+    db.flush()
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=_DATE_5,
+            current_projection_id=not_ready_projection.id,
+        )
+    )
+    db.flush()
+
+    result = canonical_history_summary(db, user.id)
+
+    assert result.data_start_date == _DATE_1
+    assert result.data_end_date == _DATE_3
+    assert result.data_day_count == 3
+    assert result.explicit_zero_days == 1
+    assert result.incomplete_days == 1
+    assert result.not_comparable_days == 1
+
+
+def test_canonical_history_summary_is_keyset_chunked_and_user_scoped(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _budget_policy(db, user)
+    start = date(2026, 2, 1)
+    for offset in range(501):
+        _canonical_projection(
+            db,
+            user,
+            policy,
+            start + timedelta(days=offset * 2),
+            calories=Decimal("1900"),
+        )
+    other = User(username="history-summary-other", password_hash="synthetic-password-hash")
+    db.add(other)
+    db.flush()
+    other_policy = _budget_policy(db, other)
+    _canonical_projection(db, other, other_policy, date(2030, 1, 1), calories=Decimal("1900"))
+
+    seen_chunk_sizes: list[int] = []
+    original_iterator = aggregate_module.iter_canonical_history_date_chunks
+
+    def recording_iterator(*args: object, **kwargs: object):
+        for chunk in original_iterator(*args, **kwargs):
+            seen_chunk_sizes.append(len(chunk))
+            yield chunk
+
+    monkeypatch.setattr(
+        aggregate_module,
+        "iter_canonical_history_date_chunks",
+        recording_iterator,
+    )
+
+    result = canonical_history_summary(db, user.id)
+
+    assert seen_chunk_sizes == [500, 1]
+    assert result.data_start_date == start
+    assert result.data_end_date == start + timedelta(days=1000)
+    assert result.data_day_count == 501
+    assert result.explicit_zero_days == 0
+    assert result.incomplete_days == 0
+    assert result.not_comparable_days == 0
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date"),
+    (
+        (_DATE_2, _DATE_1),
+        (datetime(2026, 1, 1), _DATE_1),
+        (_DATE_1, datetime(2026, 1, 2)),
+        (_DATE_1, _DATE_1 + timedelta(days=366)),
+    ),
+)
+def test_compare_data_quality_range_rejects_invalid_or_unbounded_ranges(
+    db: Session, user: User, start_date: date, end_date: date
+) -> None:
+    with pytest.raises(ValueError):
+        compare_data_quality_range(db, user.id, start_date, end_date)
