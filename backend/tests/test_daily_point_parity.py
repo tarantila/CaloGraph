@@ -1505,15 +1505,19 @@ def _d3b_projection(
     return projection
 
 
-def _d3b_counts(db: Session) -> tuple[int, ...]:
+def _d3b_persisted_snapshot(db: Session) -> tuple[tuple[tuple[object, ...], ...], ...]:
+    models = (
+        HealthSample,
+        NutritionDailyProjection,
+        NutritionDailyProjectionFact,
+        NutritionProjectionHead,
+    )
     return tuple(
-        db.scalar(select(func.count()).select_from(model)) or 0
-        for model in (
-            HealthSample,
-            NutritionDailyProjection,
-            NutritionDailyProjectionFact,
-            NutritionProjectionHead,
+        tuple(
+            tuple(getattr(row, column.key) for column in model.__table__.columns)
+            for row in db.scalars(select(model).order_by(*model.__table__.primary_key.columns))
         )
+        for model in models
     )
 
 
@@ -1582,14 +1586,29 @@ def _assert_identifier_free_daily_point_result(result: DailyPointParity) -> None
     assert isinstance(result.fields.differences, tuple)
     assert isinstance(result.nutrition.metrics, tuple)
     rendered = repr(result)
-    assert "encrypted" not in rendered
-    assert "refresh-token" not in rendered
-    assert "raw payload" not in rendered
+    for marker in (
+        "d3b-yazio-source",
+        "d3b-yazio",
+        "d3b-google-legacy",
+        "d3b-apple-only",
+        "com.example.app",
+        "web-client-id",
+        "google-web-client-id",
+        "Example Manufacturer",
+        "Example Device",
+        "encrypted-email",
+        "encrypted-password",
+        "encrypted-refresh-token",
+        "raw payload",
+    ):
+        assert marker not in rendered
+
+
 
 
 def _run_d3b_yazio_fixture(
     db: Session, user: User
-) -> tuple[DailyPointParity, tuple[int, ...], tuple[int, ...]]:
+) -> tuple[DailyPointParity, tuple[tuple[tuple[object, ...], ...], ...], tuple[tuple[tuple[object, ...], ...], ...]]:
     values = _d3b_values()
     connection = _d3b_yazio_connection(db, user)
     ingest_yazio_food_diary(
@@ -1629,16 +1648,16 @@ def _run_d3b_yazio_fixture(
         policy_at=datetime(2024, 1, 2, 12, tzinfo=UTC),
     )
     assert projection_result.status is ProjectionPersistenceStatus.CREATED
-    before_counts = _d3b_counts(db)
+    before_snapshot = _d3b_persisted_snapshot(db)
     result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
-    after_counts = _d3b_counts(db)
-    return result, before_counts, after_counts
+    after_snapshot = _d3b_persisted_snapshot(db)
+    return result, before_snapshot, after_snapshot
 
 
 def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
     db: Session, user: User
 ) -> None:
-    result, before_counts, after_counts = _run_d3b_yazio_fixture(db, user)
+    result, before_snapshot, after_snapshot = _run_d3b_yazio_fixture(db, user)
 
     assert result.comparable is True
     assert result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
@@ -1652,7 +1671,7 @@ def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
     assert calorie.projection_provider_key == "yazio"
     assert calorie.legacy_value == Decimal("4200")
     assert calorie.projection_value == Decimal("2100")
-    assert before_counts == after_counts
+    assert before_snapshot == after_snapshot
     _assert_identifier_free_daily_point_result(result)
 
 
@@ -1722,6 +1741,11 @@ def test_daily_point_apple_legacy_only_is_not_comparable_without_reason_leak(
     assert result.tracking.canonical_status is None
     assert result.tracking.canonical_reasons == ()
     assert result.nutrition.projection_state is NutritionProjectionReadState.NOT_PROJECTED
+    assert len(result.nutrition.metrics) == len(CANONICAL_METRICS)
+    assert tuple(metric.metric_key for metric in result.nutrition.metrics) == tuple(CANONICAL_METRICS)
+    assert tuple(metric.legacy_value for metric in result.nutrition.metrics) == tuple(
+        values[metric_key] for metric_key in CANONICAL_METRICS
+    )
     assert all(
         metric.classification is NutritionParityClassification.NOT_PROJECTED
         and metric.legacy_present is True
