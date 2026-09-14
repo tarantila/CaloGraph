@@ -389,10 +389,11 @@ def test_refresh_processes_120_dates_in_bounded_resumable_batches(
     db, user: User
 ) -> None:
     _policy(db, user)
-    _yazio_connection(db, user)
-    run = _run(db, user.id)
+    connection = _yazio_connection(db, user)
+    run = _run(db, user.id, source_instance_id=connection.id)
+    first_date = DAY - timedelta(days=119)
     for offset in range(120):
-        local_date = DAY + timedelta(days=offset)
+        local_date = first_date + timedelta(days=offset)
         source = _observation(
             db,
             user.id,
@@ -420,6 +421,27 @@ def test_refresh_processes_120_dates_in_bounded_resumable_batches(
     assert results[-1].projection_refresh_required is False
     assert db.query(NutritionDailyProjection).count() == 120
     assert db.query(NutritionProjectionHead).count() == 120
+
+    last_head = db.get(NutritionProjectionHead, (user.id, DAY))
+    assert last_head is not None
+    last_projection = db.get(NutritionDailyProjection, last_head.current_projection_id)
+    assert last_projection is not None
+    last_fact = db.scalar(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == last_projection.id,
+            NutritionDailyProjectionFact.metric_key == "protein_g",
+        )
+    )
+    assert last_fact is not None
+    assert last_fact.value == Decimal("120")
+    last_lineage = db.scalar(
+        select(NutritionDailyProjectionLineage).where(
+            NutritionDailyProjectionLineage.projection_fact_id == last_fact.id,
+            NutritionDailyProjectionLineage.role == "selected",
+        )
+    )
+    assert last_lineage is not None
+    assert last_lineage.provider_key == "yazio"
 
 def test_refresh_all_fresh_dates_is_a_no_op(db, user: User, monkeypatch) -> None:
     policy = _policy(db, user)
@@ -866,7 +888,7 @@ def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
         datetime.now(UTC) - timedelta(minutes=2),
         (PriorityRuleSpec("nutrition", None, "yazio", 1),),
     )
-    _yazio_connection(db, user)
+    connection = _yazio_connection(db, user)
     old_date = DAY + timedelta(days=1)
     old_policy = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
     assert old_policy is not None
@@ -877,7 +899,7 @@ def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
     source = _observation(
         db,
         user.id,
-        _run(db, user.id),
+        _run(db, user.id, source_instance_id=connection.id),
         key="missing-head-refresh",
         local_date=missing_date,
     )
@@ -916,11 +938,31 @@ def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
     missing_day = read_canonical_nutrition_day(db, user.id, DAY + timedelta(days=2))
     assert missing_day.state is NutritionProjectionReadState.NOT_PROJECTED
 
+    missing_head = db.get(NutritionProjectionHead, (user.id, missing_date))
+    assert missing_head is not None
+    missing_projection = db.get(NutritionDailyProjection, missing_head.current_projection_id)
+    assert missing_projection is not None
+    missing_fact = db.scalar(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == missing_projection.id,
+            NutritionDailyProjectionFact.metric_key == "protein_g",
+        )
+    )
+    assert missing_fact is not None
+    assert missing_fact.value == Decimal("12")
+    missing_lineage = db.scalar(
+        select(NutritionDailyProjectionLineage).where(
+            NutritionDailyProjectionLineage.projection_fact_id == missing_fact.id,
+            NutritionDailyProjectionLineage.role == "selected",
+        )
+    )
+    assert missing_lineage is not None
+    assert missing_lineage.provider_key == "yazio"
+
     current.projection_status = "failed"
     db.commit()
     with pytest.raises(NutritionProjectionReadError, match="not READY"):
         read_canonical_nutrition_day(db, user.id, old_date)
-
 
 def test_refresh_rejects_policy_without_a_matching_provider_connection(
     db, user: User

@@ -289,7 +289,28 @@ def test_postgres_policy_put_during_refresh_requires_next_policy_batch(
 
     assert first.policy_version == 1
     assert first.processed_count == 1
+    assert first.created_count == 1
     assert first.projection_refresh_required is True
+    with SessionLocal() as db:
+        policies = list(
+            db.scalars(
+                select(SourcePriorityPolicy)
+                .where(SourcePriorityPolicy.user_id == user.id)
+                .order_by(SourcePriorityPolicy.version)
+            )
+        )
+        projections = list(
+            db.scalars(
+                select(NutritionDailyProjection)
+                .where(
+                    NutritionDailyProjection.user_id == user.id,
+                    NutritionDailyProjection.local_date == DAY,
+                )
+            )
+        )
+        assert [policy.version for policy in policies] == [1, 2]
+        assert len(projections) == 1
+        assert projections[0].priority_policy_id == policies[0].id
     second = refresh_stale_nutrition_projections(
         session_factory=SessionLocal,
         user_id=user.id,
@@ -307,8 +328,22 @@ def test_postgres_policy_put_during_refresh_requires_next_policy_batch(
                 .order_by(SourcePriorityPolicy.version)
             )
         )
+        projections = list(
+            db.scalars(
+                select(NutritionDailyProjection)
+                .where(
+                    NutritionDailyProjection.user_id == user.id,
+                    NutritionDailyProjection.local_date == DAY,
+                )
+                .order_by(NutritionDailyProjection.projection_version)
+            )
+        )
         head = db.get(NutritionProjectionHead, (user.id, DAY))
         assert [policy.version for policy in policies] == [1, 2]
+        assert [projection.priority_policy_id for projection in projections] == [
+            policies[0].id,
+            policies[1].id,
+        ]
         assert head is not None
         current = db.get(NutritionDailyProjection, head.current_projection_id)
         assert current is not None
