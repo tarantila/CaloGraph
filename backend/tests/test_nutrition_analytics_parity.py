@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analytics import nutrition_parity as parity_module
@@ -23,7 +24,17 @@ from app.analytics.nutrition_parity import (
     read_legacy_nutrition_day,
 )
 from app.analytics.nutrition_projection import NutritionProjectionReadError
-from app.models import HealthSample, ImportBatch, User
+from app.google_health.client import (
+    NutritionDataSource,
+    NutritionDataSourceApplication,
+    NutritionDataSourceDevice,
+    NutritionLog,
+    NutritionLogDataPoint,
+    NutritionLogInterval,
+    NutritionNutrient,
+    NutritionQuantity,
+)
+from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -32,9 +43,23 @@ from app.nutrition.enums import (
     ProjectionStatus,
     ResolutionState,
 )
-from app.nutrition.models import NutritionDailyProjection
+from app.nutrition.models import (
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionProjectionHead,
+)
+from app.nutrition.projection import ProjectionPersistenceStatus
+from app.nutrition.projection.orchestration import rebuild_nutrition_day
 from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.parity import ParityDiagnostic, compare_decimal_parity
+from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import (
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
+)
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 
@@ -883,3 +908,361 @@ def test_nutrition_range_excludes_another_users_identical_rows(
     assert result.days_not_comparable == 0
     assert result.match_counts["dietary_energy_kcal"] == 1
     assert result.mismatch_counts["dietary_energy_kcal"] == 0
+
+
+def _parity_row_counts(db: Session) -> tuple[int, ...]:
+    return tuple(
+        db.scalar(select(func.count()).select_from(model)) or 0
+        for model in (
+            HealthSample,
+            NutritionDailyProjection,
+            NutritionDailyProjectionFact,
+            NutritionProjectionHead,
+        )
+    )
+
+
+def _assert_identifier_free_parity_contract(result: NutritionDayParity) -> None:
+    for contract in (NutritionDayParity, NutritionMetricParity, NutritionRangeParity):
+        field_names = {field.name for field in fields(contract)}
+        assert not any(
+            field_name.endswith("_id")
+            or "source_instance" in field_name
+            or "payload" in field_name
+            for field_name in field_names
+        )
+    assert all(
+        not isinstance(getattr(metric, field.name), float)
+        for metric in result.metrics
+        for field in fields(NutritionMetricParity)
+    )
+
+
+def _add_legacy_day(
+    db: Session,
+    user: User,
+    values: dict[str, Decimal],
+    *,
+    source_type: str,
+    suffix: str,
+) -> None:
+    batch = _batch(db, user, source_type=source_type)
+    for metric_key, value in values.items():
+        _sample(
+            db,
+            user=user,
+            batch=batch,
+            metric_type=metric_key,
+            value=str(value),
+            source_type=source_type,
+            suffix=f"{suffix}-{metric_key}",
+        )
+    db.flush()
+
+
+def _yazio_connection(db: Session, user: User) -> YazioConnection:
+    connection = YazioConnection(
+        user_id=user.id,
+        encrypted_email=b"encrypted-email",
+        encrypted_password=b"encrypted-password",
+        source_identifier="parity-yazio-source",
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _yazio_diary(values: dict[str, Decimal]) -> YazioFoodDiary:
+    nutrients = YazioNutrientValues(
+        energy=values["dietary_energy_kcal"],
+        protein=values["protein_g"],
+        carb=values["carbohydrates_g"],
+        fat=values["fat_g"],
+        fiber=values["fiber_g"],
+        sugar=values["sugar_g"],
+        saturated_fat=values["saturated_fat_g"],
+    )
+    return YazioFoodDiary(
+        requested_start_day=LOCAL_DATE,
+        requested_end_day=LOCAL_DATE,
+        consumed_products=(),
+        consumed_simple_products=(),
+        product_profiles=(),
+        daily_summaries=(
+            YazioDailyNutrientSummary(
+                local_date=LOCAL_DATE,
+                nutrients=nutrients,
+                energy_goal=None,
+            ),
+        ),
+    )
+
+
+def _run_yazio_parity_fixture(
+    db: Session, user: User
+) -> tuple[NutritionDayParity, tuple[int, ...], tuple[int, ...]]:
+    values = {
+        "dietary_energy_kcal": Decimal("2100"),
+        "protein_g": Decimal("120"),
+        "carbohydrates_g": Decimal("230"),
+        "fat_g": Decimal("70"),
+        "fiber_g": Decimal("30"),
+        "sugar_g": Decimal("50"),
+        "saturated_fat_g": Decimal("20"),
+    }
+    connection = _yazio_connection(db, user)
+    ingest_yazio_food_diary(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=LOCAL_DATE,
+        requested_end=LOCAL_DATE,
+        diary=_yazio_diary(values),
+    )
+    _add_legacy_day(
+        db,
+        user,
+        values,
+        source_type="yazio_export_v1",
+        suffix="real-yazio",
+    )
+    create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    db.commit()
+
+    projection_result = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        policy_at=datetime(2026, 9, 11, 12, tzinfo=UTC),
+    )
+    assert projection_result.status is ProjectionPersistenceStatus.CREATED
+    before_counts = _parity_row_counts(db)
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    after_counts = _parity_row_counts(db)
+    return result, before_counts, after_counts
+
+
+def _google_connection(db: Session, user: User) -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"encrypted-refresh-token",
+        granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
+        state="active",
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _google_point(values: dict[str, Decimal]) -> NutritionLogDataPoint:
+    start = datetime(2026, 9, 11, 10, tzinfo=UTC)
+    end = datetime(2026, 9, 11, 10, 30, tzinfo=UTC)
+    interval = NutritionLogInterval(
+        start_time=start,
+        end_time=end,
+        start_utc_offset="+02:00",
+        end_utc_offset="+02:00",
+        civil_start_time=datetime(2026, 9, 11, 12),
+        civil_end_time=datetime(2026, 9, 11, 12, 30),
+    )
+    nutrients = (
+        NutritionNutrient("PROTEIN", NutritionQuantity(values["protein_g"], "g")),
+        NutritionNutrient(
+            "DIETARY_FIBER", NutritionQuantity(values["fiber_g"], "g")
+        ),
+        NutritionNutrient("SUGAR", NutritionQuantity(values["sugar_g"], "g")),
+        NutritionNutrient(
+            "SATURATED_FAT", NutritionQuantity(values["saturated_fat_g"], "g")
+        ),
+    )
+    return NutritionLogDataPoint(
+        name="parity-google-day",
+        nutrition_log=NutritionLog(
+            interval=interval,
+            nutrients=nutrients,
+            energy=NutritionQuantity(values["dietary_energy_kcal"], "kcal"),
+            total_carbohydrate=NutritionQuantity(values["carbohydrates_g"], "g"),
+            total_fat=NutritionQuantity(values["fat_g"], "g"),
+        ),
+        data_source=NutritionDataSource(
+            recording_method="manual",
+            platform="android",
+            device=NutritionDataSourceDevice(
+                form_factor="phone",
+                manufacturer="Example Manufacturer",
+                display_name="Example Device",
+            ),
+            application=NutritionDataSourceApplication(
+                package_name="com.example.app",
+                web_client_id="web-client-id",
+                google_web_client_id="google-web-client-id",
+            ),
+        ),
+    )
+
+
+def _run_google_only_parity_fixture(db: Session, user: User) -> NutritionDayParity:
+    values = {
+        "dietary_energy_kcal": Decimal("2100"),
+        "protein_g": Decimal("120"),
+        "carbohydrates_g": Decimal("230"),
+        "fat_g": Decimal("70"),
+        "fiber_g": Decimal("30"),
+        "sugar_g": Decimal("50"),
+        "saturated_fat_g": Decimal("20"),
+    }
+    connection = _google_connection(db, user)
+    ingest_google_health_nutrition_logs(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=LOCAL_DATE,
+        requested_end=LOCAL_DATE,
+        data_points=(_google_point(values),),
+    )
+    create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "google_health", 1),),
+    )
+    db.commit()
+    projection_result = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        policy_at=datetime(2026, 9, 11, 12, tzinfo=UTC),
+    )
+    assert projection_result.status is ProjectionPersistenceStatus.CREATED
+    return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+
+def _run_apple_legacy_only_parity_fixture(db: Session, user: User) -> NutritionDayParity:
+    values = {
+        metric_key: Decimal("10")
+        for metric_key in CANONICAL_PARITY_METRICS
+    }
+    _add_legacy_day(
+        db,
+        user,
+        values,
+        source_type="apple_health_xml",
+        suffix="apple-only",
+    )
+    db.commit()
+    return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+
+def _run_precision_boundary_parity_fixture(
+    db: Session, user: User
+) -> tuple[NutritionMetricParity, ParityDiagnostic]:
+    legacy_value = Decimal("123.456789")
+    _legacy_metric_sample(
+        db,
+        user,
+        value=str(legacy_value),
+        source_type="yazio_export_v1",
+        suffix="precision-boundary",
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            metric_key: (
+                Decimal("123.456789000001")
+                if metric_key == "dietary_energy_kcal"
+                else None
+            )
+            for metric_key in CANONICAL_METRICS
+        },
+    )
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    within = _classification(result)
+    outside = compare_decimal_parity(
+        legacy_value,
+        Decimal("123.456789000003"),
+        contribution_count=1,
+    )
+    return within, outside
+
+
+def test_yazio_real_provider_complete_day_matches_legacy_rows_and_is_read_only(
+    db: Session, user: User
+) -> None:
+    result, before_counts, after_counts = _run_yazio_parity_fixture(db, user)
+
+    assert result.projection_state.value == "ready"
+    assert result.comparable is True
+    assert result.match_count == 7
+    assert result.mismatch_count == 0
+    assert result.expected_difference_count == 0
+    assert {metric.classification for metric in result.metrics} == {
+        NutritionParityClassification.MATCH
+    }
+    assert tuple(metric.metric_key for metric in result.metrics) == CANONICAL_PARITY_METRICS
+    assert all(
+        isinstance(value, Decimal)
+        for metric in result.metrics
+        for value in (metric.legacy_value, metric.projection_value)
+        if value is not None
+    )
+    assert before_counts == after_counts
+    _assert_identifier_free_parity_contract(result)
+
+
+def test_google_only_real_provider_projection_is_projection_only(
+    db: Session, user: User
+) -> None:
+    result = _run_google_only_parity_fixture(db, user)
+
+    assert result.projection_state.value == "ready"
+    assert result.comparable is True
+    assert result.match_count == 0
+    assert result.mismatch_count == 7
+    assert result.expected_difference_count == 0
+    assert tuple(metric.metric_key for metric in result.metrics) == CANONICAL_PARITY_METRICS
+    assert all(
+        metric.classification is NutritionParityClassification.PROJECTION_ONLY
+        and metric.legacy_present is False
+        and metric.projection_present is True
+        for metric in result.metrics
+    )
+
+
+def test_apple_legacy_only_day_without_projection_is_not_projected_and_non_comparable(
+    db: Session, user: User
+) -> None:
+    result = _run_apple_legacy_only_parity_fixture(db, user)
+
+    assert result.projection_state.value == "not_projected"
+    assert result.comparable is False
+    assert result.match_count == 0
+    assert result.mismatch_count == 0
+    assert result.expected_difference_count == 0
+    assert tuple(metric.metric_key for metric in result.metrics) == CANONICAL_PARITY_METRICS
+    assert all(
+        metric.classification is NutritionParityClassification.NOT_PROJECTED
+        for metric in result.metrics
+    )
+
+
+def test_precision_boundary_uses_decimal_and_bounded_tolerance(
+    db: Session, user: User
+) -> None:
+    within, outside = _run_precision_boundary_parity_fixture(db, user)
+
+    assert type(within.legacy_value) is Decimal
+    assert type(within.projection_value) is Decimal
+    assert within.classification is NutritionParityClassification.MATCH
+    assert outside.within_tolerance is False
+    assert outside.delta == Decimal("0.000000000003")
+    assert outside.tolerance == Decimal("0.000000000001")
+    assert type(outside.delta) is Decimal
+    assert type(outside.tolerance) is Decimal
