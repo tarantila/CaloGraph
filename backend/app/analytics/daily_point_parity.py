@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.activity import ACTIVE_ENERGY_METRIC
 from app.analytics.nutrition_projection import (
+    NutritionProjectionReadError,
     NutritionProjectionReadState,
     read_canonical_nutrition_day,
 )
@@ -100,7 +101,7 @@ def _build_canonical_daily_point(
 ) -> CanonicalDailyPointResult:
     try:
         projection_day = read_canonical_nutrition_day(db, user_id, local_date)
-    except Exception:
+    except NutritionProjectionReadError:
         return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
 
     if projection_day.state is NutritionProjectionReadState.NOT_PROJECTED:

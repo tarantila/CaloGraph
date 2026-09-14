@@ -255,6 +255,19 @@ def test_invalid_or_non_ready_projection_is_not_comparable_without_error_details
     assert result.reason is CanonicalDailyPointReason.PROJECTION_NOT_READY
     assert "secret" not in repr(result)
 
+def test_unrelated_projection_read_errors_propagate(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.analytics.daily_point_parity.read_canonical_nutrition_day",
+        lambda db, user_id, local_date: (_ for _ in ()).throw(
+            RuntimeError("database unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        _build_canonical_daily_point(db, user.id, LOCAL_DATE)
+
 
 def test_override_replaces_status_and_reasons_but_preserves_canonical_score(
     db: Session,
