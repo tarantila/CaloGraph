@@ -395,6 +395,100 @@ def test_get_state_keeps_current_no_value_ready_head_fresh(db, user) -> None:
     assert "projection_id" not in str(_public_dump(state))
 
 
+def test_get_state_reports_authoritative_stale_flag_for_many_missing_heads(db, user) -> None:
+    _add_yazio(db, user)
+    policy = _policy(db, user)
+    for offset in range(500):
+        local_date = AT.date() - timedelta(days=offset)
+        _add_nutrition_date(db, user, local_date)
+    for offset in range(7):
+        local_date = AT.date() - timedelta(days=offset)
+        projection = NutritionDailyProjection(
+            user_id=user.id,
+            local_date=local_date,
+            projection_version=1,
+            projection_algorithm_version="test",
+            priority_policy_id=policy.policy_id,
+            input_watermark="test-watermark",
+            projection_status="ready",
+        )
+        db.add(projection)
+        db.flush()
+        db.add(
+            NutritionProjectionHead(
+                user_id=user.id,
+                local_date=local_date,
+                current_projection_id=projection.id,
+            )
+        )
+    db.commit()
+
+    state = get_nutrition_priority_state(db, user.id, at=AT)
+
+    assert state.projection_refresh_required is True
+
+
+def test_get_state_does_not_claim_historical_data_fresh_without_usable_policy(db, user) -> None:
+    _add_yazio(db, user)
+    _policy(
+        db,
+        user,
+        PriorityRuleSpec("nutrition", None, "yazio", 1),
+        effective_from=AT + timedelta(days=1),
+    )
+    _add_nutrition_date(db, user, AT.date())
+
+    state = get_nutrition_priority_state(db, user.id, at=AT)
+
+    assert state.status == "configuration_required"
+    assert state.configuration_mode == "none"
+    assert state.projection_refresh_required is True
+
+
+def test_put_noop_returns_authoritative_stale_flag_for_missing_head(db, user) -> None:
+    _add_yazio(db, user)
+    state, changed = update_nutrition_priority(
+        db,
+        user.id,
+        NutritionPriorityUpdateRequest(expected_version=None, source_order=["yazio"]),
+    )
+    _add_nutrition_date(db, user, AT.date())
+
+    result, no_op = update_nutrition_priority(
+        db,
+        user.id,
+        NutritionPriorityUpdateRequest(expected_version=state.version, source_order=["yazio"]),
+    )
+
+    assert changed is True
+    assert no_op is False
+    assert result.projection_refresh_required is True
+
+
+def test_put_changed_returns_false_when_all_canonical_dates_are_fresh(db, user) -> None:
+    _add_yazio(db, user)
+    _add_google(db, user)
+    first_state, first_changed = update_nutrition_priority(
+        db,
+        user.id,
+        NutritionPriorityUpdateRequest(
+            expected_version=None, source_order=["yazio", "google_health"]
+        ),
+    )
+
+    result, changed = update_nutrition_priority(
+        db,
+        user.id,
+        NutritionPriorityUpdateRequest(
+            expected_version=first_state.version, source_order=["google_health", "yazio"]
+        ),
+    )
+
+    assert first_changed is True
+    assert changed is True
+    assert result.projection_refresh_required is False
+
+
 def _policy_rows(db, user: User) -> list[SourcePriorityPolicy]:
     return list(
         db.scalars(
@@ -430,7 +524,7 @@ def test_put_without_policy_creates_version_one_for_exact_provider_order(db, use
     assert changed is True
     assert state.status == "configured"
     assert state.version == 1
-    assert state.projection_refresh_required is True
+    assert state.projection_refresh_required is False
     policies = _policy_rows(db, user)
     assert len(policies) == 1
     assert [
@@ -464,7 +558,7 @@ def test_put_reorder_creates_immutable_next_version_and_requires_refresh(db, use
     assert first_changed is True
     assert changed is True
     assert second_state.version == 2
-    assert second_state.projection_refresh_required is True
+    assert second_state.projection_refresh_required is False
     policies = _policy_rows(db, user)
     assert [policy.version for policy in policies] == [1, 2]
     assert [

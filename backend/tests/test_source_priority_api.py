@@ -143,7 +143,7 @@ def test_source_priority_put_returns_complete_state_and_refresh_flag(
         "version": 1,
         "sources": [{"id": "yazio", "label": "YAZIO", "available": True, "rank": 1}],
         "configuration_mode": "global",
-        "projection_refresh_required": True,
+        "projection_refresh_required": False,
     }
     assert no_op.json()["projection_refresh_required"] is False
     assert "changed" not in changed.json()

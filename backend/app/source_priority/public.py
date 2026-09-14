@@ -104,23 +104,23 @@ def _is_public_global_policy(
 def _projection_refresh_required(
     db: Session,
     user_id: UUID,
-    active_policy_id: UUID | None,
+    policy_id: UUID | None,
 ) -> bool:
-    if active_policy_id is None:
+    if policy_id is None:
         return False
-    active_policy = db.scalar(
+    policy = db.scalar(
         select(SourcePriorityPolicy).where(
-            SourcePriorityPolicy.id == active_policy_id,
+            SourcePriorityPolicy.id == policy_id,
             SourcePriorityPolicy.user_id == user_id,
         )
     )
-    if active_policy is None:
+    if policy is None:
         return False
     return bool(
         list_stale_nutrition_projection_dates(
             db,
             user_id=user_id,
-            policy=active_policy,
+            policy=policy,
             limit=DEFAULT_REFRESH_BATCH_SIZE,
         )
     )
@@ -155,12 +155,18 @@ def get_nutrition_priority_state(
                 configuration_mode="none",
                 projection_refresh_required=False,
             )
+        refresh_policy = active_policy or latest_policy
+        refresh_required = _projection_refresh_required(
+            db,
+            user_id,
+            refresh_policy.id if refresh_policy is not None else None,
+        )
         return NutritionPriorityState(
             status="configuration_required" if policies else "selection_required",
             version=version,
             sources=_source_list(available_provider_keys, set()),
             configuration_mode="none",
-            projection_refresh_required=False,
+            projection_refresh_required=refresh_required,
         )
 
     all_nutrition_rules = list_rules(db, user_id, active_policy.id, data_area="nutrition")
@@ -318,7 +324,7 @@ def update_nutrition_priority(
         )
         if configured_order == tuple(source_order):
             state = get_nutrition_priority_state(db, user_id, at=evaluation_time)
-            return state.model_copy(update={"projection_refresh_required": False}), False
+            return state, False
 
     next_version = (latest_version or 0) + 1
     rules = tuple(
@@ -336,7 +342,7 @@ def update_nutrition_priority(
         raise
 
     state = get_nutrition_priority_state(db, user_id, at=evaluation_time)
-    return state.model_copy(update={"projection_refresh_required": True}), True
+    return state, True
 
 
 __all__ = [
