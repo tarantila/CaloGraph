@@ -391,6 +391,26 @@ def test_classification_covers_presence_and_value_states(
     assert metric.legacy_present is (legacy_value is not None)
     assert metric.projection_present is (projection_value is not None)
     assert result.comparable is True
+    assert result.match_count == (
+        7
+        if expected
+        in {
+            NutritionParityClassification.MATCH,
+            NutritionParityClassification.BOTH_MISSING,
+        }
+        else 6
+    )
+    assert result.mismatch_count == (
+        1
+        if expected
+        in {
+            NutritionParityClassification.LEGACY_ONLY,
+            NutritionParityClassification.PROJECTION_ONLY,
+            NutritionParityClassification.VALUE_MISMATCH,
+        }
+        else 0
+    )
+    assert result.expected_difference_count == 0
 
 
 def test_explicit_zero_zero_is_match_and_presence_is_not_truthiness(db: Session, user: User) -> None:
@@ -483,7 +503,7 @@ def test_ready_no_value_facts_are_comparable_both_missing(db: Session, user: Use
         metric.classification is NutritionParityClassification.BOTH_MISSING
         for metric in result.metrics
     )
-    assert result.match_count == 0
+    assert result.match_count == 7
     assert result.mismatch_count == 0
     assert result.expected_difference_count == 0
 
@@ -591,7 +611,7 @@ def test_multi_source_yazio_mapping_is_expected_difference(db: Session, user: Us
     metric = _classification(result)
 
     assert metric.classification is NutritionParityClassification.LEGACY_MULTI_SOURCE
-    assert result.match_count == 0
+    assert result.match_count == 6
     assert result.mismatch_count == 0
     assert result.expected_difference_count == 1
 

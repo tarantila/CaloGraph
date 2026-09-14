@@ -349,10 +349,20 @@ def compare_nutrition_day(
         projection_state=NutritionProjectionReadState.READY,
         metrics=metrics,
         match_count=sum(
-            metric.classification is NutritionParityClassification.MATCH for metric in metrics
+            metric.classification
+            in {
+                NutritionParityClassification.MATCH,
+                NutritionParityClassification.BOTH_MISSING,
+            }
+            for metric in metrics
         ),
         mismatch_count=sum(
-            metric.classification is NutritionParityClassification.VALUE_MISMATCH
+            metric.classification
+            in {
+                NutritionParityClassification.LEGACY_ONLY,
+                NutritionParityClassification.PROJECTION_ONLY,
+                NutritionParityClassification.VALUE_MISMATCH,
+            }
             for metric in metrics
         ),
         expected_difference_count=sum(
