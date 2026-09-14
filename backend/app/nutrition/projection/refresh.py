@@ -39,7 +39,12 @@ def list_stale_nutrition_projection_dates(
         NutritionConsumptionEvent.user_id == user_id,
         NutritionConsumptionEvent.local_date.is_not(None),
     )
-    canonical_dates = union(observation_dates, event_dates).cte("canonical_nutrition_dates")
+    head_dates = select(NutritionProjectionHead.local_date.label("local_date")).where(
+        NutritionProjectionHead.user_id == user_id,
+    )
+    canonical_dates = union(observation_dates, event_dates, head_dates).cte(
+        "canonical_nutrition_dates"
+    )
 
     statement = (
         select(canonical_dates.c.local_date)

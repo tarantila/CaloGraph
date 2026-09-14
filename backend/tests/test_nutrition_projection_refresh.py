@@ -253,12 +253,19 @@ def test_dates_are_ascending_deduplicated_and_bounded_at_fifty(db, user: User) -
 
     assert len(dates) == DEFAULT_REFRESH_BATCH_SIZE
     assert dates == tuple(sorted(set(dates)))
-    assert dates == tuple(DAY + timedelta(days=offset) for offset in range(6, 56))
+    assert dates == tuple(DAY + timedelta(days=offset) for offset in range(50))
 
 
 def test_missing_head_is_stale(db, user: User) -> None:
     policy = _policy(db, user)
     _observation(db, user.id, _run(db, user.id), key="missing-head", local_date=DAY)
+
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+
+
+def test_head_only_failed_projection_date_is_stale(db, user: User) -> None:
+    policy = _policy(db, user)
+    _head(db, user.id, DAY, _projection(db, user.id, policy, DAY, status="failed"))
 
     assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
 
