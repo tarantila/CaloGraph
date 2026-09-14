@@ -43,7 +43,6 @@ _REFRESH_FAILURE_TYPE = "urn:calograph:problem:source-priority-projection-refres
 _REFRESH_CONFLICT_CODES = frozenset(_REFRESH_CONFLICT_TYPES)
 
 
-
 @router.get("/nutrition", response_model=NutritionPriorityState)
 def nutrition_priority(
     user: User = Depends(current_user),
