@@ -724,14 +724,20 @@ def compare_data_quality_range(
         )
         if not parity.comparable:
             has_unexplained_cause = True
-        elif parity.classification in {
-            DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE,
-            DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE,
-        }:
+        elif (
+            parity.tracking.classification
+            is DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
+        ):
             has_nutrition_cause = True
-        elif parity.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE:
+        elif (
+            parity.tracking.classification
+            is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
+        ):
             has_tracking_cause = True
-        elif parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+        elif (
+            parity.tracking.classification
+            is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+        ):
             has_unexplained_cause = True
 
     if not_comparable_days:

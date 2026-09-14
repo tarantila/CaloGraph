@@ -1382,6 +1382,23 @@ def test_compare_data_quality_range_classifies_explicit_zero_as_nutrition_differ
     assert result.classification is DataQualityParityClassification.EXPECTED_NUTRITION_DIFFERENCE
 
 
+def test_compare_data_quality_range_ignores_nutrition_only_value_difference(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    _legacy_sample(db, user, _DATE_1, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, _DATE_1, calories=Decimal("2000"))
+
+    result = compare_data_quality_range(db, user.id, _DATE_1, _DATE_1)
+
+    assert result.recorded_days == 1
+    assert result.missing_days == 0
+    assert result.incomplete_days == 0
+    assert result.comparable_days == 1
+    assert result.not_comparable_days == 0
+    assert result.classification is DataQualityParityClassification.MATCH
+
+
 def test_canonical_history_summary_counts_only_canonical_data_days(
     db: Session, user: User
 ) -> None:
