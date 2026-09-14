@@ -8,17 +8,10 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.activity import ACTIVE_ENERGY_METRIC
-from app.analytics.nutrition_projection import (
-    CanonicalNutritionDay,
-    NutritionProjectionReadError,
-    NutritionProjectionReadState,
-    read_canonical_nutrition_day,
-)
 from app.analytics.nutrition_parity import (
     CANONICAL_PARITY_METRICS,
     MAX_PARITY_DAYS,
@@ -30,6 +23,12 @@ from app.analytics.nutrition_parity import (
     _empty_legacy_nutrition_day,
     _legacy_metric,
     compare_nutrition_day,
+)
+from app.analytics.nutrition_projection import (
+    CanonicalNutritionDay,
+    NutritionProjectionReadError,
+    NutritionProjectionReadState,
+    read_canonical_nutrition_day,
 )
 from app.analytics.service import (
     NUTRITION_METRICS,
@@ -136,7 +135,7 @@ def _build_canonical_daily_point_from_projection(
             for metric_key, daily_point_field in _PRIMARY_DAILY_POINT_FIELDS
             if (fact := facts_by_metric[metric_key]).value is not None
         }
-    except (KeyError, AttributeError, TypeError):
+    except KeyError, AttributeError, TypeError:
         return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
 
     point = _build_daily_point(
@@ -238,6 +237,7 @@ def _build_canonical_daily_point(
         active_energy_sources_by_day=active_energy_sources_by_day,
         override=override,
     )
+
 
 class DailyPointParityClassification(StrEnum):
     MATCH = "match"
@@ -369,6 +369,8 @@ class DailyPointParity:
     @property
     def field_differences(self) -> tuple[DailyPointFieldDifference, ...]:
         return self.fields.differences
+
+
 @dataclass(frozen=True, slots=True)
 class DailyPointRangeParity:
     """Immutable aggregate of DailyPoint parity over an inclusive date range."""
@@ -406,6 +408,7 @@ class DailyPointRangeParity:
     @property
     def unexpected_target_activity_mismatch_count(self) -> int:
         return self.unexpected_target_activity_mismatches
+
     @property
     def comparable_count(self) -> int:
         return self.days_compared
@@ -442,8 +445,6 @@ _TARGET_ACTIVITY_FIELDS: Final[frozenset[str]] = frozenset(
         "activity_data_status",
     }
 )
-
-
 
 
 _DAILY_POINT_FIELD_TO_NUTRITION_METRIC: Final[dict[str, str]] = {
@@ -541,10 +542,7 @@ def _canonical_quality_difference(
         or legacy.tracking_score != 1
         or canonical.tracking_score != 0
         or not (
-            (
-                legacy.tracking_status == "complete"
-                and canonical.tracking_status == "incomplete"
-            )
+            (legacy.tracking_status == "complete" and canonical.tracking_status == "incomplete")
             or legacy.tracking_status == canonical.tracking_status
         )
     ):
@@ -606,10 +604,7 @@ def _tracking_classification(
         and legacy.tracking_score == 0
         and canonical.tracking_score == 1
         and (
-            (
-                legacy.tracking_status == "no_data"
-                and canonical.tracking_status == "complete"
-            )
+            (legacy.tracking_status == "no_data" and canonical.tracking_status == "complete")
             or legacy.tracking_status == canonical.tracking_status
         )
     ):
@@ -753,9 +748,7 @@ def _compare_daily_point_results(
     nutrition_metrics = _nutrition_metrics_by_key(nutrition)
     tracking = _build_tracking_parity(local_date, legacy, canonical, nutrition_metrics)
     fields = _build_field_parity(local_date, legacy, canonical, nutrition_metrics)
-    classification = _highest_classification(
-        (tracking.classification, fields.classification)
-    )
+    classification = _highest_classification((tracking.classification, fields.classification))
     return DailyPointParity(
         local_date=local_date,
         tracking=tracking,
@@ -864,7 +857,10 @@ def _read_daily_point_range_inputs(
     legacy_nutrition_days = {
         local_date: NutritionLegacyDay(
             local_date=local_date,
-            metrics=tuple(_legacy_metric(metric_key, values_by_source) for metric_key in CANONICAL_PARITY_METRICS),
+            metrics=tuple(
+                _legacy_metric(metric_key, values_by_source)
+                for metric_key in CANONICAL_PARITY_METRICS
+            ),
         )
         for local_date, values_by_source in nutrition_values_by_date.items()
     }
@@ -972,8 +968,7 @@ def compare_daily_point_range(
         days_compared=sum(day.comparable for day in day_results),
         days_not_comparable=sum(not day.comparable for day in day_results),
         status_matches=sum(
-            day.comparable
-            and day.tracking.legacy_status == day.tracking.canonical_status
+            day.comparable and day.tracking.legacy_status == day.tracking.canonical_status
             for day in day_results
         ),
         expected_tracking_differences=sum(
@@ -993,8 +988,7 @@ def compare_daily_point_range(
         unexpected_target_activity_mismatches=sum(
             any(
                 difference.field_name in _TARGET_ACTIVITY_FIELDS
-                and difference.classification
-                is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+                and difference.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
                 for difference in day.fields.differences
             )
             for day in day_results
@@ -1003,18 +997,17 @@ def compare_daily_point_range(
     )
 
 
-
 __all__ = [
+    "MAX_PARITY_DAYS",
     "CanonicalDailyPointReason",
     "CanonicalDailyPointResult",
     "CanonicalDailyPointResultState",
     "CanonicalDailyPointState",
-    "MAX_PARITY_DAYS",
     "DailyPointFieldDifference",
     "DailyPointFieldParity",
     "DailyPointParity",
-    "DailyPointRangeParity",
     "DailyPointParityClassification",
+    "DailyPointRangeParity",
     "DailyPointTrackingParity",
     "_build_canonical_daily_point",
     "compare_daily_point",

@@ -6,9 +6,10 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analytics import daily_point_parity as parity_module
 from app.analytics.daily_point_parity import (
     CanonicalDailyPointReason,
     CanonicalDailyPointResult,
@@ -29,14 +30,12 @@ from app.analytics.nutrition_parity import (
     NutritionMetricParity,
     NutritionParityClassification,
 )
-from app.analytics import daily_point_parity as parity_module
 from app.analytics.nutrition_projection import (
     CanonicalNutritionDay,
     CanonicalNutritionFact,
     NutritionProjectionReadError,
     NutritionProjectionReadState,
 )
-from app.schemas import DailyPoint
 from app.google_health.client import (
     NutritionDataSource,
     NutritionDataSourceApplication,
@@ -71,8 +70,13 @@ from app.nutrition.models import (
 )
 from app.nutrition.projection import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
-from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
+from app.nutrition.repositories import (
+    create_projection,
+    create_projection_fact,
+    set_projection_head,
+)
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.schemas import DailyPoint
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -105,7 +109,6 @@ _D3B_PRIVACY_MARKERS = (
     "raw payload",
 )
 LOCAL_DATE = date(2024, 1, 2)
-
 
 
 def _fact(
@@ -150,11 +153,7 @@ def _projection_day(
         _fact(
             metric_key,
             values.get(metric_key),
-            **(
-                fact_overrides
-                if metric_key == "dietary_energy_kcal"
-                else {}
-            ),
+            **(fact_overrides if metric_key == "dietary_energy_kcal" else {}),
         )
         for metric_key in CANONICAL_METRICS
     )
@@ -331,14 +330,13 @@ def test_invalid_or_non_ready_projection_is_not_comparable_without_error_details
     assert result.reason is CanonicalDailyPointReason.PROJECTION_NOT_READY
     assert "secret" not in repr(result)
 
+
 def test_unrelated_projection_read_errors_propagate(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         "app.analytics.daily_point_parity.read_canonical_nutrition_day",
-        lambda db, user_id, local_date: (_ for _ in ()).throw(
-            RuntimeError("database unavailable")
-        ),
+        lambda db, user_id, local_date: (_ for _ in ()).throw(RuntimeError("database unavailable")),
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
@@ -371,6 +369,8 @@ def test_override_replaces_status_and_reasons_but_preserves_canonical_score(
     assert result.point.tracking_status == "probably_incomplete"
     assert result.point.tracking_score == 1
     assert result.point.tracking_reasons == ["Manuell festgelegt"]
+
+
 def _daily_point(
     *,
     calories: Decimal | None = Decimal("1900"),
@@ -388,24 +388,16 @@ def _daily_point(
         calories_kcal=calories,
         target_kcal=target,
         maintenance_kcal=maintenance,
-        deviation_kcal=(
-            None if calories is None or target is None else calories - target
-        ),
+        deviation_kcal=(None if calories is None or target is None else calories - target),
         activity_mode=activity_mode,
         activity_source_type=activity_source,
         active_energy_kcal=active_energy,
         activity_credit_kcal=activity_credit,
         activity_data_status="credited" if active_energy is not None else "missing",
-        effective_budget_kcal=(
-            None if target is None else target + activity_credit
-        ),
-        effective_maintenance_kcal=(
-            None if maintenance is None else maintenance + activity_credit
-        ),
+        effective_budget_kcal=(None if target is None else target + activity_credit),
+        effective_maintenance_kcal=(None if maintenance is None else maintenance + activity_credit),
         effective_deviation_kcal=(
-            None
-            if calories is None or target is None
-            else calories - target - activity_credit
+            None if calories is None or target is None else calories - target - activity_credit
         ),
         protein_g=Decimal("100"),
         carbs_g=Decimal("200"),
@@ -430,30 +422,20 @@ def _nutrition_day(
         NutritionMetricParity(
             metric_key=metric_key,
             legacy_value=(
-                calorie_legacy_value
-                if metric_key == "dietary_energy_kcal"
-                else Decimal("1")
+                calorie_legacy_value if metric_key == "dietary_energy_kcal" else Decimal("1")
             ),
             legacy_present=(
-                calorie_legacy_present
-                if metric_key == "dietary_energy_kcal"
-                else True
+                calorie_legacy_present if metric_key == "dietary_energy_kcal" else True
             ),
             projection_value=(
-                calorie_projection_value
-                if metric_key == "dietary_energy_kcal"
-                else Decimal("1")
+                calorie_projection_value if metric_key == "dietary_energy_kcal" else Decimal("1")
             ),
             projection_present=(
-                calorie_projection_present
-                if metric_key == "dietary_energy_kcal"
-                else True
+                calorie_projection_present if metric_key == "dietary_energy_kcal" else True
             ),
             projection_provider_key="yazio",
             projection_coverage_state=(
-                calorie_coverage
-                if metric_key == "dietary_energy_kcal"
-                else CoverageState.COMPLETE
+                calorie_coverage if metric_key == "dietary_energy_kcal" else CoverageState.COMPLETE
             ),
             projection_resolution_state=(
                 calorie_resolution
@@ -477,7 +459,8 @@ def _nutrition_day(
             metric.classification is NutritionParityClassification.MATCH for metric in metrics
         ),
         mismatch_count=sum(
-            metric.classification is NutritionParityClassification.VALUE_MISMATCH for metric in metrics
+            metric.classification is NutritionParityClassification.VALUE_MISMATCH
+            for metric in metrics
         ),
         expected_difference_count=sum(
             metric.classification is NutritionParityClassification.LEGACY_MULTI_SOURCE
@@ -546,6 +529,7 @@ def test_daily_point_parity_contracts_are_frozen_and_tuple_backed() -> None:
         tracking.legacy_status = "changed"  # type: ignore[misc]
     assert isinstance(tracking.legacy_reasons, tuple)
 
+
 def test_daily_point_parity_exact_match_keeps_reasons_separate(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -588,7 +572,10 @@ def test_daily_point_parity_explicit_zero_divergence_is_classified(
     result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
 
     assert result.classification is DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
-    assert result.tracking.classification is DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
+    assert (
+        result.tracking.classification
+        is DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
+    )
     assert result.fields.differences[0].field_name == "calories_kcal"
     assert (
         result.fields.differences[0].classification
@@ -644,7 +631,9 @@ def test_multi_source_nutrition_difference_explains_calorie_and_derived_fields(
 
     result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
 
-    assert result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    assert (
+        result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    )
     assert {
         difference.field_name
         for difference in result.fields.differences
@@ -712,6 +701,8 @@ def test_canonical_quality_difference_explains_tracking_quality_only(
     assert result.classification is expected
     assert result.tracking.classification is expected
     assert result.fields.differences == ()
+
+
 def test_unexplained_tracking_status_mismatch_is_not_expected(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -728,7 +719,6 @@ def test_unexplained_tracking_status_mismatch_is_not_expected(
 
     assert result.tracking.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
     assert result.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
-
 
 
 def test_target_mismatch_prevents_calorie_explanation_for_deviation(
@@ -756,6 +746,7 @@ def test_target_mismatch_prevents_calorie_explanation_for_deviation(
         DailyPointParityClassification.UNEXPLAINED_MISMATCH
     )
 
+
 def test_target_and_activity_mismatches_remain_unexplained(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -771,9 +762,10 @@ def test_target_and_activity_mismatches_remain_unexplained(
     result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
 
     assert result.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
-    assert {
-        difference.field_name for difference in result.fields.differences
-    } >= {"target_kcal", "activity_source_type"}
+    assert {difference.field_name for difference in result.fields.differences} >= {
+        "target_kcal",
+        "activity_source_type",
+    }
     assert all(
         difference.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
         for difference in result.fields.differences
@@ -885,9 +877,9 @@ def test_non_comparable_canonical_candidate_short_circuits_fields(
     assert result.classification is DailyPointParityClassification.NOT_COMPARABLE
     assert result.fields.comparable is False
     assert result.fields.differences == ()
-def test_daily_point_range_returns_inclusive_immutable_results(
-    db: Session, user: User
-) -> None:
+
+
+def test_daily_point_range_returns_inclusive_immutable_results(db: Session, user: User) -> None:
     result = compare_daily_point_range(
         db,
         user_id=user.id,
@@ -1505,9 +1497,7 @@ def _d3b_projection(
                 ProjectionGranularity.SUMMARY.value if value is not None else None
             ),
             presence_state=(
-                PresenceState.SUPPLIED.value
-                if value is not None
-                else PresenceState.UNKNOWN.value
+                PresenceState.SUPPLIED.value if value is not None else PresenceState.UNKNOWN.value
             ),
             coverage_state=(
                 CoverageState.COMPLETE.value if value is not None else CoverageState.UNKNOWN.value
@@ -1611,11 +1601,13 @@ def _assert_identifier_free_daily_point_result(result: DailyPointParity) -> None
         assert marker not in rendered
 
 
-
-
 def _run_d3b_yazio_fixture(
     db: Session, user: User
-) -> tuple[DailyPointParity, tuple[tuple[tuple[object, ...], ...], ...], tuple[tuple[tuple[object, ...], ...], ...]]:
+) -> tuple[
+    DailyPointParity,
+    tuple[tuple[tuple[object, ...], ...], ...],
+    tuple[tuple[tuple[object, ...], ...], ...],
+]:
     values = _d3b_values()
     connection = _d3b_yazio_connection(db, user)
     ingest_yazio_food_diary(
@@ -1667,7 +1659,9 @@ def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
     result, before_snapshot, after_snapshot = _run_d3b_yazio_fixture(db, user)
 
     assert result.comparable is True
-    assert result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    assert (
+        result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    )
     assert result.tracking.classification is DailyPointParityClassification.MATCH
     assert result.nutrition.comparable is True
     assert result.nutrition.expected_difference_count == len(CANONICAL_METRICS)
@@ -1682,9 +1676,7 @@ def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
     _assert_identifier_free_daily_point_result(result)
 
 
-def test_daily_point_google_only_projection_is_projection_only(
-    db: Session, user: User
-) -> None:
+def test_daily_point_google_only_projection_is_projection_only(db: Session, user: User) -> None:
     values = _d3b_values()
     connection = _d3b_google_connection(db, user)
     ingest_google_health_nutrition_logs(
@@ -1749,7 +1741,9 @@ def test_daily_point_apple_legacy_only_is_not_comparable_without_reason_leak(
     assert result.tracking.canonical_reasons == ()
     assert result.nutrition.projection_state is NutritionProjectionReadState.NOT_PROJECTED
     assert len(result.nutrition.metrics) == len(CANONICAL_METRICS)
-    assert tuple(metric.metric_key for metric in result.nutrition.metrics) == tuple(CANONICAL_METRICS)
+    assert tuple(metric.metric_key for metric in result.nutrition.metrics) == tuple(
+        CANONICAL_METRICS
+    )
     assert tuple(metric.legacy_value for metric in result.nutrition.metrics) == tuple(
         values[metric_key] for metric_key in CANONICAL_METRICS
     )
@@ -1775,8 +1769,12 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
     _d3b_projection(
         db,
         user,
-        {metric_key: (Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None)
-         for metric_key in CANONICAL_METRICS},
+        {
+            metric_key: (
+                Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None
+            )
+            for metric_key in CANONICAL_METRICS
+        },
     )
     within = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
     within_metric = next(
@@ -1796,8 +1794,12 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
     _d3b_projection(
         db,
         outside_user,
-        {metric_key: (Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None)
-         for metric_key in CANONICAL_METRICS},
+        {
+            metric_key: (
+                Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None
+            )
+            for metric_key in CANONICAL_METRICS
+        },
     )
     outside = compare_daily_point(db, user_id=outside_user.id, local_date=LOCAL_DATE)
     outside_metric = next(
@@ -1817,9 +1819,7 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
     _assert_identifier_free_daily_point_result(outside)
 
 
-def test_daily_point_result_is_user_scoped_and_immutable(
-    db: Session, user: User
-) -> None:
+def test_daily_point_result_is_user_scoped_and_immutable(db: Session, user: User) -> None:
     own_values = _d3b_values()
     other_values = _d3b_values("999")
     other = User(username="d3b-isolation-other", password_hash="synthetic-password-hash")
