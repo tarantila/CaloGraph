@@ -159,9 +159,7 @@ def test_canonical_parity_contract_is_exact_and_immutable() -> None:
         metric_key="protein_g",
         total=Decimal("1"),
         present=True,
-        source_breakdown=(
-            NutritionLegacySourceBreakdown(source_type="test", value=Decimal("1")),
-        ),
+        source_breakdown=(NutritionLegacySourceBreakdown(source_type="test", value=Decimal("1")),),
     )
     with pytest.raises(FrozenInstanceError):
         metric.total = Decimal("2")  # type: ignore[misc]
@@ -347,9 +345,7 @@ def _ready_projection(
                 "unit": definition.canonical_unit,
                 "selected_provider_key": providers.get(metric_key, "yazio"),
                 "selected_granularity": ProjectionGranularity.SUMMARY.value,
-                "presence_state": presence_states.get(
-                    metric_key, PresenceState.SUPPLIED
-                ).value,
+                "presence_state": presence_states.get(metric_key, PresenceState.SUPPLIED).value,
                 "coverage_state": CoverageState.COMPLETE.value,
                 "resolution_state": ResolutionState.RESOLVED.value,
                 "lineage_state": LineageState.CONFIRMED.value,
@@ -422,8 +418,11 @@ def test_classification_covers_presence_and_value_states(
         db,
         user,
         values={
-            metric_key: (None if metric_key != "dietary_energy_kcal" else
-                         (None if projection_value is None else Decimal(projection_value)))
+            metric_key: (
+                None
+                if metric_key != "dietary_energy_kcal"
+                else (None if projection_value is None else Decimal(projection_value))
+            )
             for metric_key in CANONICAL_METRICS
         },
     )
@@ -457,19 +456,21 @@ def test_classification_covers_presence_and_value_states(
     assert result.expected_difference_count == 0
 
 
-def test_explicit_zero_zero_is_match_and_presence_is_not_truthiness(db: Session, user: User) -> None:
+def test_explicit_zero_zero_is_match_and_presence_is_not_truthiness(
+    db: Session, user: User
+) -> None:
     _legacy_metric_sample(db, user, value="0", suffix="zero-legacy")
     _ready_projection(
         db,
         user,
-        values={metric_key: (Decimal("0") if metric_key == "dietary_energy_kcal" else None)
-                for metric_key in CANONICAL_METRICS},
+        values={
+            metric_key: (Decimal("0") if metric_key == "dietary_energy_kcal" else None)
+            for metric_key in CANONICAL_METRICS
+        },
         presence_states={"dietary_energy_kcal": PresenceState.EXPLICIT_ZERO},
     )
 
-    metric = _classification(
-        compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
-    )
+    metric = _classification(compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE))
 
     assert metric.classification is NutritionParityClassification.MATCH
     assert metric.legacy_value == Decimal("0")
@@ -498,8 +499,11 @@ def test_zero_and_missing_are_distinct_in_both_directions(
         db,
         user,
         values={
-            metric_key: (None if metric_key != "dietary_energy_kcal" else
-                         (None if projection_value is None else Decimal(projection_value)))
+            metric_key: (
+                None
+                if metric_key != "dietary_energy_kcal"
+                else (None if projection_value is None else Decimal(projection_value))
+            )
             for metric_key in CANONICAL_METRICS
         },
         presence_states=(
@@ -509,9 +513,7 @@ def test_zero_and_missing_are_distinct_in_both_directions(
         ),
     )
 
-    metric = _classification(
-        compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
-    )
+    metric = _classification(compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE))
 
     assert metric.classification is expected
 
@@ -638,9 +640,7 @@ def test_multi_source_yazio_mapping_is_expected_difference(db: Session, user: Us
     _legacy_metric_sample(
         db, user, value="2000", source_type="yazio_export_v1", suffix="multi-yazio"
     )
-    _legacy_metric_sample(
-        db, user, value="2000", source_type="google", suffix="multi-google"
-    )
+    _legacy_metric_sample(db, user, value="2000", source_type="google", suffix="multi-google")
     _ready_projection(
         db,
         user,
@@ -660,15 +660,11 @@ def test_multi_source_yazio_mapping_is_expected_difference(db: Session, user: Us
     assert result.expected_difference_count == 1
 
 
-def test_multi_source_selected_provider_mismatch_is_value_mismatch(
-    db: Session, user: User
-) -> None:
+def test_multi_source_selected_provider_mismatch_is_value_mismatch(db: Session, user: User) -> None:
     _legacy_metric_sample(
         db, user, value="2000", source_type="yazio_export_v1", suffix="multi-bad-yazio"
     )
-    _legacy_metric_sample(
-        db, user, value="500", source_type="google", suffix="multi-bad-google"
-    )
+    _legacy_metric_sample(db, user, value="500", source_type="google", suffix="multi-bad-google")
     _ready_projection(
         db,
         user,
@@ -690,9 +686,7 @@ def test_unmapped_legacy_source_is_not_treated_as_projection_provider_alias(
     _legacy_metric_sample(
         db, user, value="2000", source_type="apple_health_xml", suffix="unmapped-apple"
     )
-    _legacy_metric_sample(
-        db, user, value="2000", source_type="google", suffix="unmapped-google"
-    )
+    _legacy_metric_sample(db, user, value="2000", source_type="google", suffix="unmapped-google")
     _ready_projection(
         db,
         user,
@@ -730,9 +724,7 @@ def test_projection_and_legacy_reads_are_user_scoped(db: Session, user: User) ->
     )
 
 
-def test_nutrition_range_is_immutable_and_empty_ranges_are_safe(
-    db: Session, user: User
-) -> None:
+def test_nutrition_range_is_immutable_and_empty_ranges_are_safe(db: Session, user: User) -> None:
     result = compare_nutrition_range(
         db,
         user_id=user.id,
@@ -746,9 +738,7 @@ def test_nutrition_range_is_immutable_and_empty_ranges_are_safe(
     assert result.days_not_comparable == 0
     assert dict(result.match_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
     assert dict(result.mismatch_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
-    assert dict(result.expected_difference_counts) == dict.fromkeys(
-        CANONICAL_PARITY_METRICS, 0
-    )
+    assert dict(result.expected_difference_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
 
     with pytest.raises(FrozenInstanceError):
         result.days_compared = 1  # type: ignore[misc]
@@ -774,9 +764,7 @@ def test_nutrition_range_rejects_reversed_and_oversized_ranges() -> None:
         )
 
 
-def test_nutrition_range_sorts_days_and_aggregates_metric_counts(
-    db: Session, user: User
-) -> None:
+def test_nutrition_range_sorts_days_and_aggregates_metric_counts(db: Session, user: User) -> None:
     next_date = LOCAL_DATE + timedelta(days=1)
     batch = _batch(db, user, source_type="yazio_export_v1")
     _sample(
@@ -862,9 +850,7 @@ def test_nutrition_range_sorts_days_and_aggregates_metric_counts(
         assert result.mismatch_counts[metric_key] == 0
 
 
-def test_nutrition_range_excludes_another_users_identical_rows(
-    db: Session, user: User
-) -> None:
+def test_nutrition_range_excludes_another_users_identical_rows(db: Session, user: User) -> None:
     other = _other_user(db)
     target_batch = _batch(db, user, source_type="yazio_export_v1")
     other_batch = _batch(db, other, source_type="yazio_export_v1")
@@ -1112,13 +1098,9 @@ def _google_point(values: dict[str, Decimal]) -> NutritionLogDataPoint:
     )
     nutrients = (
         NutritionNutrient("PROTEIN", NutritionQuantity(values["protein_g"], "g")),
-        NutritionNutrient(
-            "DIETARY_FIBER", NutritionQuantity(values["fiber_g"], "g")
-        ),
+        NutritionNutrient("DIETARY_FIBER", NutritionQuantity(values["fiber_g"], "g")),
         NutritionNutrient("SUGAR", NutritionQuantity(values["sugar_g"], "g")),
-        NutritionNutrient(
-            "SATURATED_FAT", NutritionQuantity(values["saturated_fat_g"], "g")
-        ),
+        NutritionNutrient("SATURATED_FAT", NutritionQuantity(values["saturated_fat_g"], "g")),
     )
     return NutritionLogDataPoint(
         name="parity-google-day",
@@ -1182,11 +1164,9 @@ def _run_google_only_parity_fixture(db: Session, user: User) -> NutritionDayPari
     assert projection_result.status is ProjectionPersistenceStatus.CREATED
     return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
 
+
 def _run_apple_legacy_only_parity_fixture(db: Session, user: User) -> NutritionDayParity:
-    values = {
-        metric_key: Decimal("10")
-        for metric_key in CANONICAL_PARITY_METRICS
-    }
+    values = {metric_key: Decimal("10") for metric_key in CANONICAL_PARITY_METRICS}
     _add_legacy_day(
         db,
         user,
@@ -1196,6 +1176,7 @@ def _run_apple_legacy_only_parity_fixture(db: Session, user: User) -> NutritionD
     )
     db.commit()
     return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
 
 def _run_precision_boundary_parity_fixture(
     db: Session, user: User
@@ -1213,9 +1194,7 @@ def _run_precision_boundary_parity_fixture(
         user,
         values={
             metric_key: (
-                Decimal("123.456789000001")
-                if metric_key == "dietary_energy_kcal"
-                else None
+                Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None
             )
             for metric_key in CANONICAL_METRICS
         },
@@ -1236,9 +1215,7 @@ def _run_precision_boundary_parity_fixture(
         outside_user,
         values={
             metric_key: (
-                Decimal("123.456789000003")
-                if metric_key == "dietary_energy_kcal"
-                else None
+                Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None
             )
             for metric_key in CANONICAL_METRICS
         },
@@ -1250,7 +1227,6 @@ def _run_precision_boundary_parity_fixture(
     )
     outside = _classification(outside_result)
     return within, outside
-
 
 
 def test_yazio_real_provider_complete_day_matches_legacy_rows_and_is_read_only(
@@ -1277,9 +1253,7 @@ def test_yazio_real_provider_complete_day_matches_legacy_rows_and_is_read_only(
     _assert_identifier_free_parity_contract(result)
 
 
-def test_google_only_real_provider_projection_is_projection_only(
-    db: Session, user: User
-) -> None:
+def test_google_only_real_provider_projection_is_projection_only(db: Session, user: User) -> None:
     result = _run_google_only_parity_fixture(db, user)
 
     assert result.projection_state.value == "ready"
@@ -1315,9 +1289,7 @@ def test_apple_legacy_only_day_without_projection_is_not_projected_and_non_compa
     )
 
 
-def test_precision_boundary_uses_decimal_and_bounded_tolerance(
-    db: Session, user: User
-) -> None:
+def test_precision_boundary_uses_decimal_and_bounded_tolerance(db: Session, user: User) -> None:
     within, outside = _run_precision_boundary_parity_fixture(db, user)
 
     assert type(within.legacy_value) is Decimal
@@ -1326,7 +1298,4 @@ def test_precision_boundary_uses_decimal_and_bounded_tolerance(
     assert type(outside.legacy_value) is Decimal
     assert type(outside.projection_value) is Decimal
     assert outside.classification is NutritionParityClassification.VALUE_MISMATCH
-    assert (
-        abs(outside.legacy_value - outside.projection_value)
-        == Decimal("0.000000000003")
-    )
+    assert abs(outside.legacy_value - outside.projection_value) == Decimal("0.000000000003")

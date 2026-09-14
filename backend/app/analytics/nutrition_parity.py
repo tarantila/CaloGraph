@@ -228,9 +228,9 @@ def _read_legacy_nutrition_range(
     for sample in samples:
         values_by_metric_and_source = values_by_date.setdefault(sample.local_date, {})
         key = (sample.metric_type, sample.source_type)
-        values_by_metric_and_source[key] = values_by_metric_and_source.get(
-            key, Decimal("0")
-        ) + sample.value
+        values_by_metric_and_source[key] = (
+            values_by_metric_and_source.get(key, Decimal("0")) + sample.value
+        )
 
     return tuple(
         NutritionLegacyDay(
@@ -354,9 +354,7 @@ def _day_with_unavailable_projection(
     projection_state: NutritionProjectionReadState | None,
     classification: NutritionParityClassification,
 ) -> NutritionDayParity:
-    metrics = tuple(
-        _unavailable_metric(metric, classification) for metric in legacy_day.metrics
-    )
+    metrics = tuple(_unavailable_metric(metric, classification) for metric in legacy_day.metrics)
     return NutritionDayParity(
         local_date=legacy_day.local_date,
         projection_state=projection_state,
@@ -443,7 +441,6 @@ def compare_nutrition_day(
     return _compare_nutrition_day_with_legacy(db, legacy_day)
 
 
-
 def _validate_nutrition_range(
     start: date,
     end: date,
@@ -481,9 +478,7 @@ def compare_nutrition_range(
         start=start,
         end=end,
     )
-    days = tuple(
-        _compare_nutrition_day_with_legacy(db, legacy_day) for legacy_day in legacy_days
-    )
+    days = tuple(_compare_nutrition_day_with_legacy(db, legacy_day) for legacy_day in legacy_days)
 
     match_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
     mismatch_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
