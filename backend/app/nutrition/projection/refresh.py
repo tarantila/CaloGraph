@@ -172,11 +172,11 @@ def list_stale_nutrition_projection_dates(
     db: Session,
     *,
     user_id: UUID,
-    policy: SourcePriorityPolicy,
+    policy: SourcePriorityPolicy | None,
     limit: int,
 ) -> tuple[date, ...]:
-    """Return bounded, canonical nutrition dates whose current projection is stale."""
-    if policy.user_id != user_id or limit < 1:
+    """Return bounded canonical nutrition dates whose current projection is stale."""
+    if (policy is not None and policy.user_id != user_id) or limit < 1:
         return ()
 
     bounded_limit = min(limit, DEFAULT_REFRESH_BATCH_SIZE)
@@ -195,35 +195,43 @@ def list_stale_nutrition_projection_dates(
         "canonical_nutrition_dates"
     )
 
-    statement = (
-        select(canonical_dates.c.local_date)
-        .select_from(canonical_dates)
-        .outerjoin(
-            NutritionProjectionHead,
-            and_(
-                NutritionProjectionHead.user_id == user_id,
-                NutritionProjectionHead.local_date == canonical_dates.c.local_date,
-            ),
+    if policy is None:
+        statement = (
+            select(canonical_dates.c.local_date)
+            .select_from(canonical_dates)
+            .order_by(canonical_dates.c.local_date)
+            .limit(bounded_limit)
         )
-        .outerjoin(
-            NutritionDailyProjection,
-            and_(
-                NutritionDailyProjection.id == NutritionProjectionHead.current_projection_id,
-                NutritionDailyProjection.user_id == NutritionProjectionHead.user_id,
-                NutritionDailyProjection.local_date == NutritionProjectionHead.local_date,
-            ),
-        )
-        .where(
-            or_(
-                NutritionProjectionHead.user_id.is_(None),
-                NutritionDailyProjection.id.is_(None),
-                NutritionDailyProjection.priority_policy_id != policy.id,
-                NutritionDailyProjection.projection_status != ProjectionStatus.READY.value,
+    else:
+        statement = (
+            select(canonical_dates.c.local_date)
+            .select_from(canonical_dates)
+            .outerjoin(
+                NutritionProjectionHead,
+                and_(
+                    NutritionProjectionHead.user_id == user_id,
+                    NutritionProjectionHead.local_date == canonical_dates.c.local_date,
+                ),
             )
+            .outerjoin(
+                NutritionDailyProjection,
+                and_(
+                    NutritionDailyProjection.id == NutritionProjectionHead.current_projection_id,
+                    NutritionDailyProjection.user_id == NutritionProjectionHead.user_id,
+                    NutritionDailyProjection.local_date == NutritionProjectionHead.local_date,
+                ),
+            )
+            .where(
+                or_(
+                    NutritionProjectionHead.user_id.is_(None),
+                    NutritionDailyProjection.id.is_(None),
+                    NutritionDailyProjection.priority_policy_id != policy.id,
+                    NutritionDailyProjection.projection_status != ProjectionStatus.READY.value,
+                )
+            )
+            .order_by(canonical_dates.c.local_date)
+            .limit(bounded_limit)
         )
-        .order_by(canonical_dates.c.local_date)
-        .limit(bounded_limit)
-    )
     return tuple(db.scalars(statement).all())
 
 

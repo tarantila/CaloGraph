@@ -168,6 +168,15 @@ def test_get_state_reports_no_providers_without_policy(db, user) -> None:
         "configuration_mode": "none",
         "projection_refresh_required": False,
     }
+def test_get_state_marks_canonical_history_stale_without_policy(db, user) -> None:
+    _add_yazio(db, user)
+    _add_nutrition_date(db, user, AT.date())
+
+    state = get_nutrition_priority_state(db, user.id, at=AT)
+
+    assert state.status == "selection_required"
+    assert state.configuration_mode == "none"
+    assert state.projection_refresh_required is True
 
 
 def test_get_state_reports_d2a_single_provider_as_configured_global(db, user) -> None:

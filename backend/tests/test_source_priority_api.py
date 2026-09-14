@@ -1,16 +1,22 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.auth.security import hash_password
 from app.main import app
+
 from app.models import (
     GoogleHealthConnection,
     NutritionDailyProjection,
+    NutritionIngestionRun,
     NutritionProjectionHead,
+    NutritionSourceObservation,
     User,
     YazioConnection,
 )
@@ -99,6 +105,51 @@ def test_source_priority_get_returns_authenticated_authoritative_state(
         "configuration_mode": "none",
         "projection_refresh_required": False,
     }
+
+
+def test_source_priority_get_marks_history_stale_without_policy(
+    client: TestClient, user: User, db
+) -> None:
+    _add_yazio(db, user)
+    run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="yazio",
+        source_instance_id=uuid4(),
+        connector_variant="no-policy-test",
+        status="completed",
+        coverage_state="complete",
+    )
+    db.add(run)
+    db.flush()
+    db.add(
+        NutritionSourceObservation(
+            user_id=user.id,
+            ingestion_run_id=run.id,
+            provider_key="yazio",
+            source_instance_id=run.source_instance_id,
+            connector_variant="no-policy-test",
+            observation_kind="consumption_event",
+            source_namespace="no-policy-test",
+            source_record_id="2026-09-13",
+            source_revision=1,
+            observation_fingerprint="0" * 64,
+            local_date=date(2026, 9, 13),
+            timezone_source="provider",
+            time_confidence="exact",
+            presence_state="supplied",
+            coverage_state="complete",
+            resolution_state="resolved",
+            lineage_state="confirmed",
+        )
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get(PATH)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "selection_required"
+    assert response.json()["projection_refresh_required"] is True
 
 
 def test_source_priority_put_rejects_missing_and_invalid_csrf(

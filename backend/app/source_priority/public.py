@@ -106,16 +106,16 @@ def _projection_refresh_required(
     user_id: UUID,
     policy_id: UUID | None,
 ) -> bool:
-    if policy_id is None:
-        return False
-    policy = db.scalar(
-        select(SourcePriorityPolicy).where(
-            SourcePriorityPolicy.id == policy_id,
-            SourcePriorityPolicy.user_id == user_id,
+    policy: SourcePriorityPolicy | None = None
+    if policy_id is not None:
+        policy = db.scalar(
+            select(SourcePriorityPolicy).where(
+                SourcePriorityPolicy.id == policy_id,
+                SourcePriorityPolicy.user_id == user_id,
+            )
         )
-    )
-    if policy is None:
-        return False
+        if policy is None:
+            return False
     return bool(
         list_stale_nutrition_projection_dates(
             db,
@@ -147,20 +147,20 @@ def get_nutrition_priority_state(
     version = latest_policy.version if latest_policy is not None else None
 
     if active_policy is None:
+        refresh_policy = latest_policy
+        refresh_required = _projection_refresh_required(
+            db,
+            user_id,
+            refresh_policy.id if refresh_policy is not None else None,
+        )
         if not policies and not available_provider_keys:
             return NutritionPriorityState(
                 status="no_providers",
                 version=None,
                 sources=[],
                 configuration_mode="none",
-                projection_refresh_required=False,
+                projection_refresh_required=refresh_required,
             )
-        refresh_policy = active_policy or latest_policy
-        refresh_required = _projection_refresh_required(
-            db,
-            user_id,
-            refresh_policy.id if refresh_policy is not None else None,
-        )
         return NutritionPriorityState(
             status="configuration_required" if policies else "selection_required",
             version=version,
