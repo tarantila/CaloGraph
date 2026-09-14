@@ -52,7 +52,6 @@ from app.nutrition.projection import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
 from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
-from app.nutrition.resolution.parity import ParityDiagnostic, compare_decimal_parity
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -923,11 +922,47 @@ def _parity_row_counts(db: Session) -> tuple[int, ...]:
 
 
 def _assert_identifier_free_parity_contract(result: NutritionDayParity) -> None:
-    for contract in (NutritionDayParity, NutritionMetricParity, NutritionRangeParity):
+    allowed_fields = {
+        NutritionDayParity: {
+            "local_date",
+            "projection_state",
+            "metrics",
+            "match_count",
+            "mismatch_count",
+            "expected_difference_count",
+            "comparable",
+        },
+        NutritionMetricParity: {
+            "metric_key",
+            "legacy_value",
+            "legacy_present",
+            "projection_value",
+            "projection_present",
+            "projection_provider_key",
+            "projection_coverage_state",
+            "projection_resolution_state",
+            "projection_lineage_state",
+            "classification",
+        },
+        NutritionRangeParity: {
+            "start",
+            "end",
+            "days",
+            "days_compared",
+            "days_not_comparable",
+            "match_counts",
+            "mismatch_counts",
+            "expected_difference_counts",
+        },
+    }
+    for contract, expected_fields in allowed_fields.items():
         field_names = {field.name for field in fields(contract)}
+        assert field_names <= expected_fields
         assert not any(
-            field_name.endswith("_id")
+            field_name in {"id", "identifier", "source_identifier", "payload"}
+            or field_name.endswith("_id")
             or "source_instance" in field_name
+            or "identifier" in field_name
             or "payload" in field_name
             for field_name in field_names
         )
@@ -1143,7 +1178,6 @@ def _run_google_only_parity_fixture(db: Session, user: User) -> NutritionDayPari
     assert projection_result.status is ProjectionPersistenceStatus.CREATED
     return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
 
-
 def _run_apple_legacy_only_parity_fixture(db: Session, user: User) -> NutritionDayParity:
     values = {
         metric_key: Decimal("10")
@@ -1159,17 +1193,16 @@ def _run_apple_legacy_only_parity_fixture(db: Session, user: User) -> NutritionD
     db.commit()
     return compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
 
-
 def _run_precision_boundary_parity_fixture(
     db: Session, user: User
-) -> tuple[NutritionMetricParity, ParityDiagnostic]:
+) -> tuple[NutritionMetricParity, NutritionMetricParity]:
     legacy_value = Decimal("123.456789")
     _legacy_metric_sample(
         db,
         user,
         value=str(legacy_value),
         source_type="yazio_export_v1",
-        suffix="precision-boundary",
+        suffix="precision-boundary-within",
     )
     _ready_projection(
         db,
@@ -1183,14 +1216,37 @@ def _run_precision_boundary_parity_fixture(
             for metric_key in CANONICAL_METRICS
         },
     )
-    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
-    within = _classification(result)
-    outside = compare_decimal_parity(
-        legacy_value,
-        Decimal("123.456789000003"),
-        contribution_count=1,
+    within_result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    within = _classification(within_result)
+
+    outside_user = _other_user(db)
+    _legacy_metric_sample(
+        db,
+        outside_user,
+        value=str(legacy_value),
+        source_type="yazio_export_v1",
+        suffix="precision-boundary-outside",
     )
+    _ready_projection(
+        db,
+        outside_user,
+        values={
+            metric_key: (
+                Decimal("123.456789000003")
+                if metric_key == "dietary_energy_kcal"
+                else None
+            )
+            for metric_key in CANONICAL_METRICS
+        },
+    )
+    outside_result = compare_nutrition_day(
+        db,
+        user_id=outside_user.id,
+        local_date=LOCAL_DATE,
+    )
+    outside = _classification(outside_result)
     return within, outside
+
 
 
 def test_yazio_real_provider_complete_day_matches_legacy_rows_and_is_read_only(
@@ -1249,6 +1305,8 @@ def test_apple_legacy_only_day_without_projection_is_not_projected_and_non_compa
     assert tuple(metric.metric_key for metric in result.metrics) == CANONICAL_PARITY_METRICS
     assert all(
         metric.classification is NutritionParityClassification.NOT_PROJECTED
+        and metric.legacy_present is True
+        and metric.legacy_value == Decimal("10")
         for metric in result.metrics
     )
 
@@ -1261,8 +1319,10 @@ def test_precision_boundary_uses_decimal_and_bounded_tolerance(
     assert type(within.legacy_value) is Decimal
     assert type(within.projection_value) is Decimal
     assert within.classification is NutritionParityClassification.MATCH
-    assert outside.within_tolerance is False
-    assert outside.delta == Decimal("0.000000000003")
-    assert outside.tolerance == Decimal("0.000000000001")
-    assert type(outside.delta) is Decimal
-    assert type(outside.tolerance) is Decimal
+    assert type(outside.legacy_value) is Decimal
+    assert type(outside.projection_value) is Decimal
+    assert outside.classification is NutritionParityClassification.VALUE_MISMATCH
+    assert (
+        abs(outside.legacy_value - outside.projection_value)
+        == Decimal("0.000000000003")
+    )
