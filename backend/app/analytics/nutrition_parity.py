@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -58,9 +58,8 @@ class NutritionLegacyMetric:
 
 @dataclass(frozen=True, slots=True)
 class NutritionLegacyDay:
-    """Immutable user/date-scoped legacy nutrition totals."""
+    """Immutable legacy nutrition totals for one user/date scope."""
 
-    user_id: UUID
     local_date: date
     metrics: tuple[NutritionLegacyMetric, ...]
 
@@ -91,7 +90,7 @@ def read_legacy_nutrition_day(
         _legacy_metric(metric_key, values_by_metric_and_source)
         for metric_key in CANONICAL_PARITY_METRICS
     )
-    return NutritionLegacyDay(user_id=user_id, local_date=local_date, metrics=metrics)
+    return NutritionLegacyDay(local_date=local_date, metrics=metrics)
 
 
 def _legacy_metric(
@@ -234,7 +233,6 @@ def _read_legacy_nutrition_range(
 
     return tuple(
         NutritionLegacyDay(
-            user_id=user_id,
             local_date=local_date,
             metrics=tuple(
                 _legacy_metric(metric_key, values_by_metric_and_source)
@@ -242,6 +240,14 @@ def _read_legacy_nutrition_range(
             ),
         )
         for local_date, values_by_metric_and_source in sorted(values_by_date.items())
+    )
+
+
+
+def _empty_legacy_nutrition_day(local_date: date) -> NutritionLegacyDay:
+    return NutritionLegacyDay(
+        local_date=local_date,
+        metrics=tuple(_legacy_metric(metric_key, {}) for metric_key in CANONICAL_PARITY_METRICS),
     )
 
 
@@ -369,11 +375,13 @@ def _day_with_unavailable_projection(
 def _compare_nutrition_day_with_legacy(
     db: Session,
     legacy_day: NutritionLegacyDay,
+    *,
+    user_id: UUID,
 ) -> NutritionDayParity:
     try:
         projection_day = read_canonical_nutrition_day(
             db,
-            legacy_day.user_id,
+            user_id,
             legacy_day.local_date,
         )
     except NutritionProjectionReadError:
@@ -382,7 +390,6 @@ def _compare_nutrition_day_with_legacy(
             projection_state=None,
             classification=NutritionParityClassification.PROJECTION_NOT_READY,
         )
-
     if projection_day.state is NutritionProjectionReadState.NOT_PROJECTED:
         return _day_with_unavailable_projection(
             legacy_day,
@@ -438,7 +445,7 @@ def compare_nutrition_day(
 ) -> NutritionDayParity:
     """Compare one day's legacy totals with its validated current projection."""
     legacy_day = read_legacy_nutrition_day(db, user_id=user_id, local_date=local_date)
-    return _compare_nutrition_day_with_legacy(db, legacy_day)
+    return _compare_nutrition_day_with_legacy(db, legacy_day, user_id=user_id)
 
 
 def _validate_nutrition_range(
@@ -478,7 +485,23 @@ def compare_nutrition_range(
         start=start,
         end=end,
     )
-    days = tuple(_compare_nutrition_day_with_legacy(db, legacy_day) for legacy_day in legacy_days)
+    legacy_days_by_date = {legacy_day.local_date: legacy_day for legacy_day in legacy_days}
+    requested_dates = tuple(
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+    )
+    days = tuple(
+        _compare_nutrition_day_with_legacy(
+            db,
+            (
+                legacy_days_by_date[local_date]
+                if local_date in legacy_days_by_date
+                else _empty_legacy_nutrition_day(local_date)
+            ),
+            user_id=user_id,
+        )
+        for local_date in requested_dates
+    )
 
     match_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
     mismatch_counts = dict.fromkeys(CANONICAL_PARITY_METRICS, 0)

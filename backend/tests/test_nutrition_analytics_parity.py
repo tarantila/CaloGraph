@@ -165,10 +165,13 @@ def test_canonical_parity_contract_is_exact_and_immutable() -> None:
         metric.total = Decimal("2")  # type: ignore[misc]
 
     assert {field.name for field in fields(NutritionLegacyDay)} == {
-        "user_id",
         "local_date",
         "metrics",
     }
+    assert not any(
+        field.name == "user_id" or field.name.endswith("_id")
+        for field in fields(NutritionLegacyDay)
+    )
 
 
 def test_legacy_reader_scopes_and_sums_decimal_values_by_source(db: Session, user: User) -> None:
@@ -244,7 +247,7 @@ def test_legacy_reader_scopes_and_sums_decimal_values_by_source(db: Session, use
 
     day = read_legacy_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
 
-    assert day.user_id == user.id
+    assert not hasattr(day, "user_id")
     assert day.local_date == LOCAL_DATE
     assert type(day.metrics) is tuple
     assert tuple(metric.metric_key for metric in day.metrics) == CANONICAL_PARITY_METRICS
@@ -303,6 +306,7 @@ def _ready_projection(
     db: Session,
     user: User,
     *,
+    local_date: date = LOCAL_DATE,
     values: dict[str, Decimal | None] | None = None,
     providers: dict[str, str | None] | None = None,
     presence_states: dict[str, PresenceState] | None = None,
@@ -312,7 +316,7 @@ def _ready_projection(
     projection = create_projection(
         db,
         user_id=user.id,
-        local_date=LOCAL_DATE,
+        local_date=local_date,
         projection_version=1,
         projection_algorithm_version="nutrition-daily-v1",
         priority_policy_id=policy.policy_id,
@@ -357,7 +361,7 @@ def _ready_projection(
             metric_key=metric_key,
             **defaults,
         )
-    set_projection_head(db, user.id, LOCAL_DATE, projection.id)
+    set_projection_head(db, user.id, local_date, projection.id)
     db.commit()
     return projection
 
@@ -733,9 +737,13 @@ def test_nutrition_range_is_immutable_and_empty_ranges_are_safe(db: Session, use
     )
 
     assert isinstance(result, NutritionRangeParity)
-    assert result.days == ()
+    assert tuple(day.local_date for day in result.days) == (
+        LOCAL_DATE,
+        LOCAL_DATE + timedelta(days=1),
+    )
     assert result.days_compared == 0
-    assert result.days_not_comparable == 0
+    assert result.days_not_comparable == 2
+    assert all(day.projection_state is not None for day in result.days)
     assert dict(result.match_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
     assert dict(result.mismatch_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
     assert dict(result.expected_difference_counts) == dict.fromkeys(CANONICAL_PARITY_METRICS, 0)
@@ -848,6 +856,33 @@ def test_nutrition_range_sorts_days_and_aggregates_metric_counts(db: Session, us
         assert result.match_counts[metric_key] == 1
         assert result.expected_difference_counts[metric_key] == 0
         assert result.mismatch_counts[metric_key] == 0
+
+
+def test_nutrition_range_includes_projection_only_dates(db: Session, user: User) -> None:
+    projection_date = LOCAL_DATE + timedelta(days=1)
+    _ready_projection(
+        db,
+        user,
+        local_date=projection_date,
+        values={metric_key: Decimal("10") for metric_key in CANONICAL_METRICS},
+    )
+
+    result = compare_nutrition_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=projection_date,
+    )
+
+    assert tuple(day.local_date for day in result.days) == (LOCAL_DATE, projection_date)
+    assert result.days_compared == 1
+    assert result.days_not_comparable == 1
+    projection_only_day = result.days[1]
+    assert all(
+        metric.classification is NutritionParityClassification.PROJECTION_ONLY
+        for metric in projection_only_day.metrics
+    )
+    assert projection_only_day.mismatch_count == len(CANONICAL_PARITY_METRICS)
 
 
 def test_nutrition_range_excludes_another_users_identical_rows(db: Session, user: User) -> None:
