@@ -1114,9 +1114,7 @@ def compare_historical_budget_balance(
         classification = HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
     elif has_nutrition_cause:
         classification = HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
-    elif has_tracking_cause:
-        classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
-    elif canonical_counts["tracked_days"] != legacy_counts["tracked_days"]:
+    elif has_tracking_cause or canonical_counts["tracked_days"] != legacy_counts["tracked_days"]:
         classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
     else:
         classification = HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
