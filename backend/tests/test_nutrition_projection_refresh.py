@@ -7,9 +7,15 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.analytics.nutrition_projection import (
+    NutritionProjectionReadError,
+    NutritionProjectionReadState,
+    read_canonical_nutrition_day,
+)
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import YazioDailyNutrientSummary, YazioFoodDiary, YazioNutrientValues
 from sqlalchemy import select
 from app.database import SessionLocal
-
 from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
@@ -177,15 +183,16 @@ def _field(
     value: Decimal,
     metric_key: str = "protein_g",
 ) -> NutritionFieldObservation:
+    unit = "kcal" if metric_key == "dietary_energy_kcal" else "g"
     field = NutritionFieldObservation(
         user_id=user_id,
         source_observation_id=source.id,
         provider_field_path=f"nutrition.{metric_key}",
         provider_raw_value_decimal=value,
-        provider_raw_unit="g",
+        provider_raw_unit=unit,
         metric_key=metric_key,
         canonical_value=value,
-        canonical_unit="g",
+        canonical_unit=unit,
         observation_role="canonical" if source.provider_key == "google_health" else "provider",
         presence_state=(
             PresenceState.EXPLICIT_ZERO.value if value == Decimal("0") else PresenceState.SUPPLIED.value
@@ -379,80 +386,40 @@ def test_current_policy_failed_head_is_stale(db, user: User) -> None:
     assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
 
 def test_refresh_processes_120_dates_in_bounded_resumable_batches(
-    db, user: User, monkeypatch
+    db, user: User
 ) -> None:
-    policy = _policy(db, user)
+    _policy(db, user)
     _yazio_connection(db, user)
     run = _run(db, user.id)
     for offset in range(120):
-        _observation(
+        local_date = DAY + timedelta(days=offset)
+        source = _observation(
             db,
             user.id,
             run,
             key=f"historical-{offset}",
-            local_date=DAY + timedelta(days=offset),
+            local_date=local_date,
         )
+        _event(db, user.id, source, key=f"historical-{offset}", local_date=local_date)
+        _field(db, user.id, source, value=Decimal(offset + 1))
     db.commit()
 
-    from app.nutrition.projection import refresh as refresh_module
-
-    def fake_rebuild(
-        session,
-        *,
-        user_id,
-        local_date,
-        policy_at,
-    ):
-        projection = _projection(session, user_id, policy, local_date)
-        _head(session, user_id, local_date, projection)
-        session.commit()
-        return ProjectionPersistenceResult(
-            user_id=user_id,
-            local_date=local_date,
-            projection_id=projection.id,
-            projection_version=projection.projection_version,
-            input_watermark="refresh-test",
-            created=True,
-            status=ProjectionPersistenceStatus.CREATED,
+    results = tuple(
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=1,
         )
-
-    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", fake_rebuild)
-    result_1 = refresh_stale_nutrition_projections(
-        session_factory=lambda: type(db)(db.get_bind()),
-        user_id=user.id,
-        expected_version=1,
-    )
-    result_2 = refresh_stale_nutrition_projections(
-        session_factory=lambda: type(db)(db.get_bind()),
-        user_id=user.id,
-        expected_version=1,
-    )
-    result_3 = refresh_stale_nutrition_projections(
-        session_factory=lambda: type(db)(db.get_bind()),
-        user_id=user.id,
-        expected_version=1,
-    )
-    result_4 = refresh_stale_nutrition_projections(
-        session_factory=lambda: type(db)(db.get_bind()),
-        user_id=user.id,
-        expected_version=1,
+        for _ in range(4)
     )
 
-    assert [result.processed_count for result in (result_1, result_2, result_3, result_4)] == [
-        50,
-        50,
-        20,
-        0,
-    ]
-    assert [result.created_count for result in (result_1, result_2, result_3, result_4)] == [
-        50,
-        50,
-        20,
-        0,
-    ]
-    assert result_4.has_more is False
-    assert result_4.projection_refresh_required is False
-
+    assert [result.processed_count for result in results] == [50, 50, 20, 0]
+    assert [result.created_count for result in results] == [50, 50, 20, 0]
+    assert [result.unchanged_count for result in results] == [0, 0, 0, 0]
+    assert results[-1].has_more is False
+    assert results[-1].projection_refresh_required is False
+    assert db.query(NutritionDailyProjection).count() == 120
+    assert db.query(NutritionProjectionHead).count() == 120
 
 def test_refresh_all_fresh_dates_is_a_no_op(db, user: User, monkeypatch) -> None:
     policy = _policy(db, user)
@@ -583,7 +550,9 @@ def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: Use
     assert calls == [dates[0], dates[1], dates[1], dates[2]]
 
 
-def test_refresh_accepts_advanced_metric_specific_policy(db, user: User, monkeypatch) -> None:
+def test_refresh_accepts_advanced_metric_specific_policy_without_flattening(
+    db, user: User
+) -> None:
     policy_snapshot = create_policy_with_rules(
         db,
         user.id,
@@ -591,40 +560,65 @@ def test_refresh_accepts_advanced_metric_specific_policy(db, user: User, monkeyp
         datetime.now(UTC) - timedelta(minutes=1),
         (PriorityRuleSpec("nutrition", "dietary_energy_kcal", "yazio", 1),),
     )
-    _yazio_connection(db, user)
-    db.commit()
+    connection = _yazio_connection(db, user)
     policy = db.get(SourcePriorityPolicy, policy_snapshot.policy_id)
     assert policy is not None
-    _observation(db, user.id, _run(db, user.id), key="advanced", local_date=DAY)
+    ingest_yazio_food_diary(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=DAY,
+        requested_end=DAY,
+        diary=YazioFoodDiary(
+            requested_start_day=DAY,
+            requested_end_day=DAY,
+            consumed_products=(),
+            consumed_simple_products=(),
+            product_profiles=(),
+            daily_summaries=(
+                YazioDailyNutrientSummary(
+                    local_date=DAY,
+                    nutrients=YazioNutrientValues(
+                        energy=Decimal("2100"),
+                        protein=Decimal("120"),
+                        carb=Decimal("230"),
+                        fat=Decimal("70"),
+                        fiber=Decimal("30"),
+                        sugar=Decimal("50"),
+                        saturated_fat=Decimal("20"),
+                    ),
+                    energy_goal=None,
+                ),
+            ),
+        ),
+    )
     db.commit()
 
-    from app.nutrition.projection import refresh as refresh_module
-
-    def unchanged(
-        session,
-        *,
-        user_id,
-        local_date,
-        policy_at,
-    ):
-        return ProjectionPersistenceResult(
-            user_id=user_id,
-            local_date=local_date,
-            projection_id=None,
-            projection_version=None,
-            input_watermark="refresh-test",
-            created=False,
-            status=ProjectionPersistenceStatus.UNCHANGED,
-        )
-
-    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", unchanged)
     result = refresh_stale_nutrition_projections(
         session_factory=SessionLocal,
         user_id=user.id,
         expected_version=1,
     )
+
     assert result.processed_count == 1
-    assert result.unchanged_count == 1
+    assert result.created_count == 1
+    assert result.unchanged_count == 0
+    head = db.get(NutritionProjectionHead, (user.id, DAY))
+    assert head is not None
+    projection = db.get(NutritionDailyProjection, head.current_projection_id)
+    assert projection is not None
+    facts = db.scalars(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == projection.id,
+        )
+    ).all()
+    assert len(facts) == 7
+    assert {
+        fact.metric_key: fact.value
+        for fact in facts
+        if fact.value is not None
+    } == {"dietary_energy_kcal": Decimal("2100")}
+    assert projection.priority_policy_id == policy.id
 
 
 def test_refresh_rebuilds_same_evidence_under_new_provider_policy(
@@ -860,6 +854,72 @@ def test_refresh_real_b6_rebuilds_cross_provider_policy_lineage_with_equal_value
     assert [(lineage.provider_key, lineage.role) for lineage in lineages if lineage.role == "selected"] == [
         ("google_health", "selected")
     ]
+
+
+def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
+    db, user: User
+) -> None:
+    v1_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        datetime.now(UTC) - timedelta(minutes=2),
+        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    _yazio_connection(db, user)
+    old_date = DAY + timedelta(days=1)
+    old_policy = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
+    assert old_policy is not None
+    old_projection = _projection(db, user.id, old_policy, old_date)
+    _head(db, user.id, old_date, old_projection)
+
+    missing_date = DAY
+    source = _observation(
+        db,
+        user.id,
+        _run(db, user.id),
+        key="missing-head-refresh",
+        local_date=missing_date,
+    )
+    _event(db, user.id, source, key="missing-head-refresh", local_date=missing_date)
+    _field(db, user.id, source, value=Decimal("12"))
+    v2_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        2,
+        datetime.now(UTC) - timedelta(minutes=1),
+        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    db.commit()
+
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=2,
+    )
+
+    assert result.processed_count == 2
+    assert result.created_count == 2
+    db.expire_all()
+    current_head = db.get(NutritionProjectionHead, (user.id, old_date))
+    assert current_head is not None
+    assert current_head.current_projection_id != old_projection.id
+    assert db.get(NutritionDailyProjection, old_projection.id) is not None
+    current = db.get(NutritionDailyProjection, current_head.current_projection_id)
+    assert current is not None
+    assert current.priority_policy_id == v2_snapshot.policy_id
+
+    no_value_day = read_canonical_nutrition_day(db, user.id, old_date)
+    assert no_value_day.state is NutritionProjectionReadState.READY
+    assert no_value_day.has_any_nutrition_value is False
+    assert all(fact.value is None for fact in no_value_day.facts)
+    missing_day = read_canonical_nutrition_day(db, user.id, DAY + timedelta(days=2))
+    assert missing_day.state is NutritionProjectionReadState.NOT_PROJECTED
+
+    current.projection_status = "failed"
+    db.commit()
+    with pytest.raises(NutritionProjectionReadError, match="not READY"):
+        read_canonical_nutrition_day(db, user.id, old_date)
 
 
 def test_refresh_rejects_policy_without_a_matching_provider_connection(
