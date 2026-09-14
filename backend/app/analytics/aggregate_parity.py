@@ -23,6 +23,7 @@ from app.analytics.daily_point_parity import (
 )
 from app.analytics.nutrition_parity import (
     MAX_PARITY_DAYS,
+    NutritionLegacyDay,
     _compare_nutrition_day_with_legacy,
     _empty_legacy_nutrition_day,
 )
@@ -36,7 +37,7 @@ from app.analytics.service import (
     daily_points,
     moving_average,
 )
-from app.models import HealthSample, User
+from app.models import HealthSample, NutritionTarget, TrackingOverride, User
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionProjectionHead,
@@ -684,6 +685,67 @@ def _finalize_budget_point_counts(counts: dict[str, int]) -> dict[str, int]:
     }
 
 
+def _read_daily_point_chunk_inputs(
+    db: Session,
+    *,
+    user_id: UUID,
+    date_chunk: tuple[date, ...],
+) -> tuple[
+    dict[date, dict[str, Decimal]],
+    dict[date, int],
+    dict[tuple[date, str], Decimal],
+    dict[date, set[str]],
+    dict[date, NutritionLegacyDay],
+    list[NutritionTarget],
+    dict[date, TrackingOverride],
+]:
+    """Load D3B inputs for exactly the canonical dates in one bounded chunk."""
+    if not date_chunk:
+        raise ValueError("date_chunk must not be empty")
+    totals_by_date: dict[date, dict[str, Decimal]] = {}
+    nutrition_counts_by_date: dict[date, int] = {}
+    active_energy_by_source: dict[tuple[date, str], Decimal] = {}
+    active_energy_sources_by_day: dict[date, set[str]] = {}
+    legacy_nutrition_days: dict[date, NutritionLegacyDay] = {}
+    targets: list[NutritionTarget] = []
+    overrides: dict[date, TrackingOverride] = {}
+    for local_date in date_chunk:
+        (
+            day_totals,
+            day_nutrition_counts,
+            day_active_energy,
+            day_active_sources,
+            day_legacy_nutrition,
+            day_targets,
+            day_overrides,
+        ) = _read_daily_point_range_inputs(
+            db,
+            user_id=user_id,
+            start=local_date,
+            end=local_date,
+        )
+        if local_date in day_totals:
+            totals_by_date[local_date] = day_totals[local_date]
+        if local_date in day_nutrition_counts:
+            nutrition_counts_by_date[local_date] = day_nutrition_counts[local_date]
+        active_energy_by_source.update(day_active_energy)
+        active_energy_sources_by_day.update(day_active_sources)
+        if local_date in day_legacy_nutrition:
+            legacy_nutrition_days[local_date] = day_legacy_nutrition[local_date]
+        targets = day_targets
+        if local_date in day_overrides:
+            overrides[local_date] = day_overrides[local_date]
+    return (
+        totals_by_date,
+        nutrition_counts_by_date,
+        active_energy_by_source,
+        active_energy_sources_by_day,
+        legacy_nutrition_days,
+        targets,
+        overrides,
+    )
+
+
 def compare_historical_budget_balance(
     db: Session,
     user_id: UUID,
@@ -716,13 +778,16 @@ def compare_historical_budget_balance(
             legacy_nutrition_days,
             targets,
             overrides,
-        ) = _read_daily_point_range_inputs(
+        ) = _read_daily_point_chunk_inputs(
             db,
             user_id=user_id,
-            start=date_chunk[0],
-            end=date_chunk[-1],
+            date_chunk=date_chunk,
         )
         for local_date in date_chunk:
+            legacy_budget_candidate = any(
+                totals_by_date.get(local_date, {}).get(metric, Decimal()) > 0
+                for metric in PRIMARY_NUTRITION_METRICS
+            )
             legacy = _build_daily_point(
                 day=local_date,
                 values=totals_by_date.get(local_date, {}),
@@ -748,7 +813,7 @@ def compare_historical_budget_balance(
                 canonical_result.state is not CanonicalDailyPointResultState.READY
                 or canonical_result.point is None
             ):
-                has_non_comparable_legacy_candidate |= legacy.tracking_status != "no_data"
+                has_non_comparable_legacy_candidate |= legacy_budget_candidate
                 continue
 
             _add_budget_point_counts(canonical_counts, canonical_result.point)
@@ -769,9 +834,21 @@ def compare_historical_budget_balance(
             if not parity.comparable:
                 continue
 
-            if parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+            nutrition_field_cause = any(
+                difference.classification
+                in {
+                    DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE,
+                    DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE,
+                }
+                for difference in parity.fields.differences
+            )
+            if nutrition_field_cause:
+                has_nutrition_cause = True
+            elif parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
                 if (
-                    canonical_result.point.tracking_status == "incomplete"
+                    canonical_result.point.calories_kcal is None
+                    and legacy.calories_kcal is not None
+                    and canonical_result.point.tracking_status == "incomplete"
                     and legacy.tracking_status == "complete"
                 ):
                     has_tracking_cause = True

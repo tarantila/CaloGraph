@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.activity import ACTIVE_ENERGY_METRIC
-from app.models import HealthSample, ImportBatch, NutritionTarget, User
+from app.models import HealthSample, ImportBatch, NutritionTarget, TrackingOverride, User
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -1014,6 +1014,39 @@ def test_historical_budget_balance_incomplete_canonical_day_is_expected_tracking
     )
 
 
+def test_historical_budget_balance_incomplete_value_mismatch_is_unexplained(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    _legacy_sample(db, user, local_date, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, local_date, calories=Decimal("2200"))
+    original_builder = aggregate_module._build_canonical_daily_point_with_inputs
+
+    def incomplete_builder(*args: object, **kwargs: object) -> CanonicalDailyPointResult:
+        result = original_builder(*args, **kwargs)
+        assert result.point is not None
+        return CanonicalDailyPointResult(
+            state=CanonicalDailyPointResultState.READY,
+            point=result.point.model_copy(
+                update={
+                    "tracking_status": "incomplete",
+                    "tracking_score": 0,
+                    "tracking_reasons": ["synthetic incomplete quality"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(
+        aggregate_module,
+        "_build_canonical_daily_point_with_inputs",
+        incomplete_builder,
+    )
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.classification is HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+
+
 def test_historical_budget_balance_uses_historical_target_and_activity_source(
     db: Session, user: User
 ) -> None:
@@ -1109,7 +1142,7 @@ def test_historical_budget_balance_processes_more_than_one_chunk(
     policy = _budget_policy(db, user)
     start = date(2026, 1, 1)
     for offset in range(501):
-        local_date = start + timedelta(days=offset)
+        local_date = start + timedelta(days=offset * 2)
         _canonical_projection(db, user, policy, local_date, calories=Decimal("1900"))
 
     seen_chunk_sizes: list[int] = []
@@ -1119,15 +1152,28 @@ def test_historical_budget_balance_processes_more_than_one_chunk(
         for chunk in original_iterator(*args, **kwargs):
             seen_chunk_sizes.append(len(chunk))
             yield chunk
+    seen_input_ranges: list[tuple[date, date]] = []
+    original_loader = aggregate_module._read_daily_point_range_inputs
+
+    def recording_loader(db, *, user_id, start, end):
+        seen_input_ranges.append((start, end))
+        return original_loader(db, user_id=user_id, start=start, end=end)
 
     monkeypatch.setattr(
         aggregate_module,
         "iter_canonical_history_date_chunks",
         recording_iterator,
     )
+    monkeypatch.setattr(
+        aggregate_module,
+        "_read_daily_point_range_inputs",
+        recording_loader,
+    )
     result = compare_historical_budget_balance(db, user.id)
 
     assert seen_chunk_sizes == [500, 1]
+    assert len(seen_input_ranges) == 501
+    assert all(start == end for start, end in seen_input_ranges)
     assert result.canonical_counts["tracked_days"] == 501
     assert result.canonical_counts["within_budget_days"] == 501
 
@@ -1159,3 +1205,52 @@ def test_historical_budget_balance_is_read_only(
     before = snapshot()
     compare_historical_budget_balance(db, user.id)
     assert snapshot() == before
+
+
+def test_nonpositive_overridden_noncomparable_date_does_not_escalate_mismatch(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    non_comparable_date = _DATE_1
+    explicit_zero_date = _DATE_2
+    db.add(
+        TrackingOverride(
+            user_id=user.id,
+            local_date=non_comparable_date,
+            status="complete",
+        )
+    )
+    projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=non_comparable_date,
+        projection_version=1,
+        projection_algorithm_version="nutrition-daily-v1",
+        priority_policy_id=policy.policy_id,
+        input_watermark="aggregate-parity-test",
+        projection_status="ready",
+    )
+    db.add(projection)
+    db.flush()
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=non_comparable_date,
+            current_projection_id=projection.id,
+        )
+    )
+    _legacy_sample(db, user, explicit_zero_date, value=Decimal("0"))
+    _canonical_projection(
+        db,
+        user,
+        policy,
+        explicit_zero_date,
+        calories=Decimal("0"),
+        calorie_presence=PresenceState.EXPLICIT_ZERO.value,
+    )
+    db.flush()
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.classification is (
+        HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
+    )
