@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import date, timedelta
@@ -270,6 +271,14 @@ def test_run_daily_shadow_failure_rolls_back_closes_and_fails_open(monkeypatch, 
         "exception_class",
     }
     assert telemetry == allowed_keys
+    rendered_payload = json.loads(record.getMessage())
+    assert set(rendered_payload) == allowed_keys
+    assert rendered_payload["event"] == shadow.TELEMETRY_EVENT
+    assert rendered_payload["version"] == shadow.TELEMETRY_VERSION
+    assert rendered_payload["outcome"] == DailyShadowState.ERROR.value
+    assert rendered_payload["range_bucket"] in {"1", "2-7", "8-31", "32-366", "367+"}
+    assert rendered_payload["duration_bucket"] in {"<10ms", "10-49ms", "50-199ms", "200ms+"}
+    assert rendered_payload["exception_class"] == "SentinelFailure"
     assert record.event == shadow.TELEMETRY_EVENT
     assert record.version == shadow.TELEMETRY_VERSION
     assert record.outcome == DailyShadowState.ERROR.value

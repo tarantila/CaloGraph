@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -173,7 +174,7 @@ def _emit_telemetry(
     if exception_class is not None:
         fields["exception_class"] = exception_class
     try:
-        LOGGER.info("daily analytics shadow", extra=fields)
+        LOGGER.info(json.dumps(fields, sort_keys=True, separators=(",", ":")), extra=fields)
     except Exception:
         # Telemetry must not change the Legacy request or shadow result.
         return
