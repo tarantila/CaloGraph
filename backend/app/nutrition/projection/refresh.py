@@ -45,6 +45,7 @@ class NutritionProjectionRefreshError(RuntimeError):
 def _latest_policy(policies: list[SourcePriorityPolicy]) -> SourcePriorityPolicy | None:
     return max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
 
+
 def _has_usable_effective_policy(
     db: Session,
     *,

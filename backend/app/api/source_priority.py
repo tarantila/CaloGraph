@@ -87,6 +87,7 @@ def _refresh_error_code(exc: NutritionProjectionRefreshError) -> str | None:
         return "no_policy"
     return None
 
+
 def _raise_refresh_conflict(code: str) -> None:
     raise ProblemHTTPException(
         status_code=409,

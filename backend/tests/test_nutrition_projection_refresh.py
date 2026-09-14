@@ -199,7 +199,9 @@ def _field(
         canonical_unit=unit,
         observation_role="canonical" if source.provider_key == "google_health" else "provider",
         presence_state=(
-            PresenceState.EXPLICIT_ZERO.value if value == Decimal("0") else PresenceState.SUPPLIED.value
+            PresenceState.EXPLICIT_ZERO.value
+            if value == Decimal("0")
+            else PresenceState.SUPPLIED.value
         ),
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value,
@@ -208,6 +210,7 @@ def _field(
     db.add(field)
     db.flush()
     return field
+
 
 def _projection(
     db,
@@ -247,7 +250,9 @@ def test_observation_only_date_is_stale(db, user: User) -> None:
     policy = _policy(db, user)
     _observation(db, user.id, _run(db, user.id), key="observation", local_date=DAY)
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
 
 def test_event_only_date_is_stale_even_when_source_is_undated(db, user: User) -> None:
@@ -255,7 +260,9 @@ def test_event_only_date_is_stale_even_when_source_is_undated(db, user: User) ->
     source = _observation(db, user.id, _run(db, user.id), key="event", local_date=None)
     _event(db, user.id, source, key="event", local_date=DAY)
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
 
 def test_duplicate_observation_and_event_date_is_returned_once(db, user: User) -> None:
@@ -263,7 +270,9 @@ def test_duplicate_observation_and_event_date_is_returned_once(db, user: User) -
     source = _observation(db, user.id, _run(db, user.id), key="duplicate", local_date=DAY)
     _event(db, user.id, source, key="duplicate", local_date=DAY)
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
 
 def test_existing_current_ready_head_is_fresh(db, user: User) -> None:
@@ -336,7 +345,9 @@ def test_dates_are_ascending_deduplicated_and_bounded_at_fifty(db, user: User) -
         if offset % 2 == 0:
             _event(db, user.id, source, key=f"event-{offset}", local_date=day)
 
-    dates = list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=DEFAULT_REFRESH_BATCH_SIZE)
+    dates = list_stale_nutrition_projection_dates(
+        db, user_id=user.id, policy=policy, limit=DEFAULT_REFRESH_BATCH_SIZE
+    )
 
     assert len(dates) == DEFAULT_REFRESH_BATCH_SIZE
     assert dates == tuple(sorted(set(dates)))
@@ -347,14 +358,18 @@ def test_missing_head_is_stale(db, user: User) -> None:
     policy = _policy(db, user)
     _observation(db, user.id, _run(db, user.id), key="missing-head", local_date=DAY)
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
 
 def test_head_only_failed_projection_date_is_stale(db, user: User) -> None:
     policy = _policy(db, user)
     _head(db, user.id, DAY, _projection(db, user.id, policy, DAY, status="failed"))
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
 
 def test_old_policy_head_is_stale(db, user: User) -> None:
@@ -363,7 +378,9 @@ def test_old_policy_head_is_stale(db, user: User) -> None:
     _observation(db, user.id, _run(db, user.id), key="old-policy", local_date=DAY)
     _head(db, user.id, DAY, _projection(db, user.id, old_policy, DAY))
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=current_policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(
+        db, user_id=user.id, policy=current_policy, limit=50
+    ) == (DAY,)
 
 
 def test_current_policy_ready_head_is_fresh(db, user: User) -> None:
@@ -387,11 +404,12 @@ def test_current_policy_failed_head_is_stale(db, user: User) -> None:
     _observation(db, user.id, _run(db, user.id), key="failed", local_date=DAY)
     _head(db, user.id, DAY, _projection(db, user.id, policy, DAY, status="failed"))
 
-    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+    assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (
+        DAY,
+    )
 
-def test_refresh_processes_120_dates_in_bounded_resumable_batches(
-    db, user: User
-) -> None:
+
+def test_refresh_processes_120_dates_in_bounded_resumable_batches(db, user: User) -> None:
     _policy(db, user)
     connection = _yazio_connection(db, user)
     run = _run(db, user.id, source_instance_id=connection.id)
@@ -446,6 +464,7 @@ def test_refresh_processes_120_dates_in_bounded_resumable_batches(
     )
     assert last_lineage is not None
     assert last_lineage.provider_key == "yazio"
+
 
 def test_refresh_all_fresh_dates_is_a_no_op(db, user: User, monkeypatch) -> None:
     policy = _policy(db, user)
@@ -509,7 +528,9 @@ def test_refresh_rejects_an_unusable_effective_policy(db, user: User) -> None:
         )
 
 
-def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: User, monkeypatch) -> None:
+def test_refresh_preserves_committed_dates_when_a_later_date_fails(
+    db, user: User, monkeypatch
+) -> None:
     policy = _policy(db, user)
     _yazio_connection(db, user)
     run = _run(db, user.id)
@@ -554,18 +575,24 @@ def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: Use
         )
 
     db.expire_all()
-    assert db.scalar(
-        select(NutritionProjectionHead).where(
-            NutritionProjectionHead.user_id == user.id,
-            NutritionProjectionHead.local_date == dates[0],
+    assert (
+        db.scalar(
+            select(NutritionProjectionHead).where(
+                NutritionProjectionHead.user_id == user.id,
+                NutritionProjectionHead.local_date == dates[0],
+            )
         )
-    ) is not None
-    assert db.scalar(
-        select(NutritionProjectionHead).where(
-            NutritionProjectionHead.user_id == user.id,
-            NutritionProjectionHead.local_date == dates[1],
+        is not None
+    )
+    assert (
+        db.scalar(
+            select(NutritionProjectionHead).where(
+                NutritionProjectionHead.user_id == user.id,
+                NutritionProjectionHead.local_date == dates[1],
+            )
         )
-    ) is None
+        is None
+    )
 
     retry = refresh_stale_nutrition_projections(
         session_factory=SessionLocal,
@@ -576,9 +603,7 @@ def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: Use
     assert calls == [dates[0], dates[1], dates[1], dates[2]]
 
 
-def test_refresh_accepts_advanced_metric_specific_policy_without_flattening(
-    db, user: User
-) -> None:
+def test_refresh_accepts_advanced_metric_specific_policy_without_flattening(db, user: User) -> None:
     policy_snapshot = create_policy_with_rules(
         db,
         user.id,
@@ -639,11 +664,9 @@ def test_refresh_accepts_advanced_metric_specific_policy_without_flattening(
         )
     ).all()
     assert len(facts) == 7
-    assert {
-        fact.metric_key: fact.value
-        for fact in facts
-        if fact.value is not None
-    } == {"dietary_energy_kcal": Decimal("2100")}
+    assert {fact.metric_key: fact.value for fact in facts if fact.value is not None} == {
+        "dietary_energy_kcal": Decimal("2100")
+    }
     assert projection.priority_policy_id == policy.id
 
 
@@ -758,7 +781,6 @@ def test_refresh_treats_policy_lineage_change_as_created_even_for_same_value(
         return ProjectionPersistenceResult(
             user_id=user_id,
             local_date=local_date,
-
             projection_id=uuid4(),
             projection_version=2,
             input_watermark="lineage-changed",
@@ -877,9 +899,9 @@ def test_refresh_real_b6_rebuilds_cross_provider_policy_lineage_with_equal_value
             NutritionDailyProjectionLineage.projection_fact_id == facts[0].id,
         )
     ).all()
-    assert [(lineage.provider_key, lineage.role) for lineage in lineages if lineage.role == "selected"] == [
-        ("google_health", "selected")
-    ]
+    assert [
+        (lineage.provider_key, lineage.role) for lineage in lineages if lineage.role == "selected"
+    ] == [("google_health", "selected")]
 
 
 def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
@@ -968,9 +990,8 @@ def test_refresh_replaces_missing_and_old_heads_without_deleting_no_value_head(
     with pytest.raises(NutritionProjectionReadError, match="not READY"):
         read_canonical_nutrition_day(db, user.id, old_date)
 
-def test_refresh_rejects_policy_without_a_matching_provider_connection(
-    db, user: User
-) -> None:
+
+def test_refresh_rejects_policy_without_a_matching_provider_connection(db, user: User) -> None:
     _policy(db, user)
     with pytest.raises(NutritionProjectionRefreshError, match="usable effective"):
         refresh_stale_nutrition_projections(
@@ -978,6 +999,7 @@ def test_refresh_rejects_policy_without_a_matching_provider_connection(
             user_id=user.id,
             expected_version=1,
         )
+
 
 def test_refresh_converts_unexpected_policy_missing_to_safe_error(
     db, user: User, monkeypatch
@@ -1013,4 +1035,3 @@ def test_refresh_converts_unexpected_policy_missing_to_safe_error(
             user_id=user.id,
             expected_version=1,
         )
-

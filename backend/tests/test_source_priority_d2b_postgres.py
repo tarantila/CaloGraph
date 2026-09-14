@@ -38,7 +38,9 @@ POSTGRES_TESTS_ENABLED = os.environ.get(
     "CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS"
 ) == "1" and bool(os.environ.get("CALOGRAPH_POSTGRES_TEST_URL"))
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
+
 DAY = date(2026, 9, 11)
+
 
 def _add_connections(db: Session, user: User) -> None:
     db.add(
@@ -59,12 +61,11 @@ def _add_connections(db: Session, user: User) -> None:
     )
     db.commit()
 
+
 def _seed_refresh_day(user: User) -> None:
     with SessionLocal() as db:
         _add_connections(db, user)
-        yazio = db.scalar(
-            select(YazioConnection).where(YazioConnection.user_id == user.id)
-        )
+        yazio = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
         assert yazio is not None
         ingest_yazio_food_diary(
             db,
@@ -311,8 +312,7 @@ def test_postgres_policy_put_during_refresh_requires_next_policy_batch(
         )
         projections = list(
             db.scalars(
-                select(NutritionDailyProjection)
-                .where(
+                select(NutritionDailyProjection).where(
                     NutritionDailyProjection.user_id == user.id,
                     NutritionDailyProjection.local_date == DAY,
                 )

@@ -168,6 +168,8 @@ def test_get_state_reports_no_providers_without_policy(db, user) -> None:
         "configuration_mode": "none",
         "projection_refresh_required": False,
     }
+
+
 def test_get_state_marks_canonical_history_stale_without_policy(db, user) -> None:
     _add_yazio(db, user)
     _add_nutrition_date(db, user, AT.date())

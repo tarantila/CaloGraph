@@ -535,7 +535,11 @@ def test_source_priority_refresh_request_is_strict(
         ("configured", "expected policy version 1, current version is 2", "stale_policy"),
         ("selection_required", "", "selection_required"),
         ("configuration_required", "", "configuration_required"),
-        ("configured", "effective nutrition policy disappeared while rebuilding 2026-09-14", "no_policy"),
+        (
+            "configured",
+            "effective nutrition policy disappeared while rebuilding 2026-09-14",
+            "no_policy",
+        ),
     ],
 )
 def test_source_priority_refresh_maps_safe_conflicts(
@@ -581,7 +585,10 @@ def test_source_priority_refresh_maps_safe_conflicts(
 
     assert response.status_code == 409
     assert response.json()["detail"] == expected_detail
-    assert response.json()["type"] == f"urn:calograph:problem:source-priority-{expected_detail.replace('_', '-')}"
+    assert (
+        response.json()["type"]
+        == f"urn:calograph:problem:source-priority-{expected_detail.replace('_', '-')}"
+    )
     assert "policy_id" not in response.text
     assert "constraint" not in response.text.lower()
 
@@ -612,7 +619,9 @@ def test_source_priority_refresh_maps_unexpected_failure_safely(
 
     assert response.status_code == 500
     assert response.json()["detail"] == "projection_refresh_failed"
-    assert response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    assert (
+        response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    )
     assert "SQL" not in response.text
     assert "secret" not in response.text
 
@@ -636,7 +645,9 @@ def test_source_priority_refresh_maps_preflight_failure_safely(
 
     assert response.status_code == 500
     assert response.json()["detail"] == "projection_refresh_failed"
-    assert response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    assert (
+        response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    )
     assert "SQL" not in response.text
     assert "secret" not in response.text
 
