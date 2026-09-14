@@ -1109,12 +1109,13 @@ def compare_historical_budget_balance(
         classification = HistoricalBudgetBalanceClassification.MATCH
     elif has_unexplained_cause or has_non_comparable_legacy_candidate:
         classification = HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+    elif _has_legacy_only_budget_history(db, user_id):
+        # A positive legacy-only day contributes to an unequal count-map delta.
+        classification = HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
     elif has_nutrition_cause:
         classification = HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
     elif has_tracking_cause:
         classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
-    elif _has_legacy_only_budget_history(db, user_id):
-        classification = HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
     elif canonical_counts["tracked_days"] != legacy_counts["tracked_days"]:
         classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
     else:

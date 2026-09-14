@@ -216,6 +216,7 @@ def _canonical_projection(
     local_date: date,
     *,
     calories: Decimal | None = Decimal("1900"),
+    protein: Decimal | None = Decimal("1"),
     calorie_presence: str | None = None,
     calorie_coverage: str = CoverageState.COMPLETE.value,
     calorie_resolution: str = ResolutionState.RESOLVED.value,
@@ -232,7 +233,13 @@ def _canonical_projection(
     db.add(projection)
     db.flush()
     for metric_key, definition in CANONICAL_METRICS.items():
-        value = calories if metric_key == "dietary_energy_kcal" else Decimal("1")
+        value = (
+            calories
+            if metric_key == "dietary_energy_kcal"
+            else protein
+            if metric_key == "protein_g"
+            else Decimal("1")
+        )
         if value is None:
             presence_state = PresenceState.MISSING.value
             coverage_state = (
@@ -1109,6 +1116,67 @@ def test_historical_budget_balance_unexplained_calorie_mismatch_wins_over_nutrit
     result = compare_historical_budget_balance(db, user.id)
 
     assert result.classification is HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+
+def test_historical_budget_balance_legacy_only_wins_over_expected_nutrition_cause(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    legacy_only_date = _DATE_0
+    expected_nutrition_date = _DATE_1
+    db.add(
+        NutritionTarget(
+            user_id=user.id,
+            valid_from=legacy_only_date,
+            calories_kcal=2000,
+            maintenance_kcal=2500,
+            protein_g=120,
+        )
+    )
+    _legacy_sample(db, user, legacy_only_date, value=Decimal("1900"))
+    _legacy_sample(db, user, expected_nutrition_date, value=Decimal("1900"))
+    _legacy_sample(
+        db,
+        user,
+        expected_nutrition_date,
+        metric_type="protein_g",
+        value=Decimal("100"),
+        source_type="yazio",
+    )
+    _legacy_sample(
+        db,
+        user,
+        expected_nutrition_date,
+        metric_type="protein_g",
+        value=Decimal("20"),
+        source_type="google_health",
+    )
+    _canonical_projection(
+        db,
+        user,
+        policy,
+        expected_nutrition_date,
+        calories=Decimal("1900"),
+        protein=Decimal("100"),
+    )
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts == {
+        "tracked_days": 2,
+        "within_budget_days": 2,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.canonical_counts == {
+        "tracked_days": 1,
+        "within_budget_days": 1,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.classification is HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
+
 
 def test_historical_budget_balance_uses_historical_target_and_activity_source(
     db: Session, user: User
