@@ -83,6 +83,27 @@ from app.services.yazio_provider import (
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 
+_D3B_PRIVACY_MARKERS = (
+    "d3b-yazio-source",
+    "d3b-yazio",
+    "d3b-google-legacy",
+    "d3b-google-day",
+    "d3b-apple-only",
+    "d3b-precision-within",
+    "d3b-precision-outside",
+    "d3b-isolation-own",
+    "d3b-isolation-other",
+    "d3b-test-watermark",
+    "com.example.app",
+    "web-client-id",
+    "google-web-client-id",
+    "Example Manufacturer",
+    "Example Device",
+    "encrypted-email",
+    "encrypted-password",
+    "encrypted-refresh-token",
+    "raw payload",
+)
 LOCAL_DATE = date(2024, 1, 2)
 
 
@@ -1586,21 +1607,7 @@ def _assert_identifier_free_daily_point_result(result: DailyPointParity) -> None
     assert isinstance(result.fields.differences, tuple)
     assert isinstance(result.nutrition.metrics, tuple)
     rendered = repr(result)
-    for marker in (
-        "d3b-yazio-source",
-        "d3b-yazio",
-        "d3b-google-legacy",
-        "d3b-apple-only",
-        "com.example.app",
-        "web-client-id",
-        "google-web-client-id",
-        "Example Manufacturer",
-        "Example Device",
-        "encrypted-email",
-        "encrypted-password",
-        "encrypted-refresh-token",
-        "raw payload",
-    ):
+    for marker in _D3B_PRIVACY_MARKERS:
         assert marker not in rendered
 
 
@@ -1806,6 +1813,8 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
     assert abs(outside_metric.legacy_value - outside_metric.projection_value) == Decimal(
         "0.000000000003"
     )
+    _assert_identifier_free_daily_point_result(within)
+    _assert_identifier_free_daily_point_result(outside)
 
 
 def test_daily_point_result_is_user_scoped_and_immutable(
