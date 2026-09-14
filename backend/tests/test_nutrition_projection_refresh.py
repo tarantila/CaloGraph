@@ -5,7 +5,10 @@ from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID, uuid4
 
+import pytest
+
 from sqlalchemy import select
+from app.database import SessionLocal
 
 from app.models import HealthSample, ImportBatch, User
 from app.nutrition.enums import (
@@ -23,13 +26,20 @@ from app.nutrition.models import (
     NutritionProjectionHead,
     NutritionSourceObservation,
 )
+from app.nutrition.projection.contracts import (
+    ProjectionPersistenceResult,
+    ProjectionPersistenceStatus,
+)
+from app.nutrition.projection.refresh import (
+    DEFAULT_REFRESH_BATCH_SIZE,
+    NutritionProjectionRefreshError,
+    NutritionProjectionRefreshResult,
+    list_stale_nutrition_projection_dates,
+    refresh_stale_nutrition_projections,
+)
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy
-from app.nutrition.projection.refresh import (
-    DEFAULT_REFRESH_BATCH_SIZE,
-    list_stale_nutrition_projection_dates,
-)
 
 DAY = date(2026, 9, 1)
 POLICY_AT = datetime(2026, 9, 13, 12, tzinfo=UTC)
@@ -122,7 +132,6 @@ def _event(
     db.flush()
     return row
 
-
 def _projection(
     db,
     user_id: UUID,
@@ -130,11 +139,12 @@ def _projection(
     local_date: date,
     *,
     status: str = "ready",
+    projection_version: int = 1,
 ) -> NutritionDailyProjection:
     row = NutritionDailyProjection(
         user_id=user_id,
         local_date=local_date,
-        projection_version=1,
+        projection_version=projection_version,
         projection_algorithm_version="refresh-test",
         priority_policy_id=policy.id,
         input_watermark="refresh-test",
@@ -301,3 +311,395 @@ def test_current_policy_failed_head_is_stale(db, user: User) -> None:
     _head(db, user.id, DAY, _projection(db, user.id, policy, DAY, status="failed"))
 
     assert list_stale_nutrition_projection_dates(db, user_id=user.id, policy=policy, limit=50) == (DAY,)
+
+def test_refresh_processes_120_dates_in_bounded_resumable_batches(
+    db, user: User, monkeypatch
+) -> None:
+    policy = _policy(db, user)
+    run = _run(db, user.id)
+    for offset in range(120):
+        _observation(
+            db,
+            user.id,
+            run,
+            key=f"historical-{offset}",
+            local_date=DAY + timedelta(days=offset),
+        )
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def fake_rebuild(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        projection = _projection(session, user_id, policy, local_date)
+        _head(session, user_id, local_date, projection)
+        session.commit()
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=projection.id,
+            projection_version=projection.projection_version,
+            input_watermark="refresh-test",
+            created=True,
+            status=ProjectionPersistenceStatus.CREATED,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", fake_rebuild)
+    result_1 = refresh_stale_nutrition_projections(
+        session_factory=lambda: type(db)(db.get_bind()),
+        user_id=user.id,
+        expected_version=1,
+    )
+    result_2 = refresh_stale_nutrition_projections(
+        session_factory=lambda: type(db)(db.get_bind()),
+        user_id=user.id,
+        expected_version=1,
+    )
+    result_3 = refresh_stale_nutrition_projections(
+        session_factory=lambda: type(db)(db.get_bind()),
+        user_id=user.id,
+        expected_version=1,
+    )
+    result_4 = refresh_stale_nutrition_projections(
+        session_factory=lambda: type(db)(db.get_bind()),
+        user_id=user.id,
+        expected_version=1,
+    )
+
+    assert [result.processed_count for result in (result_1, result_2, result_3, result_4)] == [
+        50,
+        50,
+        20,
+        0,
+    ]
+    assert [result.created_count for result in (result_1, result_2, result_3, result_4)] == [
+        50,
+        50,
+        20,
+        0,
+    ]
+    assert result_4.has_more is False
+    assert result_4.projection_refresh_required is False
+
+
+def test_refresh_all_fresh_dates_is_a_no_op(db, user: User, monkeypatch) -> None:
+    policy = _policy(db, user)
+    _observation(db, user.id, _run(db, user.id), key="fresh", local_date=DAY)
+    _head(db, user.id, DAY, _projection(db, user.id, policy, DAY))
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def should_not_rebuild(*args, **kwargs):
+        raise AssertionError("fresh dates must not be rebuilt")
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", should_not_rebuild)
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=1,
+    )
+
+    assert result == NutritionProjectionRefreshResult(
+        policy_version=1,
+        processed_count=0,
+        created_count=0,
+        unchanged_count=0,
+        has_more=False,
+        projection_refresh_required=False,
+    )
+
+
+def test_refresh_rejects_an_unexpected_policy_version(db, user: User, monkeypatch) -> None:
+    _policy(db, user)
+    calls = 0
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def should_not_rebuild(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("policy validation must precede rebuild")
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", should_not_rebuild)
+    with pytest.raises(NutritionProjectionRefreshError, match="expected policy version"):
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=2,
+        )
+    assert calls == 0
+
+
+def test_refresh_rejects_an_unusable_effective_policy(db, user: User) -> None:
+    create_policy_with_rules(db, user.id, 1, POLICY_AT, ())
+    db.commit()
+
+    with pytest.raises(NutritionProjectionRefreshError, match="usable effective"):
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=1,
+        )
+
+
+def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: User, monkeypatch) -> None:
+    policy = _policy(db, user)
+    run = _run(db, user.id)
+    dates = (DAY, DAY + timedelta(days=1), DAY + timedelta(days=2))
+    for local_date in dates:
+        _observation(db, user.id, run, key=f"partial-{local_date}", local_date=local_date)
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    calls: list[date] = []
+
+    def fail_on_second(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        calls.append(local_date)
+        if local_date == dates[1] and calls.count(local_date) == 1:
+            raise NutritionProjectionRefreshError("safe rebuild failure")
+        projection = _projection(session, user_id, policy, local_date)
+        _head(session, user_id, local_date, projection)
+        session.commit()
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=projection.id,
+            projection_version=projection.projection_version,
+            input_watermark="refresh-test",
+            created=True,
+            status=ProjectionPersistenceStatus.CREATED,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", fail_on_second)
+    with pytest.raises(NutritionProjectionRefreshError, match="safe rebuild failure"):
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=1,
+        )
+
+    db.expire_all()
+    assert db.scalar(
+        select(NutritionProjectionHead).where(
+            NutritionProjectionHead.user_id == user.id,
+            NutritionProjectionHead.local_date == dates[0],
+        )
+    ) is not None
+    assert db.scalar(
+        select(NutritionProjectionHead).where(
+            NutritionProjectionHead.user_id == user.id,
+            NutritionProjectionHead.local_date == dates[1],
+        )
+    ) is None
+
+    retry = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=1,
+    )
+    assert retry.processed_count == 2
+    assert calls == [dates[0], dates[1], dates[1], dates[2]]
+
+
+def test_refresh_accepts_advanced_metric_specific_policy(db, user: User, monkeypatch) -> None:
+    policy_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        datetime.now(UTC) - timedelta(minutes=1),
+        (PriorityRuleSpec("nutrition", "dietary_energy_kcal", "yazio", 1),),
+    )
+    db.commit()
+    policy = db.get(SourcePriorityPolicy, policy_snapshot.policy_id)
+    assert policy is not None
+    _observation(db, user.id, _run(db, user.id), key="advanced", local_date=DAY)
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def unchanged(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=None,
+            projection_version=None,
+            input_watermark="refresh-test",
+            created=False,
+            status=ProjectionPersistenceStatus.UNCHANGED,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", unchanged)
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=1,
+    )
+    assert result.processed_count == 1
+    assert result.unchanged_count == 1
+
+
+def test_refresh_rebuilds_same_evidence_under_new_provider_policy(
+    db, user: User, monkeypatch
+) -> None:
+    v1_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        datetime.now(UTC) - timedelta(minutes=2),
+        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    v2_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        2,
+        datetime.now(UTC) - timedelta(minutes=1),
+        (PriorityRuleSpec("nutrition", None, "google_health", 1),),
+    )
+    db.commit()
+    v1 = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
+    v2 = db.get(SourcePriorityPolicy, v2_snapshot.policy_id)
+    assert v1 is not None and v2 is not None
+    source = _observation(db, user.id, _run(db, user.id), key="same-value", local_date=DAY)
+    _event(db, user.id, source, key="same-value", local_date=DAY)
+    _head(db, user.id, DAY, _projection(db, user.id, v1, DAY))
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def rebuild_with_new_lineage(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=uuid4(),
+            projection_version=2,
+            input_watermark="new-policy",
+            created=True,
+            status=ProjectionPersistenceStatus.CREATED,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", rebuild_with_new_lineage)
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=2,
+    )
+
+    assert result.policy_version == 2
+    assert result.processed_count == 1
+    assert result.created_count == 1
+    assert result.unchanged_count == 0
+
+
+def test_refresh_treats_policy_lineage_change_as_created_even_for_same_value(
+    db, user: User, monkeypatch
+) -> None:
+    v1_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        datetime.now(UTC) - timedelta(minutes=2),
+        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    v2_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        2,
+        datetime.now(UTC) - timedelta(minutes=1),
+        (PriorityRuleSpec("nutrition", None, "google_health", 1),),
+    )
+    db.commit()
+    v1 = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
+    v2 = db.get(SourcePriorityPolicy, v2_snapshot.policy_id)
+    assert v1 is not None and v2 is not None
+    _observation(db, user.id, _run(db, user.id), key="lineage", local_date=DAY)
+    _head(db, user.id, DAY, _projection(db, user.id, v1, DAY))
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def same_value_new_lineage(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=uuid4(),
+            projection_version=2,
+            input_watermark="lineage-changed",
+            created=True,
+            status=ProjectionPersistenceStatus.CREATED,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", same_value_new_lineage)
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=2,
+    )
+    assert result.created_count == 1
+    assert result.unchanged_count == 0
+
+
+def test_refresh_converts_unexpected_policy_missing_to_safe_error(
+    db, user: User, monkeypatch
+) -> None:
+    _policy(db, user)
+    _observation(db, user.id, _run(db, user.id), key="missing-policy", local_date=DAY)
+    db.commit()
+
+    from app.nutrition.projection import refresh as refresh_module
+
+    def policy_missing(
+        session,
+        *,
+        user_id,
+        local_date,
+        policy_at,
+    ):
+        return ProjectionPersistenceResult(
+            user_id=user_id,
+            local_date=local_date,
+            projection_id=None,
+            projection_version=None,
+            input_watermark=None,
+            created=False,
+            status=ProjectionPersistenceStatus.POLICY_MISSING,
+        )
+
+    monkeypatch.setattr(refresh_module, "rebuild_nutrition_day", policy_missing)
+    with pytest.raises(NutritionProjectionRefreshError, match="policy disappeared"):
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=1,
+        )
+
