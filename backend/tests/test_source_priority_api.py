@@ -539,8 +539,7 @@ def test_source_priority_refresh_request_is_strict(
         ("configured", "expected policy version 1, current version is 2", "stale_policy"),
         ("selection_required", "", "selection_required"),
         ("configuration_required", "", "configuration_required"),
-        ("no_providers", "", "no_providers"),
-        ("configured", "no_policy", "no_policy"),
+        ("configured", "effective nutrition policy disappeared while rebuilding 2026-09-14", "no_policy"),
     ],
 )
 def test_source_priority_refresh_maps_safe_conflicts(
@@ -609,6 +608,30 @@ def test_source_priority_refresh_maps_unexpected_failure_safely(
         raise RuntimeError("SQL constraint secret payload")
 
     monkeypatch.setattr(source_priority_api, "refresh_stale_nutrition_projections", fake_refresh)
+    response = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "projection_refresh_failed"
+    assert response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    assert "SQL" not in response.text
+    assert "secret" not in response.text
+
+
+def test_source_priority_refresh_maps_preflight_failure_safely(
+    client: TestClient, user: User, monkeypatch
+) -> None:
+    csrf = _login(client)
+
+    from app.api import source_priority as source_priority_api
+
+    def fail_preflight(*_args, **_kwargs):
+        raise RuntimeError("SQL constraint secret provider payload")
+
+    monkeypatch.setattr(source_priority_api, "get_nutrition_priority_state", fail_preflight)
     response = client.post(
         REFRESH_PATH,
         headers={"X-CSRF-Token": csrf},

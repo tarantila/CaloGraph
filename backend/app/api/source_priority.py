@@ -83,7 +83,7 @@ def _refresh_error_code(exc: NutritionProjectionRefreshError) -> str | None:
         return "configuration_required"
     if "no provider" in message:
         return "no_providers"
-    if "no policy" in message:
+    if "no policy" in message or "effective nutrition policy disappeared" in message:
         return "no_policy"
     return None
 
@@ -104,16 +104,18 @@ def refresh_nutrition_priority(
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> NutritionPriorityRefreshResponse:
-    state = get_nutrition_priority_state(db, user.id)
-    if state.status in {"selection_required", "configuration_required", "no_providers"}:
-        _raise_refresh_conflict(state.status)
-
     try:
+        state = get_nutrition_priority_state(db, user.id)
+        if state.status in {"selection_required", "configuration_required", "no_providers"}:
+            _raise_refresh_conflict(state.status)
+
         result = refresh_stale_nutrition_projections(
             session_factory=SessionLocal,
             user_id=user.id,
             expected_version=payload.expected_version,
         )
+    except ProblemHTTPException:
+        raise
     except NutritionProjectionRefreshError as exc:
         code = _refresh_error_code(exc)
         if code is not None:
