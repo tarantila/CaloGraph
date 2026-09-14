@@ -14,11 +14,21 @@ from sqlalchemy.orm import Session
 
 import app.nutrition.projection.orchestration as orchestration
 from app.database import SessionLocal, engine
-from app.models import GoogleHealthConnection, NutritionDailyProjection, NutritionProjectionHead, User, YazioConnection
+from app.models import (
+    GoogleHealthConnection,
+    NutritionDailyProjection,
+    NutritionProjectionHead,
+    User,
+    YazioConnection,
+)
 from app.nutrition.projection.refresh import refresh_stale_nutrition_projections
 from app.schemas_source_priority import NutritionPriorityUpdateRequest
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
-from app.services.yazio_provider import YazioDailyNutrientSummary, YazioFoodDiary, YazioNutrientValues
+from app.services.yazio_provider import (
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
+)
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
