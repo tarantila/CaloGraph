@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import median
@@ -92,7 +93,8 @@ def daily(
         points = [point for point in points if point.tracking_status in statuses]
     if weekday is not None:
         points = [point for point in points if point.date.weekday() == weekday]
-    try:
+    # The shadow read is strictly observational and must never affect Legacy.
+    with suppress(Exception):
         run_daily_shadow(
             user.id,
             start,
@@ -103,9 +105,6 @@ def daily(
             enabled=settings.analytics_daily_shadow_read_enabled,
             max_days=settings.analytics_daily_shadow_max_days,
         )
-    except Exception:
-        # The shadow read is strictly observational and must never affect Legacy.
-        pass
     return points
 
 @router.get("/analytics/micronutrients")

@@ -258,10 +258,10 @@ def run_daily_shadow(
 
 
 __all__ = [
-    "DailyShadowOutcome",
-    "DailyShadowState",
     "TELEMETRY_EVENT",
     "TELEMETRY_VERSION",
+    "DailyShadowOutcome",
+    "DailyShadowState",
     "check_daily_shadow_eligibility",
     "collapse_daily_point_range",
     "is_daily_shadow_eligible",
