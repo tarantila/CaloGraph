@@ -15,10 +15,10 @@ from app.analytics.nutrition_parity import (
     NutritionDayParity,
     NutritionLegacyDay,
     NutritionLegacyMetric,
+    NutritionLegacySourceBreakdown,
     NutritionMetricParity,
     NutritionParityClassification,
     NutritionRangeParity,
-    NutritionLegacySourceBreakdown,
     compare_nutrition_day,
     compare_nutrition_range,
     read_legacy_nutrition_day,
@@ -50,7 +50,11 @@ from app.nutrition.models import (
 )
 from app.nutrition.projection import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
-from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
+from app.nutrition.repositories import (
+    create_projection,
+    create_projection_fact,
+    set_projection_head,
+)
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
@@ -148,8 +152,8 @@ def test_canonical_parity_contract_is_exact_and_immutable() -> None:
         NutritionLegacyDay,
     ):
         assert is_dataclass(contract)
-        assert getattr(contract, "__dataclass_params__").frozen
-        assert getattr(contract, "__slots__")
+        assert contract.__dataclass_params__.frozen
+        assert contract.__slots__
 
     metric = NutritionLegacyMetric(
         metric_key="protein_g",
@@ -391,8 +395,8 @@ def _classification(day: NutritionDayParity, metric_key: str = "dietary_energy_k
 def test_classification_contracts_are_immutable_and_expose_safe_fields() -> None:
     for contract in (NutritionMetricParity, NutritionDayParity):
         assert is_dataclass(contract)
-        assert getattr(contract, "__dataclass_params__").frozen
-        assert getattr(contract, "__slots__")
+        assert contract.__dataclass_params__.frozen
+        assert contract.__slots__
 
 
 @pytest.mark.parametrize(
