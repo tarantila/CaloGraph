@@ -596,10 +596,33 @@ def test_multi_source_nutrition_difference_explains_calorie_and_derived_fields(
 
 
 @pytest.mark.parametrize(
-    ("coverage", "resolution"),
+    ("coverage", "resolution", "expected"),
     (
-        (CoverageState.PARTIAL, ResolutionState.RESOLVED),
-        (CoverageState.COMPLETE, ResolutionState.UNRESOLVED),
+        (
+            CoverageState.PARTIAL,
+            ResolutionState.RESOLVED,
+            DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE,
+        ),
+        (
+            CoverageState.COMPLETE,
+            ResolutionState.UNRESOLVED,
+            DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE,
+        ),
+        (
+            CoverageState.UNKNOWN,
+            ResolutionState.RESOLVED,
+            DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+        ),
+        (
+            CoverageState.COMPLETE,
+            ResolutionState.CONFLICT,
+            DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+        ),
+        (
+            CoverageState.COMPLETE,
+            ResolutionState.DUPLICATE_CANDIDATE,
+            DailyPointParityClassification.UNEXPLAINED_MISMATCH,
+        ),
     ),
 )
 def test_canonical_quality_difference_explains_tracking_quality_only(
@@ -608,6 +631,7 @@ def test_canonical_quality_difference_explains_tracking_quality_only(
     monkeypatch: pytest.MonkeyPatch,
     coverage: CoverageState,
     resolution: ResolutionState,
+    expected: DailyPointParityClassification,
 ) -> None:
     legacy = _daily_point()
     canonical = _daily_point(tracking_status="incomplete", tracking_score=0)
@@ -623,8 +647,8 @@ def test_canonical_quality_difference_explains_tracking_quality_only(
 
     result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
 
-    assert result.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
-    assert result.tracking.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
+    assert result.classification is expected
+    assert result.tracking.classification is expected
     assert result.fields.differences == ()
 def test_unexplained_tracking_status_mismatch_is_not_expected(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
@@ -644,6 +668,31 @@ def test_unexplained_tracking_status_mismatch_is_not_expected(
     assert result.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
 
 
+
+def test_target_mismatch_prevents_calorie_explanation_for_deviation(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point()
+    canonical = _daily_point(calories=Decimal("1800"), target=Decimal("2100"))
+    _stub_daily_point_comparison(
+        monkeypatch,
+        legacy=legacy,
+        canonical=canonical,
+        nutrition=_nutrition_day(NutritionParityClassification.LEGACY_MULTI_SOURCE),
+    )
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    by_field = {difference.field_name: difference for difference in result.fields.differences}
+    assert by_field["calories_kcal"].classification is (
+        DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    )
+    assert by_field["deviation_kcal"].classification is (
+        DailyPointParityClassification.UNEXPLAINED_MISMATCH
+    )
+    assert by_field["effective_deviation_kcal"].classification is (
+        DailyPointParityClassification.UNEXPLAINED_MISMATCH
+    )
 
 def test_target_and_activity_mismatches_remain_unexplained(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
@@ -667,6 +716,86 @@ def test_target_and_activity_mismatches_remain_unexplained(
         difference.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
         for difference in result.fields.differences
     )
+
+
+def test_explicit_zero_score_difference_remains_expected_when_override_masks_status(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point(
+        calories=None,
+        tracking_status="probably_incomplete",
+        tracking_score=0,
+    )
+    canonical = _daily_point(
+        calories=Decimal("0"),
+        tracking_status="probably_incomplete",
+        tracking_score=1,
+    )
+    _stub_daily_point_comparison(
+        monkeypatch,
+        legacy=legacy,
+        canonical=canonical,
+        nutrition=_nutrition_day(
+            calorie_legacy_value=Decimal("0"),
+            calorie_projection_value=Decimal("0"),
+        ),
+    )
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.tracking.classification is (
+        DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
+    )
+
+
+def test_quality_score_difference_remains_expected_when_override_masks_status(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point(tracking_status="probably_complete", tracking_score=1)
+    canonical = _daily_point(tracking_status="probably_complete", tracking_score=0)
+    _stub_daily_point_comparison(
+        monkeypatch,
+        legacy=legacy,
+        canonical=canonical,
+        nutrition=_nutrition_day(calorie_coverage=CoverageState.PARTIAL),
+    )
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.tracking.classification is (
+        DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
+    )
+
+
+def test_multi_source_quality_combination_keeps_tracking_quality_narrow(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point()
+    canonical = _daily_point(
+        calories=Decimal("1800"),
+        tracking_status="incomplete",
+        tracking_score=0,
+    )
+    _stub_daily_point_comparison(
+        monkeypatch,
+        legacy=legacy,
+        canonical=canonical,
+        nutrition=_nutrition_day(
+            NutritionParityClassification.LEGACY_MULTI_SOURCE,
+            calorie_coverage=CoverageState.PARTIAL,
+        ),
+    )
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.tracking.classification is (
+        DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
+    )
+    by_field = {difference.field_name: difference for difference in result.fields.differences}
+    assert by_field["calories_kcal"].classification is (
+        DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    )
+    assert result.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
 
 
 def test_non_comparable_canonical_candidate_short_circuits_fields(

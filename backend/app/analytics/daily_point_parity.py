@@ -29,6 +29,7 @@ from app.analytics.service import (
     daily_points,
 )
 from app.models import HealthSample, NutritionTarget, TrackingOverride, User
+from app.nutrition.enums import CoverageState, ResolutionState
 from app.schemas import DailyPoint
 
 
@@ -398,21 +399,28 @@ def _canonical_quality_difference(
     if (
         legacy.calories_kcal is None
         or canonical.calories_kcal is None
-        or legacy.tracking_status != "complete"
-        or canonical.tracking_status != "incomplete"
         or legacy.tracking_score != 1
         or canonical.tracking_score != 0
+        or not (
+            (
+                legacy.tracking_status == "complete"
+                and canonical.tracking_status == "incomplete"
+            )
+            or legacy.tracking_status == canonical.tracking_status
+        )
     ):
         return False
     calorie_metric = nutrition_metrics.get("dietary_energy_kcal")
     return bool(
         calorie_metric is not None
-        and calorie_metric.classification is NutritionParityClassification.MATCH
+        and calorie_metric.classification
+        in {
+            NutritionParityClassification.MATCH,
+            NutritionParityClassification.LEGACY_MULTI_SOURCE,
+        }
         and (
-            calorie_metric.projection_coverage_state is not None
-            and calorie_metric.projection_coverage_state.value != "complete"
-            or calorie_metric.projection_resolution_state is not None
-            and calorie_metric.projection_resolution_state.value != "resolved"
+            calorie_metric.projection_coverage_state is CoverageState.PARTIAL
+            or calorie_metric.projection_resolution_state is ResolutionState.UNRESOLVED
         )
     )
 
@@ -430,6 +438,8 @@ def _calorie_difference_explains_derived_field(
         DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE,
     }:
         return False
+    if legacy.target_kcal != canonical.target_kcal:
+        return False
     if field_name == "effective_deviation_kcal":
         return legacy.effective_budget_kcal == canonical.effective_budget_kcal
     return True
@@ -446,15 +456,23 @@ def _tracking_classification(
         and legacy.tracking_score == canonical.tracking_score
     ):
         return DailyPointParityClassification.MATCH
+    explicit_zero = _explicit_zero_difference(
+        field_name="calories_kcal",
+        legacy_value=legacy.calories_kcal,
+        canonical_value=canonical.calories_kcal,
+        nutrition_metrics=nutrition_metrics,
+    )
     if (
-        _explicit_zero_difference(
-            field_name="calories_kcal",
-            legacy_value=legacy.calories_kcal,
-            canonical_value=canonical.calories_kcal,
-            nutrition_metrics=nutrition_metrics,
+        explicit_zero
+        and legacy.tracking_score == 0
+        and canonical.tracking_score == 1
+        and (
+            (
+                legacy.tracking_status == "no_data"
+                and canonical.tracking_status == "complete"
+            )
+            or legacy.tracking_status == canonical.tracking_status
         )
-        and legacy.tracking_status == "no_data"
-        and canonical.tracking_status == "complete"
     ):
         return DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE
     if _canonical_quality_difference(nutrition_metrics, legacy, canonical):
