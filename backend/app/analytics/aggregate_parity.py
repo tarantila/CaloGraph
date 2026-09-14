@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -10,13 +10,29 @@ from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import select, union
-from sqlalchemy.orm import Session
 
+from app.analytics.daily_point_parity import (
+    CanonicalDailyPointResult,
+    CanonicalDailyPointResultState,
+    DailyPointParity,
+    DailyPointParityClassification,
+    _build_canonical_daily_point_with_inputs,
+    _compare_daily_point_results,
+    _read_daily_point_range_inputs,
+)
+from app.analytics.nutrition_parity import (
+    MAX_PARITY_DAYS,
+    _compare_nutrition_day_with_legacy,
+    _empty_legacy_nutrition_day,
+)
+from app.analytics.service import daily_points, moving_average
+from app.models import User
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionProjectionHead,
     NutritionSourceObservation,
 )
+from app.schemas import DailyPoint
 
 CANONICAL_HISTORY_CHUNK_SIZE: Final[int] = 500
 
@@ -191,6 +207,365 @@ def iter_canonical_history_date_chunks(
 
 
     return _iterate()
+_MOVING_AVERAGE_WINDOWS: Final[frozenset[int]] = frozenset({7, 14, 28})
+_ELIGIBLE_TRACKING_STATUSES: Final[frozenset[str]] = frozenset(
+    {"complete", "probably_complete"}
+)
+
+
+def _validate_moving_average_range(
+    start_date: date,
+    end_date: date,
+    windows: tuple[int, ...],
+) -> tuple[int, ...]:
+    _validate_date_bound(start_date, "start_date")
+    _validate_date_bound(end_date, "end_date")
+    if not isinstance(start_date, date) or isinstance(start_date, datetime):
+        raise ValueError("start_date must be a date")
+    if not isinstance(end_date, date) or isinstance(end_date, datetime):
+        raise ValueError("end_date must be a date")
+    if start_date > end_date:
+        raise ValueError("start_date must not be after end_date")
+    if (end_date - start_date).days + 1 > MAX_PARITY_DAYS:
+        raise ValueError(f"date range must not exceed {MAX_PARITY_DAYS} days")
+    try:
+        validated_windows = tuple(windows)
+    except TypeError as exc:
+        raise ValueError("windows must contain only 7, 14, and 28") from exc
+    if not validated_windows:
+        raise ValueError("windows must not be empty")
+    if any(
+        type(window) is not int or window not in _MOVING_AVERAGE_WINDOWS
+        for window in validated_windows
+    ):
+        raise ValueError("windows must contain only 7, 14, and 28")
+    return validated_windows
+
+
+def _calendar_dates(start_date: date, end_date: date) -> tuple[date, ...]:
+    return tuple(
+        start_date + timedelta(days=offset)
+        for offset in range((end_date - start_date).days + 1)
+    )
+
+
+def _include_incomplete_points(points: list[DailyPoint]) -> list[DailyPoint]:
+    """Make the legacy trends ``include_incomplete`` behavior read-only."""
+    return [
+        point.model_copy(update={"tracking_status": "complete"})
+        if point.calories_kcal is not None
+        else point
+        for point in points
+    ]
+
+
+def _point_is_average_eligible(point: DailyPoint, include_incomplete: bool) -> bool:
+    if point.calories_kcal is None:
+        return False
+    return include_incomplete or point.tracking_status in _ELIGIBLE_TRACKING_STATUSES
+
+
+def _window_average(
+    points_by_date: dict[date, DailyPoint],
+    window_dates: tuple[date, ...],
+    *,
+    include_incomplete: bool,
+    calories_from: dict[date, Decimal | None] | None = None,
+    status_from: dict[date, str] | None = None,
+) -> Decimal | None:
+    values: list[Decimal] = []
+    for local_date in window_dates:
+        point = points_by_date[local_date]
+        calories = (
+            calories_from[local_date]
+            if calories_from is not None
+            else point.calories_kcal
+        )
+        if calories is None:
+            continue
+        if status_from is None:
+            eligible = include_incomplete or point.tracking_status in _ELIGIBLE_TRACKING_STATUSES
+        else:
+            eligible = include_incomplete or status_from[local_date] in _ELIGIBLE_TRACKING_STATUSES
+        if eligible:
+            values.append(calories)
+    return sum(values, Decimal()) / len(values) if values else None
+
+
+def _daily_nutrition_cause(parity: DailyPointParity) -> bool:
+    return any(
+        difference.field_name == "calories_kcal"
+        and difference.classification
+        in {
+            DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE,
+            DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE,
+        }
+        for difference in parity.field_differences
+    )
+
+def _daily_tracking_cause(parity: DailyPointParity) -> bool:
+    return (
+        parity.tracking.classification
+        is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE
+    )
+
+
+def _cause_accounts_for_window(
+    *,
+    cause_dates: set[date],
+    legacy_points_by_date: dict[date, DailyPoint],
+    canonical_points_by_date: dict[date, DailyPoint],
+    window_dates: tuple[date, ...],
+    include_incomplete: bool,
+    legacy_value: Decimal | None,
+    canonical_value: Decimal | None,
+    nutrition_cause: bool,
+) -> bool:
+    if not cause_dates:
+        return False
+    relevant_causes = cause_dates.intersection(window_dates)
+    if not relevant_causes:
+        return False
+
+    for local_date in window_dates:
+        legacy = legacy_points_by_date[local_date]
+        canonical = canonical_points_by_date[local_date]
+        if legacy.calories_kcal != canonical.calories_kcal and (
+            nutrition_cause is False or local_date not in relevant_causes
+        ):
+            return False
+        legacy_eligible = _point_is_average_eligible(legacy, include_incomplete)
+        canonical_eligible = _point_is_average_eligible(canonical, include_incomplete)
+        if legacy_eligible != canonical_eligible and local_date not in relevant_causes:
+            return False
+
+    if nutrition_cause:
+        adjusted = _window_average(
+            canonical_points_by_date,
+            window_dates,
+            include_incomplete=include_incomplete,
+            calories_from={
+                local_date: legacy_points_by_date[local_date].calories_kcal
+                if local_date in relevant_causes
+                else canonical_points_by_date[local_date].calories_kcal
+                for local_date in window_dates
+            },
+        )
+    else:
+        adjusted = _window_average(
+            canonical_points_by_date,
+            window_dates,
+            include_incomplete=include_incomplete,
+            status_from={
+                local_date: legacy_points_by_date[local_date].tracking_status
+                if local_date in relevant_causes
+                else canonical_points_by_date[local_date].tracking_status
+                for local_date in window_dates
+            },
+        )
+    return adjusted == legacy_value and canonical_value != legacy_value
+
+
+def compare_moving_average_range(
+    db: Session,
+    user_id: UUID,
+    start_date: date,
+    end_date: date,
+    *,
+    windows: tuple[int, ...] = (7, 14, 28),
+    include_incomplete: bool = False,
+) -> MovingAverageRangeParity:
+    """Compare legacy and canonical moving averages over an inclusive range."""
+    windows = _validate_moving_average_range(start_date, end_date, windows)
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+
+    max_window = max(windows)
+    expanded_start = start_date - timedelta(days=max_window - 1)
+    expanded_dates = _calendar_dates(expanded_start, end_date)
+    legacy_points = daily_points(db, user, expanded_start, end_date)
+    legacy_points_by_date = {point.date: point for point in legacy_points}
+    legacy_index_by_date = {point.date: index for index, point in enumerate(legacy_points)}
+    legacy_average_points = (
+        _include_incomplete_points(legacy_points) if include_incomplete else legacy_points
+    )
+
+    (
+        totals_by_date,
+        nutrition_counts_by_date,
+        active_energy_by_source,
+        active_energy_sources_by_day,
+        legacy_nutrition_days,
+        targets,
+        overrides,
+    ) = _read_daily_point_range_inputs(
+        db,
+        user_id=user_id,
+        start=expanded_start,
+        end=end_date,
+    )
+
+    canonical_points_by_date: dict[date, DailyPoint] = {}
+    canonical_parity_by_date: dict[date, DailyPointParity] = {}
+    canonical_comparable_dates: set[date] = set()
+    for local_date in expanded_dates:
+        canonical_result: CanonicalDailyPointResult = _build_canonical_daily_point_with_inputs(
+            db,
+            user_id,
+            local_date,
+            targets=targets,
+            active_energy_by_source=active_energy_by_source,
+            active_energy_sources_by_day=active_energy_sources_by_day,
+            override=overrides.get(local_date),
+        )
+        if (
+            canonical_result.state is not CanonicalDailyPointResultState.READY
+            or canonical_result.point is None
+        ):
+            continue
+        nutrition = _compare_nutrition_day_with_legacy(
+            db,
+            legacy_nutrition_days.get(
+                local_date,
+                _empty_legacy_nutrition_day(local_date),
+            ),
+            user_id=user_id,
+        )
+        parity = _compare_daily_point_results(
+            local_date=local_date,
+            legacy=legacy_points_by_date[local_date],
+            nutrition=nutrition,
+            canonical_result=canonical_result,
+        )
+        if not parity.comparable:
+            continue
+        canonical_points_by_date[local_date] = canonical_result.point
+        canonical_parity_by_date[local_date] = parity
+        canonical_comparable_dates.add(local_date)
+
+    canonical_points = [
+        canonical_points_by_date[local_date]
+        for local_date in expanded_dates
+        if local_date in canonical_comparable_dates
+    ]
+    canonical_index_by_date = {point.date: index for index, point in enumerate(canonical_points)}
+    canonical_average_points = (
+        _include_incomplete_points(canonical_points)
+        if include_incomplete
+        else canonical_points
+    )
+
+    results: list[MovingAverageParity] = []
+    for local_date in _calendar_dates(start_date, end_date):
+        for window in windows:
+            window_dates = _calendar_dates(
+                local_date - timedelta(days=window - 1),
+                local_date,
+            )
+            legacy_value = moving_average(
+                legacy_average_points,
+                window,
+                legacy_index_by_date[local_date],
+            )
+            if not set(window_dates).issubset(canonical_comparable_dates):
+                results.append(
+                    MovingAverageParity(
+                        local_date=local_date,
+                        window=window,
+                        legacy_value=legacy_value,
+                        canonical_value=None,
+                        classification=MovingAverageParityClassification.NOT_COMPARABLE,
+                        explanation=(
+                            "canonical daily point is not comparable in the exact "
+                            "moving-average window"
+                        ),
+                    )
+                )
+                continue
+
+            canonical_value = moving_average(
+                canonical_average_points,
+                window,
+                canonical_index_by_date[local_date],
+            )
+            if legacy_value == canonical_value:
+                classification = (
+                    MovingAverageParityClassification.BOTH_MISSING
+                    if legacy_value is None
+                    else MovingAverageParityClassification.MATCH
+                )
+                results.append(
+                    MovingAverageParity(
+                        local_date=local_date,
+                        window=window,
+                        legacy_value=legacy_value,
+                        canonical_value=canonical_value,
+                        classification=classification,
+                    )
+                )
+                continue
+
+            nutrition_dates = {
+                candidate_date
+                for candidate_date in window_dates
+                if _daily_nutrition_cause(canonical_parity_by_date[candidate_date])
+            }
+            tracking_dates = {
+                candidate_date
+                for candidate_date in window_dates
+                if _daily_tracking_cause(canonical_parity_by_date[candidate_date])
+            }
+            if _cause_accounts_for_window(
+                cause_dates=nutrition_dates,
+                legacy_points_by_date=legacy_points_by_date,
+                canonical_points_by_date=canonical_points_by_date,
+                window_dates=window_dates,
+                include_incomplete=include_incomplete,
+                legacy_value=legacy_value,
+                canonical_value=canonical_value,
+                nutrition_cause=True,
+            ):
+                classification = MovingAverageParityClassification.EXPECTED_NUTRITION_DIFFERENCE
+                explanation = (
+                    "canonical nutrition value semantics explain the exact "
+                    "moving-average window"
+                )
+            elif _cause_accounts_for_window(
+                cause_dates=tracking_dates,
+                legacy_points_by_date=legacy_points_by_date,
+                canonical_points_by_date=canonical_points_by_date,
+                window_dates=window_dates,
+                include_incomplete=include_incomplete,
+                legacy_value=legacy_value,
+                canonical_value=canonical_value,
+                nutrition_cause=False,
+            ):
+                classification = MovingAverageParityClassification.EXPECTED_TRACKING_DIFFERENCE
+                explanation = (
+                    "canonical tracking eligibility explains the exact "
+                    "moving-average window"
+                )
+            else:
+                classification = MovingAverageParityClassification.UNEXPLAINED_MISMATCH
+                explanation = None
+            results.append(
+                MovingAverageParity(
+                    local_date=local_date,
+                    window=window,
+                    legacy_value=legacy_value,
+                    canonical_value=canonical_value,
+                    classification=classification,
+                    explanation=explanation,
+                )
+            )
+
+    return MovingAverageRangeParity(
+        start_date=start_date,
+        end_date=end_date,
+        results=tuple(results),
+    )
+
 
 
 __all__ = [
@@ -203,5 +578,6 @@ __all__ = [
     "MovingAverageParity",
     "MovingAverageParityClassification",
     "MovingAverageRangeParity",
+    "compare_moving_average_range",
     "iter_canonical_history_date_chunks",
 ]
