@@ -104,12 +104,18 @@ def test_canonical_parity_contract_is_exact_and_immutable() -> None:
     assert NutritionParityClassification.MATCH.value == "match"
     assert NutritionParityClassification.NOT_PROJECTED.value == "not_projected"
     assert {
+        "CANONICAL_PARITY_METRICS",
+        "MAX_PARITY_DAYS",
         "NutritionDayParity",
+        "NutritionLegacyDay",
+        "NutritionLegacyMetric",
+        "NutritionLegacySourceBreakdown",
         "NutritionMetricParity",
         "NutritionParityClassification",
-        "compare_nutrition_day",
         "NutritionRangeParity",
+        "compare_nutrition_day",
         "compare_nutrition_range",
+        "read_legacy_nutrition_day",
     } <= set(parity_module.__all__)
 
     for contract in (
