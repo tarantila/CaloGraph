@@ -510,6 +510,38 @@ def test_compare_moving_average_range_include_incomplete_is_immutable(
     assert tuple(point.tracking_status for point in legacy_points) == original_statuses
 
 
+def test_compare_moving_average_range_does_not_match_equal_means_with_different_counts(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = date(2026, 1, 10)
+    dates = [target - timedelta(days=offset) for offset in range(6, -1, -1)]
+    legacy_points = [
+        _synthetic_point(
+            local_date,
+            Decimal("100") if local_date in {target - timedelta(days=1), target} else None,
+        )
+        for local_date in dates
+    ]
+    canonical_points = {
+        point.date: (
+            _synthetic_point(point.date, Decimal("100"))
+            if point.date == target
+            else _synthetic_point(point.date, None)
+        )
+        for point in legacy_points
+    }
+    _stub_moving_average_inputs(
+        monkeypatch,
+        legacy_points=legacy_points,
+        canonical_points=canonical_points,
+    )
+
+    result = compare_moving_average_range(db, user.id, target, target, windows=(7,))
+
+    assert result.results[0].legacy_value == Decimal("100")
+    assert result.results[0].canonical_value == Decimal("100")
+    assert result.results[0].classification is MovingAverageParityClassification.UNEXPLAINED_MISMATCH
+
 def test_compare_moving_average_range_handles_missing_and_non_comparable_windows(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:

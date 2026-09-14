@@ -10,7 +10,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import select, union
-
+from sqlalchemy.orm import Session
 from app.analytics.daily_point_parity import (
     CanonicalDailyPointResult,
     CanonicalDailyPointResultState,
@@ -265,15 +265,16 @@ def _point_is_average_eligible(point: DailyPoint, include_incomplete: bool) -> b
     return include_incomplete or point.tracking_status in _ELIGIBLE_TRACKING_STATUSES
 
 
-def _window_average(
+def _window_sum_count(
     points_by_date: dict[date, DailyPoint],
     window_dates: tuple[date, ...],
     *,
     include_incomplete: bool,
     calories_from: dict[date, Decimal | None] | None = None,
     status_from: dict[date, str] | None = None,
-) -> Decimal | None:
-    values: list[Decimal] = []
+) -> tuple[Decimal, int]:
+    total = Decimal()
+    count = 0
     for local_date in window_dates:
         point = points_by_date[local_date]
         calories = (
@@ -288,8 +289,27 @@ def _window_average(
         else:
             eligible = include_incomplete or status_from[local_date] in _ELIGIBLE_TRACKING_STATUSES
         if eligible:
-            values.append(calories)
-    return sum(values, Decimal()) / len(values) if values else None
+            total += calories
+            count += 1
+    return total, count
+
+
+def _window_average(
+    points_by_date: dict[date, DailyPoint],
+    window_dates: tuple[date, ...],
+    *,
+    include_incomplete: bool,
+    calories_from: dict[date, Decimal | None] | None = None,
+    status_from: dict[date, str] | None = None,
+) -> Decimal | None:
+    total, count = _window_sum_count(
+        points_by_date,
+        window_dates,
+        include_incomplete=include_incomplete,
+        calories_from=calories_from,
+        status_from=status_from,
+    )
+    return total / count if count else None
 
 
 def _daily_nutrition_cause(parity: DailyPointParity) -> bool:
@@ -319,6 +339,10 @@ def _cause_accounts_for_window(
     include_incomplete: bool,
     legacy_value: Decimal | None,
     canonical_value: Decimal | None,
+    legacy_sum: Decimal,
+    legacy_count: int,
+    canonical_sum: Decimal,
+    canonical_count: int,
     nutrition_cause: bool,
 ) -> bool:
     if not cause_dates:
@@ -340,7 +364,7 @@ def _cause_accounts_for_window(
             return False
 
     if nutrition_cause:
-        adjusted = _window_average(
+        adjusted_sum, adjusted_count = _window_sum_count(
             canonical_points_by_date,
             window_dates,
             include_incomplete=include_incomplete,
@@ -352,7 +376,7 @@ def _cause_accounts_for_window(
             },
         )
     else:
-        adjusted = _window_average(
+        adjusted_sum, adjusted_count = _window_sum_count(
             canonical_points_by_date,
             window_dates,
             include_incomplete=include_incomplete,
@@ -363,7 +387,16 @@ def _cause_accounts_for_window(
                 for local_date in window_dates
             },
         )
-    return adjusted == legacy_value and canonical_value != legacy_value
+    actual_difference = (
+        canonical_value != legacy_value
+        or canonical_sum != legacy_sum
+        or canonical_count != legacy_count
+    )
+    return (
+        actual_difference
+        and adjusted_sum == legacy_sum
+        and adjusted_count == legacy_count
+    )
 
 
 def compare_moving_average_range(
@@ -489,7 +522,21 @@ def compare_moving_average_range(
                 window,
                 canonical_index_by_date[local_date],
             )
-            if legacy_value == canonical_value:
+            legacy_sum, legacy_count = _window_sum_count(
+                legacy_points_by_date,
+                window_dates,
+                include_incomplete=include_incomplete,
+            )
+            canonical_sum, canonical_count = _window_sum_count(
+                canonical_points_by_date,
+                window_dates,
+                include_incomplete=include_incomplete,
+            )
+            if (
+                legacy_value == canonical_value
+                and legacy_sum == canonical_sum
+                and legacy_count == canonical_count
+            ):
                 classification = (
                     MovingAverageParityClassification.BOTH_MISSING
                     if legacy_value is None
@@ -524,6 +571,10 @@ def compare_moving_average_range(
                 include_incomplete=include_incomplete,
                 legacy_value=legacy_value,
                 canonical_value=canonical_value,
+                legacy_sum=legacy_sum,
+                legacy_count=legacy_count,
+                canonical_sum=canonical_sum,
+                canonical_count=canonical_count,
                 nutrition_cause=True,
             ):
                 classification = MovingAverageParityClassification.EXPECTED_NUTRITION_DIFFERENCE
@@ -539,6 +590,10 @@ def compare_moving_average_range(
                 include_incomplete=include_incomplete,
                 legacy_value=legacy_value,
                 canonical_value=canonical_value,
+                legacy_sum=legacy_sum,
+                legacy_count=legacy_count,
+                canonical_sum=canonical_sum,
+                canonical_count=canonical_count,
                 nutrition_cause=False,
             ):
                 classification = MovingAverageParityClassification.EXPECTED_TRACKING_DIFFERENCE
