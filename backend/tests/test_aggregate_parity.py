@@ -33,10 +33,14 @@ from app.analytics.aggregate_parity import (
 )
 
 
+_DATE_0 = date(2025, 12, 31)
 _DATE_1 = date(2026, 1, 1)
 _DATE_2 = date(2026, 1, 2)
 _DATE_3 = date(2026, 1, 3)
 _DATE_4 = date(2026, 1, 4)
+_DATE_5 = date(2026, 1, 5)
+
+
 def _run(db: Session, user: User) -> NutritionIngestionRun:
     run = NutritionIngestionRun(
         user_id=user.id,
@@ -139,21 +143,32 @@ def test_canonical_history_union_is_scoped_bounded_and_keyset_paginated(
 ) -> None:
     assert CANONICAL_HISTORY_CHUNK_SIZE == 500
     run = _run(db, user)
+    _observation(db, user, _DATE_0, run=run)  # observation-only date
     observation = _observation(db, user, _DATE_1, run=run)
-    _observation(db, user, None, run=run)
-    _event(db, user, _DATE_2, observation)
-    _projection_head(db, user, _DATE_3)
+    _observation(db, user, None, run=run)  # undated observation excluded
+    _event(db, user, _DATE_2, observation)  # event-only date
+    _projection_head(db, user, _DATE_3)  # projection-only date
+    _observation(db, user, _DATE_4, run=run)  # outside the upper bound
     _event(db, user, _DATE_1, observation)  # duplicate date across sources
 
     other = User(username="aggregate-parity-other", password_hash="synthetic-password-hash")
     db.add(other)
     db.flush()
     other_run = _run(db, other)
-    other_observation = _observation(db, other, _DATE_4, run=other_run)
-    _event(db, other, _DATE_4, other_observation)
-    _projection_head(db, other, _DATE_4)
+    other_observation = _observation(db, other, _DATE_5, run=other_run)
+    _event(db, other, _DATE_5, other_observation)
+    _projection_head(db, other, _DATE_5)
 
-    chunks = tuple(
+    all_chunks = tuple(
+        iter_canonical_history_date_chunks(
+            db,
+            user.id,
+            chunk_size=2,
+        )
+    )
+    assert all_chunks == ((_DATE_0, _DATE_1), (_DATE_2, _DATE_3), (_DATE_4,))
+
+    bounded_chunks = tuple(
         iter_canonical_history_date_chunks(
             db,
             user.id,
@@ -162,9 +177,8 @@ def test_canonical_history_union_is_scoped_bounded_and_keyset_paginated(
             chunk_size=2,
         )
     )
-
-    assert chunks == ((_DATE_1, _DATE_2), (_DATE_3,))
-    assert all(len(chunk) <= 2 for chunk in chunks)
+    assert bounded_chunks == ((_DATE_1, _DATE_2), (_DATE_3,))
+    assert all(len(chunk) <= 2 for chunk in all_chunks)
 
 
 def test_canonical_history_empty_result_is_safe(db: Session, user: User) -> None:
@@ -177,6 +191,17 @@ def test_canonical_history_rejects_invalid_chunk_sizes(
 ) -> None:
     with pytest.raises(ValueError):
         iter_canonical_history_date_chunks(db, user.id, chunk_size=chunk_size)  # type: ignore[arg-type]
+
+
+def test_canonical_history_rejects_chunks_above_bounded_maximum(
+    db: Session, user: User
+) -> None:
+    with pytest.raises(ValueError):
+        iter_canonical_history_date_chunks(
+            db,
+            user.id,
+            chunk_size=CANONICAL_HISTORY_CHUNK_SIZE + 1,
+        )
 
 
 def test_canonical_history_rejects_reversed_or_invalid_date_bounds(
