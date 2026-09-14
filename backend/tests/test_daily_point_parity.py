@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analytics.daily_point_parity import (
     CanonicalDailyPointReason,
     CanonicalDailyPointResult,
     CanonicalDailyPointResultState,
+    DailyPointFieldDifference,
     DailyPointFieldParity,
     DailyPointParity,
     DailyPointParityClassification,
@@ -34,8 +36,26 @@ from app.analytics.nutrition_projection import (
     NutritionProjectionReadError,
     NutritionProjectionReadState,
 )
-from app.models import HealthSample, ImportBatch, NutritionTarget, TrackingOverride, User
 from app.schemas import DailyPoint
+from app.google_health.client import (
+    NutritionDataSource,
+    NutritionDataSourceApplication,
+    NutritionDataSourceDevice,
+    NutritionLog,
+    NutritionLogDataPoint,
+    NutritionLogInterval,
+    NutritionNutrient,
+    NutritionQuantity,
+)
+from app.models import (
+    GoogleHealthConnection,
+    HealthSample,
+    ImportBatch,
+    NutritionTarget,
+    TrackingOverride,
+    User,
+    YazioConnection,
+)
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -44,9 +64,27 @@ from app.nutrition.enums import (
     ProjectionStatus,
     ResolutionState,
 )
+from app.nutrition.models import (
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionProjectionHead,
+)
+from app.nutrition.projection import ProjectionPersistenceStatus
+from app.nutrition.projection.orchestration import rebuild_nutrition_day
+from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
+from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
+from app.services.yazio_provider import (
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
+)
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
 
 LOCAL_DATE = date(2024, 1, 2)
+
 
 
 def _fact(
@@ -1244,3 +1282,553 @@ def test_daily_point_range_preserves_activity_source_asymmetry_and_missing_state
         if difference.field_name
         in {"activity_mode", "activity_source_type", "active_energy_kcal", "activity_data_status"}
     } == set()
+
+
+def _d3b_values(base: str = "2100") -> dict[str, Decimal]:
+    return {
+        "dietary_energy_kcal": Decimal(base),
+        "protein_g": Decimal("120"),
+        "carbohydrates_g": Decimal("230"),
+        "fat_g": Decimal("70"),
+        "fiber_g": Decimal("30"),
+        "sugar_g": Decimal("50"),
+        "saturated_fat_g": Decimal("20"),
+    }
+
+
+def _d3b_sample(
+    db: Session,
+    *,
+    user: User,
+    batch: ImportBatch,
+    metric_type: str,
+    value: Decimal,
+    source_type: str,
+    suffix: str,
+) -> None:
+    at = datetime.combine(LOCAL_DATE, datetime.min.time(), tzinfo=UTC)
+    unit = "kcal" if metric_type == "dietary_energy_kcal" else "g"
+    db.add(
+        HealthSample(
+            user_id=user.id,
+            import_batch_id=batch.id,
+            external_sample_id=f"{suffix}-external",
+            fingerprint=f"{suffix}-fingerprint",
+            source_type=source_type,
+            source_name=source_type,
+            source_identifier=f"{suffix}-source",
+            metric_type=metric_type,
+            value=value,
+            unit=unit,
+            original_value=value,
+            original_unit=unit,
+            start_at=at,
+            end_at=at,
+            local_date=LOCAL_DATE,
+            timezone="UTC",
+        )
+    )
+
+
+def _d3b_legacy_day(
+    db: Session,
+    user: User,
+    values: dict[str, Decimal],
+    *,
+    source_type: str,
+    suffix: str,
+) -> None:
+    batch = ImportBatch(user_id=user.id, source_type=source_type, status="completed")
+    db.add(batch)
+    db.flush()
+    for metric_key, value in values.items():
+        _d3b_sample(
+            db,
+            user=user,
+            batch=batch,
+            metric_type=metric_key,
+            value=value,
+            source_type=source_type,
+            suffix=f"{suffix}-{metric_key}",
+        )
+    db.flush()
+
+
+def _d3b_yazio_connection(db: Session, user: User) -> YazioConnection:
+    connection = YazioConnection(
+        user_id=user.id,
+        encrypted_email=b"encrypted-email",
+        encrypted_password=b"encrypted-password",
+        source_identifier="d3b-yazio-source",
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _d3b_yazio_diary(values: dict[str, Decimal]) -> YazioFoodDiary:
+    return YazioFoodDiary(
+        requested_start_day=LOCAL_DATE,
+        requested_end_day=LOCAL_DATE,
+        consumed_products=(),
+        consumed_simple_products=(),
+        product_profiles=(),
+        daily_summaries=(
+            YazioDailyNutrientSummary(
+                local_date=LOCAL_DATE,
+                nutrients=YazioNutrientValues(
+                    energy=values["dietary_energy_kcal"],
+                    protein=values["protein_g"],
+                    carb=values["carbohydrates_g"],
+                    fat=values["fat_g"],
+                    fiber=values["fiber_g"],
+                    sugar=values["sugar_g"],
+                    saturated_fat=values["saturated_fat_g"],
+                ),
+                energy_goal=None,
+            ),
+        ),
+    )
+
+
+def _d3b_google_connection(db: Session, user: User) -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"encrypted-refresh-token",
+        granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
+        state="active",
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _d3b_google_point(values: dict[str, Decimal]) -> NutritionLogDataPoint:
+    start = datetime(2024, 1, 2, 10, tzinfo=UTC)
+    interval = NutritionLogInterval(
+        start_time=start,
+        end_time=datetime(2024, 1, 2, 10, 30, tzinfo=UTC),
+        start_utc_offset="+01:00",
+        end_utc_offset="+01:00",
+        civil_start_time=datetime(2024, 1, 2, 11),
+        civil_end_time=datetime(2024, 1, 2, 11, 30),
+    )
+    return NutritionLogDataPoint(
+        name="d3b-google-day",
+        nutrition_log=NutritionLog(
+            interval=interval,
+            nutrients=(
+                NutritionNutrient("PROTEIN", NutritionQuantity(values["protein_g"], "g")),
+                NutritionNutrient("DIETARY_FIBER", NutritionQuantity(values["fiber_g"], "g")),
+                NutritionNutrient("SUGAR", NutritionQuantity(values["sugar_g"], "g")),
+                NutritionNutrient(
+                    "SATURATED_FAT", NutritionQuantity(values["saturated_fat_g"], "g")
+                ),
+            ),
+            energy=NutritionQuantity(values["dietary_energy_kcal"], "kcal"),
+            total_carbohydrate=NutritionQuantity(values["carbohydrates_g"], "g"),
+            total_fat=NutritionQuantity(values["fat_g"], "g"),
+        ),
+        data_source=NutritionDataSource(
+            recording_method="manual",
+            platform="android",
+            device=NutritionDataSourceDevice(
+                form_factor="phone",
+                manufacturer="Example Manufacturer",
+                display_name="Example Device",
+            ),
+            application=NutritionDataSourceApplication(
+                package_name="com.example.app",
+                web_client_id="web-client-id",
+                google_web_client_id="google-web-client-id",
+            ),
+        ),
+    )
+
+
+def _d3b_projection(
+    db: Session,
+    user: User,
+    values: dict[str, Decimal | None],
+    *,
+    provider_key: str = "yazio",
+) -> NutritionDailyProjection:
+    policy = create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2023, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, provider_key, 1),),
+    )
+    projection = create_projection(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        projection_version=1,
+        projection_algorithm_version="nutrition-daily-v1",
+        priority_policy_id=policy.policy_id,
+        input_watermark="d3b-test-watermark",
+        projection_status=ProjectionStatus.READY.value,
+    )
+    for metric_key, definition in CANONICAL_METRICS.items():
+        value = values.get(metric_key)
+        create_projection_fact(
+            db,
+            user_id=user.id,
+            projection_id=projection.id,
+            metric_key=metric_key,
+            value=value,
+            unit=definition.canonical_unit,
+            selected_provider_key=provider_key if value is not None else None,
+            selected_granularity=(
+                ProjectionGranularity.SUMMARY.value if value is not None else None
+            ),
+            presence_state=(
+                PresenceState.SUPPLIED.value
+                if value is not None
+                else PresenceState.UNKNOWN.value
+            ),
+            coverage_state=(
+                CoverageState.COMPLETE.value if value is not None else CoverageState.UNKNOWN.value
+            ),
+            resolution_state=(
+                ResolutionState.RESOLVED.value
+                if value is not None
+                else ResolutionState.UNRESOLVED.value
+            ),
+            lineage_state=(
+                LineageState.CONFIRMED.value if value is not None else LineageState.UNKNOWN.value
+            ),
+        )
+    set_projection_head(db, user.id, LOCAL_DATE, projection.id)
+    db.commit()
+    return projection
+
+
+def _d3b_counts(db: Session) -> tuple[int, ...]:
+    return tuple(
+        db.scalar(select(func.count()).select_from(model)) or 0
+        for model in (
+            HealthSample,
+            NutritionDailyProjection,
+            NutritionDailyProjectionFact,
+            NutritionProjectionHead,
+        )
+    )
+
+
+def _assert_identifier_free_daily_point_result(result: DailyPointParity) -> None:
+    allowed_fields = {
+        DailyPointTrackingParity: {
+            "local_date",
+            "legacy_status",
+            "canonical_status",
+            "legacy_score",
+            "canonical_score",
+            "legacy_reasons",
+            "canonical_reasons",
+            "comparable",
+            "classification",
+        },
+        DailyPointFieldDifference: {
+            "field_name",
+            "legacy_value",
+            "canonical_value",
+            "classification",
+        },
+        DailyPointFieldParity: {"local_date", "differences", "comparable", "classification"},
+        DailyPointParity: {
+            "local_date",
+            "tracking",
+            "fields",
+            "nutrition",
+            "comparable",
+            "classification",
+        },
+        NutritionDayParity: {
+            "local_date",
+            "projection_state",
+            "metrics",
+            "match_count",
+            "mismatch_count",
+            "expected_difference_count",
+            "comparable",
+        },
+        NutritionMetricParity: {
+            "metric_key",
+            "legacy_value",
+            "legacy_present",
+            "projection_value",
+            "projection_present",
+            "projection_provider_key",
+            "projection_coverage_state",
+            "projection_resolution_state",
+            "projection_lineage_state",
+            "classification",
+        },
+    }
+    for contract, expected_fields in allowed_fields.items():
+        field_names = {field.name for field in fields(contract)}
+        assert field_names <= expected_fields
+        assert not any(
+            field_name in {"id", "identifier", "source_identifier", "payload"}
+            or field_name.endswith("_id")
+            or "identifier" in field_name
+            or "payload" in field_name
+            for field_name in field_names
+        )
+    assert isinstance(result.tracking.legacy_reasons, tuple)
+    assert isinstance(result.tracking.canonical_reasons, tuple)
+    assert isinstance(result.fields.differences, tuple)
+    assert isinstance(result.nutrition.metrics, tuple)
+    rendered = repr(result)
+    assert "encrypted" not in rendered
+    assert "refresh-token" not in rendered
+    assert "raw payload" not in rendered
+
+
+def _run_d3b_yazio_fixture(
+    db: Session, user: User
+) -> tuple[DailyPointParity, tuple[int, ...], tuple[int, ...]]:
+    values = _d3b_values()
+    connection = _d3b_yazio_connection(db, user)
+    ingest_yazio_food_diary(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=LOCAL_DATE,
+        requested_end=LOCAL_DATE,
+        diary=_d3b_yazio_diary(values),
+    )
+    _d3b_legacy_day(
+        db,
+        user,
+        values,
+        source_type="yazio_export_v1",
+        suffix="d3b-yazio",
+    )
+    _d3b_legacy_day(
+        db,
+        user,
+        values,
+        source_type="google",
+        suffix="d3b-google-legacy",
+    )
+    create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2023, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    db.commit()
+    projection_result = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        policy_at=datetime(2024, 1, 2, 12, tzinfo=UTC),
+    )
+    assert projection_result.status is ProjectionPersistenceStatus.CREATED
+    before_counts = _d3b_counts(db)
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+    after_counts = _d3b_counts(db)
+    return result, before_counts, after_counts
+
+
+def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
+    db: Session, user: User
+) -> None:
+    result, before_counts, after_counts = _run_d3b_yazio_fixture(db, user)
+
+    assert result.comparable is True
+    assert result.classification is DailyPointParityClassification.NUTRITION_VALUE_SEMANTIC_DIFFERENCE
+    assert result.tracking.classification is DailyPointParityClassification.MATCH
+    assert result.nutrition.comparable is True
+    assert result.nutrition.expected_difference_count == len(CANONICAL_METRICS)
+    calorie = next(
+        metric for metric in result.nutrition.metrics if metric.metric_key == "dietary_energy_kcal"
+    )
+    assert calorie.classification is NutritionParityClassification.LEGACY_MULTI_SOURCE
+    assert calorie.projection_provider_key == "yazio"
+    assert calorie.legacy_value == Decimal("4200")
+    assert calorie.projection_value == Decimal("2100")
+    assert before_counts == after_counts
+    _assert_identifier_free_daily_point_result(result)
+
+
+def test_daily_point_google_only_projection_is_projection_only(
+    db: Session, user: User
+) -> None:
+    values = _d3b_values()
+    connection = _d3b_google_connection(db, user)
+    ingest_google_health_nutrition_logs(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=LOCAL_DATE,
+        requested_end=LOCAL_DATE,
+        data_points=(_d3b_google_point(values),),
+    )
+    create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2023, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "google_health", 1),),
+    )
+    db.commit()
+    projection_result = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        policy_at=datetime(2024, 1, 2, 12, tzinfo=UTC),
+    )
+    assert projection_result.status is ProjectionPersistenceStatus.CREATED
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.comparable is True
+    assert result.nutrition.projection_state is NutritionProjectionReadState.READY
+    assert result.nutrition.match_count == 0
+    assert result.nutrition.mismatch_count == len(CANONICAL_METRICS)
+    assert all(
+        metric.classification is NutritionParityClassification.PROJECTION_ONLY
+        and metric.legacy_present is False
+        and metric.projection_present is True
+        and metric.projection_provider_key == "google_health"
+        for metric in result.nutrition.metrics
+    )
+    assert result.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+    _assert_identifier_free_daily_point_result(result)
+
+
+def test_daily_point_apple_legacy_only_is_not_comparable_without_reason_leak(
+    db: Session, user: User
+) -> None:
+    values = _d3b_values()
+    _d3b_legacy_day(
+        db,
+        user,
+        values,
+        source_type="apple_health_xml",
+        suffix="d3b-apple-only",
+    )
+    db.commit()
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.comparable is False
+    assert result.classification is DailyPointParityClassification.NOT_COMPARABLE
+    assert result.tracking.canonical_status is None
+    assert result.tracking.canonical_reasons == ()
+    assert result.nutrition.projection_state is NutritionProjectionReadState.NOT_PROJECTED
+    assert all(
+        metric.classification is NutritionParityClassification.NOT_PROJECTED
+        and metric.legacy_present is True
+        for metric in result.nutrition.metrics
+    )
+    _assert_identifier_free_daily_point_result(result)
+
+
+def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
+    db: Session, user: User
+) -> None:
+    legacy_value = Decimal("123.456789")
+    _d3b_legacy_day(
+        db,
+        user,
+        {"dietary_energy_kcal": legacy_value},
+        source_type="yazio_export_v1",
+        suffix="d3b-precision-within",
+    )
+    _d3b_projection(
+        db,
+        user,
+        {metric_key: (Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None)
+         for metric_key in CANONICAL_METRICS},
+    )
+    within = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+    within_metric = next(
+        metric for metric in within.nutrition.metrics if metric.metric_key == "dietary_energy_kcal"
+    )
+
+    outside_user = User(username="d3b-precision-outside", password_hash="synthetic-password-hash")
+    db.add(outside_user)
+    db.flush()
+    _d3b_legacy_day(
+        db,
+        outside_user,
+        {"dietary_energy_kcal": legacy_value},
+        source_type="yazio_export_v1",
+        suffix="d3b-precision-outside",
+    )
+    _d3b_projection(
+        db,
+        outside_user,
+        {metric_key: (Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None)
+         for metric_key in CANONICAL_METRICS},
+    )
+    outside = compare_daily_point(db, user_id=outside_user.id, local_date=LOCAL_DATE)
+    outside_metric = next(
+        metric for metric in outside.nutrition.metrics if metric.metric_key == "dietary_energy_kcal"
+    )
+
+    assert type(within_metric.legacy_value) is Decimal
+    assert type(within_metric.projection_value) is Decimal
+    assert within_metric.classification is NutritionParityClassification.MATCH
+    assert type(outside_metric.legacy_value) is Decimal
+    assert type(outside_metric.projection_value) is Decimal
+    assert outside_metric.classification is NutritionParityClassification.VALUE_MISMATCH
+    assert abs(outside_metric.legacy_value - outside_metric.projection_value) == Decimal(
+        "0.000000000003"
+    )
+
+
+def test_daily_point_result_is_user_scoped_and_immutable(
+    db: Session, user: User
+) -> None:
+    own_values = _d3b_values()
+    other_values = _d3b_values("999")
+    other = User(username="d3b-isolation-other", password_hash="synthetic-password-hash")
+    db.add(other)
+    db.flush()
+    _d3b_legacy_day(
+        db,
+        user,
+        own_values,
+        source_type="yazio_export_v1",
+        suffix="d3b-isolation-own",
+    )
+    _d3b_legacy_day(
+        db,
+        other,
+        other_values,
+        source_type="yazio_export_v1",
+        suffix="d3b-isolation-other",
+    )
+    _d3b_projection(
+        db,
+        other,
+        {metric_key: value for metric_key, value in other_values.items()},
+    )
+    _d3b_projection(
+        db,
+        user,
+        {metric_key: value for metric_key, value in own_values.items()},
+    )
+
+    result = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    calorie = next(
+        metric for metric in result.nutrition.metrics if metric.metric_key == "dietary_energy_kcal"
+    )
+    assert calorie.legacy_value == own_values["dietary_energy_kcal"]
+    assert calorie.projection_value == own_values["dietary_energy_kcal"]
+    assert result.classification is DailyPointParityClassification.MATCH
+    with pytest.raises(FrozenInstanceError):
+        result.local_date = LOCAL_DATE + timedelta(days=1)  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.tracking.legacy_status = "changed"  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        result.fields.differences.append(object())  # type: ignore[attr-defined]
+    _assert_identifier_free_daily_point_result(result)
