@@ -147,7 +147,7 @@ ENTRYPOINT ["/app/scripts/backup-agent.sh"]
 # Frontend
 # -----------------------------------------------------------------------------
 
-FROM node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS frontend-dependencies
+FROM node:26.8-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS frontend-dependencies
 
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
