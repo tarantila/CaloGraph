@@ -436,8 +436,8 @@ def compare_moving_average_range(
     )
 
     (
-        totals_by_date,
-        nutrition_counts_by_date,
+        _totals_by_date,
+        _nutrition_counts_by_date,
         active_energy_by_source,
         active_energy_sources_by_day,
         legacy_nutrition_days,

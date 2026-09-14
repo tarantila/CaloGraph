@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import MappingProxyType
@@ -10,28 +11,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.activity import ACTIVE_ENERGY_METRIC
-from app.models import HealthSample, ImportBatch, NutritionTarget, TrackingOverride, User
-from app.nutrition.enums import (
-    CoverageState,
-    LineageState,
-    PresenceState,
-    ProjectionGranularity,
-    ResolutionState,
-)
-from app.nutrition.models import (
-    NutritionConsumptionEvent,
-    NutritionDailyProjection,
-    NutritionDailyProjectionFact,
-    NutritionIngestionRun,
-    NutritionProjectionHead,
-    NutritionSourceObservation,
-)
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
 import app.analytics.aggregate_parity as aggregate_module
-
-from app.source_priority.application import create_policy_with_rules
-from app.source_priority.contracts import PriorityRuleSpec
+from app.activity import ACTIVE_ENERGY_METRIC
 from app.analytics.aggregate_parity import (
     CANONICAL_HISTORY_CHUNK_SIZE,
     CanonicalHistorySummary,
@@ -60,8 +41,26 @@ from app.analytics.daily_point_parity import (
 )
 from app.analytics.nutrition_parity import NutritionDayParity
 from app.analytics.service import TrackingInputs, _build_daily_point
+from app.models import HealthSample, ImportBatch, NutritionTarget, TrackingOverride, User
+from app.nutrition.enums import (
+    CoverageState,
+    LineageState,
+    PresenceState,
+    ProjectionGranularity,
+    ResolutionState,
+)
+from app.nutrition.models import (
+    NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionIngestionRun,
+    NutritionProjectionHead,
+    NutritionSourceObservation,
+)
+from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.schemas import DailyPoint
-
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
 
 _DATE_0 = date(2025, 12, 31)
 _DATE_1 = date(2026, 1, 1)
@@ -405,9 +404,9 @@ def test_aggregate_contracts_are_frozen_slotted_and_identifier_free() -> None:
     assert isinstance(budget.canonical_counts, MappingProxyType)
     with pytest.raises(TypeError):
         budget.legacy_counts["tracked_days"] = 4  # type: ignore[index]
-    with pytest.raises(Exception):
-        moving_range.results += (moving,)  # type: ignore[misc]
-    with pytest.raises(Exception):
+    with pytest.raises(TypeError):
+        moving_range.results[0] = moving  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
         quality.total_days = 4  # type: ignore[misc]
 
 
