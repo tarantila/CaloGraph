@@ -7,16 +7,34 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.orm import Session
 
+from app.analytics import nutrition_parity as parity_module
 from app.analytics.nutrition_parity import (
     CANONICAL_PARITY_METRICS,
     MAX_PARITY_DAYS,
+    NutritionDayParity,
     NutritionLegacyDay,
     NutritionLegacyMetric,
+    NutritionMetricParity,
     NutritionParityClassification,
     NutritionLegacySourceBreakdown,
+    compare_nutrition_day,
     read_legacy_nutrition_day,
 )
+from app.analytics.nutrition_projection import NutritionProjectionReadError
 from app.models import HealthSample, ImportBatch, User
+from app.nutrition.enums import (
+    CoverageState,
+    LineageState,
+    PresenceState,
+    ProjectionGranularity,
+    ProjectionStatus,
+    ResolutionState,
+)
+from app.nutrition.models import NutritionDailyProjection
+from app.nutrition.repositories import create_projection, create_projection_fact, set_projection_head
+from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
 
 LOCAL_DATE = date(2026, 9, 11)
 
@@ -220,3 +238,429 @@ def test_legacy_reader_scopes_and_sums_decimal_values_by_source(db: Session, use
         assert metric.total is None
         assert metric.present is False
         assert metric.source_breakdown == ()
+
+
+def _priority_policy(db: Session, user: User):
+    return create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="yazio",
+                priority_rank=1,
+            ),
+        ),
+    )
+
+
+def _ready_projection(
+    db: Session,
+    user: User,
+    *,
+    values: dict[str, Decimal | None] | None = None,
+    providers: dict[str, str | None] | None = None,
+    presence_states: dict[str, PresenceState] | None = None,
+    status: ProjectionStatus = ProjectionStatus.READY,
+) -> NutritionDailyProjection:
+    policy = _priority_policy(db, user)
+    projection = create_projection(
+        db,
+        user_id=user.id,
+        local_date=LOCAL_DATE,
+        projection_version=1,
+        projection_algorithm_version="nutrition-daily-v1",
+        priority_policy_id=policy.policy_id,
+        input_watermark="parity-test-watermark",
+        projection_status=status.value,
+    )
+    values = (
+        {metric_key: Decimal("10") for metric_key in CANONICAL_METRICS}
+        if values is None
+        else values
+    )
+    providers = {} if providers is None else providers
+    presence_states = {} if presence_states is None else presence_states
+    for metric_key, definition in CANONICAL_METRICS.items():
+        value = values.get(metric_key)
+        if value is None:
+            defaults: dict[str, object] = {
+                "value": None,
+                "unit": definition.canonical_unit,
+                "selected_provider_key": None,
+                "selected_granularity": None,
+                "presence_state": PresenceState.UNKNOWN.value,
+                "coverage_state": CoverageState.UNKNOWN.value,
+                "resolution_state": ResolutionState.UNRESOLVED.value,
+                "lineage_state": LineageState.UNKNOWN.value,
+            }
+        else:
+            defaults = {
+                "value": value,
+                "unit": definition.canonical_unit,
+                "selected_provider_key": providers.get(metric_key, "yazio"),
+                "selected_granularity": ProjectionGranularity.SUMMARY.value,
+                "presence_state": presence_states.get(
+                    metric_key, PresenceState.SUPPLIED
+                ).value,
+                "coverage_state": CoverageState.COMPLETE.value,
+                "resolution_state": ResolutionState.RESOLVED.value,
+                "lineage_state": LineageState.CONFIRMED.value,
+            }
+        create_projection_fact(
+            db,
+            user_id=user.id,
+            projection_id=projection.id,
+            metric_key=metric_key,
+            **defaults,
+        )
+    set_projection_head(db, user.id, LOCAL_DATE, projection.id)
+    db.commit()
+    return projection
+
+
+def _legacy_metric_sample(
+    db: Session,
+    user: User,
+    *,
+    value: str,
+    source_type: str = "yazio_export_v1",
+    metric_type: str = "dietary_energy_kcal",
+    suffix: str = "classification",
+) -> None:
+    batch = _batch(db, user, source_type=source_type)
+    _sample(
+        db,
+        user=user,
+        batch=batch,
+        metric_type=metric_type,
+        value=value,
+        source_type=source_type,
+        suffix=suffix,
+    )
+    db.flush()
+
+
+def _classification(day: NutritionDayParity, metric_key: str = "dietary_energy_kcal"):
+    return next(metric for metric in day.metrics if metric.metric_key == metric_key)
+
+
+def test_classification_contracts_are_immutable_and_expose_safe_fields() -> None:
+    for contract in (NutritionMetricParity, NutritionDayParity):
+        assert is_dataclass(contract)
+        assert getattr(contract, "__dataclass_params__").frozen
+        assert getattr(contract, "__slots__")
+
+
+@pytest.mark.parametrize(
+    ("legacy_value", "projection_value", "expected"),
+    (
+        ("10", "10", NutritionParityClassification.MATCH),
+        (None, None, NutritionParityClassification.BOTH_MISSING),
+        ("10", None, NutritionParityClassification.LEGACY_ONLY),
+        (None, "10", NutritionParityClassification.PROJECTION_ONLY),
+        ("10", "11", NutritionParityClassification.VALUE_MISMATCH),
+    ),
+)
+def test_classification_covers_presence_and_value_states(
+    db: Session,
+    user: User,
+    legacy_value: str | None,
+    projection_value: str | None,
+    expected: NutritionParityClassification,
+) -> None:
+    if legacy_value is not None:
+        _legacy_metric_sample(db, user, value=legacy_value)
+    _ready_projection(
+        db,
+        user,
+        values={
+            metric_key: (None if metric_key != "dietary_energy_kcal" else
+                         (None if projection_value is None else Decimal(projection_value)))
+            for metric_key in CANONICAL_METRICS
+        },
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    metric = _classification(result)
+    assert metric.classification is expected
+    assert metric.legacy_present is (legacy_value is not None)
+    assert metric.projection_present is (projection_value is not None)
+    assert result.comparable is True
+
+
+def test_explicit_zero_zero_is_match_and_presence_is_not_truthiness(db: Session, user: User) -> None:
+    _legacy_metric_sample(db, user, value="0", suffix="zero-legacy")
+    _ready_projection(
+        db,
+        user,
+        values={metric_key: (Decimal("0") if metric_key == "dietary_energy_kcal" else None)
+                for metric_key in CANONICAL_METRICS},
+        presence_states={"dietary_energy_kcal": PresenceState.EXPLICIT_ZERO},
+    )
+
+    metric = _classification(
+        compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    )
+
+    assert metric.classification is NutritionParityClassification.MATCH
+    assert metric.legacy_value == Decimal("0")
+    assert metric.projection_value == Decimal("0")
+    assert metric.legacy_present is True
+    assert metric.projection_present is True
+
+
+@pytest.mark.parametrize(
+    ("legacy_value", "projection_value", "expected"),
+    (
+        ("0", None, NutritionParityClassification.LEGACY_ONLY),
+        (None, "0", NutritionParityClassification.PROJECTION_ONLY),
+    ),
+)
+def test_zero_and_missing_are_distinct_in_both_directions(
+    db: Session,
+    user: User,
+    legacy_value: str | None,
+    projection_value: str | None,
+    expected: NutritionParityClassification,
+) -> None:
+    if legacy_value is not None:
+        _legacy_metric_sample(db, user, value=legacy_value, suffix="zero-missing")
+    _ready_projection(
+        db,
+        user,
+        values={
+            metric_key: (None if metric_key != "dietary_energy_kcal" else
+                         (None if projection_value is None else Decimal(projection_value)))
+            for metric_key in CANONICAL_METRICS
+        },
+        presence_states=(
+            {"dietary_energy_kcal": PresenceState.EXPLICIT_ZERO}
+            if projection_value == "0"
+            else None
+        ),
+    )
+
+    metric = _classification(
+        compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    )
+
+    assert metric.classification is expected
+
+
+def test_missing_projection_head_is_not_projected_and_non_comparable(
+    db: Session, user: User
+) -> None:
+    _legacy_metric_sample(db, user, value="10", suffix="missing-head")
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.projection_state.value == "not_projected"
+    assert result.comparable is False
+    assert all(
+        metric.classification is NutritionParityClassification.NOT_PROJECTED
+        for metric in result.metrics
+    )
+    assert result.match_count == result.mismatch_count == result.expected_difference_count == 0
+
+
+def test_ready_no_value_facts_are_comparable_both_missing(db: Session, user: User) -> None:
+    _ready_projection(
+        db,
+        user,
+        values={metric_key: None for metric_key in CANONICAL_METRICS},
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.projection_state.value == "ready"
+    assert result.comparable is True
+    assert all(
+        metric.classification is NutritionParityClassification.BOTH_MISSING
+        for metric in result.metrics
+    )
+    assert result.match_count == 0
+    assert result.mismatch_count == 0
+    assert result.expected_difference_count == 0
+
+
+def test_non_ready_projection_is_projection_not_ready_without_error_details(
+    db: Session, user: User
+) -> None:
+    _ready_projection(
+        db,
+        user,
+        status=ProjectionStatus.FAILED,
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    rendered = repr(result)
+
+    assert result.projection_state is None
+    assert result.comparable is False
+    assert all(
+        metric.classification is NutritionParityClassification.PROJECTION_NOT_READY
+        for metric in result.metrics
+    )
+    assert "current projection is not READY" not in rendered
+
+
+def test_reader_error_is_fail_closed_and_reader_is_called_once(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def _error(*_args: object, **_kwargs: object):
+        nonlocal calls
+        calls += 1
+        raise NutritionProjectionReadError("secret projection payload")
+
+    monkeypatch.setattr(parity_module, "read_canonical_nutrition_day", _error)
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert calls == 1
+    assert result.projection_state is None
+    assert result.comparable is False
+    assert all(
+        metric.classification is NutritionParityClassification.PROJECTION_NOT_READY
+        for metric in result.metrics
+    )
+    assert "secret projection payload" not in repr(result)
+
+
+def test_projection_metadata_is_retained_per_metric_provider(db: Session, user: User) -> None:
+    _legacy_metric_sample(
+        db,
+        user,
+        value="10",
+        metric_type="dietary_energy_kcal",
+        suffix="provider-energy",
+    )
+    _legacy_metric_sample(
+        db,
+        user,
+        value="20",
+        metric_type="protein_g",
+        suffix="provider-protein",
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "dietary_energy_kcal": Decimal("10"),
+            "protein_g": Decimal("20"),
+        },
+        providers={"dietary_energy_kcal": "yazio", "protein_g": "google_health"},
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    energy = _classification(result)
+    protein = _classification(result, "protein_g")
+
+    assert energy.projection_provider_key == "yazio"
+    assert protein.projection_provider_key == "google_health"
+    assert energy.projection_coverage_state is CoverageState.COMPLETE
+    assert energy.projection_resolution_state is ResolutionState.RESOLVED
+    assert energy.projection_lineage_state is LineageState.CONFIRMED
+
+
+def test_multi_source_yazio_mapping_is_expected_difference(db: Session, user: User) -> None:
+    _legacy_metric_sample(
+        db, user, value="2000", source_type="yazio_export_v1", suffix="multi-yazio"
+    )
+    _legacy_metric_sample(
+        db, user, value="2000", source_type="google", suffix="multi-google"
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "dietary_energy_kcal": Decimal("2000"),
+        },
+        providers={"dietary_energy_kcal": "yazio"},
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+    metric = _classification(result)
+
+    assert metric.classification is NutritionParityClassification.LEGACY_MULTI_SOURCE
+    assert result.match_count == 0
+    assert result.mismatch_count == 0
+    assert result.expected_difference_count == 1
+
+
+def test_multi_source_selected_provider_mismatch_is_value_mismatch(
+    db: Session, user: User
+) -> None:
+    _legacy_metric_sample(
+        db, user, value="2000", source_type="yazio_export_v1", suffix="multi-bad-yazio"
+    )
+    _legacy_metric_sample(
+        db, user, value="500", source_type="google", suffix="multi-bad-google"
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "dietary_energy_kcal": Decimal("1900"),
+        },
+        providers={"dietary_energy_kcal": "yazio"},
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert _classification(result).classification is NutritionParityClassification.VALUE_MISMATCH
+
+
+def test_unmapped_legacy_source_is_not_treated_as_projection_provider_alias(
+    db: Session, user: User
+) -> None:
+    _legacy_metric_sample(
+        db, user, value="2000", source_type="apple_health_xml", suffix="unmapped-apple"
+    )
+    _legacy_metric_sample(
+        db, user, value="2000", source_type="google", suffix="unmapped-google"
+    )
+    _ready_projection(
+        db,
+        user,
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "dietary_energy_kcal": Decimal("2000"),
+        },
+        providers={"dietary_energy_kcal": "apple_health_xml"},
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert _classification(result).classification is NutritionParityClassification.VALUE_MISMATCH
+
+
+def test_projection_and_legacy_reads_are_user_scoped(db: Session, user: User) -> None:
+    other = _other_user(db)
+    _legacy_metric_sample(db, other, value="10", suffix="other-legacy")
+    _ready_projection(
+        db,
+        other,
+        values={
+            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            "dietary_energy_kcal": Decimal("10"),
+        },
+    )
+
+    result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
+
+    assert result.projection_state.value == "not_projected"
+    assert result.comparable is False
+    assert all(
+        metric.classification is NutritionParityClassification.NOT_PROJECTED
+        for metric in result.metrics
+    )
