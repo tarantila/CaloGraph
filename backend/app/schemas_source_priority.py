@@ -37,8 +37,27 @@ class NutritionPriorityUpdateRequest(BaseModel):
     source_order: list[str]
 
 
+class NutritionPriorityRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int
+
+
+class NutritionPriorityRefreshResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_version: int
+    processed_count: int
+    created_count: int
+    unchanged_count: int
+    has_more: bool
+    projection_refresh_required: bool
+
+
 __all__ = [
     "NutritionPrioritySource",
     "NutritionPriorityState",
     "NutritionPriorityUpdateRequest",
+    "NutritionPriorityRefreshRequest",
+    "NutritionPriorityRefreshResponse",
 ]

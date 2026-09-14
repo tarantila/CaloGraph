@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth.security import hash_password
+from app.database import SessionLocal
 from app.main import app
+
+from app.nutrition.projection.refresh import (
+    NutritionProjectionRefreshError,
+    NutritionProjectionRefreshResult,
+)
 
 from app.models import (
     GoogleHealthConnection,
@@ -415,3 +421,249 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     db.refresh(historical_projection)
     assert historical_projection.projection_version == 1
     assert historical_projection.priority_policy_id == policy_v1.id
+
+
+REFRESH_PATH = f"{PATH}/refresh"
+
+
+def _refresh_result() -> NutritionProjectionRefreshResult:
+    return NutritionProjectionRefreshResult(
+        policy_version=1,
+        processed_count=2,
+        created_count=1,
+        unchanged_count=1,
+        has_more=False,
+        projection_refresh_required=False,
+    )
+
+
+def test_source_priority_anonymous_refresh_is_rejected(client: TestClient) -> None:
+    response = client.post(REFRESH_PATH, json={"expected_version": 1})
+
+    assert response.status_code == 401
+
+
+def test_source_priority_refresh_rejects_missing_and_invalid_csrf(
+    client: TestClient, user: User, db
+) -> None:
+    _add_yazio(db, user)
+    _login(client)
+    missing = client.post(REFRESH_PATH, json={"expected_version": 1})
+    invalid = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": "not-the-session-token"},
+        json={"expected_version": 1},
+    )
+
+    assert missing.status_code == 403
+    assert invalid.status_code == 403
+    assert missing.json()["type"] == "urn:calograph:problem:csrf-validation-failed"
+
+
+def test_source_priority_refresh_returns_strict_public_result(
+    client: TestClient, user: User, db, monkeypatch
+) -> None:
+    _add_yazio(db, user)
+    csrf = _login(client)
+    configured = client.put(
+        PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": None, "source_order": ["yazio"]},
+    )
+    assert configured.status_code == 200
+
+    captured: dict[str, object] = {}
+
+    def fake_refresh(*, session_factory, user_id, expected_version):
+        captured.update(
+            session_factory=session_factory,
+            user_id=user_id,
+            expected_version=expected_version,
+        )
+        return _refresh_result()
+
+    from app.api import source_priority as source_priority_api
+
+    monkeypatch.setattr(source_priority_api, "refresh_stale_nutrition_projections", fake_refresh)
+    response = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "policy_version": 1,
+        "processed_count": 2,
+        "created_count": 1,
+        "unchanged_count": 1,
+        "has_more": False,
+        "projection_refresh_required": False,
+    }
+    assert captured["session_factory"] is SessionLocal
+    assert captured["user_id"] == user.id
+    assert captured["expected_version"] == 1
+    assert "source_id" not in response.text
+    assert "policy_id" not in response.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"expected_version": 1, "batch_size": 1},
+        {"expected_version": 1, "offset": 0},
+        {"expected_version": 1, "cursor": "secret"},
+        {"expected_version": 1, "provider_id": "secret"},
+        {},
+    ],
+)
+def test_source_priority_refresh_request_is_strict(
+    client: TestClient, user: User, payload: dict[str, object]
+) -> None:
+    csrf = _login(client)
+
+    response = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"] == "urn:calograph:problem:validation-error"
+    assert "secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("setup", "message", "expected_detail"),
+    [
+        ("configured", "expected policy version 1, current version is 2", "stale_policy"),
+        ("selection_required", "", "selection_required"),
+        ("configuration_required", "", "configuration_required"),
+        ("no_providers", "", "no_providers"),
+        ("configured", "no_policy", "no_policy"),
+    ],
+)
+def test_source_priority_refresh_maps_safe_conflicts(
+    client: TestClient,
+    user: User,
+    db,
+    monkeypatch,
+    setup: str,
+    message: str,
+    expected_detail: str,
+) -> None:
+    if setup == "configured":
+        _add_yazio(db, user)
+        csrf = _login(client)
+        configured = client.put(
+            PATH,
+            headers={"X-CSRF-Token": csrf},
+            json={"expected_version": None, "source_order": ["yazio"]},
+        )
+        assert configured.status_code == 200
+    elif setup == "selection_required":
+        _add_yazio(db, user)
+        csrf = _login(client)
+    elif setup == "configuration_required":
+        _add_yazio(db, user)
+        create_policy_with_rules(db, user.id, 1, datetime.now(UTC), ())
+        db.commit()
+        csrf = _login(client)
+    else:
+        csrf = _login(client)
+
+    from app.api import source_priority as source_priority_api
+
+    def fake_refresh(**_kwargs):
+        raise NutritionProjectionRefreshError(message)
+
+    monkeypatch.setattr(source_priority_api, "refresh_stale_nutrition_projections", fake_refresh)
+    response = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == expected_detail
+    assert response.json()["type"] == f"urn:calograph:problem:source-priority-{expected_detail.replace('_', '-')}"
+    assert "policy_id" not in response.text
+    assert "constraint" not in response.text.lower()
+
+
+def test_source_priority_refresh_maps_unexpected_failure_safely(
+    client: TestClient, user: User, db, monkeypatch
+) -> None:
+    _add_yazio(db, user)
+    csrf = _login(client)
+    configured = client.put(
+        PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": None, "source_order": ["yazio"]},
+    )
+    assert configured.status_code == 200
+
+    from app.api import source_priority as source_priority_api
+
+    def fake_refresh(**_kwargs):
+        raise RuntimeError("SQL constraint secret payload")
+
+    monkeypatch.setattr(source_priority_api, "refresh_stale_nutrition_projections", fake_refresh)
+    response = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "projection_refresh_failed"
+    assert response.json()["type"] == "urn:calograph:problem:source-priority-projection-refresh-failed"
+    assert "SQL" not in response.text
+    assert "secret" not in response.text
+
+
+def test_source_priority_refresh_isolates_authenticated_users(
+    client: TestClient, user: User, db, monkeypatch
+) -> None:
+    _add_yazio(db, user)
+    csrf = _login(client)
+    configured = client.put(
+        PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": None, "source_order": ["yazio"]},
+    )
+    assert configured.status_code == 200
+    other = User(
+        username="source-priority-refresh-other",
+        password_hash=hash_password(PASSWORD),
+        timezone="UTC",
+    )
+    db.add(other)
+    db.commit()
+    other_client = TestClient(app)
+    other_csrf = _login(other_client, "source-priority-refresh-other")
+
+    from app.api import source_priority as source_priority_api
+
+    seen_users: list[object] = []
+
+    def fake_refresh(*, user_id, **_kwargs):
+        seen_users.append(user_id)
+        return _refresh_result()
+
+    monkeypatch.setattr(source_priority_api, "refresh_stale_nutrition_projections", fake_refresh)
+    own = client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": csrf},
+        json={"expected_version": 1},
+    )
+    other_response = other_client.post(
+        REFRESH_PATH,
+        headers={"X-CSRF-Token": other_csrf},
+        json={"expected_version": 1},
+    )
+
+    assert own.status_code == 200
+    assert other_response.status_code == 409
+    assert other_response.json()["detail"] == "no_providers"
+    assert seen_users == [user.id]
