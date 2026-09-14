@@ -68,7 +68,10 @@ def _has_usable_effective_policy(
     ranks = [rule.priority_rank for rule in rules]
     if len(set(ranks)) != len(ranks) or set(ranks) != set(range(1, len(ranks) + 1)):
         return False
-    return available_provider_keys <= configured_provider_keys
+    return (
+        configured_provider_keys <= set(DEFAULT_SOURCE_RESOLVERS)
+        and available_provider_keys <= configured_provider_keys
+    )
 
 
 def refresh_stale_nutrition_projections(
