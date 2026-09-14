@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final
@@ -13,19 +14,29 @@ from sqlalchemy.orm import Session
 
 from app.activity import ACTIVE_ENERGY_METRIC
 from app.analytics.nutrition_projection import (
+    CanonicalNutritionDay,
     NutritionProjectionReadError,
     NutritionProjectionReadState,
     read_canonical_nutrition_day,
 )
 from app.analytics.nutrition_parity import (
+    CANONICAL_PARITY_METRICS,
+    MAX_PARITY_DAYS,
     NutritionDayParity,
+    NutritionLegacyDay,
     NutritionMetricParity,
     NutritionParityClassification,
+    _compare_nutrition_day_with_legacy,
+    _empty_legacy_nutrition_day,
+    _legacy_metric,
     compare_nutrition_day,
 )
 from app.analytics.service import (
+    NUTRITION_METRICS,
+    PRIMARY_NUTRITION_METRICS,
     TrackingInputs,
     _build_daily_point,
+    _legacy_tracking_inputs,
     daily_points,
 )
 from app.models import HealthSample, NutritionTarget, TrackingOverride, User
@@ -104,16 +115,15 @@ def _canonical_tracking_inputs(has_primary_evidence: bool, calorie_usable: bool)
     )
 
 
-def _build_canonical_daily_point(
-    db: Session,
-    user_id: UUID,
+def _build_canonical_daily_point_from_projection(
+    *,
+    projection_day: CanonicalNutritionDay,
     local_date: date,
+    targets: list[NutritionTarget],
+    active_energy_by_source: dict[tuple[date, str], Decimal],
+    active_energy_sources_by_day: dict[date, set[str]],
+    override: TrackingOverride | None,
 ) -> CanonicalDailyPointResult:
-    try:
-        projection_day = read_canonical_nutrition_day(db, user_id, local_date)
-    except NutritionProjectionReadError:
-        return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
-
     if projection_day.state is NutritionProjectionReadState.NOT_PROJECTED:
         return _not_comparable(CanonicalDailyPointReason.NOT_PROJECTED)
     if projection_day.state is not NutritionProjectionReadState.READY:
@@ -128,6 +138,68 @@ def _build_canonical_daily_point(
         }
     except (KeyError, AttributeError, TypeError):
         return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
+
+    point = _build_daily_point(
+        day=local_date,
+        values=values,
+        tracking_inputs=_canonical_tracking_inputs(
+            projection_day.has_primary_evidence,
+            projection_day.calorie_usable,
+        ),
+        active_energy_by_source=active_energy_by_source,
+        active_energy_sources_by_day=active_energy_sources_by_day,
+        targets=targets,
+        override=override,
+    )
+    return CanonicalDailyPointResult(
+        state=CanonicalDailyPointResultState.READY,
+        point=point,
+    )
+
+
+def _build_canonical_daily_point_with_inputs(
+    db: Session,
+    user_id: UUID,
+    local_date: date,
+    *,
+    targets: list[NutritionTarget],
+    active_energy_by_source: dict[tuple[date, str], Decimal],
+    active_energy_sources_by_day: dict[date, set[str]],
+    override: TrackingOverride | None,
+) -> CanonicalDailyPointResult:
+    try:
+        projection_day = read_canonical_nutrition_day(db, user_id, local_date)
+    except NutritionProjectionReadError:
+        return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
+    return _build_canonical_daily_point_from_projection(
+        projection_day=projection_day,
+        local_date=local_date,
+        targets=targets,
+        active_energy_by_source=active_energy_by_source,
+        active_energy_sources_by_day=active_energy_sources_by_day,
+        override=override,
+    )
+
+
+def _build_canonical_daily_point(
+    db: Session,
+    user_id: UUID,
+    local_date: date,
+) -> CanonicalDailyPointResult:
+    try:
+        projection_day = read_canonical_nutrition_day(db, user_id, local_date)
+    except NutritionProjectionReadError:
+        return _not_comparable(CanonicalDailyPointReason.PROJECTION_NOT_READY)
+
+    if projection_day.state is not NutritionProjectionReadState.READY:
+        return _build_canonical_daily_point_from_projection(
+            projection_day=projection_day,
+            local_date=local_date,
+            targets=[],
+            active_energy_by_source={},
+            active_energy_sources_by_day={},
+            override=None,
+        )
 
     targets = list(
         db.scalars(
@@ -158,21 +230,13 @@ def _build_canonical_daily_point(
             TrackingOverride.local_date == local_date,
         )
     )
-    point = _build_daily_point(
-        day=local_date,
-        values=values,
-        tracking_inputs=_canonical_tracking_inputs(
-            projection_day.has_primary_evidence,
-            projection_day.calorie_usable,
-        ),
+    return _build_canonical_daily_point_from_projection(
+        projection_day=projection_day,
+        local_date=local_date,
+        targets=targets,
         active_energy_by_source=active_energy_by_source,
         active_energy_sources_by_day=active_energy_sources_by_day,
-        targets=targets,
         override=override,
-    )
-    return CanonicalDailyPointResult(
-        state=CanonicalDailyPointResultState.READY,
-        point=point,
     )
 
 class DailyPointParityClassification(StrEnum):
@@ -305,6 +369,81 @@ class DailyPointParity:
     @property
     def field_differences(self) -> tuple[DailyPointFieldDifference, ...]:
         return self.fields.differences
+@dataclass(frozen=True, slots=True)
+class DailyPointRangeParity:
+    """Immutable aggregate of DailyPoint parity over an inclusive date range."""
+
+    start: date
+    end: date
+    days: tuple[DailyPointParity, ...]
+    days_compared: int
+    days_not_comparable: int
+    status_matches: int
+    expected_tracking_differences: int
+    unexplained_tracking_mismatches: int
+    unexpected_target_activity_mismatches: int
+
+    @property
+    def day_results(self) -> tuple[DailyPointParity, ...]:
+        return self.days
+
+    @property
+    def status_match_count(self) -> int:
+        return self.status_matches
+
+    @property
+    def tracking_status_matches(self) -> int:
+        return self.status_matches
+
+    @property
+    def expected_tracking_difference_count(self) -> int:
+        return self.expected_tracking_differences
+
+    @property
+    def unexplained_tracking_mismatch_count(self) -> int:
+        return self.unexplained_tracking_mismatches
+
+    @property
+    def unexpected_target_activity_mismatch_count(self) -> int:
+        return self.unexpected_target_activity_mismatches
+    @property
+    def comparable_count(self) -> int:
+        return self.days_compared
+
+    @property
+    def not_comparable_count(self) -> int:
+        return self.days_not_comparable
+
+    @property
+    def tracking_status_match_count(self) -> int:
+        return self.status_matches
+
+    @property
+    def expected_tracking_differences_count(self) -> int:
+        return self.expected_tracking_differences
+
+    @property
+    def unexplained_tracking_mismatches_count(self) -> int:
+        return self.unexplained_tracking_mismatches
+
+    @property
+    def unexpected_target_activity_mismatches_count(self) -> int:
+        return self.unexpected_target_activity_mismatches
+
+
+_TARGET_ACTIVITY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "target_kcal",
+        "maintenance_kcal",
+        "activity_mode",
+        "activity_source_type",
+        "active_energy_kcal",
+        "activity_credit_kcal",
+        "activity_data_status",
+    }
+)
+
+
 
 
 _DAILY_POINT_FIELD_TO_NUTRITION_METRIC: Final[dict[str, str]] = {
@@ -596,22 +735,13 @@ def _non_comparable_parity(
     )
 
 
-def compare_daily_point(
-    db: Session,
+def _compare_daily_point_results(
     *,
-    user_id: UUID,
     local_date: date,
+    legacy: DailyPoint,
+    nutrition: NutritionDayParity,
+    canonical_result: CanonicalDailyPointResult,
 ) -> DailyPointParity:
-    """Compare one legacy DailyPoint with the D1A-backed canonical candidate."""
-    user = db.get(User, user_id)
-    if user is None:
-        raise ValueError("user not found")
-    legacy_points = daily_points(db, user, local_date, local_date)
-    if len(legacy_points) != 1:
-        raise ValueError("legacy daily point reader returned an invalid result")
-    legacy = legacy_points[0]
-    nutrition = compare_nutrition_day(db, user_id=user_id, local_date=local_date)
-    canonical_result = _build_canonical_daily_point(db, user_id, local_date)
     if (
         canonical_result.state is not CanonicalDailyPointResultState.READY
         or canonical_result.point is None
@@ -636,17 +766,257 @@ def compare_daily_point(
     )
 
 
+def compare_daily_point(
+    db: Session,
+    *,
+    user_id: UUID,
+    local_date: date,
+) -> DailyPointParity:
+    """Compare one legacy DailyPoint with the D1A-backed canonical candidate."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+    legacy_points = daily_points(db, user, local_date, local_date)
+    if len(legacy_points) != 1:
+        raise ValueError("legacy daily point reader returned an invalid result")
+    legacy = legacy_points[0]
+    nutrition = compare_nutrition_day(db, user_id=user_id, local_date=local_date)
+    canonical_result = _build_canonical_daily_point(db, user_id, local_date)
+    return _compare_daily_point_results(
+        local_date=local_date,
+        legacy=legacy,
+        nutrition=nutrition,
+        canonical_result=canonical_result,
+    )
+
+
+def _validate_daily_point_range(
+    start: date,
+    end: date,
+    max_days: int,
+) -> None:
+    if not isinstance(start, date) or isinstance(start, datetime):
+        raise ValueError("start must be a date")
+    if not isinstance(end, date) or isinstance(end, datetime):
+        raise ValueError("end must be a date")
+    if start > end:
+        raise ValueError("start must not be after end")
+    if type(max_days) is not int or max_days < 1 or max_days > MAX_PARITY_DAYS:
+        raise ValueError(f"max_days must be between 1 and {MAX_PARITY_DAYS}")
+    requested_days = (end - start).days + 1
+    if requested_days > MAX_PARITY_DAYS:
+        raise ValueError(f"date range must not exceed {MAX_PARITY_DAYS} days")
+    if requested_days > max_days:
+        raise ValueError("date range exceeds max_days")
+
+
+def _read_daily_point_range_inputs(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+) -> tuple[
+    dict[date, dict[str, Decimal]],
+    dict[date, int],
+    dict[tuple[date, str], Decimal],
+    dict[date, set[str]],
+    dict[date, NutritionLegacyDay],
+    list[NutritionTarget],
+    dict[date, TrackingOverride],
+]:
+    samples = db.scalars(
+        select(HealthSample).where(
+            HealthSample.user_id == user_id,
+            HealthSample.local_date >= start,
+            HealthSample.local_date <= end,
+        )
+    ).all()
+
+    totals_by_date: defaultdict[date, defaultdict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(Decimal)
+    )
+    nutrition_counts_by_date: defaultdict[date, int] = defaultdict(int)
+    active_energy_by_source: defaultdict[tuple[date, str], Decimal] = defaultdict(Decimal)
+    active_energy_sources_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    nutrition_values_by_date: dict[date, dict[tuple[str, str], Decimal]] = {}
+    for sample in samples:
+        if sample.metric_type == ACTIVE_ENERGY_METRIC:
+            active_energy_by_source[(sample.local_date, sample.source_type)] += sample.value
+            active_energy_sources_by_day[sample.local_date].add(sample.source_type)
+            continue
+
+        totals_by_date[sample.local_date][sample.metric_type] += sample.value
+        if sample.metric_type in NUTRITION_METRICS:
+            nutrition_counts_by_date[sample.local_date] += 1
+        if sample.metric_type in CANONICAL_PARITY_METRICS:
+            values_by_source = nutrition_values_by_date.setdefault(sample.local_date, {})
+            key = (sample.metric_type, sample.source_type)
+            values_by_source[key] = values_by_source.get(key, Decimal()) + sample.value
+
+    for day, values in totals_by_date.items():
+        if any(values.get(metric, Decimal()) > 0 for metric in PRIMARY_NUTRITION_METRICS):
+            continue
+        for metric in PRIMARY_NUTRITION_METRICS:
+            values.pop(metric, None)
+        nutrition_counts_by_date[day] = 0
+
+    legacy_nutrition_days = {
+        local_date: NutritionLegacyDay(
+            local_date=local_date,
+            metrics=tuple(_legacy_metric(metric_key, values_by_source) for metric_key in CANONICAL_PARITY_METRICS),
+        )
+        for local_date, values_by_source in nutrition_values_by_date.items()
+    }
+    targets = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user_id)
+            .order_by(NutritionTarget.valid_from)
+        )
+    )
+    overrides = {
+        item.local_date: item
+        for item in db.scalars(
+            select(TrackingOverride).where(
+                TrackingOverride.user_id == user_id,
+                TrackingOverride.local_date >= start,
+                TrackingOverride.local_date <= end,
+            )
+        ).all()
+    }
+    return (
+        {local_date: dict(values) for local_date, values in totals_by_date.items()},
+        dict(nutrition_counts_by_date),
+        dict(active_energy_by_source),
+        dict(active_energy_sources_by_day),
+        legacy_nutrition_days,
+        targets,
+        overrides,
+    )
+
+
+def compare_daily_point_range(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+    max_days: int = MAX_PARITY_DAYS,
+) -> DailyPointRangeParity:
+    """Compare DailyPoint parity for every inclusive day in a bounded range."""
+    _validate_daily_point_range(start, end, max_days)
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+
+    (
+        totals_by_date,
+        nutrition_counts_by_date,
+        active_energy_by_source,
+        active_energy_sources_by_day,
+        legacy_nutrition_days,
+        targets,
+        overrides,
+    ) = _read_daily_point_range_inputs(
+        db,
+        user_id=user_id,
+        start=start,
+        end=end,
+    )
+    requested_dates = tuple(
+        start + timedelta(days=offset) for offset in range((end - start).days + 1)
+    )
+    days: list[DailyPointParity] = []
+    for local_date in requested_dates:
+        legacy = _build_daily_point(
+            day=local_date,
+            values=totals_by_date.get(local_date, {}),
+            tracking_inputs=_legacy_tracking_inputs(
+                calories=totals_by_date.get(local_date, {}).get("dietary_energy_kcal"),
+                nutrition_count=nutrition_counts_by_date.get(local_date, 0),
+            ),
+            active_energy_by_source=active_energy_by_source,
+            active_energy_sources_by_day=active_energy_sources_by_day,
+            targets=targets,
+            override=overrides.get(local_date),
+        )
+        nutrition = _compare_nutrition_day_with_legacy(
+            db,
+            legacy_nutrition_days.get(local_date, _empty_legacy_nutrition_day(local_date)),
+            user_id=user_id,
+        )
+        canonical_result = _build_canonical_daily_point_with_inputs(
+            db,
+            user_id,
+            local_date,
+            targets=targets,
+            active_energy_by_source=active_energy_by_source,
+            active_energy_sources_by_day=active_energy_sources_by_day,
+            override=overrides.get(local_date),
+        )
+        days.append(
+            _compare_daily_point_results(
+                local_date=local_date,
+                legacy=legacy,
+                nutrition=nutrition,
+                canonical_result=canonical_result,
+            )
+        )
+
+    day_results = tuple(days)
+    return DailyPointRangeParity(
+        start=start,
+        end=end,
+        days=day_results,
+        days_compared=sum(day.comparable for day in day_results),
+        days_not_comparable=sum(not day.comparable for day in day_results),
+        status_matches=sum(
+            day.comparable
+            and day.tracking.legacy_status == day.tracking.canonical_status
+            for day in day_results
+        ),
+        expected_tracking_differences=sum(
+            day.tracking.classification
+            in {
+                DailyPointParityClassification.EXPLICIT_ZERO_SEMANTIC_DIFFERENCE,
+                DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE,
+            }
+            for day in day_results
+            if day.tracking.comparable
+        ),
+        unexplained_tracking_mismatches=sum(
+            day.tracking.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+            for day in day_results
+            if day.tracking.comparable
+        ),
+        unexpected_target_activity_mismatches=sum(
+            any(
+                difference.field_name in _TARGET_ACTIVITY_FIELDS
+                and difference.classification
+                is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+                for difference in day.fields.differences
+            )
+            for day in day_results
+            if day.fields.comparable
+        ),
+    )
+
+
 
 __all__ = [
     "CanonicalDailyPointReason",
     "CanonicalDailyPointResult",
     "CanonicalDailyPointResultState",
     "CanonicalDailyPointState",
+    "MAX_PARITY_DAYS",
     "DailyPointFieldDifference",
     "DailyPointFieldParity",
     "DailyPointParity",
+    "DailyPointRangeParity",
     "DailyPointParityClassification",
     "DailyPointTrackingParity",
     "_build_canonical_daily_point",
     "compare_daily_point",
+    "compare_daily_point_range",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, is_dataclass
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -15,11 +15,14 @@ from app.analytics.daily_point_parity import (
     DailyPointFieldParity,
     DailyPointParity,
     DailyPointParityClassification,
+    DailyPointRangeParity,
     DailyPointTrackingParity,
     _build_canonical_daily_point,
     compare_daily_point,
+    compare_daily_point_range,
 )
 from app.analytics.nutrition_parity import (
+    MAX_PARITY_DAYS,
     NutritionDayParity,
     NutritionMetricParity,
     NutritionParityClassification,
@@ -31,7 +34,7 @@ from app.analytics.nutrition_projection import (
     NutritionProjectionReadError,
     NutritionProjectionReadState,
 )
-from app.models import TrackingOverride, User
+from app.models import HealthSample, ImportBatch, NutritionTarget, TrackingOverride, User
 from app.schemas import DailyPoint
 from app.nutrition.enums import (
     CoverageState,
@@ -823,3 +826,421 @@ def test_non_comparable_canonical_candidate_short_circuits_fields(
     assert result.classification is DailyPointParityClassification.NOT_COMPARABLE
     assert result.fields.comparable is False
     assert result.fields.differences == ()
+def test_daily_point_range_returns_inclusive_immutable_results(
+    db: Session, user: User
+) -> None:
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE + timedelta(days=1),
+    )
+
+    assert isinstance(result, DailyPointRangeParity)
+    assert tuple(day.local_date for day in result.days) == (
+        LOCAL_DATE,
+        LOCAL_DATE + timedelta(days=1),
+    )
+    assert result.days_compared == 0
+    assert result.days_not_comparable == 2
+
+
+def _range_batch(db: Session, user: User) -> ImportBatch:
+    batch = ImportBatch(user_id=user.id, source_type="range-test", status="completed")
+    db.add(batch)
+    db.flush()
+    return batch
+
+
+def _range_sample(
+    db: Session,
+    *,
+    user: User,
+    batch: ImportBatch,
+    local_date: date,
+    metric_type: str,
+    value: str,
+    suffix: str,
+    source_type: str = "range-test",
+) -> None:
+    at = datetime.combine(local_date, datetime.min.time(), tzinfo=UTC)
+    db.add(
+        HealthSample(
+            user_id=user.id,
+            import_batch_id=batch.id,
+            external_sample_id=f"{suffix}-external",
+            fingerprint=f"{suffix}-fingerprint",
+            source_type=source_type,
+            source_name=source_type,
+            source_identifier=f"{suffix}-source",
+            metric_type=metric_type,
+            value=Decimal(value),
+            unit="kcal" if metric_type == "dietary_energy_kcal" else "g",
+            original_value=Decimal(value),
+            original_unit="kcal" if metric_type == "dietary_energy_kcal" else "g",
+            start_at=at,
+            end_at=at,
+            local_date=local_date,
+            timezone="UTC",
+        )
+    )
+
+
+def _not_projected_day(user_id, local_date: date) -> CanonicalNutritionDay:
+    return CanonicalNutritionDay(
+        state=NutritionProjectionReadState.NOT_PROJECTED,
+        user_id=user_id,
+        local_date=local_date,
+        projection_id=None,
+        projection_version=None,
+        projection_status=None,
+        facts=(),
+        has_primary_evidence=False,
+        has_any_nutrition_value=False,
+        calorie_value_available=False,
+        calorie_coverage_complete=False,
+        calorie_resolution_resolved=False,
+        calorie_usable=False,
+    )
+
+
+def _stub_range_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    user_id,
+    projection_days: dict[date, CanonicalNutritionDay],
+    nutrition_days: dict[date, NutritionDayParity],
+) -> None:
+    monkeypatch.setattr(
+        parity_module,
+        "read_canonical_nutrition_day",
+        lambda db, requested_user_id, local_date: projection_days.get(
+            local_date, _not_projected_day(requested_user_id, local_date)
+        ),
+    )
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: nutrition_days[legacy_day.local_date],
+    )
+
+
+def test_daily_point_range_aggregates_expected_tracking_differences(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    next_date = LOCAL_DATE + timedelta(days=1)
+    batch = _range_batch(db, user)
+    _range_sample(
+        db,
+        user=user,
+        batch=batch,
+        local_date=LOCAL_DATE,
+        metric_type="dietary_energy_kcal",
+        value="0",
+        suffix="range-zero-calories",
+    )
+    _range_sample(
+        db,
+        user=user,
+        batch=batch,
+        local_date=next_date,
+        metric_type="dietary_energy_kcal",
+        value="1900",
+        suffix="range-quality-calories",
+    )
+    db.commit()
+    zero_projection = _projection_day(
+        values={
+            "dietary_energy_kcal": Decimal("0"),
+            "protein_g": None,
+            "carbohydrates_g": None,
+            "fat_g": None,
+        }
+    )
+    quality_projection = _projection_day(
+        calorie_coverage_complete=False,
+        calorie_resolution_resolved=True,
+        calorie_usable=False,
+    )
+    _stub_range_projection(
+        monkeypatch,
+        user_id=user.id,
+        projection_days={LOCAL_DATE: zero_projection, next_date: quality_projection},
+        nutrition_days={
+            LOCAL_DATE: _nutrition_day(
+                calorie_legacy_value=Decimal("0"),
+                calorie_projection_value=Decimal("0"),
+            ),
+            next_date: _nutrition_day(calorie_coverage=CoverageState.PARTIAL),
+        },
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=next_date,
+    )
+
+    assert result.days_compared == 2
+    assert result.days_not_comparable == 0
+    assert result.status_matches == 0
+    assert result.expected_tracking_differences == 2
+    assert result.unexplained_tracking_mismatches == 0
+    assert tuple(day.local_date for day in result.days) == (LOCAL_DATE, next_date)
+    with pytest.raises(FrozenInstanceError):
+        result.status_matches = 0  # type: ignore[misc]
+
+
+def test_daily_point_range_bundles_legacy_reads_and_does_not_call_daily_points(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    original_scalars = Session.scalars
+
+    def scalars_spy(self, statement, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_scalars(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "scalars", scalars_spy)
+    monkeypatch.setattr(
+        parity_module,
+        "daily_points",
+        lambda *args, **kwargs: pytest.fail("range must not call daily_points"),
+    )
+    _stub_range_projection(monkeypatch, user_id=user.id, projection_days={}, nutrition_days={})
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: NutritionDayParity(
+            local_date=legacy_day.local_date,
+            projection_state=NutritionProjectionReadState.NOT_PROJECTED,
+            metrics=(),
+            match_count=0,
+            mismatch_count=0,
+            expected_difference_count=0,
+            comparable=False,
+        ),
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE + timedelta(days=2),
+    )
+
+    assert len(result.days) == 3
+    assert calls == 3
+
+
+def test_daily_point_range_rejects_reversed_and_oversized_ranges() -> None:
+    with pytest.raises(ValueError):
+        compare_daily_point_range(
+            object(),  # type: ignore[arg-type]
+            user_id=object(),  # type: ignore[arg-type]
+            start=LOCAL_DATE + timedelta(days=1),
+            end=LOCAL_DATE,
+        )
+    with pytest.raises(ValueError):
+        compare_daily_point_range(
+            object(),  # type: ignore[arg-type]
+            user_id=object(),  # type: ignore[arg-type]
+            start=LOCAL_DATE,
+            end=LOCAL_DATE + timedelta(days=MAX_PARITY_DAYS),
+        )
+
+
+def test_daily_point_range_accepts_the_366_day_inclusive_limit(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    end = LOCAL_DATE + timedelta(days=MAX_PARITY_DAYS - 1)
+    _stub_range_projection(monkeypatch, user_id=user.id, projection_days={}, nutrition_days={})
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: NutritionDayParity(
+            local_date=legacy_day.local_date,
+            projection_state=NutritionProjectionReadState.NOT_PROJECTED,
+            metrics=(),
+            match_count=0,
+            mismatch_count=0,
+            expected_difference_count=0,
+            comparable=False,
+        ),
+    )
+
+    result = compare_daily_point_range(db, user_id=user.id, start=LOCAL_DATE, end=end)
+
+    assert len(result.days) == MAX_PARITY_DAYS
+    assert result.days[0].local_date == LOCAL_DATE
+    assert result.days[-1].local_date == end
+
+
+def test_daily_point_range_counts_unexpected_target_activity_mismatch(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point()
+    canonical = _daily_point(target=Decimal("2100"))
+    _stub_range_projection(monkeypatch, user_id=user.id, projection_days={}, nutrition_days={})
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: _nutrition_day(),
+    )
+    monkeypatch.setattr(
+        parity_module,
+        "_build_daily_point",
+        lambda **kwargs: legacy,
+    )
+    monkeypatch.setattr(
+        parity_module,
+        "_build_canonical_daily_point_with_inputs",
+        lambda *args, **kwargs: CanonicalDailyPointResult(
+            state=CanonicalDailyPointResultState.READY,
+            point=canonical,
+        ),
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    assert result.days_compared == 1
+    assert result.unexpected_target_activity_mismatches == 1
+    assert result.unexplained_tracking_mismatches == 0
+
+
+def test_daily_point_range_isolates_legacy_inputs_by_user(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = User(username="range-other", password_hash="synthetic-password-hash")
+    db.add(other)
+    db.flush()
+    other_batch = _range_batch(db, other)
+    _range_sample(
+        db,
+        user=other,
+        batch=other_batch,
+        local_date=LOCAL_DATE,
+        metric_type="dietary_energy_kcal",
+        value="1900",
+        suffix="range-other-calories",
+    )
+    db.commit()
+    _stub_range_projection(monkeypatch, user_id=user.id, projection_days={}, nutrition_days={})
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: NutritionDayParity(
+            local_date=legacy_day.local_date,
+            projection_state=NutritionProjectionReadState.NOT_PROJECTED,
+            metrics=(),
+            match_count=0,
+            mismatch_count=0,
+            expected_difference_count=0,
+            comparable=False,
+        ),
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    assert result.days[0].tracking.legacy_status == "no_data"
+
+
+def test_daily_point_range_counts_unexplained_tracking_mismatch(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy = _daily_point()
+    canonical = _daily_point(tracking_status="probably_complete")
+    _stub_range_projection(monkeypatch, user_id=user.id, projection_days={}, nutrition_days={})
+    monkeypatch.setattr(
+        parity_module,
+        "_compare_nutrition_day_with_legacy",
+        lambda db, legacy_day, user_id: _nutrition_day(),
+    )
+    monkeypatch.setattr(parity_module, "_build_daily_point", lambda **kwargs: legacy)
+    monkeypatch.setattr(
+        parity_module,
+        "_build_canonical_daily_point_with_inputs",
+        lambda *args, **kwargs: CanonicalDailyPointResult(
+            state=CanonicalDailyPointResultState.READY,
+            point=canonical,
+        ),
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    assert result.unexplained_tracking_mismatches == 1
+
+
+def test_daily_point_range_preserves_activity_source_asymmetry_and_missing_state(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = NutritionTarget(
+        user_id=user.id,
+        valid_from=LOCAL_DATE,
+        calories_kcal=Decimal("2000"),
+        protein_g=Decimal("120"),
+        activity_mode="full",
+        activity_source_type="apple_health_xml",
+    )
+    db.add(target)
+    batch = _range_batch(db, user)
+    _range_sample(
+        db,
+        user=user,
+        batch=batch,
+        local_date=LOCAL_DATE,
+        metric_type="dietary_energy_kcal",
+        value="1900",
+        suffix="range-missing-activity-calories",
+    )
+    _range_sample(
+        db,
+        user=user,
+        batch=batch,
+        local_date=LOCAL_DATE,
+        metric_type="active_energy_burned",
+        value="300",
+        source_type="google",
+        suffix="range-missing-activity-google",
+    )
+    db.commit()
+    _stub_range_projection(
+        monkeypatch,
+        user_id=user.id,
+        projection_days={LOCAL_DATE: _projection_day()},
+        nutrition_days={LOCAL_DATE: _nutrition_day()},
+    )
+
+    result = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    day = result.days[0]
+    assert day.tracking.classification is DailyPointParityClassification.MATCH
+    assert day.fields.comparable is True
+    assert {
+        difference.field_name
+        for difference in day.fields.differences
+        if difference.field_name
+        in {"activity_mode", "activity_source_type", "active_energy_kcal", "activity_data_status"}
+    } == set()
