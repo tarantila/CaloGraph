@@ -105,6 +105,7 @@ def test_canonical_parity_contract_is_exact_and_immutable() -> None:
     assert NutritionParityClassification.NOT_PROJECTED.value == "not_projected"
     assert "NutritionDayParity" in parity_module.__all__
     assert "compare_nutrition_day" in parity_module.__all__
+    assert "NutritionParityClassification" in parity_module.__all__
 
     for contract in (
         NutritionLegacySourceBreakdown,

@@ -524,7 +524,7 @@ __all__ = [
     "NutritionLegacyDay",
     "NutritionLegacyMetric",
     "NutritionLegacySourceBreakdown",
-    "NutritionMetricParity",
+    "NutritionParityClassification",
     "compare_nutrition_day",
     "compare_nutrition_range",
     "read_legacy_nutrition_day",
