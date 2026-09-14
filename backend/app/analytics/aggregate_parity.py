@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import select, union
 from sqlalchemy.orm import Session
+
 from app.analytics.daily_point_parity import (
     CanonicalDailyPointResult,
     CanonicalDailyPointResultState,
@@ -25,8 +26,17 @@ from app.analytics.nutrition_parity import (
     _compare_nutrition_day_with_legacy,
     _empty_legacy_nutrition_day,
 )
-from app.analytics.service import daily_points, moving_average
-from app.models import User
+from app.analytics.service import (
+    PRIMARY_NUTRITION_METRICS,
+    _build_daily_point,
+    _legacy_tracking_inputs,
+    budget_balance,
+    budget_balance_for_user,
+    budget_classification,
+    daily_points,
+    moving_average,
+)
+from app.models import HealthSample, User
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionProjectionHead,
@@ -622,6 +632,198 @@ def compare_moving_average_range(
     )
 
 
+def _has_legacy_only_budget_history(db: Session, user_id: UUID) -> bool:
+    """Return whether a positive legacy budget candidate has no canonical date."""
+    observation_date = select(NutritionSourceObservation.id).where(
+        NutritionSourceObservation.user_id == user_id,
+        NutritionSourceObservation.local_date == HealthSample.local_date,
+    ).exists()
+    event_date = select(NutritionConsumptionEvent.id).where(
+        NutritionConsumptionEvent.user_id == user_id,
+        NutritionConsumptionEvent.local_date == HealthSample.local_date,
+    ).exists()
+    projection_date = select(NutritionProjectionHead.local_date).where(
+        NutritionProjectionHead.user_id == user_id,
+        NutritionProjectionHead.local_date == HealthSample.local_date,
+    ).exists()
+    statement = (
+        select(HealthSample.local_date)
+        .where(
+            HealthSample.user_id == user_id,
+            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
+            HealthSample.value > 0,
+            ~(observation_date | event_date | projection_date),
+        )
+        .limit(1)
+    )
+    return db.scalar(statement) is not None
+
+
+def _add_budget_point_counts(counts: dict[str, int], point: DailyPoint) -> None:
+    tracked = point.tracking_status != "no_data"
+    if tracked:
+        counts["tracked_days"] += 1
+    classification = budget_classification(point)
+    if classification == "under_budget":
+        counts["within_budget_days"] += 1
+    elif classification == "over_budget":
+        counts["over_budget_days"] += 1
+    elif classification == "above_maintenance":
+        counts["over_maintenance_days"] += 1
+
+
+def _finalize_budget_point_counts(counts: dict[str, int]) -> dict[str, int]:
+    return {
+        **counts,
+        "unclassified_budget_days": counts["tracked_days"]
+        - (
+            counts["within_budget_days"]
+            + counts["over_budget_days"]
+            + counts["over_maintenance_days"]
+        ),
+    }
+
+
+def compare_historical_budget_balance(
+    db: Session,
+    user_id: UUID,
+    *,
+    chunk_size: int = CANONICAL_HISTORY_CHUNK_SIZE,
+) -> HistoricalBudgetBalanceParity:
+    """Compare all historical budget classifications without writing to the database."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+
+    history_chunks = iter_canonical_history_date_chunks(
+        db,
+        user_id,
+        chunk_size=chunk_size,
+    )
+    legacy_counts = dict(budget_balance_for_user(db, user))
+    canonical_counts = dict(budget_balance([]))
+    has_tracking_cause = False
+    has_nutrition_cause = False
+    has_unexplained_cause = False
+    has_non_comparable_legacy_candidate = False
+
+    for date_chunk in history_chunks:
+        (
+            totals_by_date,
+            nutrition_counts_by_date,
+            active_energy_by_source,
+            active_energy_sources_by_day,
+            legacy_nutrition_days,
+            targets,
+            overrides,
+        ) = _read_daily_point_range_inputs(
+            db,
+            user_id=user_id,
+            start=date_chunk[0],
+            end=date_chunk[-1],
+        )
+        for local_date in date_chunk:
+            legacy = _build_daily_point(
+                day=local_date,
+                values=totals_by_date.get(local_date, {}),
+                tracking_inputs=_legacy_tracking_inputs(
+                    calories=totals_by_date.get(local_date, {}).get("dietary_energy_kcal"),
+                    nutrition_count=nutrition_counts_by_date.get(local_date, 0),
+                ),
+                active_energy_by_source=active_energy_by_source,
+                active_energy_sources_by_day=active_energy_sources_by_day,
+                targets=targets,
+                override=overrides.get(local_date),
+            )
+            canonical_result = _build_canonical_daily_point_with_inputs(
+                db,
+                user_id,
+                local_date,
+                targets=targets,
+                active_energy_by_source=active_energy_by_source,
+                active_energy_sources_by_day=active_energy_sources_by_day,
+                override=overrides.get(local_date),
+            )
+            if (
+                canonical_result.state is not CanonicalDailyPointResultState.READY
+                or canonical_result.point is None
+            ):
+                has_non_comparable_legacy_candidate |= legacy.tracking_status != "no_data"
+                continue
+
+            _add_budget_point_counts(canonical_counts, canonical_result.point)
+            nutrition = _compare_nutrition_day_with_legacy(
+                db,
+                legacy_nutrition_days.get(
+                    local_date,
+                    _empty_legacy_nutrition_day(local_date),
+                ),
+                user_id=user_id,
+            )
+            parity = _compare_daily_point_results(
+                local_date=local_date,
+                legacy=legacy,
+                nutrition=nutrition,
+                canonical_result=canonical_result,
+            )
+            if not parity.comparable:
+                continue
+
+            if parity.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH:
+                if (
+                    canonical_result.point.tracking_status == "incomplete"
+                    and legacy.tracking_status == "complete"
+                ):
+                    has_tracking_cause = True
+                else:
+                    projection_only = any(
+                        metric.classification.value == "projection_only"
+                        for metric in parity.nutrition.metrics
+                    )
+                    if projection_only and legacy.tracking_status == "no_data":
+                        has_nutrition_cause = True
+                    else:
+                        has_unexplained_cause = True
+            elif parity.classification is DailyPointParityClassification.CANONICAL_QUALITY_DIFFERENCE:
+                has_tracking_cause = True
+
+            if any(
+                difference.field_name
+                in {
+                    "target_kcal",
+                    "maintenance_kcal",
+                    "activity_mode",
+                    "activity_source_type",
+                    "active_energy_kcal",
+                    "activity_credit_kcal",
+                    "activity_data_status",
+                }
+                and difference.classification is DailyPointParityClassification.UNEXPLAINED_MISMATCH
+                for difference in parity.fields.differences
+            ):
+                has_unexplained_cause = True
+
+    canonical_counts = _finalize_budget_point_counts(canonical_counts)
+    if legacy_counts == canonical_counts:
+        classification = HistoricalBudgetBalanceClassification.MATCH
+    elif has_unexplained_cause or has_non_comparable_legacy_candidate:
+        classification = HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+    elif has_nutrition_cause:
+        classification = HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
+    elif has_tracking_cause:
+        classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
+    elif _has_legacy_only_budget_history(db, user_id):
+        classification = HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
+    elif canonical_counts["tracked_days"] != legacy_counts["tracked_days"]:
+        classification = HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
+    else:
+        classification = HistoricalBudgetBalanceClassification.UNEXPLAINED_MISMATCH
+    return HistoricalBudgetBalanceParity(
+        legacy_counts=legacy_counts,
+        canonical_counts=canonical_counts,
+        classification=classification,
+    )
+
 
 __all__ = [
     "CANONICAL_HISTORY_CHUNK_SIZE",
@@ -633,6 +835,7 @@ __all__ = [
     "MovingAverageParity",
     "MovingAverageParityClassification",
     "MovingAverageRangeParity",
+    "compare_historical_budget_balance",
     "compare_moving_average_range",
     "iter_canonical_history_date_chunks",
 ]

@@ -7,16 +7,27 @@ from types import MappingProxyType
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import User
+from app.activity import ACTIVE_ENERGY_METRIC
+from app.models import HealthSample, ImportBatch, NutritionTarget, User
+from app.nutrition.enums import (
+    CoverageState,
+    LineageState,
+    PresenceState,
+    ProjectionGranularity,
+    ResolutionState,
+)
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionDailyProjection,
+    NutritionDailyProjectionFact,
     NutritionIngestionRun,
     NutritionProjectionHead,
     NutritionSourceObservation,
 )
+from app.nutrition.resolution.metrics import CANONICAL_METRICS
 import app.analytics.aggregate_parity as aggregate_module
 
 from app.source_priority.application import create_policy_with_rules
@@ -31,6 +42,7 @@ from app.analytics.aggregate_parity import (
     MovingAverageParity,
     MovingAverageParityClassification,
     MovingAverageRangeParity,
+    compare_historical_budget_balance,
     compare_moving_average_range,
     iter_canonical_history_date_chunks,
 )
@@ -152,6 +164,125 @@ def _projection_head(db: Session, user: User, local_date: date) -> None:
         )
     )
     db.flush()
+
+
+def _legacy_sample(
+    db: Session,
+    user: User,
+    local_date: date,
+    *,
+    metric_type: str = "dietary_energy_kcal",
+    value: Decimal = Decimal("1900"),
+    source_type: str = "yazio",
+) -> HealthSample:
+    batch = ImportBatch(user_id=user.id, source_type=source_type, status="completed")
+    db.add(batch)
+    db.flush()
+    sample = HealthSample(
+        user_id=user.id,
+        import_batch_id=batch.id,
+        external_sample_id=str(uuid4()),
+        fingerprint=(uuid4().hex + uuid4().hex)[:64],
+        source_type=source_type,
+        source_identifier=str(uuid4()),
+        metric_type=metric_type,
+        value=value,
+        unit=(
+            "kcal"
+            if metric_type in {"dietary_energy_kcal", ACTIVE_ENERGY_METRIC}
+            else "g"
+        ),
+        original_value=value,
+        original_unit=(
+            "kcal"
+            if metric_type in {"dietary_energy_kcal", ACTIVE_ENERGY_METRIC}
+            else "g"
+        ),
+        start_at=datetime(local_date.year, local_date.month, local_date.day, tzinfo=UTC),
+        end_at=datetime(local_date.year, local_date.month, local_date.day, 0, 1, tzinfo=UTC),
+        local_date=local_date,
+        timezone="UTC",
+    )
+    db.add(sample)
+    db.flush()
+    return sample
+
+
+def _canonical_projection(
+    db: Session,
+    user: User,
+    policy: object,
+    local_date: date,
+    *,
+    calories: Decimal | None = Decimal("1900"),
+    calorie_presence: str | None = None,
+    calorie_coverage: str = CoverageState.COMPLETE.value,
+    calorie_resolution: str = ResolutionState.RESOLVED.value,
+) -> NutritionDailyProjection:
+    projection = NutritionDailyProjection(
+        user_id=user.id,
+        local_date=local_date,
+        projection_version=1,
+        projection_algorithm_version="nutrition-daily-v1",
+        priority_policy_id=policy.policy_id,
+        input_watermark="aggregate-parity-test",
+        projection_status="ready",
+    )
+    db.add(projection)
+    db.flush()
+    for metric_key, definition in CANONICAL_METRICS.items():
+        value = calories if metric_key == "dietary_energy_kcal" else Decimal("1")
+        if value is None:
+            presence_state = PresenceState.MISSING.value
+            coverage_state = (
+                calorie_coverage
+                if metric_key == "dietary_energy_kcal"
+                else CoverageState.UNKNOWN.value
+            )
+            resolution_state = (
+                calorie_resolution
+                if metric_key == "dietary_energy_kcal"
+                else ResolutionState.UNRESOLVED.value
+            )
+            provider = None
+            granularity = None
+        else:
+            presence_state = (
+                calorie_presence
+                or (
+                    PresenceState.EXPLICIT_ZERO.value
+                    if value == Decimal("0")
+                    else PresenceState.SUPPLIED.value
+                )
+            )
+            coverage_state = CoverageState.COMPLETE.value
+            resolution_state = ResolutionState.RESOLVED.value
+            provider = "yazio"
+            granularity = ProjectionGranularity.SUMMARY.value
+        db.add(
+            NutritionDailyProjectionFact(
+                user_id=user.id,
+                projection_id=projection.id,
+                metric_key=metric_key,
+                value=value,
+                unit=definition.canonical_unit,
+                selected_provider_key=provider,
+                selected_granularity=granularity,
+                presence_state=presence_state,
+                coverage_state=coverage_state,
+                resolution_state=resolution_state,
+                lineage_state=LineageState.CONFIRMED.value if value is not None else LineageState.UNKNOWN.value,
+            )
+        )
+    db.add(
+        NutritionProjectionHead(
+            user_id=user.id,
+            local_date=local_date,
+            current_projection_id=projection.id,
+        )
+    )
+    db.flush()
+    return projection
 
 
 def test_canonical_history_union_is_scoped_bounded_and_keyset_paginated(
@@ -725,3 +856,306 @@ def test_compare_moving_average_range_rejects_unsupported_windows(
             _DATE_1,
             windows=windows,  # type: ignore[arg-type]
         )
+
+
+def test_compare_historical_budget_balance_matches_legacy_counts(
+    db: Session, user: User
+) -> None:
+    policy = create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2025, 1, 1, tzinfo=UTC),
+        rules=(
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="yazio",
+                priority_rank=1,
+            ),
+        ),
+    )
+    _legacy_sample(db, user, _DATE_1, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, _DATE_1, calories=Decimal("1900"))
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts == {
+        "tracked_days": 1,
+        "within_budget_days": 1,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.canonical_counts == result.legacy_counts
+    assert result.classification is HistoricalBudgetBalanceClassification.MATCH
+    with pytest.raises(TypeError):
+        result.canonical_counts["tracked_days"] = 99  # type: ignore[index]
+
+
+def _budget_policy(db: Session, user: User):
+    return create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2025, 1, 1, tzinfo=UTC),
+        rules=(
+            PriorityRuleSpec(
+                data_area="nutrition",
+                metric_key=None,
+                provider_key="yazio",
+                priority_rank=1,
+            ),
+        ),
+    )
+
+
+def test_historical_budget_balance_counts_all_budget_classifications(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    db.add(
+        NutritionTarget(
+            user_id=user.id,
+            valid_from=date(2025, 1, 1),
+            calories_kcal=Decimal("2000"),
+            maintenance_kcal=Decimal("2500"),
+            protein_g=Decimal("120"),
+        )
+    )
+    dates_and_values = (
+        (date(2023, 12, 31), Decimal("1900")),
+        (date(2025, 1, 1), Decimal("1900")),
+        (date(2025, 1, 2), Decimal("2200")),
+        (date(2025, 1, 3), Decimal("3000")),
+    )
+    for local_date, calories in dates_and_values:
+        _legacy_sample(db, user, local_date, value=calories)
+        _canonical_projection(db, user, policy, local_date, calories=calories)
+
+    result = compare_historical_budget_balance(db, user.id, chunk_size=2)
+
+    expected = {
+        "tracked_days": 4,
+        "within_budget_days": 1,
+        "over_budget_days": 1,
+        "over_maintenance_days": 1,
+        "unclassified_budget_days": 1,
+    }
+    assert result.legacy_counts == expected
+    assert result.canonical_counts == expected
+    assert result.classification is HistoricalBudgetBalanceClassification.MATCH
+
+
+def test_historical_budget_balance_explicit_zero_is_expected_nutrition_difference(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    _legacy_sample(db, user, local_date, value=Decimal("0"))
+    _canonical_projection(
+        db,
+        user,
+        policy,
+        local_date,
+        calories=Decimal("0"),
+        calorie_presence=PresenceState.EXPLICIT_ZERO.value,
+    )
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts == {
+        "tracked_days": 0,
+        "within_budget_days": 0,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.canonical_counts == {
+        "tracked_days": 1,
+        "within_budget_days": 1,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.classification is (
+        HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
+    )
+
+
+def test_historical_budget_balance_incomplete_canonical_day_is_expected_tracking_difference(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    _legacy_sample(db, user, local_date, value=Decimal("1900"))
+    _canonical_projection(
+        db,
+        user,
+        policy,
+        local_date,
+        calories=None,
+        calorie_coverage=CoverageState.PARTIAL.value,
+        calorie_resolution=ResolutionState.UNRESOLVED.value,
+    )
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts["within_budget_days"] == 1
+    assert result.canonical_counts == {
+        "tracked_days": 1,
+        "within_budget_days": 0,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 1,
+    }
+    assert result.classification is (
+        HistoricalBudgetBalanceClassification.EXPECTED_TRACKING_DIFFERENCE
+    )
+
+
+def test_historical_budget_balance_uses_historical_target_and_activity_source(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    db.add(
+        NutritionTarget(
+            user_id=user.id,
+            valid_from=local_date,
+            calories_kcal=1800,
+            maintenance_kcal=2500,
+            protein_g=120,
+            activity_mode="full",
+            activity_source_type="apple_health_xml",
+        )
+    )
+    _legacy_sample(db, user, local_date, value=Decimal("2000"))
+    _legacy_sample(
+        db,
+        user,
+        local_date,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        value=Decimal("300"),
+        source_type="apple_health_xml",
+    )
+    _canonical_projection(db, user, policy, local_date, calories=Decimal("2000"))
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts == {
+        "tracked_days": 1,
+        "within_budget_days": 1,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.canonical_counts == result.legacy_counts
+    assert result.classification is HistoricalBudgetBalanceClassification.MATCH
+
+
+def test_historical_budget_balance_event_and_projection_only_history_is_safe(
+    db: Session, user: User
+) -> None:
+    run = _run(db, user)
+    observation = _observation(db, user, _DATE_1, run=run)
+    _event(db, user, _DATE_1, observation)
+    _projection_head(db, user, _DATE_2)
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts == result.canonical_counts == {
+        "tracked_days": 0,
+        "within_budget_days": 0,
+        "over_budget_days": 0,
+        "over_maintenance_days": 0,
+        "unclassified_budget_days": 0,
+    }
+    assert result.classification is HistoricalBudgetBalanceClassification.MATCH
+
+
+def test_historical_budget_balance_reports_legacy_only_history(
+    db: Session, user: User
+) -> None:
+    _legacy_sample(db, user, _DATE_1, value=Decimal("1900"))
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts["tracked_days"] == 1
+    assert result.canonical_counts["tracked_days"] == 0
+    assert result.classification is HistoricalBudgetBalanceClassification.LEGACY_ONLY_HISTORY
+
+
+def test_historical_budget_balance_isolates_users(
+    db: Session, user: User
+) -> None:
+    other = User(username="historical-budget-other", password_hash="synthetic-password-hash")
+    db.add(other)
+    db.flush()
+    _legacy_sample(db, other, _DATE_1, value=Decimal("1900"))
+    policy = _budget_policy(db, user)
+    _canonical_projection(db, user, policy, _DATE_2, calories=Decimal("1900"))
+
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert result.legacy_counts["tracked_days"] == 0
+    assert result.canonical_counts["tracked_days"] == 1
+    assert result.classification is HistoricalBudgetBalanceClassification.EXPECTED_NUTRITION_DIFFERENCE
+
+
+def test_historical_budget_balance_processes_more_than_one_chunk(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _budget_policy(db, user)
+    start = date(2026, 1, 1)
+    for offset in range(501):
+        local_date = start + timedelta(days=offset)
+        _canonical_projection(db, user, policy, local_date, calories=Decimal("1900"))
+
+    seen_chunk_sizes: list[int] = []
+    original_iterator = aggregate_module.iter_canonical_history_date_chunks
+
+    def recording_iterator(*args: object, **kwargs: object):
+        for chunk in original_iterator(*args, **kwargs):
+            seen_chunk_sizes.append(len(chunk))
+            yield chunk
+
+    monkeypatch.setattr(
+        aggregate_module,
+        "iter_canonical_history_date_chunks",
+        recording_iterator,
+    )
+    result = compare_historical_budget_balance(db, user.id)
+
+    assert seen_chunk_sizes == [500, 1]
+    assert result.canonical_counts["tracked_days"] == 501
+    assert result.canonical_counts["within_budget_days"] == 501
+
+
+def test_historical_budget_balance_is_read_only(
+    db: Session, user: User
+) -> None:
+    policy = _budget_policy(db, user)
+    local_date = _DATE_1
+    _legacy_sample(db, user, local_date, value=Decimal("1900"))
+    _canonical_projection(db, user, policy, local_date, calories=Decimal("1900"))
+
+    def snapshot() -> dict[str, tuple[object, ...]]:
+        return {
+            "projections": tuple(db.scalars(select(NutritionDailyProjection.id)).all()),
+            "facts": tuple(db.scalars(select(NutritionDailyProjectionFact.id)).all()),
+            "heads": tuple(
+                db.execute(
+                    select(
+                        NutritionProjectionHead.user_id,
+                        NutritionProjectionHead.local_date,
+                        NutritionProjectionHead.current_projection_id,
+                    )
+                ).all()
+            ),
+            "samples": tuple(db.scalars(select(HealthSample.id)).all()),
+        }
+
+    before = snapshot()
+    compare_historical_budget_balance(db, user.id)
+    assert snapshot() == before
