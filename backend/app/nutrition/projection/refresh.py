@@ -18,6 +18,7 @@ from app.nutrition.models import (
 )
 from app.nutrition.projection.contracts import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
+from app.nutrition.resolution.sources import DEFAULT_SOURCE_RESOLVERS, resolve_default_provider_sources
 from app.source_priority.models import SourcePriorityPolicy
 from app.source_priority.repositories import get_effective_policy, list_policies, list_rules
 
@@ -41,6 +42,34 @@ class NutritionProjectionRefreshError(RuntimeError):
 def _latest_policy(policies: list[SourcePriorityPolicy]) -> SourcePriorityPolicy | None:
     return max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
 
+def _has_usable_effective_policy(
+    db: Session,
+    *,
+    user_id: UUID,
+    policy: SourcePriorityPolicy,
+) -> bool:
+    rules = list_rules(db, user_id, policy.id, data_area="nutrition")
+    bindings = resolve_default_provider_sources(
+        db,
+        user_id=user_id,
+        provider_keys=DEFAULT_SOURCE_RESOLVERS.keys(),
+    )
+    available_provider_keys = {binding.provider_key for binding in bindings}
+    if not rules or not available_provider_keys:
+        return False
+
+    configured_provider_keys = {rule.provider_key for rule in rules}
+    if not configured_provider_keys & available_provider_keys:
+        return False
+
+    if any(rule.metric_key is not None for rule in rules):
+        return True
+
+    ranks = [rule.priority_rank for rule in rules]
+    if len(set(ranks)) != len(ranks) or set(ranks) != set(range(1, len(ranks) + 1)):
+        return False
+    return available_provider_keys <= configured_provider_keys
+
 
 def refresh_stale_nutrition_projections(
     *,
@@ -63,11 +92,10 @@ def refresh_stale_nutrition_projections(
                 f"expected policy version {expected_version}, current version is {actual_version}"
             )
         policy = get_effective_policy(validation_session, user_id, policy_at)
-        if policy is None or not list_rules(
+        if policy is None or not _has_usable_effective_policy(
             validation_session,
-            user_id,
-            policy.id,
-            data_area="nutrition",
+            user_id=user_id,
+            policy=policy,
         ):
             raise NutritionProjectionRefreshError("a usable effective nutrition policy is required")
         stale_dates = list_stale_nutrition_projection_dates(

@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 from app.database import SessionLocal
 
-from app.models import HealthSample, ImportBatch, User
+from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -22,6 +22,9 @@ from app.nutrition.enums import (
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionDailyProjectionLineage,
+    NutritionFieldObservation,
     NutritionIngestionRun,
     NutritionProjectionHead,
     NutritionSourceObservation,
@@ -58,11 +61,40 @@ def _policy(db, user: User, *, version: int = 1) -> SourcePriorityPolicy:
     return db.get(SourcePriorityPolicy, snapshot.policy_id)  # type: ignore[return-value]
 
 
-def _run(db, user_id: UUID) -> NutritionIngestionRun:
+def _yazio_connection(db, user: User) -> YazioConnection:
+    connection = YazioConnection(
+        user_id=user.id,
+        encrypted_email=b"refresh-email",
+        encrypted_password=b"refresh-password",
+        source_identifier="refresh-test",
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _google_connection(db, user: User) -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"refresh-token",
+        granted_scopes=[],
+    )
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def _run(
+    db,
+    user_id: UUID,
+    *,
+    provider_key: str = "yazio",
+    source_instance_id: UUID = SOURCE_INSTANCE_ID,
+) -> NutritionIngestionRun:
     run = NutritionIngestionRun(
         user_id=user_id,
-        provider_key="yazio",
-        source_instance_id=SOURCE_INSTANCE_ID,
+        provider_key=provider_key,
+        source_instance_id=source_instance_id,
         connector_variant="refresh-test",
         status="completed",
         coverage_state=CoverageState.COMPLETE.value,
@@ -84,11 +116,15 @@ def _observation(
     row = NutritionSourceObservation(
         user_id=user_id,
         ingestion_run_id=run.id,
-        provider_key="yazio",
-        source_instance_id=SOURCE_INSTANCE_ID,
+        provider_key=run.provider_key,
+        source_instance_id=run.source_instance_id,
         connector_variant="refresh-test",
         observation_kind=observation_kind,
-        source_namespace="refresh-test",
+        source_namespace=(
+            "google_health.nutrition_log"
+            if run.provider_key == "google_health"
+            else "yazio.simple_product"
+        ),
         source_record_id=key,
         source_revision=1,
         observation_fingerprint=sha256(key.encode()).hexdigest(),
@@ -116,8 +152,8 @@ def _event(
     row = NutritionConsumptionEvent(
         user_id=user_id,
         source_observation_id=source.id,
-        provider_key="yazio",
-        source_instance_id=SOURCE_INSTANCE_ID,
+        provider_key=source.provider_key,
+        source_instance_id=source.source_instance_id,
         event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value,
         logical_event_key=key,
         revision=1,
@@ -131,6 +167,36 @@ def _event(
     db.add(row)
     db.flush()
     return row
+
+
+def _field(
+    db,
+    user_id: UUID,
+    source: NutritionSourceObservation,
+    *,
+    value: Decimal,
+    metric_key: str = "protein_g",
+) -> NutritionFieldObservation:
+    field = NutritionFieldObservation(
+        user_id=user_id,
+        source_observation_id=source.id,
+        provider_field_path=f"nutrition.{metric_key}",
+        provider_raw_value_decimal=value,
+        provider_raw_unit="g",
+        metric_key=metric_key,
+        canonical_value=value,
+        canonical_unit="g",
+        observation_role="canonical" if source.provider_key == "google_health" else "provider",
+        presence_state=(
+            PresenceState.EXPLICIT_ZERO.value if value == Decimal("0") else PresenceState.SUPPLIED.value
+        ),
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    db.add(field)
+    db.flush()
+    return field
 
 def _projection(
     db,
@@ -316,6 +382,7 @@ def test_refresh_processes_120_dates_in_bounded_resumable_batches(
     db, user: User, monkeypatch
 ) -> None:
     policy = _policy(db, user)
+    _yazio_connection(db, user)
     run = _run(db, user.id)
     for offset in range(120):
         _observation(
@@ -389,6 +456,7 @@ def test_refresh_processes_120_dates_in_bounded_resumable_batches(
 
 def test_refresh_all_fresh_dates_is_a_no_op(db, user: User, monkeypatch) -> None:
     policy = _policy(db, user)
+    _yazio_connection(db, user)
     _observation(db, user.id, _run(db, user.id), key="fresh", local_date=DAY)
     _head(db, user.id, DAY, _projection(db, user.id, policy, DAY))
     db.commit()
@@ -450,6 +518,7 @@ def test_refresh_rejects_an_unusable_effective_policy(db, user: User) -> None:
 
 def test_refresh_preserves_committed_dates_when_a_later_date_fails(db, user: User, monkeypatch) -> None:
     policy = _policy(db, user)
+    _yazio_connection(db, user)
     run = _run(db, user.id)
     dates = (DAY, DAY + timedelta(days=1), DAY + timedelta(days=2))
     for local_date in dates:
@@ -522,6 +591,7 @@ def test_refresh_accepts_advanced_metric_specific_policy(db, user: User, monkeyp
         datetime.now(UTC) - timedelta(minutes=1),
         (PriorityRuleSpec("nutrition", "dietary_energy_kcal", "yazio", 1),),
     )
+    _yazio_connection(db, user)
     db.commit()
     policy = db.get(SourcePriorityPolicy, policy_snapshot.policy_id)
     assert policy is not None
@@ -565,15 +635,23 @@ def test_refresh_rebuilds_same_evidence_under_new_provider_policy(
         user.id,
         1,
         datetime.now(UTC) - timedelta(minutes=2),
-        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+        (
+            PriorityRuleSpec("nutrition", None, "yazio", 1),
+            PriorityRuleSpec("nutrition", None, "google_health", 2),
+        ),
     )
     v2_snapshot = create_policy_with_rules(
         db,
         user.id,
         2,
         datetime.now(UTC) - timedelta(minutes=1),
-        (PriorityRuleSpec("nutrition", None, "google_health", 1),),
+        (
+            PriorityRuleSpec("nutrition", None, "google_health", 1),
+            PriorityRuleSpec("nutrition", None, "yazio", 2),
+        ),
     )
+    _yazio_connection(db, user)
+    _google_connection(db, user)
     db.commit()
     v1 = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
     v2 = db.get(SourcePriorityPolicy, v2_snapshot.policy_id)
@@ -623,15 +701,23 @@ def test_refresh_treats_policy_lineage_change_as_created_even_for_same_value(
         user.id,
         1,
         datetime.now(UTC) - timedelta(minutes=2),
-        (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+        (
+            PriorityRuleSpec("nutrition", None, "yazio", 1),
+            PriorityRuleSpec("nutrition", None, "google_health", 2),
+        ),
     )
     v2_snapshot = create_policy_with_rules(
         db,
         user.id,
         2,
         datetime.now(UTC) - timedelta(minutes=1),
-        (PriorityRuleSpec("nutrition", None, "google_health", 1),),
+        (
+            PriorityRuleSpec("nutrition", None, "google_health", 1),
+            PriorityRuleSpec("nutrition", None, "yazio", 2),
+        ),
     )
+    _yazio_connection(db, user)
+    _google_connection(db, user)
     db.commit()
     v1 = db.get(SourcePriorityPolicy, v1_snapshot.policy_id)
     v2 = db.get(SourcePriorityPolicy, v2_snapshot.policy_id)
@@ -652,6 +738,7 @@ def test_refresh_treats_policy_lineage_change_as_created_even_for_same_value(
         return ProjectionPersistenceResult(
             user_id=user_id,
             local_date=local_date,
+
             projection_id=uuid4(),
             projection_version=2,
             input_watermark="lineage-changed",
@@ -669,10 +756,128 @@ def test_refresh_treats_policy_lineage_change_as_created_even_for_same_value(
     assert result.unchanged_count == 0
 
 
+def test_refresh_real_b6_rebuilds_cross_provider_policy_lineage_with_equal_values(
+    db, user: User
+) -> None:
+    yazio = _yazio_connection(db, user)
+    google = _google_connection(db, user)
+    yazio_run = _run(db, user.id, provider_key="yazio", source_instance_id=yazio.id)
+    google_run = _run(db, user.id, provider_key="google_health", source_instance_id=google.id)
+    yazio_source = _observation(db, user.id, yazio_run, key="real-yazio", local_date=DAY)
+    google_source = _observation(db, user.id, google_run, key="real-google", local_date=DAY)
+    _event(db, user.id, yazio_source, key="real-yazio", local_date=DAY)
+    _event(db, user.id, google_source, key="real-google", local_date=DAY)
+    _field(db, user.id, yazio_source, value=Decimal("7"))
+    _field(db, user.id, google_source, value=Decimal("7"))
+
+    v1_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        1,
+        datetime.now(UTC) - timedelta(minutes=2),
+        (
+            PriorityRuleSpec("nutrition", None, "yazio", 1),
+            PriorityRuleSpec("nutrition", None, "google_health", 2),
+        ),
+    )
+    db.commit()
+
+    from app.nutrition.projection.orchestration import rebuild_nutrition_day
+
+    initial = rebuild_nutrition_day(
+        db,
+        user_id=user.id,
+        local_date=DAY,
+        policy_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    assert initial.status is ProjectionPersistenceStatus.CREATED
+    db.expire_all()
+    initial_fact = db.scalar(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == initial.projection_id,
+            NutritionDailyProjectionFact.metric_key == "protein_g",
+        )
+    )
+    assert initial_fact is not None
+    assert initial_fact.value == Decimal("7")
+    initial_lineage = db.scalar(
+        select(NutritionDailyProjectionLineage).where(
+            NutritionDailyProjectionLineage.projection_fact_id == initial_fact.id,
+            NutritionDailyProjectionLineage.role == "selected",
+        )
+    )
+    assert initial_lineage is not None
+    assert initial_lineage.provider_key == "yazio"
+
+    v2_snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        2,
+        datetime.now(UTC) - timedelta(seconds=1),
+        (
+            PriorityRuleSpec("nutrition", None, "google_health", 1),
+            PriorityRuleSpec("nutrition", None, "yazio", 2),
+        ),
+    )
+    db.commit()
+    v2 = db.get(SourcePriorityPolicy, v2_snapshot.policy_id)
+    assert v2 is not None
+
+    result = refresh_stale_nutrition_projections(
+        session_factory=SessionLocal,
+        user_id=user.id,
+        expected_version=2,
+    )
+
+    assert result.processed_count == 1
+    assert result.created_count == 1
+    db.expire_all()
+    head = db.scalar(
+        select(NutritionProjectionHead).where(
+            NutritionProjectionHead.user_id == user.id,
+            NutritionProjectionHead.local_date == DAY,
+        )
+    )
+    assert head is not None
+    assert head.current_projection_id != initial.projection_id
+    current = db.get(NutritionDailyProjection, head.current_projection_id)
+    assert current is not None
+    assert current.priority_policy_id == v2.id
+
+    facts = db.scalars(
+        select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == current.id,
+            NutritionDailyProjectionFact.metric_key == "protein_g",
+        )
+    ).all()
+    assert len(facts) == 1
+    assert facts[0].value == Decimal("7")
+    lineages = db.scalars(
+        select(NutritionDailyProjectionLineage).where(
+            NutritionDailyProjectionLineage.projection_fact_id == facts[0].id,
+        )
+    ).all()
+    assert [(lineage.provider_key, lineage.role) for lineage in lineages if lineage.role == "selected"] == [
+        ("google_health", "selected")
+    ]
+
+
+def test_refresh_rejects_policy_without_a_matching_provider_connection(
+    db, user: User
+) -> None:
+    _policy(db, user)
+    with pytest.raises(NutritionProjectionRefreshError, match="usable effective"):
+        refresh_stale_nutrition_projections(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            expected_version=1,
+        )
+
 def test_refresh_converts_unexpected_policy_missing_to_safe_error(
     db, user: User, monkeypatch
 ) -> None:
     _policy(db, user)
+    _yazio_connection(db, user)
     _observation(db, user.id, _run(db, user.id), key="missing-policy", local_date=DAY)
     db.commit()
 
