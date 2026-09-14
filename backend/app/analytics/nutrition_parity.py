@@ -243,7 +243,6 @@ def _read_legacy_nutrition_range(
     )
 
 
-
 def _empty_legacy_nutrition_day(local_date: date) -> NutritionLegacyDay:
     return NutritionLegacyDay(
         local_date=local_date,
@@ -487,8 +486,7 @@ def compare_nutrition_range(
     )
     legacy_days_by_date = {legacy_day.local_date: legacy_day for legacy_day in legacy_days}
     requested_dates = tuple(
-        start + timedelta(days=offset)
-        for offset in range((end - start).days + 1)
+        start + timedelta(days=offset) for offset in range((end - start).days + 1)
     )
     days = tuple(
         _compare_nutrition_day_with_legacy(
