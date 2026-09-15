@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models import User
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
@@ -155,6 +157,7 @@ def bootstrap_nutrition_priority(
     registry = DEFAULT_SOURCE_RESOLVERS if resolver_registry is None else resolver_registry
 
     with session_factory() as db:
+        db.scalar(select(User.id).where(User.id == user_id).with_for_update())
         bindings = resolve_default_provider_sources(
             db,
             user_id=user_id,

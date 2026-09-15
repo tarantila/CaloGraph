@@ -358,3 +358,57 @@ def test_postgres_policy_put_during_refresh_requires_next_policy_batch(
         current = db.get(NutritionDailyProjection, head.current_projection_id)
         assert current is not None
         assert current.priority_policy_id == policies[1].id
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL transaction visibility tests are not explicitly enabled",
+)
+def test_postgres_complete_policy_is_visible_only_after_commit(user) -> None:
+    conftest.assert_safe_test_database()
+    assert engine.dialect.name == "postgresql"
+    effective_from = datetime(2026, 9, 12, tzinfo=UTC)
+
+    with SessionLocal() as writer, SessionLocal() as reader:
+        snapshot = create_policy_with_rules(
+            writer,
+            user.id,
+            version=1,
+            effective_from=effective_from,
+            rules=(
+                PriorityRuleSpec("nutrition", None, "yazio", 1),
+                PriorityRuleSpec("nutrition", None, "google_health", 2),
+            ),
+        )
+        assert (
+            reader.scalar(
+                select(SourcePriorityPolicy).where(SourcePriorityPolicy.id == snapshot.policy_id)
+            )
+            is None
+        )
+        assert (
+            reader.scalar(
+                select(SourcePriorityRule).where(SourcePriorityRule.policy_id == snapshot.policy_id)
+            )
+            is None
+        )
+
+        writer.commit()
+        reader.rollback()
+        policy = reader.scalar(
+            select(SourcePriorityPolicy).where(SourcePriorityPolicy.id == snapshot.policy_id)
+        )
+        rules = list(
+            reader.scalars(
+                select(SourcePriorityRule)
+                .where(SourcePriorityRule.policy_id == snapshot.policy_id)
+                .order_by(SourcePriorityRule.priority_rank)
+            )
+        )
+
+    assert policy is not None
+    assert policy.version == 1
+    assert [(rule.provider_key, rule.priority_rank) for rule in rules] == [
+        ("yazio", 1),
+        ("google_health", 2),
+    ]
