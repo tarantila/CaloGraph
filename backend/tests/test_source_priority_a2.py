@@ -7,11 +7,10 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models import User
-from app.source_priority.contracts import UNSET
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import UNSET, PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.repositories import (
-    add_rule,
-    create_policy,
     get_effective_policy,
     get_policy,
     list_rules,
@@ -71,6 +70,24 @@ def _rule(
     return rule
 
 
+def _complete_policy(
+    db,
+    user: User,
+    *,
+    version: int,
+    effective_from: datetime,
+    rules: tuple[PriorityRuleSpec, ...] = (PriorityRuleSpec("nutrition", None, "yazio", 1),),
+) -> SourcePriorityPolicy:
+    snapshot = create_policy_with_rules(
+        db,
+        user.id,
+        version,
+        effective_from,
+        rules,
+    )
+    policy = db.get(SourcePriorityPolicy, snapshot.policy_id)
+    assert policy is not None
+    return policy
 
 
 def test_policy_version_must_be_at_least_one(db, user) -> None:
@@ -106,39 +123,63 @@ def test_same_policy_version_is_allowed_for_different_users(db, user) -> None:
 
 
 def test_policy_effective_lookup_is_timezone_aware_and_has_no_earlier_result(db, user) -> None:
-    first = create_policy(db, user.id, 1, _FIRST_EFFECTIVE)
-    second = create_policy(
+    first = _complete_policy(
         db,
-        user.id,
-        2,
-        datetime(2026, 1, 2, 9, tzinfo=UTC),
+        user,
+        version=1,
+        effective_from=_FIRST_EFFECTIVE,
+    )
+    second = _complete_policy(
+        db,
+        user,
+        version=2,
+        effective_from=datetime(2026, 1, 2, 9, tzinfo=UTC),
     )
     db.commit()
 
-    assert get_effective_policy(
-        db,
-        user.id,
-        datetime(2026, 1, 2, 10, 30, tzinfo=UTC),
-    ).id == second.id
-    assert get_effective_policy(
-        db,
-        user.id,
-        datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
-    ).id == first.id
-    assert get_effective_policy(
-        db,
-        user.id,
-        datetime(2025, 12, 31, 23, 59, tzinfo=UTC),
-    ) is None
+    assert (
+        get_effective_policy(
+            db,
+            user.id,
+            datetime(2026, 1, 2, 10, 30, tzinfo=UTC),
+        ).id
+        == second.id
+    )
+    assert (
+        get_effective_policy(
+            db,
+            user.id,
+            datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+        ).id
+        == first.id
+    )
+    assert (
+        get_effective_policy(
+            db,
+            user.id,
+            datetime(2025, 12, 31, 23, 59, tzinfo=UTC),
+        )
+        is None
+    )
 
     with pytest.raises(ValueError, match=r"timezone|aware|naive"):
-        create_policy(db, user.id, 3, datetime(2026, 1, 3, 12))
+        _complete_policy(
+            db,
+            user,
+            version=3,
+            effective_from=datetime(2026, 1, 3, 12),
+        )
     with pytest.raises(ValueError, match=r"timezone|aware|naive"):
         get_effective_policy(db, user.id, datetime(2026, 1, 3, 12))
 
 
 def test_effective_policy_lookup_normalizes_equivalent_utc_offsets(db, user) -> None:
-    policy = create_policy(db, user.id, 1, datetime(2026, 1, 3, 12, tzinfo=UTC))
+    policy = _complete_policy(
+        db,
+        user,
+        version=1,
+        effective_from=datetime(2026, 1, 3, 12, tzinfo=UTC),
+    )
     db.commit()
 
     equivalent_local_time = datetime(
@@ -263,26 +304,44 @@ def test_rule_policy_composite_fk_rejects_cross_user_reference(db, user) -> None
     db.rollback()
 
 
-def test_repository_policy_and_rule_operations_are_append_only_reads(db, user) -> None:
-    first = create_policy(db, user.id, 1, _FIRST_EFFECTIVE)
-    second = create_policy(
+def test_repository_policy_reads_are_user_scoped(db, user) -> None:
+    first = _complete_policy(
         db,
-        user.id,
-        2,
-        datetime(2026, 1, 2, 12, tzinfo=UTC),
+        user,
+        version=1,
+        effective_from=_FIRST_EFFECTIVE,
+        rules=(
+            PriorityRuleSpec("nutrition", None, "yazio", 1),
+            PriorityRuleSpec("nutrition", "dietary_energy_kcal", "apple_health", 2),
+        ),
     )
-    wildcard = add_rule(db, user.id, first.id, "nutrition", None, "yazio", 1)
-    metric = add_rule(db, user.id, first.id, "nutrition", "energy", "apple_health", 2)
+    second = _complete_policy(
+        db,
+        user,
+        version=2,
+        effective_from=datetime(2026, 1, 2, 12, tzinfo=UTC),
+    )
     db.commit()
+    first_rules = list_rules(db, user.id, first.id)
 
     assert get_policy(db, user.id, first.id).id == first.id
     assert get_policy(db, user.id, second.id).id == second.id
     assert get_policy(db, user.id, uuid4()) is None
     assert get_policy(db, user.id, first.id).version == 1
-    assert [item.id for item in list_rules(db, user.id, first.id)] == [wildcard.id, metric.id]
-    assert list_rules(db, user.id, first.id, data_area="nutrition", metric_key=None)[0].id == wildcard.id
-    assert list_rules(db, user.id, first.id, data_area="nutrition", metric_key="energy")[0].id == metric.id
-    assert list_rules(db, user.id, first.id, metric_key=UNSET) == [wildcard, metric]
+    assert [item.id for item in first_rules] == [
+        item.id for item in list_rules(db, user.id, first.id)
+    ]
+    assert (
+        list_rules(db, user.id, first.id, data_area="nutrition", metric_key=None)[0].id
+        == first_rules[0].id
+    )
+    assert (
+        list_rules(db, user.id, first.id, data_area="nutrition", metric_key="dietary_energy_kcal")[
+            0
+        ].id
+        == first_rules[1].id
+    )
+    assert list_rules(db, user.id, first.id, metric_key=UNSET) == first_rules
 
     other = _other_user(db, user, "source-priority-reader")
     db.commit()

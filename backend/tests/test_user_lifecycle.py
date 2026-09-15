@@ -37,6 +37,23 @@ from app.models import (
     WebAuthnUserHandle,
     YazioConnection,
 )
+from app.nutrition.enums import (
+    CoverageState,
+    LineageState,
+    PresenceState,
+    ProjectionGranularity,
+    ResolutionState,
+)
+from app.nutrition.models import (
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionProjectionHead,
+)
+from app.nutrition.repositories import (
+    create_projection,
+    create_projection_fact,
+    set_projection_head,
+)
 from app.services.import_service import persist_import
 from app.services.rate_limit import hash_rate_limit_key, normalize_account_identifier
 from app.services.user_lifecycle import (
@@ -51,6 +68,9 @@ from app.services.user_operation_lock import (
     shared_user_operation,
 )
 from app.services.yazio_sync import YazioSyncError, configure_yazio_connection, sync_yazio_user
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
 PASSWORD = "correct-horse-battery-staple"
 
@@ -418,6 +438,95 @@ def test_hard_delete_requires_inactive_target_and_cascades_owned_data(
         "admin.user.deleted",
     ]
 
+
+def test_hard_delete_cascades_source_priority_and_projection_rows(
+    user: User,
+    db: OrmSession,
+) -> None:
+    user.is_admin = True
+    target = _add_user(db, user, "delete-source-priority-target")
+    policy = create_policy_with_rules(
+        db,
+        target.id,
+        version=1,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "yazio", 1),),
+    )
+    projection = create_projection(
+        db,
+        user_id=target.id,
+        local_date=date(2026, 1, 1),
+        projection_version=1,
+        projection_algorithm_version="lifecycle-test",
+        priority_policy_id=policy.policy_id,
+        input_watermark="lifecycle-test-watermark",
+        projection_status="ready",
+    )
+    create_projection_fact(
+        db,
+        user_id=target.id,
+        projection_id=projection.id,
+        metric_key="dietary_energy_kcal",
+        value=Decimal("2000"),
+        unit="kcal",
+        selected_provider_key="yazio",
+        selected_granularity=ProjectionGranularity.SUMMARY.value,
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    set_projection_head(db, target.id, date(2026, 1, 1), projection.id)
+    db.commit()
+
+    target_id = target.id
+    deactivate_user(db, user.id, target.id)
+    delete_user(db, user.id, target.id, target.username)
+    db.expire_all()
+
+    assert db.get(User, target_id) is None
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == target_id)
+        )
+        == 0
+    )
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(SourcePriorityRule)
+            .where(SourcePriorityRule.user_id == target_id)
+        )
+        == 0
+    )
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(NutritionDailyProjection)
+            .where(NutritionDailyProjection.user_id == target_id)
+        )
+        == 0
+    )
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(NutritionDailyProjectionFact)
+            .where(NutritionDailyProjectionFact.user_id == target_id)
+        )
+        == 0
+    )
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(NutritionProjectionHead)
+            .where(NutritionProjectionHead.user_id == target_id)
+        )
+        == 0
+    )
+
+
 def test_hard_delete_persists_audit_snapshot_without_deleted_target_fk(
     user: User,
     db: OrmSession,
@@ -658,7 +767,6 @@ def test_two_concurrent_admin_deactivations_cannot_both_succeed(
     db.expire_all()
     assert results.count("success") == 1
     assert sum(db.scalars(select(User.is_active).where(User.is_admin.is_(True)))) == 1
-
 
 
 def test_local_shared_lock_supports_cross_thread_dependency_teardown(

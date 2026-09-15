@@ -34,7 +34,9 @@ from app.nutrition.repositories import (
     get_projection_by_version,
     set_projection_head,
 )
-from app.source_priority.repositories import create_policy
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy
 
 PROJECTION_DATE = date(2026, 9, 7)
 INPUT_WATERMARK = "nutrition-input-2026-09-08T12:00:00Z"
@@ -47,13 +49,17 @@ def _other_user(db, username: str = "projection-other") -> User:
     return other
 
 
-def _policy(db, user: User, *, version: int = 1):
-    return create_policy(
+def _policy(db, user: User, *, version: int = 1) -> SourcePriorityPolicy:
+    snapshot = create_policy_with_rules(
         db,
         user_id=user.id,
         version=version,
         effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        rules=(PriorityRuleSpec("nutrition", None, "yazio", 1),),
     )
+    policy = db.get(SourcePriorityPolicy, snapshot.policy_id)
+    assert policy is not None
+    return policy
 
 
 def _projection(

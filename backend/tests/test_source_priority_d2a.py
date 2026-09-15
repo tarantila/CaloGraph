@@ -16,6 +16,7 @@ import app.source_priority.bootstrap as bootstrap_module
 from app.database import SessionLocal, engine
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.schemas_source_priority import NutritionPriorityUpdateRequest
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import (
     NutritionPriorityBootstrapResult,
@@ -24,6 +25,7 @@ from app.source_priority.bootstrap import (
 )
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
+from app.source_priority.public import update_nutrition_priority
 
 POSTGRES_TESTS_ENABLED = os.environ.get(
     "CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS"
@@ -532,28 +534,16 @@ def test_existing_google_policy_is_immutable_when_yazio_becomes_available(db, us
 def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
     db,
     user: User,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert engine.dialect.name == "postgresql"
     _add_yazio(db, user)
-
-    original_create = bootstrap_module.create_policy_with_rules
     barrier = Barrier(2)
-
-    def gated_create(*args, **kwargs):
-        barrier.wait(timeout=30)
-        return original_create(*args, **kwargs)
-
-    monkeypatch.setattr(bootstrap_module, "create_policy_with_rules", gated_create)
-
     sessions: list[_TrackedSession] = []
 
-    def session_factory() -> _TrackedSession:
-        return _tracked_session_factory(sessions)
-
     def attempt() -> object:
+        barrier.wait(timeout=30)
         return bootstrap_nutrition_priority(
-            session_factory=session_factory,
+            session_factory=lambda: _tracked_session_factory(sessions),
             user_id=user.id,
             effective_from=BOOTSTRAP_AT,
         )
@@ -593,35 +583,100 @@ def test_bootstrap_postgres_race_has_one_v1_and_closes_both_sessions(
 
 @pytest.mark.skipif(
     not POSTGRES_TESTS_ENABLED,
+    reason="isolated PostgreSQL bootstrap/update race tests are not explicitly enabled",
+)
+def test_bootstrap_and_explicit_update_race_leave_complete_policy_versions(
+    db,
+    user: User,
+) -> None:
+    assert engine.dialect.name == "postgresql"
+    _add_yazio(db, user)
+    barrier = Barrier(2)
+
+    def run_bootstrap():
+        barrier.wait(timeout=30)
+        return bootstrap_nutrition_priority(
+            session_factory=SessionLocal,
+            user_id=user.id,
+            effective_from=BOOTSTRAP_AT,
+        )
+
+    def run_explicit_update():
+        barrier.wait(timeout=30)
+        with SessionLocal() as explicit_db:
+            return update_nutrition_priority(
+                explicit_db,
+                user.id,
+                NutritionPriorityUpdateRequest(
+                    expected_version=None,
+                    source_order=["yazio"],
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        bootstrap_result, explicit_result = list(
+            executor.map(lambda operation: operation(), (run_bootstrap, run_explicit_update))
+        )
+
+    assert bootstrap_result.status in (
+        NutritionPriorityBootstrapStatus.CREATED,
+        NutritionPriorityBootstrapStatus.EXISTING_POLICY,
+        NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED,
+    )
+    assert explicit_result[0].version in (1, 2)
+    with SessionLocal() as check:
+        policies = list(
+            check.scalars(
+                select(SourcePriorityPolicy)
+                .where(SourcePriorityPolicy.user_id == user.id)
+                .order_by(SourcePriorityPolicy.version)
+            )
+        )
+        rules = list(
+            check.scalars(
+                select(SourcePriorityRule)
+                .where(SourcePriorityRule.user_id == user.id)
+                .order_by(SourcePriorityRule.priority_rank)
+            )
+        )
+
+    assert [policy.version for policy in policies] in ([1], [1, 2])
+    assert len(rules) == len(policies)
+    rules_by_policy = {
+        policy.id: [
+            (rule.provider_key, rule.priority_rank) for rule in rules if rule.policy_id == policy.id
+        ]
+        for policy in policies
+    }
+    assert all(rules_by_policy[policy.id] == [("yazio", 1)] for policy in policies)
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TESTS_ENABLED,
     reason="isolated PostgreSQL bootstrap race tests are not explicitly enabled",
 )
 def test_bootstrap_postgres_earlier_effective_loser_is_existing_policy(
     db,
     user: User,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert engine.dialect.name == "postgresql"
     _add_yazio(db, user)
     early = BOOTSTRAP_AT
     late = BOOTSTRAP_AT + timedelta(days=1)
-    original_create = bootstrap_module.create_policy_with_rules
-    barrier = Barrier(2)
-    later_committed = Event()
-
-    def gated_create(db, user_id, version, effective_from, rules):
-        barrier.wait(timeout=30)
-        if effective_from == early:
-            assert later_committed.wait(timeout=30)
-        return original_create(db, user_id, version, effective_from, rules)
-
-    monkeypatch.setattr(bootstrap_module, "create_policy_with_rules", gated_create)
+    late_started = Event()
+    late_committed = Event()
     sessions: list[_TrackedSession] = []
 
     def attempt(effective_from: datetime):
         def on_commit() -> None:
             if effective_from == late:
-                later_committed.set()
+                late_committed.set()
 
+        if effective_from == late:
+            late_started.set()
+        else:
+            assert late_started.wait(timeout=30)
+            assert late_committed.wait(timeout=30)
         return bootstrap_nutrition_priority(
             session_factory=lambda: _tracked_session_factory(
                 sessions,
@@ -635,8 +690,8 @@ def test_bootstrap_postgres_earlier_effective_loser_is_existing_policy(
         results = list(executor.map(attempt, (early, late)))
 
     assert sorted(result.status for result in results) == [
+        NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED,
         NutritionPriorityBootstrapStatus.CREATED,
-        NutritionPriorityBootstrapStatus.EXISTING_POLICY,
     ]
     winner = next(
         result for result in results if result.status is NutritionPriorityBootstrapStatus.CREATED
@@ -644,7 +699,7 @@ def test_bootstrap_postgres_earlier_effective_loser_is_existing_policy(
     loser = next(
         result
         for result in results
-        if result.status is NutritionPriorityBootstrapStatus.EXISTING_POLICY
+        if result.status is NutritionPriorityBootstrapStatus.CONFIGURATION_REQUIRED
     )
     assert loser.policy_id == winner.policy_id
     assert loser.policy_version == winner.policy_version == 1
