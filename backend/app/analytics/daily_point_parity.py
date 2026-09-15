@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final
@@ -41,6 +41,8 @@ from app.analytics.service import (
 from app.models import HealthSample, NutritionTarget, TrackingOverride, User
 from app.nutrition.enums import CoverageState, ResolutionState
 from app.schemas import DailyPoint
+from app.source_priority.application import get_effective_policy_snapshot
+from app.source_priority.contracts import PriorityPolicySnapshot
 
 
 class CanonicalDailyPointResultState(StrEnum):
@@ -404,6 +406,7 @@ class DailyPointRangeParity:
     canonical_projection_ids: tuple[UUID | None, ...] = ()
     canonical_projection_ready: tuple[bool, ...] = ()
     canonical_calorie_usable: tuple[bool, ...] = ()
+    canonical_policy_snapshot: PriorityPolicySnapshot | None = None
 
 
     @property
@@ -920,9 +923,15 @@ def compare_daily_point_range(
     start: date,
     end: date,
     max_days: int = MAX_PARITY_DAYS,
+    include_canonical_policy_snapshot: bool = False,
 ) -> DailyPointRangeParity:
     """Compare DailyPoint parity for every inclusive day in a bounded range."""
     _validate_daily_point_range(start, end, max_days)
+    canonical_policy_snapshot = (
+        get_effective_policy_snapshot(db, user_id, datetime.now(UTC))
+        if include_canonical_policy_snapshot
+        else None
+    )
     user = db.get(User, user_id)
     if user is None:
         raise ValueError("user not found")
@@ -1028,6 +1037,7 @@ def compare_daily_point_range(
         canonical_projection_ids=tuple(canonical_projection_ids),
         canonical_projection_ready=tuple(canonical_projection_ready),
         canonical_calorie_usable=tuple(canonical_calorie_usable),
+        canonical_policy_snapshot=canonical_policy_snapshot,
     )
 
 

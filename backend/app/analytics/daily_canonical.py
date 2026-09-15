@@ -9,7 +9,7 @@ from time import monotonic
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session
 
 from app.analytics.daily_point_parity import (
@@ -22,7 +22,6 @@ from app.nutrition.models import NutritionDailyProjection, NutritionProjectionHe
 from app.schemas import DailyPoint
 from app.source_priority.contracts import PriorityPolicySnapshot, PriorityRuleSnapshot
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
-from app.source_priority.repositories import get_effective_policy
 
 LOGGER = logging.getLogger(__name__)
 TELEMETRY_EVENT = "analytics.daily.canonical"
@@ -221,62 +220,6 @@ def _rollback_safely(session: object) -> None:
             return
 
 
-def _valid_source_priority_policy(
-    db: Session,
-    *,
-    user_id: UUID,
-    policy_id: object,
-) -> bool:
-    """Validate the persisted policy referenced by a current projection."""
-    if not isinstance(policy_id, UUID):
-        return False
-    try:
-        policy = db.scalar(
-            select(SourcePriorityPolicy).where(
-                SourcePriorityPolicy.id == policy_id,
-                SourcePriorityPolicy.user_id == user_id,
-            )
-        )
-        if policy is None:
-            return False
-        current_policy = get_effective_policy(db, user_id, datetime.now(UTC))
-        if current_policy is None or current_policy.id != policy_id:
-            return False
-
-        rules = tuple(
-            db.scalars(
-                select(SourcePriorityRule)
-                .where(
-                    SourcePriorityRule.policy_id == policy_id,
-                    SourcePriorityRule.user_id == user_id,
-                )
-                .order_by(SourcePriorityRule.priority_rank, SourcePriorityRule.id)
-            ).all()
-        )
-        effective_from = policy.effective_from
-        if effective_from.tzinfo is None or effective_from.utcoffset() is None:
-            effective_from = effective_from.replace(tzinfo=UTC)
-        PriorityPolicySnapshot(
-            policy_id=policy.id,
-            user_id=policy.user_id,
-            version=policy.version,
-            effective_from=effective_from,
-            rules=tuple(
-                PriorityRuleSnapshot(
-                    rule_id=rule.id,
-                    data_area=rule.data_area,
-                    metric_key=rule.metric_key,
-                    provider_key=rule.provider_key,
-                    priority_rank=rule.priority_rank,
-                )
-                for rule in rules
-            ),
-        )
-    except (AttributeError, TypeError, ValueError):
-        return False
-    return True
-
-
 def _classification_outcome(day: object) -> DailyCanonicalOutcome | None:
     comparable = getattr(day, "comparable", False)
     classification = getattr(day, "classification", None)
@@ -298,36 +241,191 @@ def _classification_outcome(day: object) -> DailyCanonicalOutcome | None:
     return None
 
 
-def _read_canonical_head_metadata(
+def _seal_canonical_serving(
     db: Session,
     *,
     user_id: UUID,
     start: date,
     end: date,
-) -> dict[date, tuple[UUID, UUID]]:
-    """Read current-head projection and policy IDs in one private query."""
-    rows = db.execute(
-        select(
-            NutritionProjectionHead.local_date,
-            NutritionProjectionHead.current_projection_id,
-            NutritionDailyProjection.priority_policy_id,
+    expected_projection_ids: tuple[UUID, ...],
+    expected_policy: PriorityPolicySnapshot,
+) -> bool:
+    """Read and validate every serving dependency in one snapshot-consistent statement."""
+    if expected_policy.user_id != user_id:
+        return False
+
+    requested_dates = tuple(
+        start + timedelta(days=offset) for offset in range((end - start).days + 1)
+    )
+    if len(expected_projection_ids) != len(requested_dates):
+        return False
+
+    try:
+        effective_policy = (
+            select(
+                SourcePriorityPolicy.id.label("effective_policy_id"),
+                SourcePriorityPolicy.user_id.label("effective_policy_user_id"),
+                SourcePriorityPolicy.version.label("effective_policy_version"),
+                SourcePriorityPolicy.effective_from.label("effective_policy_effective_from"),
+            )
+            .where(
+                SourcePriorityPolicy.user_id == user_id,
+                SourcePriorityPolicy.effective_from <= datetime.now(UTC),
+            )
+            .order_by(SourcePriorityPolicy.effective_from.desc())
+            .limit(1)
+            .subquery("effective_policy")
         )
-        .join(
-            NutritionDailyProjection,
-            (NutritionDailyProjection.id == NutritionProjectionHead.current_projection_id)
-            & (NutritionDailyProjection.user_id == NutritionProjectionHead.user_id)
-            & (NutritionDailyProjection.local_date == NutritionProjectionHead.local_date),
+        rows = db.execute(
+            select(
+                NutritionProjectionHead.local_date.label("head_local_date"),
+                NutritionProjectionHead.current_projection_id.label("head_projection_id"),
+                NutritionDailyProjection.id.label("projection_id"),
+                NutritionDailyProjection.user_id.label("projection_user_id"),
+                NutritionDailyProjection.local_date.label("projection_local_date"),
+                NutritionDailyProjection.projection_status.label("projection_status"),
+                NutritionDailyProjection.priority_policy_id.label("projection_policy_id"),
+                effective_policy.c.effective_policy_id,
+                effective_policy.c.effective_policy_user_id,
+                effective_policy.c.effective_policy_version,
+                effective_policy.c.effective_policy_effective_from,
+                SourcePriorityRule.id.label("rule_id"),
+                SourcePriorityRule.user_id.label("rule_user_id"),
+                SourcePriorityRule.policy_id.label("rule_policy_id"),
+                SourcePriorityRule.data_area.label("rule_data_area"),
+                SourcePriorityRule.metric_key.label("rule_metric_key"),
+                SourcePriorityRule.provider_key.label("rule_provider_key"),
+                SourcePriorityRule.priority_rank.label("rule_priority_rank"),
+            )
+            .select_from(NutritionProjectionHead)
+            .outerjoin(
+                NutritionDailyProjection,
+                (NutritionDailyProjection.id == NutritionProjectionHead.current_projection_id)
+                & (NutritionDailyProjection.user_id == NutritionProjectionHead.user_id)
+                & (NutritionDailyProjection.local_date == NutritionProjectionHead.local_date),
+            )
+            .outerjoin(effective_policy, true())
+            .outerjoin(
+                SourcePriorityRule,
+                (SourcePriorityRule.user_id == effective_policy.c.effective_policy_user_id)
+                & (SourcePriorityRule.policy_id == effective_policy.c.effective_policy_id),
+            )
+            .where(
+                NutritionProjectionHead.user_id == user_id,
+                NutritionProjectionHead.local_date >= start,
+                NutritionProjectionHead.local_date <= end,
+            )
+            .order_by(
+                NutritionProjectionHead.local_date,
+                SourcePriorityRule.priority_rank,
+                SourcePriorityRule.id,
+            )
+        ).all()
+    except Exception:
+        return False
+
+    heads: dict[date, tuple[UUID, UUID]] = {}
+    effective_policy_values: tuple[UUID, UUID, int, datetime] | None = None
+    rules: dict[UUID, PriorityRuleSnapshot] = {}
+    try:
+        for row in rows:
+            head_date = row.head_local_date
+            head_projection_id = row.head_projection_id
+            projection_id = row.projection_id
+            projection_user_id = row.projection_user_id
+            projection_local_date = row.projection_local_date
+            projection_status = row.projection_status
+            projection_policy_id = row.projection_policy_id
+            if (
+                type(head_date) is not date
+                or not isinstance(head_projection_id, UUID)
+                or projection_id != head_projection_id
+                or projection_user_id != user_id
+                or projection_local_date != head_date
+                or projection_status != "ready"
+                or projection_policy_id != expected_policy.policy_id
+            ):
+                return False
+            previous_head = heads.setdefault(head_date, (head_projection_id, projection_policy_id))
+            if previous_head != (head_projection_id, projection_policy_id):
+                return False
+
+            policy_id = row.effective_policy_id
+            policy_user_id = row.effective_policy_user_id
+            policy_version = row.effective_policy_version
+            policy_effective_from = row.effective_policy_effective_from
+            if not (
+                isinstance(policy_id, UUID)
+                and policy_user_id == user_id
+                and type(policy_version) is int
+                and isinstance(policy_effective_from, datetime)
+            ):
+                return False
+            if (
+                policy_effective_from.tzinfo is None
+                or policy_effective_from.utcoffset() is None
+            ):
+                policy_effective_from = policy_effective_from.replace(tzinfo=UTC)
+            current_policy_values = (
+                policy_id,
+                policy_user_id,
+                policy_version,
+                policy_effective_from.astimezone(UTC),
+            )
+            if (
+                effective_policy_values is not None
+                and effective_policy_values != current_policy_values
+            ):
+                return False
+            effective_policy_values = current_policy_values
+
+            rule_id = row.rule_id
+            if rule_id is None:
+                if any(
+                    value is not None
+                    for value in (
+                        row.rule_user_id,
+                        row.rule_policy_id,
+                        row.rule_data_area,
+                        row.rule_metric_key,
+                        row.rule_provider_key,
+                        row.rule_priority_rank,
+                    )
+                ):
+                    return False
+                continue
+            if not isinstance(rule_id, UUID):
+                return False
+            if row.rule_user_id != user_id or row.rule_policy_id != policy_id:
+                return False
+            rule = PriorityRuleSnapshot(
+                rule_id=rule_id,
+                data_area=row.rule_data_area,
+                metric_key=row.rule_metric_key,
+                provider_key=row.rule_provider_key,
+                priority_rank=row.rule_priority_rank,
+            )
+            previous_rule = rules.setdefault(rule_id, rule)
+            if previous_rule != rule:
+                return False
+
+        if effective_policy_values is None or set(heads) != set(requested_dates):
+            return False
+        for local_date, expected_projection_id in zip(
+            requested_dates, expected_projection_ids, strict=True
+        ):
+            if heads.get(local_date) != (expected_projection_id, expected_policy.policy_id):
+                return False
+        actual_policy = PriorityPolicySnapshot(
+            policy_id=effective_policy_values[0],
+            user_id=effective_policy_values[1],
+            version=effective_policy_values[2],
+            effective_from=effective_policy_values[3],
+            rules=tuple(rules.values()),
         )
-        .where(
-            NutritionProjectionHead.user_id == user_id,
-            NutritionProjectionHead.local_date >= start,
-            NutritionProjectionHead.local_date <= end,
-        )
-    ).all()
-    return {
-        local_date: (projection_id, policy_id)
-        for local_date, projection_id, policy_id in rows
-    }
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return actual_policy == expected_policy
 
 
 def _strict_canonical_points(
@@ -376,49 +474,24 @@ def _strict_canonical_points(
             DailyCanonicalState.NOT_COMPARABLE,
             reason="projection_not_ready",
         )
-    head_metadata_by_date = _read_canonical_head_metadata(
+    expected_policy = getattr(parity, "canonical_policy_snapshot", None)
+    if not isinstance(expected_policy, PriorityPolicySnapshot):
+        return DailyCanonicalOutcome(
+            DailyCanonicalState.FALLBACK,
+            reason="source_priority_policy_invalid",
+        )
+    if not _seal_canonical_serving(
         db,
         user_id=user_id,
         start=parity.start,
         end=parity.end,
-    )
-    requested_dates = tuple(
-        parity.start + timedelta(days=offset) for offset in range(len(days))
-    )
-    if len(head_metadata_by_date) != len(days):
-        return DailyCanonicalOutcome(
-            DailyCanonicalState.NOT_COMPARABLE,
-            reason="projection_not_ready",
-        )
-    policy_ids: list[UUID] = []
-    for local_date, carried_projection_id in zip(
-        requested_dates, canonical_projection_ids, strict=True
+        expected_projection_ids=canonical_projection_ids,
+        expected_policy=expected_policy,
     ):
-        current_metadata = head_metadata_by_date.get(local_date)
-        if current_metadata is None or current_metadata[0] != carried_projection_id:
-            return DailyCanonicalOutcome(
-                DailyCanonicalState.NOT_COMPARABLE,
-                reason="projection_not_ready",
-            )
-        policy_ids.append(current_metadata[1])
-    valid_policy_ids: set[UUID] = set()
-    for policy_id in policy_ids:
-        if not isinstance(policy_id, UUID):
-            return DailyCanonicalOutcome(
-                DailyCanonicalState.FALLBACK,
-                reason="source_priority_policy_invalid",
-            )
-        if policy_id not in valid_policy_ids:
-            if not _valid_source_priority_policy(
-                db,
-                user_id=user_id,
-                policy_id=policy_id,
-            ):
-                return DailyCanonicalOutcome(
-                    DailyCanonicalState.FALLBACK,
-                    reason="source_priority_policy_invalid",
-                )
-            valid_policy_ids.add(policy_id)
+        return DailyCanonicalOutcome(
+            DailyCanonicalState.FALLBACK,
+            reason="source_priority_policy_invalid",
+        )
     return DailyCanonicalOutcome(DailyCanonicalState.MATCH, points=canonical_points)
 
 
@@ -500,6 +573,7 @@ def run_daily_canonical_read(
                     start=start,
                     end=end,
                     max_days=max_days,
+                    include_canonical_policy_snapshot=True,
                 )
                 outcome = collapse_daily_canonical_range(
                     parity,
