@@ -28,6 +28,7 @@ from app.nutrition.enums import (
 from app.nutrition.projection import (
     CANONICAL_METRIC_KEYS,
     DailyProjectionBuildInput,
+    ProjectionContractError,
     ProjectionInputManifest,
     ProjectionPersistenceStatus,
     SourceObservationToken,
@@ -49,6 +50,7 @@ from app.source_priority.contracts import (
     PrioritySelectionRole,
     ProviderDisposition,
 )
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 LOCAL_DATE = date(2026, 9, 11)
@@ -357,6 +359,88 @@ def test_first_projection_persists_version_one_seven_facts_and_head(db, user):
     ) is not None
     assert db.query(NutritionDailyProjectionFact).filter_by(projection_id=projection.id).count() == 7
 
+
+
+def test_policy_snapshot_user_mismatch_rejects_before_projection_persistence(db, user) -> None:
+    policy_snapshot = _policy(db, user)
+    db.commit()
+    policy_before = db.get(SourcePriorityPolicy, policy_snapshot.policy_id)
+    assert policy_before is not None
+    rules_before = tuple(
+        (
+            rule.id,
+            rule.user_id,
+            rule.policy_id,
+            rule.data_area,
+            rule.metric_key,
+            rule.provider_key,
+            rule.priority_rank,
+        )
+        for rule in db.scalars(
+            select(SourcePriorityRule)
+            .where(SourcePriorityRule.policy_id == policy_snapshot.policy_id)
+            .order_by(SourcePriorityRule.id)
+        )
+    )
+
+    other = User(
+        username="projection-scope-other",
+        password_hash=user.password_hash,
+        timezone=user.timezone,
+    )
+    db.add(other)
+    db.commit()
+    build_input = _all_values(db, user, policy_snapshot)
+    object.__setattr__(policy_snapshot, "user_id", other.id)
+
+    with pytest.raises(ProjectionContractError, match="policy snapshot user_id"):
+        persist_daily_projection(db, build_input=build_input)
+
+    assert db.query(NutritionDailyProjection).count() == 0
+    assert db.query(NutritionDailyProjectionFact).count() == 0
+    assert db.query(NutritionDailyProjectionLineage).count() == 0
+    assert db.query(NutritionProjectionHead).count() == 0
+    policy_after = db.get(SourcePriorityPolicy, policy_snapshot.policy_id)
+    assert policy_after is not None
+    assert (
+        policy_after.id,
+        policy_after.user_id,
+        policy_after.version,
+        policy_after.effective_from,
+    ) == (
+        policy_before.id,
+        policy_before.user_id,
+        policy_before.version,
+        policy_before.effective_from,
+    )
+    rules_after = tuple(
+        (
+            rule.id,
+            rule.user_id,
+            rule.policy_id,
+            rule.data_area,
+            rule.metric_key,
+            rule.provider_key,
+            rule.priority_rank,
+        )
+        for rule in db.scalars(
+            select(SourcePriorityRule)
+            .where(SourcePriorityRule.policy_id == policy_snapshot.policy_id)
+            .order_by(SourcePriorityRule.id)
+        )
+    )
+    assert rules_after == rules_before
+
+    object.__setattr__(policy_snapshot, "user_id", user.id)
+    result = persist_daily_projection(db, build_input=build_input)
+    db.commit()
+
+    assert result.created is True
+    assert result.status is ProjectionPersistenceStatus.CREATED
+    assert db.query(NutritionDailyProjection).count() == 1
+    assert db.query(NutritionDailyProjectionFact).count() == 7
+    assert db.query(NutritionDailyProjectionLineage).count() == 7
+    assert db.query(NutritionProjectionHead).count() == 1
 
 def test_identical_input_is_noop_after_lock(db, user):
     policy = _policy(db, user)
