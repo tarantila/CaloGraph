@@ -41,6 +41,8 @@ def _validate_policy_scope(db: Session, build_input: DailyProjectionBuildInput) 
     policy_snapshot = build_input.input_manifest.policy
     if policy_snapshot is None:
         raise ProjectionContractError("policy is required for persistence")
+    if policy_snapshot.user_id != build_input.user_id:
+        raise ProjectionContractError("policy snapshot user_id does not match build input")
     policy = db.scalar(
         select(SourcePriorityPolicy).where(
             SourcePriorityPolicy.id == policy_snapshot.policy_id,
