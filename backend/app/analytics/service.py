@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -34,6 +35,23 @@ PRIMARY_NUTRITION_METRICS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class TrackingInputs:
+    status: str
+    score: int
+    reasons: tuple[str, ...]
+
+
+def _legacy_tracking_inputs(
+    *, calories: Decimal | None, nutrition_count: int
+) -> TrackingInputs:
+    status, score, reasons = tracking_status(
+        calories=calories,
+        nutrition_count=nutrition_count,
+    )
+    return TrackingInputs(status=status, score=score, reasons=tuple(reasons))
+
+
 def daterange(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
@@ -53,7 +71,7 @@ def _build_daily_point(
     *,
     day: date,
     values: dict[str, Decimal],
-    nutrition_count: int,
+    tracking_inputs: TrackingInputs,
     active_energy_by_source: dict[tuple[date, str], Decimal],
     active_energy_sources_by_day: dict[date, set[str]],
     targets: list[NutritionTarget],
@@ -86,10 +104,9 @@ def _build_daily_point(
         if maintenance_kcal is not None
         else None
     )
-    status, score, reasons = tracking_status(
-        calories=calories,
-        nutrition_count=nutrition_count,
-    )
+    status = tracking_inputs.status
+    score = tracking_inputs.score
+    reasons = list(tracking_inputs.reasons)
     if override is not None:
         status = override.status
         reasons = ["Manuell festgelegt"]
@@ -179,7 +196,10 @@ def daily_points(
         _build_daily_point(
             day=day,
             values=totals.get(day, {}),
-            nutrition_count=nutrition_counts.get(day, 0),
+            tracking_inputs=_legacy_tracking_inputs(
+                calories=totals.get(day, {}).get("dietary_energy_kcal"),
+                nutrition_count=nutrition_counts.get(day, 0),
+            ),
             active_energy_by_source=active_energy_by_source,
             active_energy_sources_by_day=active_energy_sources_by_day,
             targets=targets,
@@ -246,7 +266,10 @@ def _budget_balance_chunk(
         _build_daily_point(
             day=day,
             values=totals[day],
-            nutrition_count=1,
+            tracking_inputs=_legacy_tracking_inputs(
+                calories=totals[day].get("dietary_energy_kcal"),
+                nutrition_count=1,
+            ),
             active_energy_by_source=active_energy_by_source,
             active_energy_sources_by_day=active_energy_sources_by_day,
             targets=targets,

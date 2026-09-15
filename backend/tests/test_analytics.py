@@ -3,11 +3,12 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.analytics import service as analytics_service
 from app.analytics.service import budget_balance, daily_points, percentile
 from app.api.analytics import calendar, daily, micronutrients, trends
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import NutritionTarget, User
+from app.models import NutritionTarget, TrackingOverride, User
 from app.services.import_service import persist_import
 
 
@@ -88,6 +89,57 @@ def test_low_calorie_day_is_accepted_as_recorded_data(db: Session, user: User) -
     assert point.tracking_status == "complete"
     assert point.tracking_score == 1
     assert point.tracking_reasons == ["Kalorienwert vorhanden"]
+
+
+def test_tracking_override_replaces_status_and_reasons_but_preserves_score(
+    db: Session, user: User
+) -> None:
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", [metric(2, "dietary_energy_kcal", "1900")], received=1),
+        None,
+        "x-test",
+        "test",
+    )
+    db.add(
+        TrackingOverride(
+            user_id=user.id,
+            local_date=date(2024, 1, 2),
+            status="probably_incomplete",
+            note="Manuell bestätigt",
+        )
+    )
+    db.commit()
+
+    point = daily_points(db, user, date(2024, 1, 2), date(2024, 1, 2))[0]
+
+    assert point.tracking_status == "probably_incomplete"
+    assert point.tracking_score == 1
+    assert point.tracking_reasons == ["Manuell festgelegt"]
+
+
+def test_daily_point_builder_uses_explicit_tracking_inputs() -> None:
+    assert hasattr(analytics_service, "TrackingInputs")
+
+    tracking_inputs = analytics_service.TrackingInputs(
+        status="incomplete",
+        score=7,
+        reasons=("Canonical tracking reason",),
+    )
+    point = analytics_service._build_daily_point(
+        day=date(2024, 1, 2),
+        values={"dietary_energy_kcal": Decimal("1900")},
+        active_energy_by_source={},
+        active_energy_sources_by_day={},
+        targets=[],
+        tracking_inputs=tracking_inputs,
+        override=None,
+    )
+
+    assert point.tracking_status == "incomplete"
+    assert point.tracking_score == 7
+    assert point.tracking_reasons == ["Canonical tracking reason"]
 
 
 def test_targetless_nutrition_has_no_budget_or_classification(db: Session, user: User) -> None:

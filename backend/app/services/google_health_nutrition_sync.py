@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
 
@@ -30,10 +30,12 @@ from app.google_health.constants import (
 from app.google_health.errors import GoogleHealthClientError
 from app.models import GoogleHealthConnection
 from app.nutrition.models import NutritionSourceObservation
+from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_ingestion import (
     ingest_google_health_nutrition_logs,
 )
+from app.source_priority.bootstrap import bootstrap_nutrition_priority
 
 DEFAULT_MAX_SYNC_PAGES = 100
 
@@ -268,7 +270,7 @@ class GoogleHealthNutritionSyncService:
                 or 0
             )
             write_db.commit()
-            return GoogleHealthNutritionSyncResult(
+            result = GoogleHealthNutritionSyncResult(
                 status=cast(str, getattr(run, "status", "completed")),
                 fetched_count=len(points),
                 persisted_count=persisted_count,
@@ -293,6 +295,19 @@ class GoogleHealthNutritionSyncService:
             if write_db is not None:
                 write_db.close()
 
+        policy_at = datetime.now(UTC)
+        bootstrap_nutrition_priority(
+            session_factory=self._session_factory,
+            user_id=user_id,
+            effective_from=policy_at,
+        )
+        rebuild_affected_nutrition_days(
+            session_factory=self._session_factory,
+            user_id=user_id,
+            ingestion_run_id=run.id,
+            policy_at=policy_at,
+        )
+        return result
 
 __all__ = [
     "GoogleHealthNutritionSyncError",

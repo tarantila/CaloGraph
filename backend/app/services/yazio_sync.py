@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.importers.yazio import parse_yazio_export
 from app.models import User, YazioConnection
+from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
 from app.schemas import ImportSummary
 from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import (
@@ -58,6 +59,7 @@ from app.services.yazio_transport import (
     fetch_yazio_payload_transport,
     validate_yazio_credentials_transport,
 )
+from app.source_priority.bootstrap import bootstrap_nutrition_priority
 
 YazioFetcher = Callable[[str, str, date, date, bool], dict[str, Any]]
 MICRONUTRIENT_SYNC_INTERVAL = timedelta(hours=24)
@@ -260,7 +262,7 @@ def _sync_yazio_user_with_domain(
                 and summary.skipped == 0
             ):
                 raise YazioSyncError("YAZIO-Daten konnten nicht verarbeitet werden.")
-            ingest_yazio_food_diary(
+            run = ingest_yazio_food_diary(
                 db,
                 user_id=active_user.id,
                 source_instance_id=(
@@ -276,6 +278,7 @@ def _sync_yazio_user_with_domain(
                 diary=diary,
             )
             db.commit()
+            policy_at = datetime.now(UTC)
         except Exception:
             db.rollback()
             raise
@@ -297,6 +300,17 @@ def _sync_yazio_user_with_domain(
             "skipped": summary.skipped,
             "failed": summary.failed,
         },
+    )
+    bootstrap_nutrition_priority(
+        session_factory=SessionLocal,
+        user_id=active_user.id,
+        effective_from=policy_at,
+    )
+    rebuild_affected_nutrition_days(
+        session_factory=SessionLocal,
+        user_id=active_user.id,
+        ingestion_run_id=run.id,
+        policy_at=policy_at,
     )
 
     if (

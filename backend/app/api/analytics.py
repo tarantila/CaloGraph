@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import median
@@ -9,6 +10,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analytics.daily_canonical import (
+    DailyCanonicalState,
+    check_daily_canonical_read_eligibility,
+    run_daily_canonical_read,
+)
+from app.analytics.daily_shadow import run_daily_shadow
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     budget_balance_for_user,
@@ -19,6 +26,7 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.auth.dependencies import current_user
+from app.config import settings
 from app.database import get_db
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample, ImportBatch, User
@@ -90,6 +98,58 @@ def daily(
         points = [point for point in points if point.tracking_status in statuses]
     if weekday is not None:
         points = [point for point in points if point.date.weekday() == weekday]
+    # D4B owns canonical comparison for eligible requests.  Ineligible D4B
+    # requests retain the existing D4A observation path when configured.
+    if settings.analytics_daily_canonical_read_enabled:
+        canonical_eligibility = check_daily_canonical_read_eligibility(
+            enabled=True,
+            source=source,
+            tracking=tracking,
+            weekday=weekday,
+            start=start,
+            end=end,
+            period=period,
+            max_days=31,
+        )
+        with suppress(Exception):
+            canonical_outcome = run_daily_canonical_read(
+                user.id,
+                start,
+                end,
+                source,
+                tracking,
+                weekday,
+                period=period,
+                enabled=True,
+                max_days=31,
+            )
+            if canonical_outcome.points is not None:
+                points = list(canonical_outcome.points)
+        if canonical_eligibility.state is not DailyCanonicalState.MATCH:
+            with suppress(Exception):
+                run_daily_shadow(
+                    user.id,
+                    start,
+                    end,
+                    source,
+                    tracking,
+                    weekday,
+                    enabled=settings.analytics_daily_shadow_read_enabled,
+                    max_days=settings.analytics_daily_shadow_max_days,
+                )
+    else:
+        # The shadow read is strictly observational and must never affect the Legacy request.
+        with suppress(Exception):
+            run_daily_shadow(
+                user.id,
+                start,
+                end,
+                source,
+                tracking,
+                weekday,
+                enabled=settings.analytics_daily_shadow_read_enabled,
+                max_days=settings.analytics_daily_shadow_max_days,
+            )
     return points
 
 @router.get("/analytics/micronutrients")
