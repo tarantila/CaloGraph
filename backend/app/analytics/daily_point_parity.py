@@ -61,6 +61,9 @@ class CanonicalDailyPointResult:
     state: CanonicalDailyPointResultState
     point: DailyPoint | None = None
     reason: CanonicalDailyPointReason | None = None
+    projection_id: UUID | None = None
+    projection_ready: bool = False
+    calorie_usable: bool = False
 
     def __post_init__(self) -> None:
         if self.state is CanonicalDailyPointResultState.READY:
@@ -85,6 +88,16 @@ _PRIMARY_DAILY_POINT_FIELDS: tuple[tuple[str, str], ...] = (
     ("carbohydrates_g", "carbohydrates_g"),
     ("fat_g", "fat_g"),
 )
+# Legacy HealthSample.value is Numeric(20,6), while canonical facts are
+# Numeric(24,12). Normalize only trailing-zero exponent differences so the
+# existing DailyPoint wire contract stays exact without changing values.
+_LEGACY_DAILY_POINT_DECIMAL_QUANTUM = Decimal("0.000001")
+
+
+def _legacy_daily_point_value(value: Decimal) -> Decimal:
+    """Match the Legacy DailyPoint wire exponent without changing its value."""
+    normalized = value.quantize(_LEGACY_DAILY_POINT_DECIMAL_QUANTUM)
+    return normalized if normalized == value else value
 
 
 def _not_comparable(reason: CanonicalDailyPointReason) -> CanonicalDailyPointResult:
@@ -131,7 +144,7 @@ def _build_canonical_daily_point_from_projection(
     try:
         facts_by_metric = {fact.metric_key: fact for fact in projection_day.facts}
         values = {
-            daily_point_field: fact.value
+            daily_point_field: _legacy_daily_point_value(fact.value)
             for metric_key, daily_point_field in _PRIMARY_DAILY_POINT_FIELDS
             if (fact := facts_by_metric[metric_key]).value is not None
         }
@@ -153,6 +166,9 @@ def _build_canonical_daily_point_from_projection(
     return CanonicalDailyPointResult(
         state=CanonicalDailyPointResultState.READY,
         point=point,
+        projection_id=projection_day.projection_id,
+        projection_ready=True,
+        calorie_usable=projection_day.calorie_usable,
     )
 
 
@@ -384,6 +400,11 @@ class DailyPointRangeParity:
     expected_tracking_differences: int
     unexplained_tracking_mismatches: int
     unexpected_target_activity_mismatches: int
+    canonical_points: tuple[DailyPoint, ...] = ()
+    canonical_projection_ids: tuple[UUID | None, ...] = ()
+    canonical_projection_ready: tuple[bool, ...] = ()
+    canonical_calorie_usable: tuple[bool, ...] = ()
+
 
     @property
     def day_results(self) -> tuple[DailyPointParity, ...]:
@@ -924,6 +945,10 @@ def compare_daily_point_range(
         start + timedelta(days=offset) for offset in range((end - start).days + 1)
     )
     days: list[DailyPointParity] = []
+    canonical_points: list[DailyPoint] = []
+    canonical_projection_ids: list[UUID | None] = []
+    canonical_projection_ready: list[bool] = []
+    canonical_calorie_usable: list[bool] = []
     for local_date in requested_dates:
         legacy = _build_daily_point(
             day=local_date,
@@ -951,6 +976,11 @@ def compare_daily_point_range(
             active_energy_sources_by_day=active_energy_sources_by_day,
             override=overrides.get(local_date),
         )
+        if canonical_result.point is not None:
+            canonical_points.append(canonical_result.point)
+        canonical_projection_ids.append(canonical_result.projection_id)
+        canonical_projection_ready.append(canonical_result.projection_ready)
+        canonical_calorie_usable.append(canonical_result.calorie_usable)
         days.append(
             _compare_daily_point_results(
                 local_date=local_date,
@@ -994,6 +1024,10 @@ def compare_daily_point_range(
             for day in day_results
             if day.fields.comparable
         ),
+        canonical_points=tuple(canonical_points),
+        canonical_projection_ids=tuple(canonical_projection_ids),
+        canonical_projection_ready=tuple(canonical_projection_ready),
+        canonical_calorie_usable=tuple(canonical_calorie_usable),
     )
 
 

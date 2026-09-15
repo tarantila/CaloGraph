@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,12 +8,46 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.analytics import daily_shadow
+from app.analytics.service import daily_points
 from app.api import analytics
 from app.auth import security
 from app.config import settings
 from app.main import app
 from app.models import NutritionTarget, TrackingQualitySettings, User, UserOnboarding, UserSession
+from app.nutrition.models import (
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionProjectionHead,
+)
 from app.schemas import TargetInput
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
+
+
+def _daily_canonical_persisted_snapshot(db, user: User) -> dict[str, tuple[tuple[object, ...], ...]]:
+    owned_models = (
+        NutritionTarget,
+        SourcePriorityPolicy,
+        SourcePriorityRule,
+        NutritionDailyProjection,
+        NutritionDailyProjectionFact,
+        NutritionProjectionHead,
+    )
+    snapshot: dict[str, tuple[tuple[object, ...], ...]] = {}
+    user_columns = tuple(User.__table__.columns)
+    user_rows = db.scalars(select(User).where(User.id == user.id)).all()
+    snapshot[User.__tablename__] = tuple(
+        tuple(getattr(row, column.name) for column in user_columns) for row in user_rows
+    )
+    for model in owned_models:
+        columns = tuple(model.__table__.columns)
+        statement = select(model).where(model.user_id == user.id)
+        for primary_key in model.__table__.primary_key.columns:
+            statement = statement.order_by(primary_key)
+        rows = db.scalars(statement).all()
+        snapshot[model.__tablename__] = tuple(
+            tuple(getattr(row, column.name) for column in columns) for row in rows
+        )
+    return snapshot
 
 
 def test_login_csrf_and_logout(client: TestClient, user: User, db) -> None:
@@ -1445,3 +1480,144 @@ def test_daily_shadow_read_does_not_mutate_user_or_target_rows(
     ]
     assert (refreshed_user.username, refreshed_user.timezone, refreshed_user.is_active) == before_user
     assert after_targets == before_targets
+
+
+def _enable_daily_canonical(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "analytics_daily_shadow_read_enabled", False)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "not_comparable",
+        "source_priority_policy_invalid",
+        "projection_no_primary_values",
+    ],
+)
+def test_daily_canonical_fallback_reuses_legacy_response(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    del user
+    settings.analytics_daily_canonical_read_enabled = False
+    baseline = _daily_response(client)
+    _enable_daily_canonical(monkeypatch)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def canonical_fallback(*args: object, **kwargs: object) -> SimpleNamespace:
+        calls.append((args, kwargs))
+        return SimpleNamespace(points=None, reason=reason)
+
+    monkeypatch.setattr(analytics, "run_daily_canonical_read", canonical_fallback, raising=False)
+    response = _daily_response(client)
+
+    assert response.status_code == baseline.status_code
+    assert response.json() == baseline.json()
+    assert len(calls) == 1
+
+
+def test_daily_canonical_match_serves_canonical_points_with_legacy_wire_contract(
+    client: TestClient,
+    user: User,
+    db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_date = date(2026, 8, 11)
+    legacy_points = daily_points(db, user, local_date, local_date)
+    assert len(legacy_points) == 1
+    canonical_point = legacy_points[0].model_copy(deep=True)
+    _enable_daily_canonical(monkeypatch)
+    monkeypatch.setattr(analytics, "daily_points", lambda *args, **kwargs: list(legacy_points))
+    monkeypatch.setattr(analytics, "run_daily_shadow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        analytics,
+        "run_daily_canonical_read",
+        lambda *args, **kwargs: SimpleNamespace(points=(canonical_point,), reason=None),
+        raising=False,
+    )
+
+    selected = analytics.daily(
+        start=local_date,
+        end=local_date,
+        source=None,
+        tracking=None,
+        weekday=None,
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert selected[0] is canonical_point
+    assert selected[0].model_dump(mode="json") == legacy_points[0].model_dump(mode="json")
+
+    settings.analytics_daily_canonical_read_enabled = False
+    baseline = _daily_response(client)
+    settings.analytics_daily_canonical_read_enabled = True
+    canonical_response = _daily_response(client)
+
+    assert canonical_response.status_code == baseline.status_code == 200
+    assert canonical_response.json() == baseline.json()
+
+
+def test_daily_canonical_ineligible_request_keeps_shadow_observation(
+    user: User,
+    db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_date = date(2026, 8, 11)
+    monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "analytics_daily_shadow_read_enabled", True)
+    monkeypatch.setattr(analytics, "daily_points", lambda *args, **kwargs: [])
+    canonical_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    shadow_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def canonical_skip(*args: object, **kwargs: object) -> SimpleNamespace:
+        canonical_calls.append((args, kwargs))
+        return SimpleNamespace(points=None, reason="source_filter")
+
+    def shadow_observe(*args: object, **kwargs: object) -> None:
+        shadow_calls.append((args, kwargs))
+
+    monkeypatch.setattr(analytics, "run_daily_canonical_read", canonical_skip)
+    monkeypatch.setattr(analytics, "run_daily_shadow", shadow_observe)
+
+    selected = analytics.daily(
+        start=local_date,
+        end=local_date,
+        source="apple",
+        tracking=None,
+        weekday=None,
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert selected == []
+    assert len(canonical_calls) == 1
+    assert len(shadow_calls) == 1
+
+
+def test_daily_canonical_enabled_get_does_not_mutate_persisted_state(
+    client: TestClient,
+    user: User,
+    db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "analytics_daily_shadow_read_enabled", False)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    before = _daily_canonical_persisted_snapshot(db, user)
+
+    response = client.get("/api/v1/analytics/daily?start=2026-08-11&end=2026-08-11")
+
+    assert response.status_code == 200
+    db.expire_all()
+    after = _daily_canonical_persisted_snapshot(db, user)
+    assert after == before

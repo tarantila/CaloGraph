@@ -6,6 +6,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,6 +37,8 @@ from app.analytics.nutrition_projection import (
     NutritionProjectionReadError,
     NutritionProjectionReadState,
 )
+from app.analytics.service import daily_points
+from app.config import settings
 from app.google_health.client import (
     NutritionDataSource,
     NutritionDataSourceApplication,
@@ -1865,3 +1868,53 @@ def test_daily_point_result_is_user_scoped_and_immutable(db: Session, user: User
     with pytest.raises(AttributeError):
         result.fields.differences.append(object())  # type: ignore[attr-defined]
     _assert_identifier_free_daily_point_result(result)
+
+
+def test_daily_canonical_endpoint_serves_strict_match_from_separate_session(
+    db: Session,
+    user: User,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = _d3b_values()
+    _d3b_legacy_day(
+        db,
+        user,
+        values,
+        source_type="yazio_export_v1",
+        suffix="d4b-endpoint",
+    )
+    _d3b_projection(db, user, values)
+
+    parity = compare_daily_point_range(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+        max_days=31,
+    )
+    assert parity.days[0].classification is DailyPointParityClassification.MATCH
+    assert len(parity.canonical_points) == 1
+    assert parity.canonical_points[0].model_dump(mode="json") == daily_points(
+        db, user, LOCAL_DATE, LOCAL_DATE
+    )[0].model_dump(mode="json")
+
+    monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", False, raising=False)
+    monkeypatch.setattr(settings, "analytics_daily_shadow_read_enabled", False)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    assert login.status_code == 200
+    legacy_response = client.get(
+        f"/api/v1/analytics/daily?start={LOCAL_DATE.isoformat()}&end={LOCAL_DATE.isoformat()}"
+    )
+    assert legacy_response.status_code == 200
+
+    monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", True)
+    canonical_response = client.get(
+        f"/api/v1/analytics/daily?start={LOCAL_DATE.isoformat()}&end={LOCAL_DATE.isoformat()}"
+    )
+
+    assert canonical_response.status_code == legacy_response.status_code == 200
+    assert canonical_response.json() == legacy_response.json()
