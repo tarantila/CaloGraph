@@ -54,6 +54,17 @@ updates:
         patterns: ["*"]
         exclude-patterns: ["node"]
 
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:20"
+      timezone: Europe/Berlin
+    groups:
+      compose-images:
+        patterns: ["*"]
+
   - package-ecosystem: npm
     directory: /frontend
     schedule:
