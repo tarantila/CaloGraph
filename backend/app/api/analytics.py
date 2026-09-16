@@ -18,7 +18,9 @@ from app.analytics.daily_canonical import (
 )
 from app.analytics.daily_shadow import run_daily_shadow
 from app.analytics.micronutrient_shadow import (
+    MicronutrientShadowState,
     read_legacy_micronutrient_period,
+    run_micronutrient_canonical_read,
     run_micronutrient_shadow,
 )
 from app.analytics.service import (
@@ -180,17 +182,35 @@ def micronutrients(
         source=source,
     )
     response = legacy.to_public(start=start, end=end, source=source)
-    with suppress(Exception):
-        run_micronutrient_shadow(
-            user.id,
-            start,
-            end,
-            source,
-            period,
-            legacy,
-            enabled=settings.analytics_micronutrients_shadow_read_enabled,
-            max_days=settings.analytics_micronutrients_shadow_max_days,
-        )
+    if settings.analytics_micronutrients_canonical_read_enabled:
+        with suppress(Exception):
+            evaluation = run_micronutrient_canonical_read(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=True,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
+            if (
+                evaluation.state is MicronutrientShadowState.MATCH
+                and evaluation.canonical is not None
+            ):
+                response = {**response, **evaluation.canonical.to_public_value_scope()}
+    else:
+        with suppress(Exception):
+            run_micronutrient_shadow(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=settings.analytics_micronutrients_shadow_read_enabled,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
     return response
 
 

@@ -1,4 +1,6 @@
 import io
+import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.analytics import micronutrient_shadow
 from app.analytics.micronutrient_shadow import (
+    MicronutrientEvaluation,
     MicronutrientMetricResult,
     MicronutrientParityClassification,
     MicronutrientPeriodResult,
@@ -15,6 +18,7 @@ from app.analytics.micronutrient_shadow import (
     read_canonical_micronutrient_period,
     read_legacy_micronutrient_period,
     resolve_shadow_source_mapping,
+    run_micronutrient_canonical_read,
     run_micronutrient_shadow,
 )
 from app.api.analytics import micronutrients
@@ -801,3 +805,395 @@ def test_micronutrient_shadow_settings_default_to_disabled_and_thirty_one_days()
 
     assert settings.analytics_micronutrients_shadow_read_enabled is False
     assert settings.analytics_micronutrients_shadow_max_days == 31
+
+
+def _canonical_with_iron_total(
+    period: MicronutrientPeriodResult,
+    total: Decimal,
+) -> MicronutrientPeriodResult:
+    nutrients = tuple(
+        replace(
+            item,
+            total=total if item.metric_type == "iron_mg" else item.total,
+            average_daily=total if item.metric_type == "iron_mg" else item.average_daily,
+        )
+        for item in period.nutrients
+    )
+    return replace(period, nutrients=nutrients)
+
+
+def test_canonical_value_scope_replaces_only_values_after_full_match(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(
+        db,
+        user,
+        [_sample(1, "dietary_energy_kcal", "1800"), _sample(1, "iron_mg", "7")],
+    )
+    start = end = date(2024, 1, 1)
+    legacy = read_legacy_micronutrient_period(
+        db, user_id=user.id, start=start, end=end, source="test"
+    )
+    canonical = _canonical_with_iron_total(legacy, Decimal("99"))
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.run_micronutrient_canonical_read",
+        lambda *args, **kwargs: MicronutrientEvaluation(
+            state=MicronutrientShadowState.MATCH,
+            canonical=canonical,
+        ),
+    )
+
+    result = micronutrients(
+        start=start, end=end, source="test", period=None, user=user, db=db
+    )
+
+    legacy_public = legacy.to_public(start=start, end=end, source="test")
+    assert result["start_date"] == legacy_public["start_date"]
+    assert result["end_date"] == legacy_public["end_date"]
+    assert result["source"] == legacy_public["source"]
+    assert result["last_updated_at"] == legacy_public["last_updated_at"]
+    assert result["available_sources"] == legacy_public["available_sources"]
+    assert result["definition"] == legacy_public["definition"]
+    assert result["recorded_days"] == canonical.recorded_days
+    assert next(item for item in result["nutrients"] if item["metric_type"] == "iron_mg")["total"] == 99.0
+
+
+def test_canonical_mismatch_keeps_complete_legacy_value_scope(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(
+        db,
+        user,
+        [_sample(1, "dietary_energy_kcal", "1800"), _sample(1, "iron_mg", "7")],
+    )
+    start = end = date(2024, 1, 1)
+    legacy = read_legacy_micronutrient_period(
+        db, user_id=user.id, start=start, end=end, source="test"
+    )
+    canonical = _canonical_with_iron_total(legacy, Decimal("99"))
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.run_micronutrient_canonical_read",
+        lambda *args, **kwargs: MicronutrientEvaluation(
+            state=MicronutrientShadowState.MISMATCH,
+            canonical=canonical,
+            reason="parity",
+        ),
+    )
+
+    result = micronutrients(
+        start=start, end=end, source="test", period=None, user=user, db=db
+    )
+
+    assert result == legacy.to_public(start=start, end=end, source="test")
+
+
+def test_canonical_error_keeps_complete_legacy_response(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(db, user, [_sample(1, "dietary_energy_kcal", "1800")])
+    start = end = date(2024, 1, 1)
+    legacy = read_legacy_micronutrient_period(
+        db, user_id=user.id, start=start, end=end, source="test"
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+
+    def fail_canonical(*args: object, **kwargs: object) -> MicronutrientEvaluation:
+        raise RuntimeError("canonical failure")
+
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_canonical_read", fail_canonical)
+
+    result = micronutrients(
+        start=start, end=end, source="test", period=None, user=user, db=db
+    )
+
+    assert result == legacy.to_public(start=start, end=end, source="test")
+
+
+def test_canonical_serialization_failure_keeps_complete_legacy_response(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(db, user, [_sample(1, "dietary_energy_kcal", "1800")])
+    start = end = date(2024, 1, 1)
+    legacy = read_legacy_micronutrient_period(
+        db, user_id=user.id, start=start, end=end, source="test"
+    )
+    malformed = MicronutrientPeriodResult(
+        recorded_days=legacy.recorded_days,
+        nutrients=legacy.nutrients[:-1],
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.run_micronutrient_canonical_read",
+        lambda *args, **kwargs: MicronutrientEvaluation(
+            state=MicronutrientShadowState.MATCH,
+            canonical=malformed,
+        ),
+    )
+
+    result = micronutrients(
+        start=start, end=end, source="test", period=None, user=user, db=db
+    )
+
+    assert result == legacy.to_public(start=start, end=end, source="test")
+
+
+def test_canonical_value_scope_serializes_all_catalog_items() -> None:
+    period = MicronutrientPeriodResult(
+        recorded_days=1,
+        nutrients=tuple(
+            MicronutrientMetricResult(
+                metric_type=definition.metric_type,
+                total=Decimal("1"),
+                average_daily=Decimal("1"),
+                days_with_value=1,
+                eu_nrv=definition.eu_nrv,
+                percent_of_nrv=Decimal("7"),
+                status="covered",
+                coverage_ratio=1.0,
+            )
+            for definition in MICRONUTRIENTS
+        ),
+    )
+
+    values = period.to_public_value_scope()
+
+    assert values["recorded_days"] == 1
+    assert len(values["nutrients"]) == 26
+    assert [item["metric_type"] for item in values["nutrients"]] == [
+        definition.metric_type for definition in MICRONUTRIENTS
+    ]
+    assert all(
+        set(item)
+        == {
+            "id",
+            "metric_type",
+            "label",
+            "category",
+            "unit",
+            "eu_nrv",
+            "total",
+            "average_daily",
+            "days_with_value",
+            "coverage_ratio",
+            "percent_of_nrv",
+            "status",
+        }
+        for item in values["nutrients"]
+    )
+
+
+def test_canonical_flag_uses_one_evaluation_without_shadow_double_read(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(db, user, [_sample(1, "dietary_energy_kcal", "1800")])
+    calls = {"canonical": 0, "shadow": 0}
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_shadow_read_enabled", True
+    )
+
+    def canonical(*args: object, **kwargs: object) -> MicronutrientEvaluation:
+        calls["canonical"] += 1
+        return MicronutrientEvaluation(state=MicronutrientShadowState.NOT_COMPARABLE)
+
+    def shadow(*args: object, **kwargs: object) -> None:
+        calls["shadow"] += 1
+        raise AssertionError("N4 shadow must not run with canonical serving enabled")
+
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_canonical_read", canonical)
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_shadow", shadow)
+
+    micronutrients(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 1),
+        source="test",
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert calls == {"canonical": 1, "shadow": 0}
+
+
+def test_canonical_disabled_preserves_shadow_route(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(db, user, [_sample(1, "dietary_energy_kcal", "1800")])
+    calls = {"canonical": 0, "shadow": 0}
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", False
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_shadow_read_enabled", True
+    )
+
+    def canonical(*args: object, **kwargs: object) -> None:
+        calls["canonical"] += 1
+
+    def shadow(*args: object, **kwargs: object) -> None:
+        calls["shadow"] += 1
+
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_canonical_read", canonical)
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_shadow", shadow)
+
+    micronutrients(
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 1),
+        source="test",
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert calls == {"canonical": 0, "shadow": 1}
+
+
+def test_canonical_eligibility_never_opens_session_for_ineligible_request(
+    monkeypatch, user: User
+) -> None:
+    opened = False
+
+    def fail_session() -> None:
+        nonlocal opened
+        opened = True
+        raise AssertionError("ineligible request must not open a canonical session")
+
+    monkeypatch.setattr(micronutrient_shadow, "SessionLocal", fail_session)
+    empty = MicronutrientPeriodResult(recorded_days=0, nutrients=())
+
+    result = run_micronutrient_canonical_read(
+        user.id,
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+        "yazio_export_v1",
+        None,
+        empty,
+        enabled=True,
+        max_days=31,
+    )
+
+    assert result.state is MicronutrientShadowState.RANGE_TOO_LONG
+    assert opened is False
+
+
+def test_micronutrient_canonical_flag_defaults_to_disabled() -> None:
+    configured = Settings(_env_file=None, environment="test")
+
+    assert configured.analytics_micronutrients_canonical_read_enabled is False
+
+
+def test_canonical_read_telemetry_is_bounded_and_separate(monkeypatch, user: User) -> None:
+    events: list[dict[str, object]] = []
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(micronutrient_shadow, "SessionLocal", lambda: Session())
+    monkeypatch.setattr(
+        micronutrient_shadow,
+        "resolve_shadow_source_mapping",
+        lambda db, *, user_id, source: SimpleNamespace(
+            provider_key="yazio", source_instance_id=user.id
+        ),
+    )
+    empty = MicronutrientPeriodResult(
+        recorded_days=0,
+        nutrients=tuple(
+            MicronutrientMetricResult(
+                metric_type=definition.metric_type,
+                total=None,
+                average_daily=None,
+                days_with_value=0,
+                eu_nrv=definition.eu_nrv,
+                percent_of_nrv=None,
+                status="no_data",
+                coverage_ratio=0.0,
+            )
+            for definition in MICRONUTRIENTS
+        ),
+    )
+    monkeypatch.setattr(
+        micronutrient_shadow,
+        "read_canonical_micronutrient_period",
+        lambda *args, **kwargs: empty,
+    )
+    monkeypatch.setattr(
+        micronutrient_shadow.LOGGER,
+        "info",
+        lambda message, *, extra: events.append({"message": message, **extra}),
+    )
+
+    result = run_micronutrient_canonical_read(
+        user.id,
+        date(2024, 1, 1),
+        date(2024, 1, 1),
+        "yazio_export_v1",
+        None,
+        empty,
+        enabled=True,
+    )
+
+    assert result.state is MicronutrientShadowState.MATCH
+    payload = json.loads(str(events[-1]["message"]))
+    assert payload["event"] == "analytics.micronutrients.canonical"
+    assert payload["version"] == "n5.v1"
+    assert payload["outcome"] == "canonical_served"
+    assert set(payload) == {
+        "event",
+        "version",
+        "outcome",
+        "range_bucket",
+        "duration_bucket",
+        "classification",
+    }
+    assert str(user.id) not in str(payload)
+    assert "yazio_export_v1" not in str(payload)
+
+
+def test_canonical_ineligible_inputs_skip_session(monkeypatch, user: User) -> None:
+    opened = False
+
+    def fail_session() -> None:
+        nonlocal opened
+        opened = True
+        raise AssertionError("ineligible request must not open a canonical session")
+
+    monkeypatch.setattr(micronutrient_shadow, "SessionLocal", fail_session)
+    empty = MicronutrientPeriodResult(recorded_days=0, nutrients=())
+    cases = (
+        (None, None, date(2024, 1, 1), date(2024, 1, 1), MicronutrientShadowState.NOT_COMPARABLE),
+        ("yazio_export_v1", "all", date(2024, 1, 1), date(2024, 1, 1), MicronutrientShadowState.PERIOD_ALL),
+        ("google_health", None, date(2024, 1, 1), date(2024, 1, 1), MicronutrientShadowState.NOT_COMPARABLE),
+        ("yazio_export_v1", None, date(2024, 1, 1), date(2024, 2, 1), MicronutrientShadowState.RANGE_TOO_LONG),
+    )
+
+    for source, period, start, end, expected_state in cases:
+        result = run_micronutrient_canonical_read(
+            user.id,
+            start,
+            end,
+            source,
+            period,
+            empty,
+            enabled=True,
+            max_days=31,
+        )
+        assert result.state is expected_state
+
+    assert opened is False

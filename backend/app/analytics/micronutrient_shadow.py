@@ -27,6 +27,8 @@ from app.services.apple_health_nutrition_ingestion import apple_health_source_in
 LOGGER = logging.getLogger(__name__)
 TELEMETRY_EVENT = "analytics.micronutrients.shadow"
 TELEMETRY_VERSION = "n4.v1"
+CANONICAL_TELEMETRY_EVENT = "analytics.micronutrients.canonical"
+CANONICAL_TELEMETRY_VERSION = "n5.v1"
 _MAX_EXCEPTION_CLASS_LENGTH = 64
 _MAX_DAYS = 31
 
@@ -53,6 +55,14 @@ class MicronutrientParityClassification(StrEnum):
     NOT_COMPARABLE = "not_comparable"
 
 
+class MicronutrientCanonicalTelemetryOutcome(StrEnum):
+    LEGACY_INELIGIBLE = "legacy_ineligible"
+    FALLBACK_NOT_COMPARABLE = "fallback_not_comparable"
+    FALLBACK_PARITY = "fallback_parity"
+    FALLBACK_ERROR = "fallback_error"
+    CANONICAL_SERVED = "canonical_served"
+
+
 @dataclass(frozen=True, slots=True)
 class MicronutrientMetricResult:
     metric_type: str
@@ -75,12 +85,37 @@ class MicronutrientPeriodResult:
     def by_metric(self) -> Mapping[str, MicronutrientMetricResult]:
         return {item.metric_type: item for item in self.nutrients}
 
+    def _public_nutrients(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": definition.yazio_id,
+                "metric_type": definition.metric_type,
+                "label": definition.label,
+                "category": definition.category,
+                "unit": definition.unit,
+                "eu_nrv": serialize_decimal(definition.eu_nrv),
+                "total": serialize_decimal(item.total),
+                "average_daily": serialize_decimal(item.average_daily),
+                "days_with_value": item.days_with_value,
+                "coverage_ratio": item.coverage_ratio,
+                "percent_of_nrv": serialize_decimal(item.percent_of_nrv),
+                "status": item.status,
+            }
+            for definition, item in zip(MICRONUTRIENTS, self.nutrients, strict=True)
+        ]
+
+    def to_public_value_scope(self) -> dict[str, Any]:
+        return {
+            "recorded_days": self.recorded_days,
+            "nutrients": self._public_nutrients(),
+        }
+
     def to_public(self, *, start: date, end: date, source: str | None) -> dict[str, Any]:
         return {
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "source": source,
-            "recorded_days": self.recorded_days,
+            **self.to_public_value_scope(),
             "last_updated_at": (
                 self.filtered_updated_at.isoformat() if self.filtered_updated_at else None
             ),
@@ -90,23 +125,6 @@ class MicronutrientPeriodResult:
                     "last_updated_at": updated_at.isoformat() if updated_at else None,
                 }
                 for source_type, updated_at in self.available_sources
-            ],
-            "nutrients": [
-                {
-                    "id": definition.yazio_id,
-                    "metric_type": definition.metric_type,
-                    "label": definition.label,
-                    "category": definition.category,
-                    "unit": definition.unit,
-                    "eu_nrv": serialize_decimal(definition.eu_nrv),
-                    "total": serialize_decimal(item.total),
-                    "average_daily": serialize_decimal(item.average_daily),
-                    "days_with_value": item.days_with_value,
-                    "coverage_ratio": item.coverage_ratio,
-                    "percent_of_nrv": serialize_decimal(item.percent_of_nrv),
-                    "status": item.status,
-                }
-                for definition, item in zip(MICRONUTRIENTS, self.nutrients, strict=True)
             ],
             "definition": {
                 "reference": "EU-NRV für Erwachsene, Verordnung (EU) Nr. 1169/2011, Anhang XIII",
@@ -175,6 +193,15 @@ class ShadowEligibility:
         if source not in {"yazio_export_v1", "apple_health_xml"}:
             return cls(MicronutrientShadowState.NOT_COMPARABLE, "source_mapping")
         return cls(MicronutrientShadowState.MATCH)
+
+
+@dataclass(frozen=True, slots=True)
+class MicronutrientEvaluation:
+    state: MicronutrientShadowState
+    canonical: MicronutrientPeriodResult | None = None
+    parity: MicronutrientParityResult | None = None
+    reason: str | None = None
+    exception_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +463,53 @@ def resolve_shadow_source_mapping(
     return None
 
 
+def evaluate_micronutrient_candidate(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+    source: str | None,
+    period: str | None,
+    legacy: MicronutrientPeriodResult,
+    enabled: bool,
+    max_days: int = _MAX_DAYS,
+) -> MicronutrientEvaluation:
+    eligibility = ShadowEligibility.check(
+        enabled=enabled,
+        source=source,
+        period=period,
+        start=start,
+        end=end,
+        max_days=max_days,
+    )
+    if eligibility.state is not MicronutrientShadowState.MATCH:
+        return MicronutrientEvaluation(eligibility.state, reason=eligibility.reason)
+    assert source is not None
+    mapping = resolve_shadow_source_mapping(db, user_id=user_id, source=source)
+    if mapping is None:
+        return MicronutrientEvaluation(
+            MicronutrientShadowState.NOT_COMPARABLE,
+            reason="source_mapping",
+        )
+    canonical = read_canonical_micronutrient_period(
+        db,
+        user_id=user_id,
+        provider_key=mapping.provider_key,
+        source_instance_id=mapping.source_instance_id,
+        start=start,
+        end=end,
+    )
+    parity = compare_micronutrient_periods(legacy, canonical)
+    return MicronutrientEvaluation(
+        MicronutrientShadowState.MATCH
+        if parity.classification is MicronutrientParityClassification.MATCH
+        else MicronutrientShadowState.MISMATCH,
+        canonical=canonical,
+        parity=parity,
+    )
+
+
 def _range_bucket(start: date, end: date) -> str:
     days = (end - start).days + 1
     if days == 1:
@@ -495,6 +569,136 @@ def _rollback_safely(session: object) -> None:
             return
 
 
+def _run_micronutrient_evaluation(
+    user_id: UUID,
+    start: date,
+    end: date,
+    source: str | None,
+    period: str | None,
+    legacy: MicronutrientPeriodResult,
+    *,
+    enabled: bool,
+    max_days: int,
+) -> MicronutrientEvaluation:
+    eligibility = ShadowEligibility.check(
+        enabled=enabled,
+        source=source,
+        period=period,
+        start=start,
+        end=end,
+        max_days=max_days,
+    )
+    if eligibility.state is not MicronutrientShadowState.MATCH:
+        return MicronutrientEvaluation(eligibility.state, reason=eligibility.reason)
+
+    session: object | None = None
+    try:
+        session = SessionLocal()
+        with session as candidate_session:
+            return evaluate_micronutrient_candidate(
+                candidate_session,
+                user_id=user_id,
+                start=start,
+                end=end,
+                source=source,
+                period=period,
+                legacy=legacy,
+                enabled=enabled,
+                max_days=max_days,
+            )
+    except Exception as exc:
+        if session is not None:
+            _rollback_safely(session)
+        return MicronutrientEvaluation(
+            MicronutrientShadowState.ERROR,
+            exception_class=_exception_class(exc),
+        )
+
+
+def _canonical_telemetry_outcome(
+    evaluation: MicronutrientEvaluation,
+) -> MicronutrientCanonicalTelemetryOutcome:
+    if (
+        evaluation.state is MicronutrientShadowState.MATCH
+        and evaluation.canonical is not None
+    ):
+        return MicronutrientCanonicalTelemetryOutcome.CANONICAL_SERVED
+    if evaluation.state in {
+        MicronutrientShadowState.DISABLED,
+        MicronutrientShadowState.PERIOD_ALL,
+        MicronutrientShadowState.RANGE_TOO_LONG,
+    }:
+        return MicronutrientCanonicalTelemetryOutcome.LEGACY_INELIGIBLE
+    if evaluation.state is MicronutrientShadowState.NOT_COMPARABLE:
+        return MicronutrientCanonicalTelemetryOutcome.FALLBACK_NOT_COMPARABLE
+    if evaluation.state is MicronutrientShadowState.MISMATCH:
+        return MicronutrientCanonicalTelemetryOutcome.FALLBACK_PARITY
+    return MicronutrientCanonicalTelemetryOutcome.FALLBACK_ERROR
+
+
+def _emit_canonical_telemetry(
+    *,
+    evaluation: MicronutrientEvaluation,
+    start: date,
+    end: date,
+    elapsed_seconds: float,
+) -> None:
+    fields: dict[str, Any] = {
+        "event": CANONICAL_TELEMETRY_EVENT,
+        "version": CANONICAL_TELEMETRY_VERSION,
+        "outcome": _canonical_telemetry_outcome(evaluation).value,
+        "range_bucket": _range_bucket(start, end),
+        "duration_bucket": _duration_bucket(elapsed_seconds),
+    }
+    if evaluation.parity is not None:
+        fields["classification"] = evaluation.parity.classification.value
+    if evaluation.exception_class is not None:
+        fields["exception_class"] = evaluation.exception_class
+    try:
+        LOGGER.info(json.dumps(fields, sort_keys=True, separators=(",", ":")), extra=fields)
+    except Exception:
+        return
+
+
+def run_micronutrient_canonical_read(
+    user_id: UUID,
+    start: date,
+    end: date,
+    source: str | None,
+    period: str | None,
+    legacy: MicronutrientPeriodResult,
+    *,
+    enabled: bool,
+    max_days: int = _MAX_DAYS,
+) -> MicronutrientEvaluation:
+    started = monotonic()
+    evaluation = _run_micronutrient_evaluation(
+        user_id,
+        start,
+        end,
+        source,
+        period,
+        legacy,
+        enabled=enabled,
+        max_days=max_days,
+    )
+    if evaluation.state is MicronutrientShadowState.MATCH and evaluation.canonical is not None:
+        try:
+            evaluation.canonical.to_public_value_scope()
+        except Exception as exc:
+            evaluation = MicronutrientEvaluation(
+                MicronutrientShadowState.ERROR,
+                exception_class=_exception_class(exc),
+            )
+    _emit_canonical_telemetry(
+        evaluation=evaluation,
+        start=start,
+        end=end,
+        elapsed_seconds=monotonic() - started,
+    )
+    return evaluation
+
+
 def run_micronutrient_shadow(
     user_id: UUID,
     start: date,
@@ -506,72 +710,37 @@ def run_micronutrient_shadow(
     enabled: bool,
     max_days: int = _MAX_DAYS,
 ) -> MicronutrientShadowOutcome:
-    eligibility = ShadowEligibility.check(
+    started = monotonic()
+    evaluation = _run_micronutrient_evaluation(
+        user_id,
+        start,
+        end,
+        source,
+        period,
+        legacy,
         enabled=enabled,
-        source=source,
-        period=period,
-        start=start,
-        end=end,
         max_days=max_days,
     )
-    started = monotonic()
-    if eligibility.state is not MicronutrientShadowState.MATCH:
-        outcome = MicronutrientShadowOutcome(eligibility.state, reason=eligibility.reason)
-        _emit_telemetry(outcome=outcome, start=start, end=end, elapsed_seconds=monotonic() - started)
-        return outcome
-
-    session: object | None = None
-    try:
-        session = SessionLocal()
-        with session as shadow_session:
-            try:
-                assert source is not None
-                mapping = resolve_shadow_source_mapping(
-                    shadow_session,
-                    user_id=user_id,
-                    source=source,
-                )
-                if mapping is None:
-                    outcome = MicronutrientShadowOutcome(
-                        MicronutrientShadowState.NOT_COMPARABLE,
-                        reason="source_mapping",
-                    )
-                else:
-                    canonical = read_canonical_micronutrient_period(
-                        shadow_session,
-                        user_id=user_id,
-                        provider_key=mapping.provider_key,
-                        source_instance_id=mapping.source_instance_id,
-                        start=start,
-                        end=end,
-                    )
-                    parity = compare_micronutrient_periods(legacy, canonical)
-                    outcome = MicronutrientShadowOutcome(
-                        MicronutrientShadowState.MATCH
-                        if parity.classification is MicronutrientParityClassification.MATCH
-                        else MicronutrientShadowState.MISMATCH,
-                        classification=parity.classification,
-                    )
-            except Exception as exc:
-                _rollback_safely(shadow_session)
-                outcome = MicronutrientShadowOutcome(
-                    MicronutrientShadowState.ERROR,
-                    exception_class=_exception_class(exc),
-                )
-        _emit_telemetry(outcome=outcome, start=start, end=end, elapsed_seconds=monotonic() - started)
-        return outcome
-    except Exception as exc:
-        if session is not None:
-            _rollback_safely(session)
-        outcome = MicronutrientShadowOutcome(
-            MicronutrientShadowState.ERROR,
-            exception_class=_exception_class(exc),
-        )
-        _emit_telemetry(outcome=outcome, start=start, end=end, elapsed_seconds=monotonic() - started)
-        return outcome
+    outcome = MicronutrientShadowOutcome(
+        evaluation.state,
+        classification=(
+            evaluation.parity.classification if evaluation.parity is not None else None
+        ),
+        reason=evaluation.reason,
+        exception_class=evaluation.exception_class,
+    )
+    _emit_telemetry(
+        outcome=outcome,
+        start=start,
+        end=end,
+        elapsed_seconds=monotonic() - started,
+    )
+    return outcome
 
 
 __all__ = [
+    "MicronutrientCanonicalTelemetryOutcome",
+    "MicronutrientEvaluation",
     "MicronutrientMetricResult",
     "MicronutrientParityClassification",
     "MicronutrientParityResult",
@@ -581,8 +750,10 @@ __all__ = [
     "ShadowEligibility",
     "ShadowSourceMapping",
     "compare_micronutrient_periods",
+    "evaluate_micronutrient_candidate",
     "read_canonical_micronutrient_period",
     "read_legacy_micronutrient_period",
     "resolve_shadow_source_mapping",
+    "run_micronutrient_canonical_read",
     "run_micronutrient_shadow",
 ]
