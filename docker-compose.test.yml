@@ -23,7 +23,7 @@ services:
       - ./docker-compose.yml:/workspace/docker-compose.yml:ro
       - ./docker-compose.dev.yml:/workspace/docker-compose.dev.yml:ro
   postgres-ci:
-    image: postgres:18.4-alpine
+    image: postgres:18.6-alpine
     environment:
       POSTGRES_DB: calograph_test
       POSTGRES_USER: calograph_test
