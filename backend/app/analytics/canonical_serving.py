@@ -66,6 +66,7 @@ class CanonicalServingEndpoint(StrEnum):
     DAILY = "daily"
     CALENDAR = "calendar"
     WEEKLY = "weekly"
+    WEEKDAYS = "weekdays"
 
 @dataclass(frozen=True, slots=True)
 class CanonicalServingEligibility:

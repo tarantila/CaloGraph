@@ -26,6 +26,7 @@ from app.analytics.service import (
     percentile,
     serialize_decimal,
 )
+from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
@@ -439,8 +440,23 @@ def weekdays(
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 180)
     _unlock_big_picture_if_requested(db, user, period)
+    points = daily_points(db, user, start, end)
+    if (
+        settings.analytics_weekdays_canonical_read_enabled
+        and period != "all"
+        and (end - start).days + 1 <= 31
+    ):
+        with suppress(Exception):
+            canonical_outcome = run_weekdays_canonical_read(
+                user.id,
+                start,
+                end,
+                legacy_points=tuple(points),
+            )
+            if canonical_outcome.points is not None:
+                points = list(canonical_outcome.points)
     groups: dict[int, list[DailyPoint]] = defaultdict(list)
-    for point in daily_points(db, user, start, end):
+    for point in points:
         groups[point.date.weekday()].append(point)
     labels = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
     output = []
