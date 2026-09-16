@@ -24,9 +24,13 @@ from app.nutrition.models import (
     NutritionIngestionRun,
     NutritionSourceObservation,
 )
-from app.nutrition.projection import ProjectionPersistenceStatus
-from app.nutrition.projection.orchestration import rebuild_nutrition_day
-from app.nutrition.resolution import PROVIDER_RESOLVERS, resolve_provider_metric
+from app.nutrition.projection import ProjectionPersistenceStatus, rebuild_nutrition_day
+from app.nutrition.resolution import (
+    PROVIDER_RESOLVERS,
+    canonical_unit,
+    resolve_daily_nutrient,
+    resolve_provider_metric,
+)
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     resolve_default_provider_sources,
@@ -133,11 +137,10 @@ def _event(
             user_id=user.id,
             source_observation_id=source.id,
             provider_field_path=f"nutritionLog.{metric_key}",
-            provider_raw_value_decimal=value,
-            provider_raw_unit="kcal" if metric_key == "dietary_energy_kcal" else "g",
+            provider_raw_unit=canonical_unit(metric_key),
             metric_key=metric_key,
             canonical_value=value,
-            canonical_unit="kcal" if metric_key == "dietary_energy_kcal" else "g",
+            canonical_unit=canonical_unit(metric_key),
             observation_role=ObservationRole.CANONICAL.value,
             presence_state=(
                 PresenceState.EXPLICIT_ZERO.value if value == Decimal("0") else PresenceState.SUPPLIED.value
@@ -649,3 +652,47 @@ def test_google_health_rebuild_without_any_source_fails_closed(db, user) -> None
             local_date=DAY,
             policy_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
         )
+
+def test_google_health_daily_reader_accepts_sodium_and_micronutrient(db, user):
+    connection = _connection(db, user)
+    run = _run(db, user, connection)
+    _event(
+        db,
+        user,
+        connection,
+        run,
+        key="sodium",
+        value=Decimal("500"),
+        metric_key="sodium_mg",
+    )
+    _event(
+        db,
+        user,
+        connection,
+        run,
+        key="iron",
+        value=Decimal("4"),
+        metric_key="iron_mg",
+    )
+
+    sodium = resolve_daily_nutrient(
+        db,
+        provider_key=GOOGLE,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="sodium_mg",
+    )
+    iron = resolve_daily_nutrient(
+        db,
+        provider_key=GOOGLE,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="iron_mg",
+    )
+
+    assert sodium.value == Decimal("500")
+    assert sodium.unit == "mg"
+    assert iron.value == Decimal("4")
+    assert iron.unit == "mg"

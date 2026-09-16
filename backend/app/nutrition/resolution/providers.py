@@ -61,6 +61,7 @@ class YazioProviderResolver:
             metric_key=metric_key,
         )
 
+
 class GoogleHealthProviderResolver:
     provider_key = "google_health"
 
@@ -84,10 +85,47 @@ class GoogleHealthProviderResolver:
         )
 
 
+class AppleHealthProviderResolver:
+    provider_key = "apple_health"
+
+    def resolve_metric(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+        local_date: date,
+        metric_key: str,
+    ) -> ProviderCandidate:
+        from app.services.apple_health_nutrition_resolution import resolve_apple_health_metric
+
+        return resolve_apple_health_metric(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+            metric_key=metric_key,
+        )
+
+
+_YAZIO_PROVIDER_RESOLVER = YazioProviderResolver()
+_GOOGLE_HEALTH_PROVIDER_RESOLVER = GoogleHealthProviderResolver()
+_APPLE_HEALTH_PROVIDER_RESOLVER = AppleHealthProviderResolver()
+
+
 PROVIDER_RESOLVERS: Mapping[str, NutritionProviderResolver] = MappingProxyType(
     {
-        "yazio": YazioProviderResolver(),
-        "google_health": GoogleHealthProviderResolver(),
+        "yazio": _YAZIO_PROVIDER_RESOLVER,
+        "google_health": _GOOGLE_HEALTH_PROVIDER_RESOLVER,
+    }
+)
+
+
+NUTRIENT_READ_PROVIDER_RESOLVERS: Mapping[str, NutritionProviderResolver] = MappingProxyType(
+    {
+        "yazio": _YAZIO_PROVIDER_RESOLVER,
+        "google_health": _GOOGLE_HEALTH_PROVIDER_RESOLVER,
+        "apple_health": _APPLE_HEALTH_PROVIDER_RESOLVER,
     }
 )
 

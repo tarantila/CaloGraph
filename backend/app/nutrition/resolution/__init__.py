@@ -14,6 +14,7 @@ from .contracts import (
     build_event_candidate,
     build_summary_candidate,
 )
+from .daily_reader import resolve_daily_nutrient, resolve_daily_nutrients
 from .eligibility import is_candidate_eligible, is_summary_usable
 from .metrics import (
     CANONICAL_NUTRITION_METRICS,
@@ -26,6 +27,7 @@ from .metrics import (
 )
 from .parity import ParityDiagnostic, compare_decimal_parity
 from .providers import (
+    NUTRIENT_READ_PROVIDER_RESOLVERS,
     PROVIDER_RESOLVERS,
     NutritionProviderResolver,
     ProviderCandidateContractError,
@@ -41,6 +43,7 @@ from .sources import ProviderSourceBindings, ProviderSourceInstance
 __all__ = [
     "CANONICAL_NUTRITION_METRICS",
     "DAILY_PROJECTION_METRICS",
+    "NUTRIENT_READ_PROVIDER_RESOLVERS",
     "PROVIDER_RESOLVERS",
     "AggregatedMetric",
     "EventReconstructionCandidate",
@@ -72,6 +75,8 @@ __all__ = [
     "is_summary_usable",
     "is_unsupported_metric",
     "metric_definition",
+    "resolve_daily_nutrient",
+    "resolve_daily_nutrients",
     "resolve_event_vs_summary",
     "resolve_provider_metric",
 ]

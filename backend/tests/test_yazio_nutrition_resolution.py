@@ -25,7 +25,7 @@ from app.nutrition.models import (
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
-from app.nutrition.resolution import ReasonCode
+from app.nutrition.resolution import ReasonCode, resolve_daily_nutrient
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_nutrition_resolution import resolve_yazio_day, resolve_yazio_metric
 from app.services.yazio_provider import (
@@ -87,14 +87,20 @@ def _product(event_id: str, product_id: str, local_date: date = DAY, amount: Dec
     )
 
 
-def _simple(event_id: str, protein: Decimal | None, local_date: date = DAY) -> YazioConsumedSimpleProduct:
+def _simple(
+    event_id: str,
+    protein: Decimal | None,
+    local_date: date = DAY,
+    *,
+    nutrients: YazioNutrientValues | None = None,
+) -> YazioConsumedSimpleProduct:
     return YazioConsumedSimpleProduct(
         consumed_item_id=event_id,
         amount=Decimal("1"),
         provider_civil_datetime=datetime.combine(local_date, datetime.min.time()),
         local_date=local_date,
         daytime="breakfast",
-        nutrients=YazioNutrientValues(protein=protein),
+        nutrients=nutrients or YazioNutrientValues(protein=protein),
         serving=None,
         serving_quantity=None,
         name="Simple",
@@ -674,3 +680,32 @@ def test_day_resolution_returns_one_candidate_per_canonical_metric(db, user):
         "saturated_fat_g",
     }
     assert all(candidate.provider_key == PROVIDER for candidate in result.values())
+
+def test_yazio_daily_reader_accepts_n1_micronutrient(db, user):
+    connection = _connection(db, user)
+    _ingest(
+        db,
+        user,
+        connection,
+        _diary(
+            simple_products=(
+                _simple(
+                    "iron-event",
+                    None,
+                    nutrients=YazioNutrientValues(additional={"mineral.iron": Decimal("0.004")}),
+                ),
+            )
+        ),
+    )
+
+    candidate = resolve_daily_nutrient(
+        db,
+        provider_key=PROVIDER,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key="iron_mg",
+    )
+
+    assert candidate.value == Decimal("4")
+    assert candidate.unit == "mg"
