@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from app.analytics import canonical_serving
 from app.analytics import daily_canonical as canonical
 from app.analytics.daily_point_parity import DailyPointParityClassification
 from app.schemas import DailyPoint
@@ -462,3 +463,68 @@ def test_ineligible_evaluator_telemetry_uses_public_bounded_outcome(monkeypatch,
         "legacy_fallback_unexplained_mismatch",
         "legacy_fallback_error",
     }
+
+
+def test_snapshot_shared_fallback_error_preserves_bounded_exception_class(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    point = DailyPoint.model_construct(date=date(2026, 9, 10))
+    exception_class = "E" * 64
+    shared_result = canonical_serving.CanonicalServingResult(
+        selected_points=(point,),
+        source=canonical_serving.CanonicalServingSource.LEGACY_SELECTED,
+        outcome=canonical_serving.CanonicalServingOutcome.FALLBACK_ERROR,
+        # FALLBACK_ERROR is authoritative over any stale detail.
+        detail=canonical_serving.CanonicalServingDetail.SOURCE_PRIORITY_POLICY_INVALID,
+        exception_class=exception_class,
+    )
+    monkeypatch.setattr(canonical_serving, "serve_canonical", lambda request: shared_result)
+
+    with caplog.at_level(logging.INFO, logger=canonical.LOGGER.name):
+        result = canonical.run_daily_canonical_read(
+            USER_ID,
+            point.date,
+            point.date,
+            None,
+            None,
+            None,
+            enabled=True,
+            max_days=31,
+            legacy_points=(point,),
+        )
+
+    payload = json.loads(caplog.records[-1].getMessage())
+    assert result.state is canonical.DailyCanonicalState.ERROR
+    assert result.exception_class == exception_class
+    assert payload["outcome"] == "legacy_fallback_error"
+    assert payload["exception_class"] == exception_class
+    assert len(payload["exception_class"]) == 64
+
+
+def test_snapshot_shared_no_primary_values_preserves_typed_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    point = DailyPoint.model_construct(date=date(2026, 9, 10))
+    shared_result = canonical_serving.CanonicalServingResult(
+        selected_points=(point,),
+        source=canonical_serving.CanonicalServingSource.LEGACY_SELECTED,
+        outcome=canonical_serving.CanonicalServingOutcome.FALLBACK_NOT_READY,
+        detail=canonical_serving.CanonicalServingDetail.PROJECTION_NO_PRIMARY_VALUES,
+    )
+    monkeypatch.setattr(canonical_serving, "serve_canonical", lambda request: shared_result)
+
+    result = canonical.run_daily_canonical_read(
+        USER_ID,
+        point.date,
+        point.date,
+        None,
+        None,
+        None,
+        enabled=True,
+        max_days=31,
+        legacy_points=(point,),
+    )
+
+    assert result.state is canonical.DailyCanonicalState.FALLBACK
+    assert result.reason is canonical.DailyCanonicalReason.PROJECTION_NO_PRIMARY_VALUES

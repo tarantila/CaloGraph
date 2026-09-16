@@ -9,12 +9,20 @@ from time import monotonic
 from typing import Any
 from uuid import UUID
 
+from app.analytics import canonical_telemetry
+from app.analytics.canonical_serving import (
+    CanonicalServingDetail,
+    CanonicalServingEligibility,
+    CanonicalServingEligibilityReason,
+    CanonicalServingEndpoint,
+    CanonicalServingOutcome,
+    CanonicalServingRequest,
+    serve_canonical,
+)
 from app.analytics.daily_canonical import (
     DailyCanonicalOutcome,
+    DailyCanonicalReason,
     DailyCanonicalState,
-    _duration_bucket,
-    _exception_class,
-    _range_bucket,
     run_daily_canonical_read,
 )
 from app.schemas import DailyPoint
@@ -52,9 +60,9 @@ def _telemetry_outcome(outcome: DailyCanonicalOutcome) -> str:
     if outcome.state is DailyCanonicalState.NOT_COMPARABLE:
         return CalendarCanonicalTelemetryOutcome.FALLBACK_NOT_READY
     if outcome.state is DailyCanonicalState.FALLBACK:
-        if outcome.reason == "projection_no_primary_values":
+        if outcome.reason is DailyCanonicalReason.PROJECTION_NO_PRIMARY_VALUES:
             return CalendarCanonicalTelemetryOutcome.FALLBACK_NOT_READY
-        if outcome.reason == "legacy_snapshot_changed":
+        if outcome.reason is DailyCanonicalReason.LEGACY_SNAPSHOT_CHANGED:
             return CalendarCanonicalTelemetryOutcome.FALLBACK_PARITY
         return CalendarCanonicalTelemetryOutcome.FALLBACK_SEAL
     return CalendarCanonicalTelemetryOutcome.ERROR
@@ -71,8 +79,8 @@ def _emit_telemetry(
         "event": TELEMETRY_EVENT,
         "version": TELEMETRY_VERSION,
         "outcome": _telemetry_outcome(outcome),
-        "range_bucket": _range_bucket(start, end),
-        "duration_bucket": _duration_bucket(elapsed_seconds),
+        "range_bucket": canonical_telemetry._range_bucket(start, end),
+        "duration_bucket": canonical_telemetry._duration_bucket(elapsed_seconds),
     }
     if outcome.exception_class is not None:
         fields["exception_class"] = outcome.exception_class
@@ -90,6 +98,104 @@ def run_calendar_canonical_read(
     legacy_points: Sequence[DailyPoint] | None = None,
 ) -> DailyCanonicalOutcome:
     started = monotonic()
+    if legacy_points is not None:
+        requested_days = (end - start).days + 1
+        request = CanonicalServingRequest(
+            user_id=user_id,
+            start=start,
+            end=end,
+            legacy_points=tuple(legacy_points),
+            enabled=True,
+            endpoint=CanonicalServingEndpoint.CALENDAR,
+            eligibility=CanonicalServingEligibility(
+                eligible=requested_days <= MAX_CANONICAL_READ_DAYS,
+                reason=(
+                    CanonicalServingEligibilityReason.RANGE_TOO_LARGE
+                    if requested_days > MAX_CANONICAL_READ_DAYS
+                    else None
+                ),
+            ),
+        )
+        try:
+            result = serve_canonical(request)
+            detail = getattr(result, "detail", None)
+            if result.outcome is CanonicalServingOutcome.FALLBACK_ERROR:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.ERROR,
+                    exception_class=result.exception_class,
+                )
+            elif result.outcome is CanonicalServingOutcome.CANONICAL_SERVED:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.MATCH,
+                    points=result.selected_points,
+                )
+            elif result.outcome is CanonicalServingOutcome.LEGACY_INELIGIBLE:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.SKIPPED,
+                    reason=DailyCanonicalReason.RANGE_TOO_LARGE,
+                )
+            elif detail is CanonicalServingDetail.PROJECTION_NO_PRIMARY_VALUES:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.FALLBACK,
+                    reason=DailyCanonicalReason.PROJECTION_NO_PRIMARY_VALUES,
+                )
+            elif detail is CanonicalServingDetail.NOT_COMPARABLE:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.NOT_COMPARABLE,
+                    reason=DailyCanonicalReason.NOT_COMPARABLE,
+                )
+            elif (
+                detail is CanonicalServingDetail.PROJECTION_NOT_READY
+                or result.outcome is CanonicalServingOutcome.FALLBACK_NOT_READY
+            ):
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.NOT_COMPARABLE,
+                    reason=DailyCanonicalReason.PROJECTION_NOT_READY,
+                )
+            elif detail is CanonicalServingDetail.EXPECTED_DIFFERENCE:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.EXPECTED_DIFFERENCE,
+                    reason=DailyCanonicalReason.EXPECTED_DIFFERENCE,
+                )
+            elif detail is CanonicalServingDetail.UNEXPLAINED_MISMATCH:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.UNEXPLAINED_MISMATCH,
+                    reason=DailyCanonicalReason.UNEXPLAINED_MISMATCH,
+                )
+            elif (
+                detail is CanonicalServingDetail.LEGACY_SNAPSHOT_CHANGED
+                or result.outcome is CanonicalServingOutcome.FALLBACK_PARITY
+            ):
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.FALLBACK,
+                    reason=DailyCanonicalReason.LEGACY_SNAPSHOT_CHANGED,
+                )
+            elif (
+                detail is CanonicalServingDetail.SOURCE_PRIORITY_POLICY_INVALID
+                or result.outcome is CanonicalServingOutcome.FALLBACK_SEAL
+            ):
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.FALLBACK,
+                    reason=DailyCanonicalReason.SOURCE_PRIORITY_POLICY_INVALID,
+                )
+            else:
+                outcome = DailyCanonicalOutcome(
+                    DailyCanonicalState.ERROR,
+                    exception_class=getattr(result, "exception_class", None),
+                )
+        except Exception as exc:
+            outcome = DailyCanonicalOutcome(
+                DailyCanonicalState.ERROR,
+                exception_class=canonical_telemetry._exception_class(exc),
+            )
+        _emit_telemetry(
+            outcome=outcome,
+            start=start,
+            end=end,
+            elapsed_seconds=monotonic() - started,
+        )
+        return outcome
+
     try:
         outcome = run_daily_canonical_read(
             user_id,
@@ -105,14 +211,7 @@ def run_calendar_canonical_read(
     except Exception as exc:
         outcome = DailyCanonicalOutcome(
             DailyCanonicalState.ERROR,
-            exception_class=_exception_class(exc),
-        )
-    if outcome.points is not None and legacy_points is not None and list(outcome.points) != list(
-        legacy_points
-    ):
-        outcome = DailyCanonicalOutcome(
-            DailyCanonicalState.FALLBACK,
-            reason="legacy_snapshot_changed",
+            exception_class=canonical_telemetry._exception_class(exc),
         )
     _emit_telemetry(
         outcome=outcome,

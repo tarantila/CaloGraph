@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -5,8 +6,17 @@ from uuid import UUID
 
 import pytest
 
-from app.analytics import calendar_canonical
-from app.analytics.daily_canonical import DailyCanonicalOutcome, DailyCanonicalState
+from app.analytics import calendar_canonical, canonical_serving
+from app.analytics.canonical_serving import (
+    CanonicalServingOutcome,
+    CanonicalServingResult,
+    CanonicalServingSource,
+)
+from app.analytics.daily_canonical import (
+    DailyCanonicalOutcome,
+    DailyCanonicalReason,
+    DailyCanonicalState,
+)
 from app.api import analytics as analytics_api
 from app.config import Settings
 from app.nutrition.models import (
@@ -181,16 +191,14 @@ def test_calendar_canonical_snapshot_race_keeps_initial_legacy_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     legacy_points = [_point(date(2026, 9, 10), "1900")]
-    newer_canonical_points = (_point(date(2026, 9, 10), "1800"),)
-
     monkeypatch.setattr(analytics_api.settings, "analytics_calendar_canonical_read_enabled", True)
     monkeypatch.setattr(analytics_api, "daily_points", lambda *args: legacy_points)
     monkeypatch.setattr(
         analytics_api,
         "run_calendar_canonical_read",
         lambda *args, **kwargs: DailyCanonicalOutcome(
-            DailyCanonicalState.MATCH,
-            points=newer_canonical_points,
+            DailyCanonicalState.FALLBACK,
+            reason="legacy_snapshot_changed",
         ),
     )
 
@@ -246,13 +254,13 @@ def test_calendar_canonical_reader_falls_back_on_legacy_snapshot_change(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     legacy_point = _point(date(2026, 9, 10), "1900")
-    canonical_point = _point(date(2026, 9, 10), "1800")
     monkeypatch.setattr(
         calendar_canonical,
-        "run_daily_canonical_read",
-        lambda *args, **kwargs: DailyCanonicalOutcome(
-            DailyCanonicalState.MATCH,
-            points=(canonical_point,),
+        "serve_canonical",
+        lambda *args, **kwargs: CanonicalServingResult(
+            selected_points=(legacy_point,),
+            source=CanonicalServingSource.LEGACY_SELECTED,
+            outcome=CanonicalServingOutcome.FALLBACK_PARITY,
         ),
     )
 
@@ -268,6 +276,32 @@ def test_calendar_canonical_reader_falls_back_on_legacy_snapshot_change(
     assert result.reason == "legacy_snapshot_changed"
     assert result.points is None
     assert '"outcome":"fallback_parity"' in caplog.records[-1].msg
+
+
+def test_calendar_canonical_reader_preserves_typed_no_primary_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_point = _point(date(2026, 9, 10), "1900")
+    monkeypatch.setattr(
+        calendar_canonical,
+        "serve_canonical",
+        lambda *args, **kwargs: canonical_serving.CanonicalServingResult(
+            selected_points=(legacy_point,),
+            source=canonical_serving.CanonicalServingSource.LEGACY_SELECTED,
+            outcome=canonical_serving.CanonicalServingOutcome.FALLBACK_NOT_READY,
+            detail=canonical_serving.CanonicalServingDetail.PROJECTION_NO_PRIMARY_VALUES,
+        ),
+    )
+
+    result = calendar_canonical.run_calendar_canonical_read(
+        USER.id,
+        legacy_point.date,
+        legacy_point.date,
+        legacy_points=(legacy_point,),
+    )
+
+    assert result.state is DailyCanonicalState.FALLBACK
+    assert result.reason is DailyCanonicalReason.PROJECTION_NO_PRIMARY_VALUES
 
 
 def test_calendar_canonical_reader_maps_seal_fallback_without_leaking_details(
@@ -398,3 +432,35 @@ def test_calendar_get_does_not_write_projection_or_source_priority_rows(
 
     after = tuple(db.query(model).count() for model in models)
     assert after == before
+
+
+def test_snapshot_shared_fallback_error_preserves_bounded_exception_class(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    point = _point(date(2026, 9, 10))
+    exception_class = "E" * 64
+    shared_result = canonical_serving.CanonicalServingResult(
+        selected_points=(point,),
+        source=canonical_serving.CanonicalServingSource.LEGACY_SELECTED,
+        outcome=canonical_serving.CanonicalServingOutcome.FALLBACK_ERROR,
+        # FALLBACK_ERROR is authoritative over any stale detail.
+        detail=canonical_serving.CanonicalServingDetail.SOURCE_PRIORITY_POLICY_INVALID,
+        exception_class=exception_class,
+    )
+    monkeypatch.setattr(calendar_canonical, "serve_canonical", lambda request: shared_result)
+
+    with caplog.at_level("INFO", logger=calendar_canonical.LOGGER.name):
+        result = calendar_canonical.run_calendar_canonical_read(
+            USER.id,
+            point.date,
+            point.date,
+            legacy_points=(point,),
+        )
+
+    payload = json.loads(caplog.records[-1].getMessage())
+    assert result.state is DailyCanonicalState.ERROR
+    assert result.exception_class == exception_class
+    assert payload["outcome"] == "error"
+    assert payload["exception_class"] == exception_class
+    assert len(payload["exception_class"]) == 64
