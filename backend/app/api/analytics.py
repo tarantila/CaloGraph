@@ -123,6 +123,7 @@ def daily(
                 period=period,
                 enabled=True,
                 max_days=31,
+                legacy_points=tuple(points),
             )
             if canonical_outcome.points is not None:
                 points = list(canonical_outcome.points)
@@ -532,11 +533,7 @@ def calendar(
                 legacy_points=points,
             )
             if canonical_outcome.points is not None:
-                canonical_points = list(canonical_outcome.points)
-                # The canonical session may observe a newer Legacy input snapshot.
-                # Serve it only when it still matches the exact request-session result.
-                if canonical_points == points:
-                    points = canonical_points
+                points = list(canonical_outcome.points)
     output = []
     for point in points:
         classification = budget_classification(point)

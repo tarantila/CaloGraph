@@ -924,8 +924,9 @@ def compare_daily_point_range(
     end: date,
     max_days: int = MAX_PARITY_DAYS,
     include_canonical_policy_snapshot: bool = False,
+    legacy_points: tuple[DailyPoint, ...] | None = None,
 ) -> DailyPointRangeParity:
-    """Compare DailyPoint parity for every inclusive day in a bounded range."""
+    """Compare canonical points against a supplied or locally built Legacy snapshot."""
     _validate_daily_point_range(start, end, max_days)
     canonical_policy_snapshot = (
         get_effective_policy_snapshot(db, user_id, datetime.now(UTC))
@@ -953,23 +954,35 @@ def compare_daily_point_range(
     requested_dates = tuple(
         start + timedelta(days=offset) for offset in range((end - start).days + 1)
     )
+    supplied_legacy_by_date: dict[date, DailyPoint] | None = None
+    if legacy_points is not None:
+        if len(legacy_points) != len(requested_dates) or any(
+            point.date != local_date
+            for point, local_date in zip(legacy_points, requested_dates, strict=False)
+        ):
+            raise ValueError("legacy_points must cover the complete ordered request range")
+        supplied_legacy_by_date = dict(zip(requested_dates, legacy_points, strict=True))
     days: list[DailyPointParity] = []
     canonical_points: list[DailyPoint] = []
     canonical_projection_ids: list[UUID | None] = []
     canonical_projection_ready: list[bool] = []
     canonical_calorie_usable: list[bool] = []
     for local_date in requested_dates:
-        legacy = _build_daily_point(
-            day=local_date,
-            values=totals_by_date.get(local_date, {}),
-            tracking_inputs=_legacy_tracking_inputs(
-                calories=totals_by_date.get(local_date, {}).get("dietary_energy_kcal"),
-                nutrition_count=nutrition_counts_by_date.get(local_date, 0),
-            ),
-            active_energy_by_source=active_energy_by_source,
-            active_energy_sources_by_day=active_energy_sources_by_day,
-            targets=targets,
-            override=overrides.get(local_date),
+        legacy = (
+            supplied_legacy_by_date[local_date]
+            if supplied_legacy_by_date is not None
+            else _build_daily_point(
+                day=local_date,
+                values=totals_by_date.get(local_date, {}),
+                tracking_inputs=_legacy_tracking_inputs(
+                    calories=totals_by_date.get(local_date, {}).get("dietary_energy_kcal"),
+                    nutrition_count=nutrition_counts_by_date.get(local_date, 0),
+                ),
+                active_energy_by_source=active_energy_by_source,
+                active_energy_sources_by_day=active_energy_sources_by_day,
+                targets=targets,
+                override=overrides.get(local_date),
+            )
         )
         nutrition = _compare_nutrition_day_with_legacy(
             db,
