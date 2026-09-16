@@ -26,6 +26,7 @@ from app.analytics.service import (
     percentile,
     serialize_decimal,
 )
+from app.analytics.trends_canonical import run_trends_canonical_read
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
@@ -511,7 +512,24 @@ def trends(
     start, end = _range(start, end, user.timezone, 90)
     _unlock_big_picture_if_requested(db, user, period)
     points = daily_points(db, user, start, end)
+    requested_days = (end - start).days + 1
+    if (
+        settings.analytics_trends_canonical_read_enabled
+        and period != "all"
+        and requested_days <= 31
+    ):
+        with suppress(Exception):
+            canonical_outcome = run_trends_canonical_read(
+                user.id,
+                start,
+                end,
+                legacy_points=tuple(points),
+            )
+            if canonical_outcome.points is not None:
+                points = list(canonical_outcome.points)
     historical_budget_balance = _historical_budget_balance(db, user)
+    if include_incomplete:
+        points = [point.model_copy() for point in points]
     output = []
     for index, point in enumerate(points):
         item = point.model_dump(mode="json")

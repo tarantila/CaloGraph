@@ -217,6 +217,7 @@ class Settings(BaseSettings):
     analytics_calendar_canonical_read_enabled: bool = False
     analytics_weekly_canonical_read_enabled: bool = False
     analytics_weekdays_canonical_read_enabled: bool = False
+    analytics_trends_canonical_read_enabled: bool = False
     security_audit_geoip_provider: Literal["disabled", "ipwhois"] = "disabled"
     security_audit_geoip_timeout_seconds: float = Field(default=2.0, ge=0.2, le=10.0)
     security_audit_geoip_cache_seconds: int = Field(default=3_600, ge=60, le=86_400)
