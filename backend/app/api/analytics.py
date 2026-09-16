@@ -26,6 +26,7 @@ from app.analytics.service import (
     percentile,
     serialize_decimal,
 )
+from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
@@ -348,6 +349,20 @@ def weekly(
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
     points = daily_points(db, user, start, end)
+    requested_days = (end - start).days + 1
+    if (
+        settings.analytics_weekly_canonical_read_enabled
+        and requested_days <= 31
+    ):
+        with suppress(Exception):
+            canonical_outcome = run_weekly_canonical_read(
+                user.id,
+                start,
+                end,
+                legacy_points=tuple(points),
+            )
+            if canonical_outcome.points is not None:
+                points = list(canonical_outcome.points)
     grouped: dict[date, list[DailyPoint]] = defaultdict(list)
     for point in points:
         week_start = point.date - timedelta(days=(point.date.weekday() - user.week_starts_on) % 7)
