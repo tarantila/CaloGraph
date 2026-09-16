@@ -3,6 +3,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 from xml.etree.ElementTree import ParseError
 
 import zstandard
@@ -19,6 +20,12 @@ from app.importers.json_adapter import AdapterResult
 from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.schemas import ImportSummary
 from app.security_events import log_security_event, security_reference
+from app.services.apple_health_nutrition_ingestion import (
+    create_apple_health_nutrition_run,
+    fail_apple_health_nutrition_run,
+    finish_apple_health_nutrition_run,
+    persist_apple_food_correlation,
+)
 from app.services.user_operation_lock import shared_user_operation
 
 
@@ -307,8 +314,12 @@ def _finish_partial(
     unknown_types: set[str],
     errors: list[tuple[int | None, str | None, str, str]],
     exc: Exception,
+    *,
+    apple_nutrition_run_id: UUID | None = None,
 ) -> ImportSummary:
     db.rollback()
+    if apple_nutrition_run_id is not None:
+        fail_apple_health_nutrition_run(db, apple_nutrition_run_id)
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
         raise RuntimeError("Import batch disappeared while recording a partial failure") from exc
@@ -373,12 +384,30 @@ def _persist_apple_health_stream_locked(
         log_started=not atomic,
     )
     counters = ImportCounters()
+    apple_nutrition_run = create_apple_health_nutrition_run(db, user_id=user.id)
     samples: list[CanonicalSample] = []
     pending_errors: list[tuple[int | None, str | None, str, str]] = []
     unknown_types: set[str] = set()
+    correlation_count = 0
 
     try:
-        for record in iter_apple_health_xml(stream, user.timezone):
+        for record in iter_apple_health_xml(
+            stream,
+            user.timezone,
+            max_records=settings.max_import_records,
+        ):
+            if record.food_correlation is not None:
+                correlation_count += 1
+                if correlation_count > settings.max_import_records:
+                    raise ImportLimitError("Import enthält zu viele XML-Korrelationen")
+                persist_apple_food_correlation(
+                    db,
+                    user_id=user.id,
+                    run=apple_nutrition_run,
+                    correlation=record.food_correlation,
+                    timezone=user.timezone,
+                )
+                continue
             counters.received += 1
             if counters.received > settings.max_import_records:
                 raise ImportLimitError("Import enthält zu viele XML-Datensätze")
@@ -422,6 +451,7 @@ def _persist_apple_health_stream_locked(
             counters.inserted += inserted
             counters.updated += updated
             counters.duplicate_skipped += skipped
+        finish_apple_health_nutrition_run(db, apple_nutrition_run)
         _checkpoint(db, batch, counters, unknown_types, pending_errors, commit=not atomic)
     except (DefusedXmlException, OSError, ParseError, zipfile.BadZipFile, zlib.error) as exc:
         if atomic:
@@ -434,6 +464,7 @@ def _persist_apple_health_stream_locked(
             unknown_types,
             pending_errors,
             exc,
+            apple_nutrition_run_id=apple_nutrition_run.id,
         )
     except ImportLimitError as exc:
         if atomic:
@@ -446,6 +477,7 @@ def _persist_apple_health_stream_locked(
             unknown_types,
             pending_errors,
             exc,
+            apple_nutrition_run_id=apple_nutrition_run.id,
         )
     except SQLAlchemyError as exc:
         if atomic:
@@ -458,6 +490,7 @@ def _persist_apple_health_stream_locked(
             unknown_types,
             pending_errors,
             exc,
+            apple_nutrition_run_id=apple_nutrition_run.id,
         )
         raise
 

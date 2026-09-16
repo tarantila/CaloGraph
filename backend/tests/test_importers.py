@@ -456,6 +456,105 @@ def test_apple_health_xml_maps_active_energy() -> None:
     assert result.samples[0].value == Decimal("321")
 
 
+def test_apple_food_correlation_collects_children_without_changing_legacy_records() -> None:
+    xml = (
+        b"<HealthData>"
+        b'<Correlation type="HKCorrelationTypeIdentifierFood" sourceName="Meal App" '
+        b'sourceVersion="4.2" startDate="2026-08-17 10:00:00 +0200" '
+        b'endDate="2026-08-17 10:30:00 +0200">'
+        b'<MetadataEntry key="HKFoodType" value="Lunch" />'
+        b'<MetadataEntry key="HKExternalUUID" value="food-123" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" value="600" '
+        b'unit="kcal" startDate="2026-08-17 10:00:00 +0200" '
+        b'endDate="2026-08-17 10:30:00 +0200" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryProtein" value="30" '
+        b'unit="g" startDate="2026-08-17 10:00:00 +0200" '
+        b'endDate="2026-08-17 10:30:00 +0200" />'
+        b"</Correlation>"
+        b'<Record type="HKQuantityTypeIdentifierDietaryProtein" value="30" unit="g" '
+        b'startDate="2026-08-17 10:00:00 +0200" endDate="2026-08-17 10:30:00 +0200" />'
+        b"</HealthData>"
+    )
+
+    records = list(apple_xml.iter_apple_health_xml(io.BytesIO(xml), "Europe/Berlin"))
+
+    legacy_samples = [record.sample for record in records if record.sample is not None]
+    correlations = [
+        record.food_correlation for record in records if record.food_correlation is not None
+    ]
+    assert len(legacy_samples) == 3
+    assert len(correlations) == 1
+    correlation = correlations[0]
+    assert correlation.source_name == "Meal App"
+    assert correlation.food_name == "Lunch"
+    assert correlation.external_uuid == "food-123"
+    assert [nutrient.raw_type for nutrient in correlation.nutrients] == [
+        "HKQuantityTypeIdentifierDietaryEnergyConsumed",
+        "HKQuantityTypeIdentifierDietaryProtein",
+    ]
+
+
+def test_apple_food_correlation_preserves_unknown_and_invalid_children() -> None:
+    xml = (
+        b"<HealthData>"
+        b'<Correlation type="HKCorrelationTypeIdentifierFood" sourceName="Meal App" '
+        b'startDate="2026-08-17 10:00:00 +0200" endDate="2026-08-17 10:30:00 +0200">'
+        b'<Record type="HKQuantityTypeIdentifierFutureNutrient" value="2" unit="g" '
+        b'startDate="2026-08-17 10:00:00 +0200" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryProtein" value="invalid" unit="g" '
+        b'startDate="2026-08-17 10:00:00 +0200" />'
+        b"</Correlation>"
+        b"</HealthData>"
+    )
+
+    records = list(apple_xml.iter_apple_health_xml(io.BytesIO(xml), "Europe/Berlin"))
+
+    correlation = next(record.food_correlation for record in records if record.food_correlation)
+    assert len(correlation.nutrients) == 2
+    assert correlation.nutrients[0].raw_type == "HKQuantityTypeIdentifierFutureNutrient"
+    assert correlation.nutrients[0].value == Decimal("2")
+    assert correlation.nutrients[1].value is None
+    assert correlation.nutrients[1].value_error == "invalid_value"
+
+
+def test_apple_food_correlation_without_children_is_safe() -> None:
+    xml = (
+        b"<HealthData>"
+        b'<Correlation type="HKCorrelationTypeIdentifierFood" sourceName="Meal App" '
+        b'startDate="2026-08-17 10:00:00 +0200" endDate="2026-08-17 10:30:00 +0200" />'
+        b"</HealthData>"
+    )
+
+    records = list(apple_xml.iter_apple_health_xml(io.BytesIO(xml), "Europe/Berlin"))
+
+    correlation = next(record.food_correlation for record in records if record.food_correlation)
+    assert correlation.nutrients == ()
+
+
+def test_apple_food_correlation_bounds_legacy_child_fields() -> None:
+    oversized_source = b"S" * 256
+    xml = (
+        b"<HealthData>"
+        b'<Correlation type="HKCorrelationTypeIdentifierFood" '
+        b'startDate="2026-08-17 10:00:00 +0200" endDate="2026-08-17 10:30:00 +0200">'
+        b'<MetadataEntry key="HKExternalUUID" value="" />'
+        b'<Record type="HKQuantityTypeIdentifierDietaryProtein" value="2" unit="g" '
+        b'startDate="2026-08-17 10:00:00 +0200" endDate="2026-08-17 10:30:00 +0200" '
+        b'sourceName="'
+        + oversized_source
+        + b'" />'
+        b"</Correlation>"
+        b"</HealthData>"
+    )
+
+    records = list(apple_xml.iter_apple_health_xml(io.BytesIO(xml), "Europe/Berlin"))
+
+    sample = next(record.sample for record in records if record.sample is not None)
+    correlation = next(record.food_correlation for record in records if record.food_correlation)
+    assert sample.source_name is None
+    assert correlation.external_uuid is None
+
+
 def test_yazio_days_export_is_aggregated_without_meal_details() -> None:
     result = parse_yazio_export(
         {
