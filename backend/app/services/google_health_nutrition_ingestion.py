@@ -20,6 +20,7 @@ from app.google_health.client import (
     NutritionQuantity,
     NutritionServing,
 )
+from app.importers.common import decimal_value
 from app.models import GoogleHealthConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
@@ -74,7 +75,70 @@ _NUTRIENT_METRICS = {
     "DIETARY_FIBER": ("fiber_g", "g"),
     "SUGAR": ("sugar_g", "g"),
     "SATURATED_FAT": ("saturated_fat_g", "g"),
+    "BIOTIN": ("biotin_ug", "ug"),
+    "CALCIUM": ("calcium_mg", "mg"),
+    "CHLORIDE": ("chloride_mg", "mg"),
+    "COPPER": ("copper_mg", "mg"),
+    "FOLATE": ("folate_ug", "ug"),
+    "FOLIC_ACID": ("folate_ug", "ug"),
+    "IODINE": ("iodine_ug", "ug"),
+    "IRON": ("iron_mg", "mg"),
+    "MAGNESIUM": ("magnesium_mg", "mg"),
+    "MANGANESE": ("manganese_mg", "mg"),
+    "NIACIN": ("niacin_mg", "mg"),
+    "PANTOTHENIC_ACID": ("pantothenic_acid_mg", "mg"),
+    "PHOSPHORUS": ("phosphorus_mg", "mg"),
+    "POTASSIUM": ("potassium_mg", "mg"),
+    "RIBOFLAVIN": ("riboflavin_mg", "mg"),
+    "SELENIUM": ("selenium_ug", "ug"),
+    "SODIUM": ("sodium_mg", "mg"),
+    "THIAMIN": ("thiamin_mg", "mg"),
+    "VITAMIN_A": ("vitamin_a_ug", "ug"),
+    "VITAMIN_B12": ("vitamin_b12_ug", "ug"),
+    "VITAMIN_B6": ("vitamin_b6_mg", "mg"),
+    "VITAMIN_C": ("vitamin_c_mg", "mg"),
+    "VITAMIN_D": ("vitamin_d_ug", "ug"),
+    "VITAMIN_E": ("vitamin_e_mg", "mg"),
+    "VITAMIN_K": ("vitamin_k_ug", "ug"),
+    "ZINC": ("zinc_mg", "mg"),
 }
+
+_NUTRIENT_PRIORITY = {"FOLATE": 0, "FOLIC_ACID": 1}
+
+
+def _canonical_nutrient(nutrient: str) -> tuple[str, str] | None:
+    if nutrient == "CARBOHYDRATES":
+        return "carbohydrates_g", "g"
+    if nutrient == "FAT":
+        return "fat_g", "g"
+    return _NUTRIENT_METRICS.get(nutrient)
+
+_WEIGHT_TO_G = {
+    "g": Decimal("1"),
+    "gram": Decimal("1"),
+    "grams": Decimal("1"),
+    "gramme": Decimal("1"),
+    "mg": Decimal("0.001"),
+    "milligram": Decimal("0.001"),
+    "milligrams": Decimal("0.001"),
+    "ug": Decimal("0.000001"),
+    "mcg": Decimal("0.000001"),
+    "microgram": Decimal("0.000001"),
+    "micrograms": Decimal("0.000001"),
+}
+
+
+def _canonical_weight_value(
+    value: Decimal | None, raw_unit: str | None, canonical_unit: str
+) -> Decimal | None:
+    if value is None or raw_unit is None:
+        return None
+    factor = _WEIGHT_TO_G.get(raw_unit.strip().lower())
+    target_factor = _WEIGHT_TO_G.get(canonical_unit)
+    if factor is None or target_factor is None:
+        return None
+    return value * factor / target_factor
+
 
 # The DTO normally carries user-provided units, while tests and callers may
 # construct it directly with short semantic units.  Resource names are never
@@ -198,6 +262,14 @@ def _data_source_metadata(source: NutritionDataSource | None) -> dict[str, Any]:
     return _safe_metadata(metadata)
 
 
+def _database_safe_value(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return decimal_value(value.normalize())
+    except (TypeError, ValueError):
+        return None
+
 def _decimal(quantity: NutritionQuantity | None) -> Decimal | None:
     if quantity is None:
         return None
@@ -295,6 +367,19 @@ def _field(
     coverage_state: str = CoverageState.COMPLETE.value,
     metadata: Mapping[str, Any] | None = None,
 ) -> NutritionFieldObservation:
+    safe_value = _database_safe_value(value)
+    safe_canonical_value = _database_safe_value(canonical_value)
+    if safe_value is None or (
+        canonical_value is not None and safe_canonical_value is None
+    ):
+        value = safe_value
+        canonical_value = None
+        metric_key = None
+        canonical_unit = None
+        role = ObservationRole.PROVIDER.value
+    else:
+        value = safe_value
+        canonical_value = safe_canonical_value
     provider_field_path = _safe_path(provider_field_path)
     existing = db.scalar(
         select(NutritionFieldObservation).where(
@@ -353,7 +438,9 @@ def _serving(
     metadata: Mapping[str, Any],
 ) -> NutritionServingObservation:
     quantity = (
-        _decimal(NutritionQuantity(serving.amount, None)) if serving.amount is not None else None
+        _database_safe_value(_decimal(NutritionQuantity(serving.amount, None)))
+        if serving.amount is not None
+        else None
     )
     unit = _serving_unit(serving.food_measurement_unit)
     existing = db.scalar(
@@ -433,11 +520,16 @@ def _field_observations(
         ("totalCarbohydrate", log.total_carbohydrate, "carbohydrates_g"),
         ("totalFat", log.total_fat, "fat_g"),
     )
-    direct_metric_names = {name for name, quantity, _ in direct_totals if quantity is not None}
+    direct_metric_names: set[str] = set()
+    emitted_canonical_metrics: set[str] = set()
     for name, quantity, metric in direct_totals:
         value = _decimal(quantity)
         if quantity is None:
             continue
+        canonical_value = _canonical_weight_value(value, quantity.unit, "g")
+        metric_key = metric if canonical_value is not None else None
+        canonical_unit = "g" if canonical_value is not None else None
+        role = ObservationRole.CANONICAL.value if canonical_value is not None else ObservationRole.PROVIDER.value
         _field(
             db,
             user_id=user_id,
@@ -445,39 +537,60 @@ def _field_observations(
             provider_field_path=f"nutritionLog.{name}",
             value=value,
             raw_unit=quantity.unit,
-            metric_key=metric,
-            canonical_value=value,
-            canonical_unit="g",
-            role=ObservationRole.CANONICAL.value,
+            metric_key=metric_key,
+            canonical_value=canonical_value,
+            canonical_unit=canonical_unit,
+            role=role,
             metadata=metadata,
             coverage_state=coverage_state,
         )
+        if metric_key is not None:
+            direct_metric_names.add(name)
+            emitted_canonical_metrics.add(metric_key)
+    preferred_canonical_indices: dict[str, int] = {}
+    for candidate_index, candidate in enumerate(log.nutrients):
+        candidate_canonical = _canonical_nutrient(candidate.nutrient)
+        candidate_value = _decimal(candidate.quantity)
+        if candidate_canonical is None or _canonical_weight_value(
+            candidate_value, candidate.quantity.unit, candidate_canonical[1]
+        ) is None:
+            continue
+        candidate_metric = candidate_canonical[0]
+        candidate_rank = (_NUTRIENT_PRIORITY.get(candidate.nutrient, 0), candidate_index)
+        previous_index = preferred_canonical_indices.get(candidate_metric)
+        if previous_index is None:
+            preferred_canonical_indices[candidate_metric] = candidate_index
+            continue
+        previous_nutrient = log.nutrients[previous_index].nutrient
+        previous_rank = (_NUTRIENT_PRIORITY.get(previous_nutrient, 0), previous_index)
+        if candidate_rank < previous_rank:
+            preferred_canonical_indices[candidate_metric] = candidate_index
 
-    emitted_canonical_metrics = {
-        metric for _, quantity, metric in direct_totals if quantity is not None
-    }
     for index, nutrient in enumerate(log.nutrients):
         value = _decimal(nutrient.quantity)
         provider_path = f"nutritionLog.nutrients[{index}].{nutrient.nutrient}"
-        canonical = _NUTRIENT_METRICS.get(nutrient.nutrient)
-        if nutrient.nutrient == "CARBOHYDRATES":
-            canonical = ("carbohydrates_g", "g")
-        elif nutrient.nutrient == "FAT":
-            canonical = ("fat_g", "g")
+        canonical = _canonical_nutrient(nutrient.nutrient)
         overridden = nutrient.nutrient in {"CARBOHYDRATES", "FAT"} and (
             (nutrient.nutrient == "CARBOHYDRATES" and "totalCarbohydrate" in direct_metric_names)
             or (nutrient.nutrient == "FAT" and "totalFat" in direct_metric_names)
         )
-        duplicate = canonical is not None and canonical[0] in emitted_canonical_metrics
-        provider_only = overridden or canonical is None or duplicate
+        duplicate = canonical is not None and (
+            canonical[0] in emitted_canonical_metrics
+            or preferred_canonical_indices.get(canonical[0]) != index
+        )
+        canonical_value = (
+            _canonical_weight_value(value, nutrient.quantity.unit, canonical[1])
+            if canonical is not None
+            else None
+        )
+        provider_only = overridden or canonical is None or duplicate or canonical_value is None
         metric_key = None
-        canonical_value = None
         canonical_unit = None
         role = ObservationRole.PROVIDER.value
         if canonical is not None and not provider_only:
             metric_key, canonical_unit = canonical
-            canonical_value = value
             role = ObservationRole.CANONICAL.value
+        persisted_canonical_value = canonical_value if metric_key is not None else None
         _field(
             db,
             user_id=user_id,
@@ -486,7 +599,7 @@ def _field_observations(
             value=value,
             raw_unit=nutrient.quantity.unit,
             metric_key=metric_key,
-            canonical_value=canonical_value,
+            canonical_value=persisted_canonical_value,
             canonical_unit=canonical_unit,
             role=role,
             metadata=metadata,
@@ -644,9 +757,11 @@ def _persist_point(
             canonical_start_at=interval.start_time,
             canonical_end_at=interval.end_time,
             local_date=local_date,
-            amount=Decimal(str(log.serving.amount))
-            if log.serving and log.serving.amount is not None
-            else None,
+            amount=(
+                _database_safe_value(Decimal(str(log.serving.amount)))
+                if log.serving and log.serving.amount is not None
+                else None
+            ),
             amount_unit=_serving_unit(log.serving.food_measurement_unit) if log.serving else None,
             presence_state=PresenceState.SUPPLIED.value,
             coverage_state=point_coverage,

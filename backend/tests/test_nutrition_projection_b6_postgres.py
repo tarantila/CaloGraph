@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.projection import ProjectionPersistenceStatus, rebuild_nutrition_day
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
@@ -197,7 +197,7 @@ def test_b6_postgres_uses_one_snapshot_for_all_provider_reads(
 
     def collect_with_snapshot_gate(db, **kwargs):
         result = original_collect(db, **kwargs)
-        if kwargs["metric_key"] == next(iter(CANONICAL_METRICS)):
+        if kwargs["metric_key"] == next(iter(DAILY_PROJECTION_METRICS)):
             first_metric_read.set()
             assert allow_projection_to_continue.wait(timeout=30)
         return result
@@ -254,7 +254,7 @@ def test_b6_postgres_policy_change_keeps_one_snapshot_for_all_reads(
 
     def collect_with_policy_gate(db, **kwargs):
         result = original_collect(db, **kwargs)
-        if kwargs["metric_key"] == next(iter(CANONICAL_METRICS)):
+        if kwargs["metric_key"] == next(iter(DAILY_PROJECTION_METRICS)):
             first_metric_read.set()
             assert allow_projection_to_continue.wait(timeout=30)
         return result

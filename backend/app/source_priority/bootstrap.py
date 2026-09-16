@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import User
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     ProviderSourceResolver,
@@ -92,7 +92,7 @@ def _nutrition_is_configured(rules: list[SourcePriorityRule]) -> bool:
     if any(rule.metric_key is None for rule in nutrition_rules):
         return True
     metric_keys = {rule.metric_key for rule in nutrition_rules}
-    return set(CANONICAL_METRICS).issubset(metric_keys)
+    return set(DAILY_PROJECTION_METRICS).issubset(metric_keys)
 
 
 def _policy_timestamp(policy: SourcePriorityPolicy) -> datetime:

@@ -20,10 +20,10 @@ from app.analytics.nutrition_projection import (
 )
 from app.models import HealthSample
 from app.nutrition.enums import CoverageState, LineageState, ResolutionState
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.nutrition.resolution.parity import compare_decimal_parity
 
-CANONICAL_PARITY_METRICS: Final[tuple[str, ...]] = tuple(CANONICAL_METRICS)
+CANONICAL_PARITY_METRICS: Final[tuple[str, ...]] = DAILY_PROJECTION_METRICS
 MAX_PARITY_DAYS: Final[int] = 366
 
 

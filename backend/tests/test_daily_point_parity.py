@@ -78,7 +78,7 @@ from app.nutrition.repositories import (
     create_projection_fact,
     set_projection_head,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 from app.schemas import DailyPoint
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
@@ -125,7 +125,7 @@ def _fact(
 ) -> CanonicalNutritionFact:
     return CanonicalNutritionFact(
         metric_key=metric_key,
-        unit=CANONICAL_METRICS[metric_key].canonical_unit,
+        unit=CANONICAL_NUTRITION_METRICS[metric_key].canonical_unit,
         value=value,
         presence_state=presence_state,
         coverage_state=coverage_state,
@@ -158,7 +158,7 @@ def _projection_day(
             values.get(metric_key),
             **(fact_overrides if metric_key == "dietary_energy_kcal" else {}),
         )
-        for metric_key in CANONICAL_METRICS
+        for metric_key in DAILY_PROJECTION_METRICS
     )
     return CanonicalNutritionDay(
         state=NutritionProjectionReadState.READY,
@@ -1486,7 +1486,8 @@ def _d3b_projection(
         input_watermark="d3b-test-watermark",
         projection_status=ProjectionStatus.READY.value,
     )
-    for metric_key, definition in CANONICAL_METRICS.items():
+    for metric_key in DAILY_PROJECTION_METRICS:
+        definition = CANONICAL_NUTRITION_METRICS[metric_key]
         value = values.get(metric_key)
         create_projection_fact(
             db,
@@ -1667,7 +1668,7 @@ def test_daily_point_yazio_multi_source_explanation_is_read_only_and_safe(
     )
     assert result.tracking.classification is DailyPointParityClassification.MATCH
     assert result.nutrition.comparable is True
-    assert result.nutrition.expected_difference_count == len(CANONICAL_METRICS)
+    assert result.nutrition.expected_difference_count == len(DAILY_PROJECTION_METRICS)
     calorie = next(
         metric for metric in result.nutrition.metrics if metric.metric_key == "dietary_energy_kcal"
     )
@@ -1711,7 +1712,7 @@ def test_daily_point_google_only_projection_is_projection_only(db: Session, user
     assert result.comparable is True
     assert result.nutrition.projection_state is NutritionProjectionReadState.READY
     assert result.nutrition.match_count == 0
-    assert result.nutrition.mismatch_count == len(CANONICAL_METRICS)
+    assert result.nutrition.mismatch_count == len(DAILY_PROJECTION_METRICS)
     assert all(
         metric.classification is NutritionParityClassification.PROJECTION_ONLY
         and metric.legacy_present is False
@@ -1743,12 +1744,12 @@ def test_daily_point_apple_legacy_only_is_not_comparable_without_reason_leak(
     assert result.tracking.canonical_status is None
     assert result.tracking.canonical_reasons == ()
     assert result.nutrition.projection_state is NutritionProjectionReadState.NOT_PROJECTED
-    assert len(result.nutrition.metrics) == len(CANONICAL_METRICS)
+    assert len(result.nutrition.metrics) == len(DAILY_PROJECTION_METRICS)
     assert tuple(metric.metric_key for metric in result.nutrition.metrics) == tuple(
-        CANONICAL_METRICS
+        DAILY_PROJECTION_METRICS
     )
     assert tuple(metric.legacy_value for metric in result.nutrition.metrics) == tuple(
-        values[metric_key] for metric_key in CANONICAL_METRICS
+        values[metric_key] for metric_key in DAILY_PROJECTION_METRICS
     )
     assert all(
         metric.classification is NutritionParityClassification.NOT_PROJECTED
@@ -1776,7 +1777,7 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
             metric_key: (
                 Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
     )
     within = compare_daily_point(db, user_id=user.id, local_date=LOCAL_DATE)
@@ -1801,7 +1802,7 @@ def test_daily_point_decimal_precision_preserves_decimal_and_tolerance(
             metric_key: (
                 Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
     )
     outside = compare_daily_point(db, user_id=outside_user.id, local_date=LOCAL_DATE)

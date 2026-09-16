@@ -2,6 +2,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from app.micronutrients import MICRONUTRIENTS
+
 
 @dataclass(frozen=True, slots=True)
 class MetricDefinition:
@@ -10,7 +12,17 @@ class MetricDefinition:
     value_eligible: bool = True
 
 
-_CANONICAL_METRICS = {
+DAILY_PROJECTION_METRICS: tuple[str, ...] = (
+    "dietary_energy_kcal",
+    "protein_g",
+    "carbohydrates_g",
+    "fat_g",
+    "fiber_g",
+    "sugar_g",
+    "saturated_fat_g",
+)
+
+_BASE_METRICS = {
     "dietary_energy_kcal": MetricDefinition("dietary_energy_kcal", "kcal"),
     "protein_g": MetricDefinition("protein_g", "g"),
     "carbohydrates_g": MetricDefinition("carbohydrates_g", "g"),
@@ -18,14 +30,25 @@ _CANONICAL_METRICS = {
     "fiber_g": MetricDefinition("fiber_g", "g"),
     "sugar_g": MetricDefinition("sugar_g", "g"),
     "saturated_fat_g": MetricDefinition("saturated_fat_g", "g"),
+    "sodium_mg": MetricDefinition("sodium_mg", "mg"),
 }
 
-CANONICAL_METRICS: Mapping[str, MetricDefinition] = MappingProxyType(_CANONICAL_METRICS)
+_CANONICAL_NUTRITION_METRICS = {
+    **_BASE_METRICS,
+    **{
+        nutrient.metric_type: MetricDefinition(nutrient.metric_type, nutrient.unit)
+        for nutrient in MICRONUTRIENTS
+    },
+}
+
+CANONICAL_NUTRITION_METRICS: Mapping[str, MetricDefinition] = MappingProxyType(
+    _CANONICAL_NUTRITION_METRICS
+)
 UNSUPPORTED_METRIC_KEYS = frozenset({"salt"})
 
 
 def metric_definition(metric_key: str) -> MetricDefinition | None:
-    return CANONICAL_METRICS.get(metric_key)
+    return CANONICAL_NUTRITION_METRICS.get(metric_key)
 
 
 def is_known_metric(metric_key: str) -> bool:

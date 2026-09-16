@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from app.nutrition.resolution.metrics import CANONICAL_METRICS, canonical_unit
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS, canonical_unit
 from app.nutrition.resolution.sources import ProviderSourceBindings
 from app.source_priority.contracts import (
     PriorityPolicySnapshot,
@@ -20,7 +20,7 @@ from .tokens import TechnicalEvidenceToken, token_identity, token_sort_key
 PROJECTION_ALGORITHM_VERSION: Final = "nutrition-daily-v1"
 METRIC_REGISTRY_VERSION: Final = "nutrition-metrics-v1"
 WATERMARK_FORMAT_VERSION: Final = "nutrition-watermark-v2"
-CANONICAL_METRIC_KEYS: tuple[str, ...] = tuple(CANONICAL_METRICS)
+CANONICAL_METRIC_KEYS: tuple[str, ...] = DAILY_PROJECTION_METRICS
 
 
 class ProjectionContractError(ValueError):
@@ -152,7 +152,7 @@ class DailyProjectionBuildInput:
         for selection in selections:
             if selection.user_id != self.user_id or selection.local_date != self.local_date:
                 raise ProjectionContractError("selection scope does not match build input")
-            if selection.metric_key not in CANONICAL_METRICS:
+            if selection.metric_key not in CANONICAL_METRIC_KEYS:
                 raise ProjectionContractError("selection metric must be a canonical nutrition metric")
             if selection.metric_key in by_metric:
                 raise ProjectionContractError("duplicate metric selection")

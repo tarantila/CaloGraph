@@ -55,7 +55,7 @@ from app.nutrition.repositories import (
     create_projection_fact,
     set_projection_head,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -324,13 +324,14 @@ def _ready_projection(
         projection_status=status.value,
     )
     values = (
-        {metric_key: Decimal("10") for metric_key in CANONICAL_METRICS}
+        {metric_key: Decimal("10") for metric_key in DAILY_PROJECTION_METRICS}
         if values is None
         else values
     )
     providers = {} if providers is None else providers
     presence_states = {} if presence_states is None else presence_states
-    for metric_key, definition in CANONICAL_METRICS.items():
+    for metric_key in DAILY_PROJECTION_METRICS:
+        definition = CANONICAL_NUTRITION_METRICS[metric_key]
         value = values.get(metric_key)
         if value is None:
             defaults: dict[str, object] = {
@@ -427,7 +428,7 @@ def test_classification_covers_presence_and_value_states(
                 if metric_key != "dietary_energy_kcal"
                 else (None if projection_value is None else Decimal(projection_value))
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
     )
 
@@ -469,7 +470,7 @@ def test_explicit_zero_zero_is_match_and_presence_is_not_truthiness(
         user,
         values={
             metric_key: (Decimal("0") if metric_key == "dietary_energy_kcal" else None)
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
         presence_states={"dietary_energy_kcal": PresenceState.EXPLICIT_ZERO},
     )
@@ -508,7 +509,7 @@ def test_zero_and_missing_are_distinct_in_both_directions(
                 if metric_key != "dietary_energy_kcal"
                 else (None if projection_value is None else Decimal(projection_value))
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
         presence_states=(
             {"dietary_energy_kcal": PresenceState.EXPLICIT_ZERO}
@@ -542,7 +543,7 @@ def test_ready_no_value_facts_are_comparable_both_missing(db: Session, user: Use
     _ready_projection(
         db,
         user,
-        values={metric_key: None for metric_key in CANONICAL_METRICS},
+        values={metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
     )
 
     result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
@@ -622,7 +623,7 @@ def test_projection_metadata_is_retained_per_metric_provider(db: Session, user: 
         db,
         user,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "dietary_energy_kcal": Decimal("10"),
             "protein_g": Decimal("20"),
         },
@@ -649,7 +650,7 @@ def test_multi_source_yazio_mapping_is_expected_difference(db: Session, user: Us
         db,
         user,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "dietary_energy_kcal": Decimal("2000"),
         },
         providers={"dietary_energy_kcal": "yazio"},
@@ -673,7 +674,7 @@ def test_multi_source_selected_provider_mismatch_is_value_mismatch(db: Session, 
         db,
         user,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "dietary_energy_kcal": Decimal("1900"),
         },
         providers={"dietary_energy_kcal": "yazio"},
@@ -695,7 +696,7 @@ def test_unmapped_legacy_source_is_not_treated_as_projection_provider_alias(
         db,
         user,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "dietary_energy_kcal": Decimal("2000"),
         },
         providers={"dietary_energy_kcal": "apple_health_xml"},
@@ -713,7 +714,7 @@ def test_projection_and_legacy_reads_are_user_scoped(db: Session, user: User) ->
         db,
         other,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "dietary_energy_kcal": Decimal("10"),
         },
     )
@@ -823,7 +824,7 @@ def test_nutrition_range_sorts_days_and_aggregates_metric_counts(db: Session, us
             "protein_g": Decimal("10"),
             **{
                 metric_key: None
-                for metric_key in CANONICAL_METRICS
+                for metric_key in DAILY_PROJECTION_METRICS
                 if metric_key not in {"dietary_energy_kcal", "protein_g"}
             },
         },
@@ -864,7 +865,7 @@ def test_nutrition_range_includes_projection_only_dates(db: Session, user: User)
         db,
         user,
         local_date=projection_date,
-        values={metric_key: Decimal("10") for metric_key in CANONICAL_METRICS},
+        values={metric_key: Decimal("10") for metric_key in DAILY_PROJECTION_METRICS},
     )
 
     result = compare_nutrition_range(
@@ -914,7 +915,7 @@ def test_nutrition_range_excludes_another_users_identical_rows(db: Session, user
             "dietary_energy_kcal": Decimal("10"),
             **{
                 metric_key: None
-                for metric_key in CANONICAL_METRICS
+                for metric_key in DAILY_PROJECTION_METRICS
                 if metric_key != "dietary_energy_kcal"
             },
         },
@@ -1231,7 +1232,7 @@ def _run_precision_boundary_parity_fixture(
             metric_key: (
                 Decimal("123.456789000001") if metric_key == "dietary_energy_kcal" else None
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
     )
     within_result = compare_nutrition_day(db, user_id=user.id, local_date=LOCAL_DATE)
@@ -1252,7 +1253,7 @@ def _run_precision_boundary_parity_fixture(
             metric_key: (
                 Decimal("123.456789000003") if metric_key == "dietary_energy_kcal" else None
             )
-            for metric_key in CANONICAL_METRICS
+            for metric_key in DAILY_PROJECTION_METRICS
         },
     )
     outside_result = compare_nutrition_day(

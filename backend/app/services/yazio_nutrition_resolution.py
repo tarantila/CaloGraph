@@ -32,7 +32,8 @@ from app.nutrition.models import (
 )
 from app.nutrition.repositories import validate_source_instance
 from app.nutrition.resolution import (
-    CANONICAL_METRICS,
+    CANONICAL_NUTRITION_METRICS,
+    DAILY_PROJECTION_METRICS,
     EvidenceKind,
     MetricContribution,
     ProviderCandidate,
@@ -696,7 +697,7 @@ def resolve_yazio_metric(
     metric_key: str,
 ) -> ProviderCandidate:
     """Resolve one persisted YAZIO metric without mutating the session."""
-    if metric_key not in CANONICAL_METRICS:
+    if metric_key not in CANONICAL_NUTRITION_METRICS:
         return _unsupported_candidate(user_id=user_id, local_date=local_date, metric_key=metric_key)
     validate_source_instance(
         db,
@@ -780,5 +781,5 @@ def resolve_yazio_day(
             local_date=local_date,
             metric_key=metric_key,
         )
-        for metric_key in CANONICAL_METRICS
+        for metric_key in DAILY_PROJECTION_METRICS
     }

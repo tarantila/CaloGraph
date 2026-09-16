@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from .contracts import ProviderCandidate
-from .metrics import CANONICAL_METRICS, UNSUPPORTED_METRIC_KEYS
+from .metrics import CANONICAL_NUTRITION_METRICS, UNSUPPORTED_METRIC_KEYS
 from .sources import (
     ProviderSourceBindings,
     ProviderSourceInstance,
@@ -109,7 +109,7 @@ def _normalize_provider_key(provider_key: str) -> str:
 
 
 def _validate_metric_key(metric_key: str) -> None:
-    if metric_key not in CANONICAL_METRICS and metric_key not in UNSUPPORTED_METRIC_KEYS:
+    if metric_key not in CANONICAL_NUTRITION_METRICS and metric_key not in UNSUPPORTED_METRIC_KEYS:
         raise ValueError("unsupported metric")
 
 

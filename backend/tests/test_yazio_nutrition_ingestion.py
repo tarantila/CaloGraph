@@ -171,6 +171,12 @@ def test_domain_metadata_cap_is_deterministic_and_order_independent():
     assert _safe_metadata(dict(reversed(tuple(metadata.items())))) == expected
 
 
+def test_domain_metadata_filters_sensitive_values_under_safe_keys():
+    assert _safe_metadata({"note": "provider access token=secret-value"}) == {}
+
+
+
+
 
 def test_product_event_uses_profile_base_unit_without_scaling(db, user):
     run = _ingest(db, user, simple=False, summary=False)
@@ -445,6 +451,136 @@ def test_unknown_profile_nutrients_have_no_invented_raw_unit(db, user):
     assert by_path["nutrients.salt"].metric_key is None
     assert by_path["nutrients.salt"].canonical_unit is None
     assert by_path["nutrients.salt"].provider_raw_unit == "g"
+
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_raw"),
+    [
+        (Decimal("2000000000"), Decimal("2000000000")),
+        (Decimal("0.1234567890123"), None),
+        (Decimal("1E+100"), None),
+        (Decimal("9" * 120), None),
+        (Decimal("-1"), None),
+        (Decimal("NaN"), None),
+        (Decimal("Infinity"), None),
+    ],
+)
+def test_unsafe_micronutrient_values_remain_provider_only(db, user, value, expected_raw):
+    diary = _diary(simple=False, summary=False)
+    profile = replace(
+        diary.product_profiles[0],
+        nutrients=replace(
+            diary.product_profiles[0].nutrients,
+            additional={"vitamin.c": value},
+        ),
+    )
+    diary = replace(diary, product_profiles=(profile,))
+
+    _ingest(db, user, diary)
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path == "nutrients.vitamin.c"
+        )
+    )
+
+
+    assert field is not None
+    assert field.provider_raw_value_decimal == expected_raw
+    assert field.canonical_value is None
+    assert field.metric_key is None
+    assert field.observation_role == ObservationRole.PROVIDER.value
+
+def test_explicit_zero_micronutrient_remains_canonical(db, user):
+    diary = _diary(simple=False, summary=False)
+    profile = replace(
+        diary.product_profiles[0],
+        nutrients=replace(
+            diary.product_profiles[0].nutrients,
+            additional={"vitamin.c": Decimal("0")},
+        ),
+    )
+    diary = replace(diary, product_profiles=(profile,))
+
+    _ingest(db, user, diary)
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path == "nutrients.vitamin.c"
+        )
+    )
+
+    assert field is not None
+    assert field.provider_raw_value_decimal == Decimal("0")
+    assert field.canonical_value == Decimal("0")
+    assert field.metric_key == "vitamin_c_mg"
+    assert field.observation_role == ObservationRole.PROVIDER.value
+
+@pytest.mark.parametrize(
+    "amount",
+    [Decimal("1E+100"), Decimal("0.1234567890123"), Decimal("-1")],
+)
+def test_unsafe_event_amount_is_not_persisted(db, user, amount):
+    _ingest(db, user, _diary(product_amount=amount, simple=False, summary=False))
+
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event is not None
+    assert event.amount is None
+
+
+def test_unsafe_event_serving_quantity_is_not_persisted(db, user):
+    diary = _diary(simple=False, summary=False)
+    product = replace(
+        diary.consumed_products[0],
+        serving_quantity=Decimal("1E+100"),
+    )
+    diary = replace(diary, consumed_products=(product,))
+
+    _ingest(db, user, diary)
+    serving = db.scalar(
+        select(NutritionServingObservation).where(
+            NutritionServingObservation.serving_scope == ServingScope.EVENT.value
+        )
+    )
+
+    assert serving is not None
+    assert serving.quantity is None
+
+def test_verified_micronutrients_are_canonicalized_across_yazio_scopes(db, user):
+    diary = _diary()
+    profile_nutrients = replace(
+        diary.product_profiles[0].nutrients,
+        additional={"vitamin.a": Decimal("0.0008"), "mineral.iron": Decimal("0.014")},
+    )
+    simple_nutrients = replace(
+        diary.consumed_simple_products[0].nutrients,
+        additional={"vitamin.a": Decimal("0.0008"), "mineral.iron": Decimal("0.014")},
+    )
+    summary_nutrients = replace(
+        diary.daily_summaries[0].nutrients,
+        additional={"vitamin.a": Decimal("0.0008"), "mineral.iron": Decimal("0.014")},
+    )
+    diary = replace(
+        diary,
+        product_profiles=(replace(diary.product_profiles[0], nutrients=profile_nutrients),),
+        consumed_simple_products=(
+            replace(diary.consumed_simple_products[0], nutrients=simple_nutrients),
+        ),
+        daily_summaries=(replace(diary.daily_summaries[0], nutrients=summary_nutrients),),
+    )
+    _ingest(db, user, diary)
+
+    fields = db.scalars(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.metric_key.in_(("vitamin_a_ug", "iron_mg"))
+        )
+    ).all()
+    assert len(fields) == 6
+    assert {(field.metric_key, field.canonical_unit, field.canonical_value) for field in fields} == {
+        ("vitamin_a_ug", "ug", Decimal("800.0")),
+        ("iron_mg", "mg", Decimal("14.000")),
+    }
+    assert all(field.provider_raw_unit == "g" for field in fields)
+    assert all(field.observation_role == ObservationRole.PROVIDER.value for field in fields)
 
 
 def test_civil_datetime_is_naive_and_timezone_is_metadata(db, user):

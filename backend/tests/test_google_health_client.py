@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import traceback
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import ClassVar
 
 import pytest
@@ -17,6 +18,7 @@ from app.google_health.client import (
     GoogleHealthRateLimitedError,
     GoogleHealthScopeError,
     GoogleHealthTransientError,
+    _parse_nonnegative_number,
 )
 
 
@@ -312,5 +314,14 @@ def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> N
     assert "do-not-leak" not in str(raised.value)
     assert "secret" not in str(raised.value)
     assert raised.value.__cause__ is None
+
     assert "do-not-leak" not in "".join(traceback.format_exception(raised.value))
     assert "do-not-leak" not in caplog.text
+
+@pytest.mark.parametrize(
+    "value",
+    [Decimal("0.1234567890123"), Decimal("1E+100")],
+)
+def test_parser_rejects_values_outside_numeric_scale_or_range(value):
+    with pytest.raises(ValueError):
+        _parse_nonnegative_number(value)

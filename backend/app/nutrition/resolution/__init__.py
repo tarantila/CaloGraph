@@ -16,7 +16,8 @@ from .contracts import (
 )
 from .eligibility import is_candidate_eligible, is_summary_usable
 from .metrics import (
-    CANONICAL_METRICS,
+    CANONICAL_NUTRITION_METRICS,
+    DAILY_PROJECTION_METRICS,
     MetricDefinition,
     canonical_unit,
     is_known_metric,
@@ -38,7 +39,8 @@ from .resolver import resolve_event_vs_summary
 from .sources import ProviderSourceBindings, ProviderSourceInstance
 
 __all__ = [
-    "CANONICAL_METRICS",
+    "CANONICAL_NUTRITION_METRICS",
+    "DAILY_PROJECTION_METRICS",
     "PROVIDER_RESOLVERS",
     "AggregatedMetric",
     "EventReconstructionCandidate",

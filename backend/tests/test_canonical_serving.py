@@ -45,7 +45,7 @@ from app.nutrition.repositories import (
     create_projection_lineage,
     set_projection_head,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
 from app.schemas import DailyPoint
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -392,9 +392,9 @@ def _seed_real_serving_scope(
             source_identifier=f"{suffix}-legacy",
             metric_type=metric_key,
             value=value,
-            unit=CANONICAL_METRICS[metric_key].canonical_unit,
+            unit=CANONICAL_NUTRITION_METRICS[metric_key].canonical_unit,
             original_value=value,
-            original_unit=CANONICAL_METRICS[metric_key].canonical_unit,
+            original_unit=CANONICAL_NUTRITION_METRICS[metric_key].canonical_unit,
             start_at=sample_at,
             end_at=sample_at,
             local_date=local_date,
@@ -450,7 +450,7 @@ def _seed_real_serving_scope(
             projection_id=projection.id,
             metric_key=metric_key,
             value=value,
-            unit=CANONICAL_METRICS[metric_key].canonical_unit,
+            unit=CANONICAL_NUTRITION_METRICS[metric_key].canonical_unit,
             selected_provider_key="yazio",
             selected_granularity=ProjectionGranularity.SUMMARY.value,
             presence_state=PresenceState.SUPPLIED.value,
