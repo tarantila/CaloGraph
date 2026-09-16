@@ -60,6 +60,10 @@ CaloGraph is actively evolving. Planned areas of development include:
 
 - **AI-assisted nutrition analysis:** use structured nutrition, meal and food
   data for deeper, opt-in analysis beyond charts and daily aggregates.
+- **Expanded trends and micronutrient analytics:** rebuild the trends and
+  micronutrient views around richer long-term analysis, period-over-period
+  comparisons, data coverage and clearer macro- and micronutrient insights,
+  with optional reference-value context where appropriate.
 - **Modernized YAZIO integration:** migrate the experimental direct YAZIO sync
   from the legacy exporter path to a CaloGraph-owned integration based on the
   newer community API and SDK.
