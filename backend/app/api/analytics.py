@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analytics.calendar_canonical import run_calendar_canonical_read
 from app.analytics.daily_canonical import (
     DailyCanonicalState,
     check_daily_canonical_read_eligibility,
@@ -521,8 +522,23 @@ def calendar(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 31)
+    points = daily_points(db, user, start, end)
+    if settings.analytics_calendar_canonical_read_enabled:
+        with suppress(Exception):
+            canonical_outcome = run_calendar_canonical_read(
+                user.id,
+                start,
+                end,
+                legacy_points=points,
+            )
+            if canonical_outcome.points is not None:
+                canonical_points = list(canonical_outcome.points)
+                # The canonical session may observe a newer Legacy input snapshot.
+                # Serve it only when it still matches the exact request-session result.
+                if canonical_points == points:
+                    points = canonical_points
     output = []
-    for point in daily_points(db, user, start, end):
+    for point in points:
         classification = budget_classification(point)
         output.append({**point.model_dump(mode="json"), "classification": classification})
     return {"days": output}

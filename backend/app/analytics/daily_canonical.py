@@ -539,6 +539,7 @@ def run_daily_canonical_read(
     period: str | None = None,
     enabled: bool,
     max_days: int = MAX_CANONICAL_READ_DAYS,
+    emit_telemetry: bool = True,
 ) -> DailyCanonicalOutcome:
     """Run one bounded, read-only D4B comparison and fail open on every error."""
     started = monotonic()
@@ -553,7 +554,7 @@ def run_daily_canonical_read(
         max_days=max_days,
     )
     if eligibility.state is not DailyCanonicalState.MATCH:
-        if enabled:
+        if enabled and emit_telemetry:
             _emit_telemetry(
                 outcome=eligibility,
                 start=start,
@@ -586,13 +587,14 @@ def run_daily_canonical_read(
                     DailyCanonicalState.ERROR,
                     exception_class=_exception_class(exc),
                 )
-        _emit_telemetry(
-            outcome=outcome,
-            start=start,
-            end=end,
-            elapsed_seconds=monotonic() - started,
-            exception_class=outcome.exception_class,
-        )
+        if emit_telemetry:
+            _emit_telemetry(
+                outcome=outcome,
+                start=start,
+                end=end,
+                elapsed_seconds=monotonic() - started,
+                exception_class=outcome.exception_class,
+            )
         return outcome
     except Exception as exc:
         if session is not None:
@@ -601,13 +603,14 @@ def run_daily_canonical_read(
             DailyCanonicalState.ERROR,
             exception_class=_exception_class(exc),
         )
-        _emit_telemetry(
-            outcome=outcome,
-            start=start,
-            end=end,
-            elapsed_seconds=monotonic() - started,
-            exception_class=outcome.exception_class,
-        )
+        if emit_telemetry:
+            _emit_telemetry(
+                outcome=outcome,
+                start=start,
+                end=end,
+                elapsed_seconds=monotonic() - started,
+                exception_class=outcome.exception_class,
+            )
         return outcome
 
 
