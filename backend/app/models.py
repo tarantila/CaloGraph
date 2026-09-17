@@ -67,10 +67,32 @@ class User(Base):
     google_health_oauth_flows: Mapped[list[GoogleHealthOAuthFlow]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    provider_preferences: Mapped[list[UserProviderPreference]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
 
+
+class UserProviderPreference(Base):
+    __tablename__ = "user_provider_preferences"
+    __table_args__ = (
+        CheckConstraint("length(data_area) > 0", name="ck_provider_preferences_data_area"),
+        CheckConstraint("length(provider_key) > 0", name="ck_provider_preferences_provider_key"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    data_area: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    user: Mapped[User] = relationship(back_populates="provider_preferences")
 
 
 class InstanceBootstrap(Base):

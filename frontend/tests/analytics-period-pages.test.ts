@@ -72,7 +72,7 @@ const analyticsViews = [
   { component: MicronutrientsView, endpoint: '/analytics/micronutrients', defaultRange: () => {
     const end = isoDateInTimeZone('Europe/Berlin')
     return { start: shiftIsoDate(end, -29), end }
-  }, suffix: '&source=yazio_export_v1' },
+  }, suffix: '' },
   { component: WeekdaysView, endpoint: '/analytics/weekdays', defaultRange: weekdaysDefaultRange, suffix: '' },
 ] as const
 
@@ -108,7 +108,7 @@ describe('analytics page responsive period integrations', () => {
     await flushPromises()
 
     const today = isoDateInTimeZone('Europe/Berlin')
-    expect(apiMock).toHaveBeenCalledWith(`/analytics/micronutrients?start=${shiftIsoDate(today, -6)}&end=${today}&source=yazio_export_v1`)
+    expect(apiMock).toHaveBeenCalledWith(`/analytics/micronutrients?start=${shiftIsoDate(today, -6)}&end=${today}`)
   })
 
   it('keeps custom controls separate from Daily additional filters', async () => {

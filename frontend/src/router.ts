@@ -47,6 +47,11 @@ const router = createRouter({
           component: () => import('./views/AccountIntegrationsView.vue'),
         },
         {
+          path: 'datenquellen',
+          name: 'account-data-sources',
+          component: () => import('./views/AccountDataSourcesView.vue'),
+        },
+        {
           path: 'daten-und-datenschutz',
           name: 'account-data-privacy',
           component: () => import('./views/AccountDataPrivacyView.vue'),

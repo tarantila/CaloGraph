@@ -15,6 +15,16 @@ from .contracts import (
     build_summary_candidate,
 )
 from .daily_reader import resolve_daily_nutrient, resolve_daily_nutrients
+from .discovery import (
+    NutritionProviderDiscovery,
+    NutritionProviderIdentity,
+    NutritionProviderMetadata,
+    NutritionProviderMetadataSet,
+    ProviderDiscoveryEvidence,
+    ProviderDiscoveryResolver,
+    discover_nutrition_provider_metadata,
+    discover_nutrition_providers,
+)
 from .eligibility import is_candidate_eligible, is_summary_usable
 from .metrics import (
     CANONICAL_NUTRITION_METRICS,
@@ -50,10 +60,16 @@ __all__ = [
     "EvidenceKind",
     "MetricContribution",
     "MetricDefinition",
+    "NutritionProviderDiscovery",
+    "NutritionProviderIdentity",
+    "NutritionProviderMetadata",
+    "NutritionProviderMetadataSet",
     "NutritionProviderResolver",
     "ParityDiagnostic",
     "ProviderCandidate",
     "ProviderCandidateContractError",
+    "ProviderDiscoveryEvidence",
+    "ProviderDiscoveryResolver",
     "ProviderNotAvailableError",
     "ProviderSourceBindings",
     "ProviderSourceInstance",
@@ -70,6 +86,8 @@ __all__ = [
     "canonical_unit",
     "collect_provider_candidates",
     "compare_decimal_parity",
+    "discover_nutrition_provider_metadata",
+    "discover_nutrition_providers",
     "is_candidate_eligible",
     "is_known_metric",
     "is_summary_usable",

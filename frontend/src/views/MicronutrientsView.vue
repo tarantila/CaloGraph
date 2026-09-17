@@ -43,6 +43,15 @@ interface Nutrient {
   status: NutrientStatus
 }
 
+interface MicronutrientProviderMetadata {
+  provider_key: string
+  latest_evidence_observed_at: string
+}
+interface MicronutrientSelectedProvider {
+  provider_key: string
+  latest_evidence_observed_at: string | null
+}
+
 interface MicronutrientResponse {
   start_date: string
   end_date: string
@@ -55,6 +64,8 @@ interface MicronutrientResponse {
     coverage_threshold: number
     orientation_threshold_percent: number
   }
+  selected_provider?: MicronutrientSelectedProvider
+  providers?: MicronutrientProviderMetadata[]
 }
 
 const route = useRoute()
@@ -65,7 +76,6 @@ const defaultRange = { start: before, end: today }
 const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
 const start = ref(initialRange.start)
 const end = ref(initialRange.end)
-const source = ref(String(route.query.source ?? 'yazio_export_v1'))
 const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
 const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
 const period = ref<AnalyticsCompactPreset | undefined>(
@@ -90,41 +100,24 @@ const integer = createNumberFormatter({ maximumFractionDigits: 0 })
 const percent = createNumberFormatter({ style: 'percent', maximumFractionDigits: 0 })
 const referencePercent = createNumberFormatter({ maximumFractionDigits: 1 })
 
-const sourceLabels: Record<string, string> = {
-  yazio_export_v1: 'micronutrientsUi.sourceYazio',
-  health_auto_export_v2: 'micronutrientsUi.sourceHealthAutoExport',
-  calograph_sync_v1: 'micronutrientsUi.sourceCaloGraph',
-  apple_health_xml: 'micronutrientsUi.sourceAppleHealth',
+function providerLabel(value: string) {
+  return t(`providerPreferencesUi.providers.${value}`)
 }
 
-function sourceLabel(value: string) {
-  return sourceLabels[value] ? t(sourceLabels[value]) : value
-}
-
-async function load(allowSourceFallback = true) {
+async function load() {
   error.value = ''
   loading.value = true
   await router.replace({
     query: {
       start: start.value,
       end: end.value,
-      source: source.value || undefined,
       period: period.value || undefined,
     },
   })
   try {
     const params = new URLSearchParams({ start: start.value, end: end.value })
-    if (source.value) params.set('source', source.value)
     if (period.value === 'all') params.set('period', 'all')
     const response = await api<MicronutrientResponse>(`/analytics/micronutrients?${params}`)
-    const selectedSourceExists = response.available_sources.some(
-      (item) => item.source_type === source.value,
-    )
-    if (allowSourceFallback && !selectedSourceExists && response.available_sources.length) {
-      source.value = response.available_sources[0].source_type
-      await load(false)
-      return
-    }
     result.value = response
   } catch (cause) {
     error.value = localizeApiError(cause, 'errors.requestFailed')
@@ -240,24 +233,13 @@ async function syncYazioHistory() {
   </div>
 
   <section class="card filter-panel micronutrient-source-filter" :aria-label="t('micronutrients.chooseSource')">
-    <label class="field">
-      {{ t('micronutrients.chooseSource') }}
-      <select v-model="source" @change="load()">
-        <option
-          v-for="item in result?.available_sources ?? []"
-          :key="item.source_type"
-          :value="item.source_type"
-        >
-          {{ sourceLabel(item.source_type) }}
-        </option>
-        <option
-          v-if="!result?.available_sources.some((item) => item.source_type === source)"
-          :value="source"
-        >
-          {{ sourceLabel(source) }}
-        </option>
-      </select>
-    </label>
+    <div>
+      <strong>{{ t('common.source') }}</strong>
+      <span v-if="result?.selected_provider">
+        {{ providerLabel(result.selected_provider.provider_key) }}
+      </span>
+      <span v-else>{{ t('micronutrientsUi.sourceYazio') }}</span>
+    </div>
     <span class="source-freshness">{{ freshness }}</span>
   </section>
 
@@ -352,10 +334,10 @@ async function syncYazioHistory() {
       <div>
         <h2>{{ t('micronutrientsUi.explainerTitle') }}</h2>
         <p>{{ t('micronutrientsUi.explainerP1') }}</p>
-        <p>{{ t('micronutrientsUi.explainerP2', { days: result.recorded_days, required: requiredCoverageDays() }) }}</p>
+        <p>{{ t('providerPreferencesUi.coverageExplanation', { provider: result.selected_provider ? providerLabel(result.selected_provider.provider_key) : t('micronutrientsUi.sourceYazio'), days: result.recorded_days, required: requiredCoverageDays() }) }}</p>
         <p>{{ t('micronutrientsUi.explainerP3') }}</p>
         <a href="https://eur-lex.europa.eu/legal-content/DE-EN/ALL/?uri=CELEX:32011R1169" target="_blank" rel="noreferrer">{{ t('micronutrientsUi.referenceLink') }}</a>
-        <div v-if="source === 'yazio_export_v1'" class="micronutrient-backfill">
+        <div v-if="!result.selected_provider" class="micronutrient-backfill">
           <p>{{ t('micronutrientsUi.backfillHelp') }}</p>
           <button class="button secondary" type="button" :disabled="syncingHistory" @click="syncYazioHistory">
             <PhArrowsClockwise :size="16" weight="bold" aria-hidden="true" />
@@ -368,7 +350,7 @@ async function syncYazioHistory() {
     </section>
 
     <p class="micronutrient-source-note">
-      {{ t('micronutrientsUi.sourceNote', { source: sourceLabel(result.source ?? source) }) }}
+      {{ t('micronutrientsUi.sourceNote', { source: result.selected_provider ? providerLabel(result.selected_provider.provider_key) : t('micronutrientsUi.sourceYazio') }) }}
     </p>
   </template>
 </template>

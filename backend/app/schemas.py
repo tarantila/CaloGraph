@@ -59,6 +59,40 @@ class UserResponse(BaseModel):
     deactivated_at: datetime | None
 
 
+
+class ProviderPreferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: str = Field(min_length=1, max_length=64)
+
+
+class ProviderPreferenceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    data_area: str
+    provider_key: str
+
+
+class ProviderPreferenceListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preferences: list[ProviderPreferenceResponse]
+
+
+class ProviderAvailabilityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: str
+    available: bool
+    status: Literal["available", "disabled", "not_configured", "reauth_required", "no_data"]
+
+
+class ProviderAvailabilityListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    data_area: str
+    providers: list[ProviderAvailabilityResponse]
+
 class BootstrapStatusResponse(BaseModel):
     setup_required: bool
 
@@ -535,6 +569,56 @@ class DailyPoint(BaseModel):
     tracking_status: TrackingStatus
     tracking_score: int
     tracking_reasons: list[str]
+
+
+class MicronutrientSelectedProviderResponse(BaseModel):
+    provider_key: str
+    latest_evidence_observed_at: datetime | None
+
+
+class MicronutrientProviderMetadataResponse(BaseModel):
+    provider_key: str
+    latest_evidence_observed_at: datetime
+
+
+class MicronutrientAvailableSourceResponse(BaseModel):
+    source_type: str
+    last_updated_at: datetime | None
+
+
+class MicronutrientNutrientResponse(BaseModel):
+    id: str
+    metric_type: str
+    label: str
+    category: Literal["vitamin", "mineral"]
+    unit: Literal["mg", "ug"]
+    eu_nrv: float | None
+    total: float | None
+    average_daily: float | None
+    days_with_value: int
+    coverage_ratio: float
+    percent_of_nrv: float | None
+    status: Literal["no_data", "insufficient_data", "below_orientation", "covered"]
+
+
+class MicronutrientDefinitionResponse(BaseModel):
+    reference: str
+    average: str
+    coverage_threshold: float
+    orientation_threshold_percent: int
+
+
+class MicronutrientResponse(BaseModel):
+    start_date: date
+    end_date: date
+    source: str | None
+    recorded_days: int
+    nutrients: list[MicronutrientNutrientResponse]
+    last_updated_at: datetime | None
+    available_sources: list[MicronutrientAvailableSourceResponse]
+    definition: MicronutrientDefinitionResponse
+    selected_provider: MicronutrientSelectedProviderResponse | None = None
+    providers: list[MicronutrientProviderMetadataResponse] | None = None
 
 
 class TargetSettingsResponse(BaseModel):

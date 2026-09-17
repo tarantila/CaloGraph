@@ -25,8 +25,13 @@ from app.api.analytics import micronutrients
 from app.config import Settings
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
+from app.main import app
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import User, YazioConnection
+from app.nutrition.resolution.discovery import (
+    NutritionProviderMetadata,
+    NutritionProviderMetadataSet,
+)
 from app.services.import_service import persist_apple_health_stream, persist_import
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -1197,3 +1202,143 @@ def test_canonical_ineligible_inputs_skip_session(monkeypatch, user: User) -> No
         assert result.state is expected_state
 
     assert opened is False
+
+def test_micronutrient_metadata_flags_default_to_disabled() -> None:
+    configured = Settings(_env_file=None, environment="test")
+
+    assert configured.analytics_micronutrients_metadata_shadow_enabled is False
+    assert configured.analytics_micronutrients_public_provider_metadata_enabled is False
+
+
+def test_metadata_shadow_route_preserves_legacy_response(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(
+        db,
+        user,
+        [
+            _sample(1, "dietary_energy_kcal", "1800"),
+            _sample(1, "iron_mg", "7"),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_metadata_shadow_enabled",
+        True,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.api.analytics.run_micronutrient_metadata_shadow",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+    start = end = date(2024, 1, 1)
+
+    result = micronutrients(
+        start=start,
+        end=end,
+        source="test",
+        period="all",
+        user=user,
+        db=db,
+    )
+
+    expected = read_legacy_micronutrient_period(
+        db,
+        user_id=user.id,
+        start=start,
+        end=end,
+        source="test",
+    ).to_public(start=start, end=end, source="test")
+    assert result == expected
+    assert calls == [
+        {
+            "enabled": True,
+            "max_days": 31,
+        }
+    ]
+
+
+def test_public_provider_metadata_is_omitted_when_disabled(
+    monkeypatch, db: Session, user: User
+) -> None:
+    start = end = date(2024, 1, 1)
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_public_provider_metadata_enabled",
+        False,
+    )
+    discovery_calls: list[object] = []
+    monkeypatch.setattr(
+        "app.api.analytics.discover_nutrition_provider_metadata",
+        lambda *args, **kwargs: discovery_calls.append(object()),
+    )
+
+    result = micronutrients(
+        start=start,
+        end=end,
+        source="test",
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert "providers" not in result
+    assert discovery_calls == []
+
+
+def test_public_provider_metadata_serializes_canonical_discovery(
+    monkeypatch, db: Session, user: User
+) -> None:
+    start = end = date(2024, 1, 1)
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_public_provider_metadata_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.discover_nutrition_provider_metadata",
+        lambda *args, **kwargs: NutritionProviderMetadataSet(
+            (
+                NutritionProviderMetadata(
+                    "yazio",
+                    datetime(2024, 1, 1, 12, tzinfo=UTC),
+                ),
+                NutritionProviderMetadata(
+                    "google_health",
+                    datetime(2024, 1, 1, 10, tzinfo=UTC),
+                ),
+            )
+        ),
+    )
+
+    result = micronutrients(
+        start=start,
+        end=end,
+        source="test",
+        period=None,
+        user=user,
+        db=db,
+    )
+
+    assert result["providers"] == [
+        {
+            "provider_key": "google_health",
+            "latest_evidence_observed_at": "2024-01-01T10:00:00+00:00",
+        },
+        {
+            "provider_key": "yazio",
+            "latest_evidence_observed_at": "2024-01-01T12:00:00+00:00",
+        },
+    ]
+    assert result["last_updated_at"] is None
+
+
+def test_micronutrient_openapi_documents_optional_provider_metadata() -> None:
+    operation = app.openapi()["paths"]["/api/v1/analytics/micronutrients"]["get"]
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema["$ref"] == "#/components/schemas/MicronutrientResponse"
+    provider_schema = app.openapi()["components"]["schemas"]["MicronutrientResponse"]["properties"][
+        "providers"
+    ]
+    assert provider_schema["anyOf"][0]["type"] == "array"
+    assert provider_schema["anyOf"][0]["items"]["$ref"] == (
+        "#/components/schemas/MicronutrientProviderMetadataResponse"
+    )

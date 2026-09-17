@@ -29,6 +29,9 @@ LAST_TARGET_REQUIRED = f"{PROBLEM_BASE}last-target-required"
 TARGET_VERSION_NOT_FOUND = f"{PROBLEM_BASE}target-version-not-found"
 ACTIVITY_SOURCE_UNAVAILABLE = f"{PROBLEM_BASE}activity-source-unavailable"
 DATA_EXPORT_BUSY = f"{PROBLEM_BASE}data-export-busy"
+PROVIDER_NOT_AVAILABLE = f"{PROBLEM_BASE}provider-not-available"
+PROVIDER_SELECTION_UNAVAILABLE = f"{PROBLEM_BASE}provider-selection-unavailable"
+PROVIDER_SELECTION_NOT_READY = f"{PROBLEM_BASE}provider-selection-not-ready"
 BOOTSTRAP_ALREADY_INITIALIZED = f"{PROBLEM_BASE}bootstrap-already-initialized"
 
 

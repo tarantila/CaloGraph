@@ -226,7 +226,27 @@ automatic synchronization for that account. Saving and successfully verifying
 the credentials again resumes the personal schedule.
 
 Because direct YAZIO retrieval uses an undocumented interface, Apple Health
-remains the independent fallback path.
+remains an independently configured provider option; CaloGraph does not switch
+to it automatically.
+
+## Nutrition provider preference
+
+Under **Konto → Datenquellen**, each user can select the provider for the
+`nutrition` data area. The preference is stored on the account and is never
+encoded in the analytics URL. `GET /api/v1/settings/provider-preferences`
+returns saved preferences; `GET
+/api/v1/settings/provider-availability/nutrition` reports current,
+user-specific availability. `PUT
+/api/v1/settings/provider-preferences/nutrition` stores a provider key and
+`DELETE` removes the preference.
+
+Supported provider keys are `yazio`, `google_health`, and `apple_health`.
+Unavailable providers cannot be selected. An existing preference is retained
+when a provider later becomes unavailable; analytics reports that state and
+does not silently switch providers. If no preference exists, the migration
+keeps the Legacy YAZIO analytics behavior. An explicit Legacy `source` query
+parameter remains supported for compatibility, but the frontend does not
+create provider-selection URL state.
 
 ## Personal profile
 
