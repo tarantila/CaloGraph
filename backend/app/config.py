@@ -216,6 +216,7 @@ class Settings(BaseSettings):
     analytics_micronutrients_shadow_read_enabled: bool = False
     analytics_micronutrients_shadow_max_days: int = Field(default=31, ge=1, le=31)
     analytics_micronutrients_metadata_shadow_enabled: bool = False
+    analytics_micronutrients_public_provider_metadata_enabled: bool = False
     analytics_micronutrients_canonical_read_enabled: bool = False
     analytics_daily_canonical_read_enabled: bool = False
     analytics_calendar_canonical_read_enabled: bool = False

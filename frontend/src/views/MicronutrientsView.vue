@@ -43,6 +43,11 @@ interface Nutrient {
   status: NutrientStatus
 }
 
+interface MicronutrientProviderMetadata {
+  provider_key: string
+  latest_evidence_observed_at: string
+}
+
 interface MicronutrientResponse {
   start_date: string
   end_date: string
@@ -55,6 +60,7 @@ interface MicronutrientResponse {
     coverage_threshold: number
     orientation_threshold_percent: number
   }
+  providers?: MicronutrientProviderMetadata[]
 }
 
 const route = useRoute()

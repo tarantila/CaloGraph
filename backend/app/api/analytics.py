@@ -40,7 +40,8 @@ from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
 from app.models import HealthSample, ImportBatch, User
-from app.schemas import DailyPoint
+from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.schemas import DailyPoint, MicronutrientResponse
 from app.services.achievements import unlock_achievement_keys
 
 router = APIRouter(tags=["Analytics"])
@@ -163,7 +164,11 @@ def daily(
             )
     return points
 
-@router.get("/analytics/micronutrients")
+@router.get(
+    "/analytics/micronutrients",
+    response_model=MicronutrientResponse,
+    response_model_exclude_unset=True,
+)
 def micronutrients(
     start: date | None = None,
     end: date | None = None,
@@ -212,6 +217,26 @@ def micronutrients(
                 enabled=settings.analytics_micronutrients_shadow_read_enabled,
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
+    if settings.analytics_micronutrients_public_provider_metadata_enabled:
+        with suppress(Exception):
+            provider_metadata = discover_nutrition_provider_metadata(
+                db,
+                user_id=user.id,
+                start=start,
+                end=end,
+            )
+            response = {
+                **response,
+                "providers": [
+                    {
+                        "provider_key": provider.provider_key,
+                        "latest_evidence_observed_at": (
+                            provider.latest_evidence_observed_at.isoformat()
+                        ),
+                    }
+                    for provider in provider_metadata.providers
+                ],
+            }
     with suppress(Exception):
         run_micronutrient_metadata_shadow(
             user.id,

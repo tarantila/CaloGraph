@@ -537,6 +537,50 @@ class DailyPoint(BaseModel):
     tracking_reasons: list[str]
 
 
+class MicronutrientProviderMetadataResponse(BaseModel):
+    provider_key: str
+    latest_evidence_observed_at: datetime
+
+
+class MicronutrientAvailableSourceResponse(BaseModel):
+    source_type: str
+    last_updated_at: datetime | None
+
+
+class MicronutrientNutrientResponse(BaseModel):
+    id: str
+    metric_type: str
+    label: str
+    category: Literal["vitamin", "mineral"]
+    unit: Literal["mg", "ug"]
+    eu_nrv: float | None
+    total: float | None
+    average_daily: float | None
+    days_with_value: int
+    coverage_ratio: float
+    percent_of_nrv: float | None
+    status: Literal["no_data", "insufficient_data", "below_orientation", "covered"]
+
+
+class MicronutrientDefinitionResponse(BaseModel):
+    reference: str
+    average: str
+    coverage_threshold: float
+    orientation_threshold_percent: int
+
+
+class MicronutrientResponse(BaseModel):
+    start_date: date
+    end_date: date
+    source: str | None
+    recorded_days: int
+    nutrients: list[MicronutrientNutrientResponse]
+    last_updated_at: datetime | None
+    available_sources: list[MicronutrientAvailableSourceResponse]
+    definition: MicronutrientDefinitionResponse
+    providers: list[MicronutrientProviderMetadataResponse] | None = None
+
+
 class TargetSettingsResponse(BaseModel):
     targets: list[TargetResponse]
 

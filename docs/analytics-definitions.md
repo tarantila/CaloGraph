@@ -90,6 +90,28 @@ evidence of a deficiency and is not a supplement recommendation. Choline is
 shown without a percentage comparison because the EU table used here does not
 define an NRV for it.
 
+## Micronutrient provider metadata
+
+The micronutrient response keeps the legacy `source`, `available_sources`, and
+`last_updated_at` fields unchanged. When public canonical provider metadata is
+enabled, it additionally returns `providers`, sorted by `provider_key`:
+
+```json
+[
+  {
+    "provider_key": "yazio",
+    "latest_evidence_observed_at": "2026-01-01T12:00:00+00:00"
+  }
+]
+```
+
+`provider_key` identifies the canonical provider family. It is not a source
+selection, `SourcePriority`, or a `source_instance_id`. The
+`latest_evidence_observed_at` timestamp is derived from canonical evidence and
+is intentionally distinct from the legacy `last_updated_at`, which remains
+based on `HealthSample.updated_at`. Providers are user-scoped and range-scoped;
+providers without qualifying evidence are omitted.
+
 ## Calendar
 
 The calendar opens on the current month and can navigate to previous calendar
