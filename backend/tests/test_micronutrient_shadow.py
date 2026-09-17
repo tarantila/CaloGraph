@@ -1197,3 +1197,54 @@ def test_canonical_ineligible_inputs_skip_session(monkeypatch, user: User) -> No
         assert result.state is expected_state
 
     assert opened is False
+def test_micronutrient_metadata_flag_defaults_to_disabled() -> None:
+    configured = Settings(_env_file=None, environment="test")
+
+    assert configured.analytics_micronutrients_metadata_shadow_enabled is False
+
+
+def test_metadata_shadow_route_preserves_legacy_response(
+    monkeypatch, db: Session, user: User
+) -> None:
+    _persist(
+        db,
+        user,
+        [
+            _sample(1, "dietary_energy_kcal", "1800"),
+            _sample(1, "iron_mg", "7"),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_metadata_shadow_enabled",
+        True,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.api.analytics.run_micronutrient_metadata_shadow",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+    start = end = date(2024, 1, 1)
+
+    result = micronutrients(
+        start=start,
+        end=end,
+        source="test",
+        period="all",
+        user=user,
+        db=db,
+    )
+
+    expected = read_legacy_micronutrient_period(
+        db,
+        user_id=user.id,
+        start=start,
+        end=end,
+        source="test",
+    ).to_public(start=start, end=end, source="test")
+    assert result == expected
+    assert calls == [
+        {
+            "enabled": True,
+            "max_days": 31,
+        }
+    ]

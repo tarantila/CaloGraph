@@ -17,6 +17,7 @@ from app.analytics.daily_canonical import (
     run_daily_canonical_read,
 )
 from app.analytics.daily_shadow import run_daily_shadow
+from app.analytics.micronutrient_metadata_shadow import run_micronutrient_metadata_shadow
 from app.analytics.micronutrient_shadow import (
     MicronutrientShadowState,
     read_legacy_micronutrient_period,
@@ -211,6 +212,17 @@ def micronutrients(
                 enabled=settings.analytics_micronutrients_shadow_read_enabled,
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
+    with suppress(Exception):
+        run_micronutrient_metadata_shadow(
+            user.id,
+            start,
+            end,
+            source,
+            period,
+            legacy,
+            enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
+            max_days=settings.analytics_micronutrients_shadow_max_days,
+        )
     return response
 
 
