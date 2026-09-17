@@ -256,13 +256,18 @@ def test_micronutrients_preference_path_never_reads_legacy_values(
     def fail_legacy(*args, **kwargs):
         raise AssertionError("configured provider path must not read legacy values")
 
+    discovery_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.api.analytics.discover_nutrition_provider_metadata",
+        lambda *args, **kwargs: discovery_calls.append(kwargs) or None,
+    )
     monkeypatch.setattr("app.api.analytics.read_legacy_micronutrient_period", fail_legacy)
-
     response = client.get(
         "/api/v1/analytics/micronutrients?start=2026-09-01&end=2026-09-01"
     )
 
     assert response.status_code == 200
+    assert discovery_calls[0]["provider_key"] == "yazio"
     payload = response.json()
     assert payload["source"] is None
     assert payload["selected_provider"]["provider_key"] == "yazio"

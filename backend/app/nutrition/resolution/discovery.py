@@ -241,13 +241,19 @@ def discover_nutrition_provider_metadata(
     start: date,
     end: date,
     provider_registry: Mapping[str, object] | None = None,
+    provider_key: str | None = None,
 ) -> NutritionProviderMetadataSet:
     """Read range-scoped provider metadata for canonical micronutrient evidence."""
     _validate_range(start, end)
     registry = _provider_registry() if provider_registry is None else provider_registry
+    provider_keys = (
+        tuple(sorted(registry))
+        if provider_key is None
+        else (NutritionProviderIdentity(provider_key).provider_key,)
+    )
     metadata: list[NutritionProviderMetadata] = []
-    for provider_key in sorted(registry):
-        resolver = _discovery_resolver(registry[provider_key])
+    for provider_key in provider_keys:
+        resolver = _discovery_resolver(registry.get(provider_key))
         if resolver is None:
             continue
         evidence = resolver.discover_range_evidence(

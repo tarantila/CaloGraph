@@ -19,6 +19,7 @@ from app.nutrition.resolution import (
     ProviderCandidate,
     resolve_provider_period,
 )
+from app.nutrition.resolution.period_reader import MAX_PROVIDER_PERIOD_DAYS
 from app.schemas import DailyPoint
 
 _PRIMARY_DAILY_POINT_METRICS: Final[tuple[tuple[str, str], ...]] = (
@@ -88,20 +89,30 @@ def read_provider_daily_points(
     """Serve DailyPoints from one owned provider without reading nutrition HealthSamples."""
     if start > end:
         raise ProviderDailyReadError("provider daily range is invalid")
-
-    try:
-        candidates_by_date = resolve_provider_period(
-            db,
-            provider_key=provider_key,
-            user_id=user_id,
-            source_instance_id=source_instance_id,
-            start=start,
-            end=end,
-            metric_keys=DAILY_PROJECTION_METRICS,
-            max_days=(end - start).days + 1,
+    candidates_by_date: dict[date, Mapping[str, ProviderCandidate]] = {}
+    chunk_start = start
+    while chunk_start <= end:
+        remaining_days = (end - chunk_start).days
+        chunk_end = chunk_start + timedelta(
+            days=min(MAX_PROVIDER_PERIOD_DAYS - 1, remaining_days)
         )
-    except (ValueError, KeyError) as exc:
-        raise ProviderDailyReadError("canonical provider returned an invalid period") from exc
+        try:
+            chunk_candidates = resolve_provider_period(
+                db,
+                provider_key=provider_key,
+                user_id=user_id,
+                source_instance_id=source_instance_id,
+                start=chunk_start,
+                end=chunk_end,
+                metric_keys=DAILY_PROJECTION_METRICS,
+                max_days=MAX_PROVIDER_PERIOD_DAYS,
+            )
+        except (ValueError, KeyError) as exc:
+            raise ProviderDailyReadError("canonical provider returned an invalid period") from exc
+        candidates_by_date.update(chunk_candidates)
+        if chunk_end == end:
+            break
+        chunk_start = chunk_end + timedelta(days=1)
 
     targets = list(
         db.scalars(

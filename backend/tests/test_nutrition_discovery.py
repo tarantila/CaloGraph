@@ -28,6 +28,7 @@ from app.nutrition.resolution.discovery import (
     NutritionProviderDiscovery,
     NutritionProviderIdentity,
     NutritionProviderMetadataSet,
+    ProviderDiscoveryEvidence,
     discover_nutrition_provider_metadata,
     discover_nutrition_providers,
 )
@@ -220,6 +221,37 @@ def test_range_metadata_requires_local_date_and_valid_micronutrient_field(
 
     assert result.providers[0].provider_key == "yazio"
     assert result.providers[0].latest_evidence_observed_at == LATEST_OBSERVED_AT
+
+def test_range_metadata_can_limit_provider_registry(db: Session, user: User) -> None:
+    calls: list[str] = []
+
+    class Resolver:
+        def __init__(self, provider_key: str) -> None:
+            self.provider_key = provider_key
+
+        def discover_global_evidence(self, db, *, user_id):
+            del db, user_id
+            return ProviderDiscoveryEvidence(self.provider_key, None)
+
+        def discover_range_evidence(self, db, *, user_id, start, end):
+            del db, user_id, start, end
+            calls.append(self.provider_key)
+            return ProviderDiscoveryEvidence(self.provider_key, OBSERVED_AT)
+
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_registry={
+            "google_health": Resolver("google_health"),
+            "yazio": Resolver("yazio"),
+        },
+        provider_key="yazio",
+    )
+
+    assert tuple(item.provider_key for item in result.providers) == ("yazio",)
+    assert calls == ["yazio"]
 
 
 

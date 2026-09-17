@@ -135,7 +135,7 @@ def test_daily_without_preference_keeps_legacy_path(monkeypatch):
     assert result == [_point()]
 
 
-def test_provider_daily_reads_all_projection_metrics_in_one_bounded_read(monkeypatch):
+def test_provider_daily_reads_projection_metrics_in_bounded_chunks(monkeypatch):
     calls = []
 
     def candidate(local_date: date, metric_key: str):
@@ -189,12 +189,58 @@ def test_provider_daily_reads_all_projection_metrics_in_one_bounded_read(monkeyp
     )
 
     assert len(result) == 32
-    assert [(call["start"], call["end"]) for call in calls] == [(start, end)]
-    assert calls[0]["max_days"] == 32
+    assert [(call["start"], call["end"]) for call in calls] == [
+        (start, start + provider_daily.timedelta(days=30)),
+        (start + provider_daily.timedelta(days=31), end),
+    ]
+    assert [call["max_days"] for call in calls] == [31, 31]
     assert all(set(call["metric_keys"]) == set(DAILY_PROJECTION_METRICS) for call in calls)
     assert all(call["provider_key"] == "apple_health" for call in calls)
     assert all(call["user_id"] == USER_ID for call in calls)
     assert all(call["source_instance_id"] == SOURCE_INSTANCE_ID for call in calls)
+
+def test_provider_daily_accepts_date_max_boundary_without_overflow(monkeypatch):
+    calls = []
+    candidate = SimpleNamespace(
+        value=Decimal("1"),
+        value_contributing=True,
+        presence_state=PresenceState.SUPPLIED,
+        coverage_state=CoverageState.COMPLETE,
+        resolution_state=ResolutionState.RESOLVED,
+    )
+
+    def fake_period(db, **kwargs):
+        del db
+        calls.append(kwargs)
+        return {
+            kwargs["start"]: {
+                metric_key: candidate for metric_key in kwargs["metric_keys"]
+            }
+        }
+
+    monkeypatch.setattr(provider_daily, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(provider_daily, "_build_daily_point", lambda **kwargs: kwargs)
+
+    class EmptyDb:
+        def scalars(self, statement):
+            del statement
+            return []
+
+        def execute(self, statement):
+            del statement
+            return SimpleNamespace(all=lambda: [])
+
+    result = provider_daily.read_provider_daily_points(
+        EmptyDb(),
+        user_id=USER_ID,
+        provider_key="apple_health",
+        source_instance_id=SOURCE_INSTANCE_ID,
+        start=date.max,
+        end=date.max,
+    )
+
+    assert len(result) == 1
+    assert [(call["start"], call["end"]) for call in calls] == [(date.max, date.max)]
 
 
 def test_daily_point_consumers_use_one_provider_path_without_legacy_points(monkeypatch):

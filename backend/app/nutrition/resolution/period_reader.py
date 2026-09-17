@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 from types import MappingProxyType
-from typing import Protocol
+from typing import Final, Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from .contracts import ProviderCandidate
 from .metrics import CANONICAL_NUTRITION_METRICS
 from .providers import ProviderNotAvailableError
 
-_MAX_PERIOD_DAYS = 31
+MAX_PROVIDER_PERIOD_DAYS: Final = 31
 
 
 class NutritionPeriodResolver(Protocol):
@@ -167,7 +167,7 @@ def resolve_provider_period(
     end: date,
     metric_keys: Sequence[str] | None = None,
     resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
-    max_days: int = _MAX_PERIOD_DAYS,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
 ) -> PeriodCandidates:
     """Resolve a complete canonical metric matrix with one bounded provider read."""
     if type(start) is not date or type(end) is not date or start > end:

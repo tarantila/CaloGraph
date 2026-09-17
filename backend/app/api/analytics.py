@@ -345,6 +345,12 @@ def micronutrients(
                 user_id=user.id,
                 start=start,
                 end=end,
+                provider_key=(
+                    selection.provider_key
+                    if selection is not None
+                    and not settings.analytics_micronutrients_public_provider_metadata_enabled
+                    else None
+                ),
             )
     if selection is not None:
         selected_latest_evidence = (
