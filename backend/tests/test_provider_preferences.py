@@ -207,6 +207,30 @@ def test_micronutrients_without_source_uses_configured_provider(
     assert payload["recorded_days"] == 0
     assert all(item["status"] == "no_data" for item in payload["nutrients"])
 
+def test_micronutrients_without_preference_keeps_legacy_yazio_fallback(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    _login(client)
+
+    def fail_canonical(*args, **kwargs):
+        raise AssertionError("no-preference compatibility path must not read canonical values")
+
+    monkeypatch.setattr("app.api.analytics.read_canonical_micronutrient_period", fail_canonical)
+
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-09-01&end=2026-09-01"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "yazio_export_v1"
+    assert "selected_provider" not in payload
+    assert payload["recorded_days"] == 0
+
+
 
 
 def test_micronutrients_preference_path_never_reads_legacy_values(
