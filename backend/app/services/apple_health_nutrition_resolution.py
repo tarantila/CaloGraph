@@ -612,6 +612,7 @@ def resolve_apple_health_period(
     start: date,
     end: date,
     metric_keys: Sequence[str],
+    skip_source_instance_validation: bool = False,
 ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
     """Resolve all requested Apple nutrients for every date in one bounded read."""
     if type(start) is not date or type(end) is not date or start > end:

@@ -983,6 +983,7 @@ def resolve_yazio_period(
     start: date,
     end: date,
     metric_keys: Sequence[str],
+    skip_source_instance_validation: bool = False,
 ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
     """Resolve a bounded YAZIO metric matrix with one database scope load."""
     requested_metric_keys = tuple(dict.fromkeys(metric_keys))
@@ -1009,12 +1010,13 @@ def resolve_yazio_period(
             }
             for local_date in dates
         }
-    validate_source_instance(
-        db,
-        user_id=user_id,
-        provider_key=_PROVIDER,
-        source_instance_id=source_instance_id,
-    )
+    if not skip_source_instance_validation:
+        validate_source_instance(
+            db,
+            user_id=user_id,
+            provider_key=_PROVIDER,
+            source_instance_id=source_instance_id,
+        )
     scope = _load_period_scope(
         db,
         user_id=user_id,

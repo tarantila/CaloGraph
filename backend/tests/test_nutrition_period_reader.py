@@ -157,6 +157,7 @@ def test_period_reader_splits_long_ranges_into_contiguous_bounded_chunks(monkeyp
         (start + timedelta(days=31), start + timedelta(days=61)),
     ]
     assert [len(candidates) for _, _, candidates in chunks] == [31, 31]
+    assert [call["skip_source_instance_validation"] for call in calls] == [False, True]
     assert [call["max_days"] for call in calls] == [31, 31]
 
 

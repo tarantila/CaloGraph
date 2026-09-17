@@ -316,11 +316,10 @@ def read_canonical_micronutrient_period(
     start: date,
     end: date,
 ) -> MicronutrientPeriodResult:
-    values_by_metric: dict[str, dict[date, Decimal]] = {
-        metric_type: {} for metric_type in MICRONUTRIENT_METRIC_TYPES
-    }
-    primary_recorded_dates: set[date] = set()
-    all_value_dates: set[date] = set()
+    totals_by_metric: dict[str, Decimal] = defaultdict(Decimal)
+    days_by_metric: dict[str, int] = defaultdict(int)
+    primary_recorded_days = 0
+    all_value_days = 0
     requested_metrics = tuple(CANONICAL_NUTRITION_METRICS)
     canonical_source_rows = (
         db.execute(
@@ -352,29 +351,29 @@ def read_canonical_micronutrient_period(
     ):
         for offset in range((chunk_end - chunk_start).days + 1):
             current = chunk_start + timedelta(days=offset)
-            candidate_values = {
-                metric_type: candidates_by_day[current][metric_type].value
-                for metric_type in requested_metrics
-            }
-            if any(
-                (value is not None and value > 0)
-                for metric_type, value in candidate_values.items()
-                if metric_type in PRIMARY_NUTRITION_METRICS
-            ):
-                primary_recorded_dates.add(current)
+            candidate_values = candidates_by_day[current]
+            primary_has_value = any(
+                (value := candidate_values[metric_type].value) is not None and value > 0
+                for metric_type in PRIMARY_NUTRITION_METRICS
+            )
+            any_value = False
             for metric_type in MICRONUTRIENT_METRIC_TYPES:
-                value = candidate_values.get(metric_type)
-                if value is not None:
-                    values_by_metric[metric_type][current] = value
-                    all_value_dates.add(current)
+                value = candidate_values[metric_type].value
+                if value is None:
+                    continue
+                totals_by_metric[metric_type] += value
+                days_by_metric[metric_type] += 1
+                any_value = True
+            if primary_has_value:
+                primary_recorded_days += 1
+            if any_value:
+                all_value_days += 1
 
-    recorded_dates = primary_recorded_dates or all_value_dates
-    recorded_days = len(recorded_dates)
+    recorded_days = primary_recorded_days or all_value_days
     metrics: list[MicronutrientMetricResult] = []
     for definition in MICRONUTRIENTS:
-        values = values_by_metric[definition.metric_type]
-        total = sum(values.values(), Decimal()) if values else None
-        available_days = len(values)
+        total = totals_by_metric.get(definition.metric_type)
+        available_days = days_by_metric.get(definition.metric_type, 0)
         average = total / recorded_days if total is not None and recorded_days else None
         coverage_ratio = available_days / recorded_days if recorded_days else 0.0
         reference_percent = (

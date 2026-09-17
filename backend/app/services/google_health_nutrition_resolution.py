@@ -501,6 +501,7 @@ def resolve_google_health_period(
     start: date,
     end: date,
     metric_keys: Sequence[str],
+    skip_source_instance_validation: bool = False,
 ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
     """Resolve a complete Google Health metric matrix from one bounded read."""
     if type(start) is not date or type(end) is not date or start > end:
@@ -515,12 +516,13 @@ def resolve_google_health_period(
         if metric_key in CANONICAL_NUTRITION_METRICS
     )
     if supported_metrics:
-        validate_source_instance(
-            db,
-            user_id=user_id,
-            provider_key=_PROVIDER,
-            source_instance_id=source_instance_id,
-        )
+        if not skip_source_instance_validation:
+            validate_source_instance(
+                db,
+                user_id=user_id,
+                provider_key=_PROVIDER,
+                source_instance_id=source_instance_id,
+            )
         scope = _load_google_period_scope(
             db,
             user_id=user_id,

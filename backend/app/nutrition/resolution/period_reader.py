@@ -29,6 +29,7 @@ class NutritionPeriodResolver(Protocol):
         start: date,
         end: date,
         metric_keys: Sequence[str],
+        skip_source_instance_validation: bool = False,
     ) -> Mapping[date, Mapping[str, ProviderCandidate]]: ...
 
 
@@ -51,15 +52,18 @@ class _FunctionPeriodResolver:
         start: date,
         end: date,
         metric_keys: Sequence[str],
+        skip_source_instance_validation: bool = False,
     ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
-        return self._reader(
-            db,
-            user_id=user_id,
-            source_instance_id=source_instance_id,
-            start=start,
-            end=end,
-            metric_keys=metric_keys,
-        )
+        kwargs: dict[str, object] = {
+            "user_id": user_id,
+            "source_instance_id": source_instance_id,
+            "start": start,
+            "end": end,
+            "metric_keys": metric_keys,
+        }
+        if skip_source_instance_validation:
+            kwargs["skip_source_instance_validation"] = True
+        return self._reader(db, **kwargs)
 
 
 
@@ -173,6 +177,7 @@ def iter_provider_period_chunks(
     if type(max_days) is not int or max_days < 1:
         raise ValueError("max_days must be a positive integer")
     chunk_start = start
+    skip_source_instance_validation = False
     while True:
         remaining_days = (end - chunk_start).days
         chunk_end = chunk_start + timedelta(days=min(max_days - 1, remaining_days))
@@ -188,10 +193,12 @@ def iter_provider_period_chunks(
                 end=chunk_end,
                 metric_keys=metric_keys,
                 max_days=max_days,
+                skip_source_instance_validation=skip_source_instance_validation,
             ),
         )
         if chunk_end == end:
             return
+        skip_source_instance_validation = True
         chunk_start = chunk_end + timedelta(days=1)
 
 
@@ -206,6 +213,7 @@ def resolve_provider_period(
     metric_keys: Sequence[str] | None = None,
     resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
     max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+    skip_source_instance_validation: bool = False,
 ) -> PeriodCandidates:
     """Resolve a complete canonical metric matrix with one bounded provider read."""
     if type(start) is not date or type(end) is not date or start > end:
@@ -222,14 +230,25 @@ def resolve_provider_period(
         raise ProviderNotAvailableError(
             f"period resolver is not registered: {normalized_provider_key}"
         )
-    result = resolver.resolve_period(
-        db,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        start=start,
-        end=end,
-        metric_keys=requested_metrics,
-    )
+    if skip_source_instance_validation:
+        result = resolver.resolve_period(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            start=start,
+            end=end,
+            metric_keys=requested_metrics,
+            skip_source_instance_validation=True,
+        )
+    else:
+        result = resolver.resolve_period(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            start=start,
+            end=end,
+            metric_keys=requested_metrics,
+        )
     return _validate_result(
         result,
         provider_key=normalized_provider_key,
