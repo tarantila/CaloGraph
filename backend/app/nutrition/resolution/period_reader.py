@@ -167,12 +167,15 @@ def resolve_provider_period(
     end: date,
     metric_keys: Sequence[str] | None = None,
     resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
+    max_days: int = _MAX_PERIOD_DAYS,
 ) -> PeriodCandidates:
     """Resolve a complete canonical metric matrix with one bounded provider read."""
     if type(start) is not date or type(end) is not date or start > end:
         raise ValueError("period range must contain dates in ascending order")
-    if (end - start).days + 1 > _MAX_PERIOD_DAYS:
-        raise ValueError("period range must not exceed 31 days")
+    if type(max_days) is not int or max_days < 1:
+        raise ValueError("max_days must be a positive integer")
+    if (end - start).days + 1 > max_days:
+        raise ValueError(f"period range must not exceed {max_days} days")
     requested_metrics = _normalize_metric_keys(metric_keys)
     normalized_provider_key = _normalize_provider_key(provider_key)
     registry = _default_registry() if resolver_registry is None else resolver_registry

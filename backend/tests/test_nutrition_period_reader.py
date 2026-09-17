@@ -135,6 +135,25 @@ def test_period_reader_rejects_ranges_longer_than_31_days() -> None:
         )
 
 
+def test_period_reader_accepts_explicit_larger_bound_for_base_analytics() -> None:
+    start = date(2026, 1, 1)
+    end = date(2026, 2, 1)
+
+    result = resolve_provider_period(
+        object(),
+        provider_key="test",
+        user_id=uuid4(),
+        source_instance_id=uuid4(),
+        start=start,
+        end=end,
+        metric_keys=tuple(CANONICAL_NUTRITION_METRICS),
+        resolver_registry={"test": _PeriodResolver()},
+        max_days=32,
+    )
+
+    assert tuple(result) == tuple(start + timedelta(days=offset) for offset in range(32))
+
+
 def test_canonical_period_aggregates_bounded_read_without_metric_loop(monkeypatch, user) -> None:
     calls = []
 
