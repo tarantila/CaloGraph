@@ -401,7 +401,17 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     today = datetime.now(ZoneInfo(user.timezone)).date()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
-    points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+    else:
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=week_start - timedelta(days=7),
+            end=week_end,
+        )
     points_through_today = [point for point in points if point.date <= today]
     today_point = points_through_today[-1]
     current_week = [point for point in points if week_start <= point.date <= today]
@@ -416,6 +426,8 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     protein_values = [
         point.protein_g for point in points_through_today[-7:] if point.protein_g is not None
     ]
+    # Import-/Coverage-Metadaten bleiben bewusst HealthSample-basiert; sie sind
+    # keine Provenance-Aussage über die Canonical-Nutrition-Werte oben.
     last_import = db.scalar(
         select(ImportBatch)
         .where(ImportBatch.user_id == user.id, ImportBatch.status.like("completed%"))
