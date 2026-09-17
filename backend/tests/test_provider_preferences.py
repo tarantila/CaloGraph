@@ -208,6 +208,34 @@ def test_micronutrients_without_source_uses_configured_provider(
     assert all(item["status"] == "no_data" for item in payload["nutrients"])
 
 
+
+def test_micronutrients_preference_path_never_reads_legacy_values(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    def fail_legacy(*args, **kwargs):
+        raise AssertionError("configured provider path must not read legacy values")
+
+    monkeypatch.setattr("app.api.analytics.read_legacy_micronutrient_period", fail_legacy)
+
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-09-01&end=2026-09-01"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] is None
+    assert payload["selected_provider"]["provider_key"] == "yazio"
+    assert payload["recorded_days"] == 0
+    assert all(item["status"] == "no_data" for item in payload["nutrients"])
+
 def test_micronutrients_explicit_legacy_source_bypasses_provider_preference(
     client: TestClient,
     user,

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
-from datetime import date
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.nutrition.enums import (
@@ -28,6 +29,7 @@ from app.nutrition.models import (
     NutritionSourceTombstone,
 )
 from app.nutrition.resolution.contracts import (
+    EventReconstructionCandidate,
     MetricContribution,
     ProviderCandidate,
     build_event_candidate,
@@ -38,6 +40,14 @@ from app.services.apple_health_nutrition_ingestion import apple_health_source_in
 
 _PROVIDER = "apple_health"
 _SOURCE_NAMESPACE = "apple_health.food_correlation"
+
+
+@dataclass(frozen=True, slots=True)
+class _AppleReadScope:
+    sources: Mapping[UUID, NutritionSourceObservation]
+    fields: Mapping[tuple[UUID, str], tuple[NutritionFieldObservation, ...]]
+    tombstones: tuple[NutritionSourceTombstone, ...]
+    identity_ids: Mapping[UUID, frozenset[UUID]]
 
 
 def _enum[EnumValue](enum_type: type[EnumValue], value: str | None, fallback: EnumValue) -> EnumValue:
@@ -132,7 +142,7 @@ def _event_tombstoned(
     event: NutritionConsumptionEvent,
     source: NutritionSourceObservation | None,
     tombstones: Sequence[NutritionSourceTombstone],
-    identity_ids: dict[UUID, frozenset[UUID]],
+    identity_ids: Mapping[UUID, frozenset[UUID]],
 ) -> bool:
     if _source_tombstoned(source, tombstones):
         return True
@@ -223,6 +233,51 @@ def _query_events_for_day(
     )
 
 
+def _query_events_for_period(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+) -> tuple[tuple[NutritionConsumptionEvent, ...], tuple[NutritionConsumptionEvent, ...]]:
+    ranged_events = tuple(
+        db.scalars(
+            select(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.user_id == user_id,
+                NutritionConsumptionEvent.provider_key == _PROVIDER,
+                NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                NutritionConsumptionEvent.local_date >= start,
+                NutritionConsumptionEvent.local_date <= end,
+            )
+        ).all()
+    )
+    logical_keys = tuple(
+        sorted(
+            {
+                event.logical_event_key
+                for event in ranged_events
+                if event.logical_event_key is not None
+            }
+        )
+    )
+    if not logical_keys:
+        return ranged_events, ranged_events
+    expanded_events = tuple(
+        db.scalars(
+            select(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.user_id == user_id,
+                NutritionConsumptionEvent.provider_key == _PROVIDER,
+                NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                NutritionConsumptionEvent.logical_event_key.in_(logical_keys),
+            )
+        ).all()
+    )
+    by_id = {event.id: event for event in ranged_events}
+    by_id.update({event.id: event for event in expanded_events})
+    return ranged_events, tuple(by_id.values())
+
+
 def _identity_links(
     db: Session,
     *,
@@ -244,57 +299,96 @@ def _identity_links(
     return {event_id: frozenset(identity_ids) for event_id, identity_ids in grouped.items()}
 
 
-def _event_contributions(
+def _load_scope(
     db: Session,
     *,
-    events: Sequence[NutritionConsumptionEvent],
     user_id: UUID,
     source_instance_id: UUID,
-    local_date: date,
-    metric_key: str,
-) -> list[MetricContribution]:
+    events: Sequence[NutritionConsumptionEvent],
+    metric_keys: Sequence[str],
+) -> _AppleReadScope:
     source_ids = {event.source_observation_id for event in events}
-    sources = (
-        {
-            source.id: source
-            for source in db.scalars(
-                select(NutritionSourceObservation).where(
-                    NutritionSourceObservation.user_id == user_id,
-                    NutritionSourceObservation.id.in_(source_ids),
-                )
-            ).all()
-        }
-        if source_ids
-        else {}
-    )
-    field_rows = (
+    source_rows = (
         db.scalars(
-            select(NutritionFieldObservation).where(
-                NutritionFieldObservation.user_id == user_id,
-                NutritionFieldObservation.source_observation_id.in_(source_ids),
-                NutritionFieldObservation.metric_key == metric_key,
-                NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
-            ).order_by(NutritionFieldObservation.provider_field_path, NutritionFieldObservation.id)
+            select(NutritionSourceObservation).where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.id.in_(source_ids),
+            )
         ).all()
         if source_ids
-        else []
+        else ()
     )
-    fields: dict[UUID, list[NutritionFieldObservation]] = defaultdict(list)
+    sources = {source.id: source for source in source_rows}
+
+    requested_metrics = tuple(metric_keys)
+    field_rows = (
+        db.scalars(
+            select(NutritionFieldObservation)
+            .where(
+                NutritionFieldObservation.user_id == user_id,
+                NutritionFieldObservation.source_observation_id.in_(source_ids),
+                NutritionFieldObservation.metric_key.in_(requested_metrics),
+                NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
+            )
+            .order_by(NutritionFieldObservation.provider_field_path, NutritionFieldObservation.id)
+        ).all()
+        if source_ids and requested_metrics
+        else ()
+    )
+    fields: dict[tuple[UUID, str], list[NutritionFieldObservation]] = defaultdict(list)
     for field in field_rows:
-        fields[field.source_observation_id].append(field)
+        if field.metric_key is not None:
+            fields[(field.source_observation_id, field.metric_key)].append(field)
+    identity_ids = _identity_links(db, user_id=user_id, event_ids=[event.id for event in events])
+    source_record_ids = {
+        source.source_record_id
+        for source in sources.values()
+        if source.source_record_id is not None
+    }
+    identity_id_values = {
+        identity_id
+        for event_identity_ids in identity_ids.values()
+        for identity_id in event_identity_ids
+    }
+    tombstone_scope = [
+        NutritionSourceTombstone.source_observation_id.in_(source_ids),
+    ]
+    if source_record_ids:
+        tombstone_scope.append(NutritionSourceTombstone.source_record_id.in_(source_record_ids))
+    if identity_id_values:
+        tombstone_scope.append(NutritionSourceTombstone.external_identity_id.in_(identity_id_values))
     tombstones = tuple(
         db.scalars(
             select(NutritionSourceTombstone).where(
                 NutritionSourceTombstone.user_id == user_id,
                 NutritionSourceTombstone.provider_key == _PROVIDER,
                 NutritionSourceTombstone.source_instance_id == source_instance_id,
+                or_(*tombstone_scope),
             )
         ).all()
     )
-    identity_ids = _identity_links(db, user_id=user_id, event_ids=[event.id for event in events])
+    return _AppleReadScope(
+        sources=sources,
+        fields={key: tuple(values) for key, values in fields.items()},
+        tombstones=tombstones,
+        identity_ids=identity_ids,
+    )
+
+
+def _event_contributions_from_scope(
+    scope: _AppleReadScope,
+    *,
+    events: Sequence[NutritionConsumptionEvent],
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+    metric_key: str,
+    revision_groups: Sequence[tuple[NutritionConsumptionEvent, ...]] | None = None,
+) -> list[MetricContribution]:
     contributions: list[MetricContribution] = []
 
-    for revision_group in _current_event_groups(events):
+    groups = _current_event_groups(events) if revision_groups is None else revision_groups
+    for revision_group in groups:
         if len(revision_group) != 1:
             contributions.extend(
                 _missing_contribution(
@@ -312,8 +406,8 @@ def _event_contributions(
         event = revision_group[0]
         if event.local_date != local_date:
             continue
-        source = sources.get(event.source_observation_id)
-        if _event_tombstoned(event, source, tombstones, identity_ids):
+        source = scope.sources.get(event.source_observation_id)
+        if _event_tombstoned(event, source, scope.tombstones, scope.identity_ids):
             if source is not None:
                 contributions.append(
                     _missing_contribution(
@@ -354,7 +448,7 @@ def _event_contributions(
             )
             continue
 
-        event_fields = fields.get(event.source_observation_id, [])
+        event_fields = scope.fields.get((event.source_observation_id, metric_key), ())
         if len(event_fields) != 1:
             if event_fields:
                 contributions.extend(
@@ -406,6 +500,32 @@ def _event_contributions(
     return contributions
 
 
+def _event_contributions(
+    db: Session,
+    *,
+    events: Sequence[NutritionConsumptionEvent],
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+    metric_key: str,
+) -> list[MetricContribution]:
+    scope = _load_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        events=events,
+        metric_keys=(metric_key,),
+    )
+    return _event_contributions_from_scope(
+        scope,
+        events=events,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        local_date=local_date,
+        metric_key=metric_key,
+    )
+
+
 def _empty_candidate(*, user_id: UUID, local_date: date, metric_key: str) -> ProviderCandidate:
     return ProviderCandidate(
         provider_key=_PROVIDER,
@@ -421,6 +541,25 @@ def _empty_candidate(*, user_id: UUID, local_date: date, metric_key: str) -> Pro
         lineage_state=LineageState.UNKNOWN,
         source_lineage=(),
         reason_code=ReasonCode.ALL_SOURCES_MISSING,
+    )
+
+
+def _provider_candidate(event_candidate: EventReconstructionCandidate) -> ProviderCandidate:
+    return ProviderCandidate(
+        provider_key=event_candidate.provider_key,
+        user_id=event_candidate.user_id,
+        local_date=event_candidate.local_date,
+        metric_key=event_candidate.metric_key,
+        value=event_candidate.value,
+        unit=event_candidate.unit,
+        selected_granularity=event_candidate.selected_granularity,
+        presence_state=event_candidate.presence_state,
+        coverage_state=event_candidate.coverage_state,
+        resolution_state=event_candidate.resolution_state,
+        lineage_state=event_candidate.lineage_state,
+        source_lineage=event_candidate.source_lineage,
+        reason_code=event_candidate.reason_code,
+        diagnostic_codes=event_candidate.diagnostic_codes,
     )
 
 
@@ -462,22 +601,97 @@ def resolve_apple_health_metric(
         ),
         event_set_known=True,
     )
-    return ProviderCandidate(
-        provider_key=event_candidate.provider_key,
-        user_id=event_candidate.user_id,
-        local_date=event_candidate.local_date,
-        metric_key=event_candidate.metric_key,
-        value=event_candidate.value,
-        unit=event_candidate.unit,
-        selected_granularity=event_candidate.selected_granularity,
-        presence_state=event_candidate.presence_state,
-        coverage_state=event_candidate.coverage_state,
-        resolution_state=event_candidate.resolution_state,
-        lineage_state=event_candidate.lineage_state,
-        source_lineage=event_candidate.source_lineage,
-        reason_code=event_candidate.reason_code,
-        diagnostic_codes=event_candidate.diagnostic_codes,
+    return _provider_candidate(event_candidate)
+
+
+def resolve_apple_health_period(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str],
+) -> Mapping[date, Mapping[str, ProviderCandidate]]:
+    """Resolve all requested Apple nutrients for every date in one bounded read."""
+    if type(start) is not date or type(end) is not date or start > end:
+        raise ValueError("period range must contain dates in ascending order")
+    requested_metrics = tuple(metric_keys)
+    if len(requested_metrics) != len(set(requested_metrics)):
+        raise ValueError("duplicate metric key")
+    if any(metric_key not in CANONICAL_NUTRITION_METRICS for metric_key in requested_metrics):
+        raise ValueError("metric key must be a canonical nutrition metric")
+    expected_source_instance_id = apple_health_source_instance_id(user_id)
+    if source_instance_id != expected_source_instance_id:
+        raise ValueError("source_instance_id must belong to the same user")
+
+    days = tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
+    if not requested_metrics:
+        return {local_date: {} for local_date in days}
+
+    ranged_events, events = _query_events_for_period(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
     )
+    event_dates = {event.local_date for event in ranged_events if event.local_date is not None}
+    if not ranged_events:
+        return {
+            local_date: {
+                metric_key: _empty_candidate(
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                )
+                for metric_key in requested_metrics
+            }
+            for local_date in days
+        }
+
+    scope = _load_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        events=events,
+        metric_keys=requested_metrics,
+    )
+    revision_groups = _current_event_groups(events)
+    result: dict[date, Mapping[str, ProviderCandidate]] = {}
+    for local_date in days:
+        if local_date not in event_dates:
+            result[local_date] = {
+                metric_key: _empty_candidate(
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                )
+                for metric_key in requested_metrics
+            }
+            continue
+        result[local_date] = {
+            metric_key: _provider_candidate(
+                build_event_candidate(
+                    provider_key=_PROVIDER,
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                    contributions=_event_contributions_from_scope(
+                        scope,
+                        events=events,
+                        user_id=user_id,
+                        source_instance_id=source_instance_id,
+                        local_date=local_date,
+                        metric_key=metric_key,
+                        revision_groups=revision_groups,
+                    ),
+                    event_set_known=True,
+                )
+            )
+            for metric_key in requested_metrics
+        }
+    return result
 
 
-__all__ = ["resolve_apple_health_metric"]
+__all__ = ["resolve_apple_health_metric", "resolve_apple_health_period"]

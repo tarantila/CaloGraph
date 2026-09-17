@@ -19,7 +19,8 @@ from app.analytics.service import PRIMARY_NUTRITION_METRICS, serialize_decimal
 from app.database import SessionLocal
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample
-from app.nutrition.resolution.daily_reader import resolve_daily_nutrients
+from app.nutrition.models import NutritionSourceObservation
+from app.nutrition.resolution import resolve_provider_period
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
@@ -320,20 +321,40 @@ def read_canonical_micronutrient_period(
     }
     primary_recorded_dates: set[date] = set()
     all_value_dates: set[date] = set()
-    current = start
     requested_metrics = tuple(CANONICAL_NUTRITION_METRICS)
+    candidates_by_day = resolve_provider_period(
+        db,
+        provider_key=provider_key,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=requested_metrics,
+    )
+    canonical_source_rows = (
+        db.execute(
+            select(
+                NutritionSourceObservation.provider_key,
+                func.max(NutritionSourceObservation.observed_at),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == provider_key,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.local_date >= start,
+                NutritionSourceObservation.local_date <= end,
+            )
+            .group_by(NutritionSourceObservation.provider_key)
+            .order_by(NutritionSourceObservation.provider_key)
+        ).all()
+        if isinstance(db, Session)
+        else ()
+    )
+    current = start
     while current <= end:
-        candidates = resolve_daily_nutrients(
-            db,
-            provider_key=provider_key,
-            user_id=user_id,
-            source_instance_id=source_instance_id,
-            local_date=current,
-            metric_keys=requested_metrics,
-        )
         candidate_values = {
-            metric_type: candidate.value
-            for metric_type, candidate in zip(requested_metrics, candidates, strict=True)
+            metric_type: candidates_by_day[current][metric_type].value
+            for metric_type in requested_metrics
         }
         if any(
             (value is not None and value > 0)
@@ -382,7 +403,17 @@ def read_canonical_micronutrient_period(
                 coverage_ratio=coverage_ratio,
             )
         )
-    return MicronutrientPeriodResult(recorded_days=recorded_days, nutrients=tuple(metrics))
+    return MicronutrientPeriodResult(
+        recorded_days=recorded_days,
+        nutrients=tuple(metrics),
+        filtered_updated_at=max(
+            (updated_at for _, updated_at in canonical_source_rows if updated_at is not None),
+            default=None,
+        ),
+        available_sources=tuple(
+            (source_type, updated_at) for source_type, updated_at in canonical_source_rows
+        ),
+    )
 
 
 def compare_micronutrient_periods(

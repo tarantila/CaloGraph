@@ -213,18 +213,18 @@ def micronutrients(
                 detail="Der konfigurierte Nutrition-Provider unterstützt den Gesamtzeitraum nicht.",
                 problem_type=PROVIDER_SELECTION_NOT_READY,
             )
+    legacy = None
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-
-    legacy = read_legacy_micronutrient_period(
-        db,
-        user_id=user.id,
-        start=start,
-        end=end,
-        source=source,
-    )
-    response = legacy.to_public(start=start, end=end, source=source)
-    if selection is not None:
+        legacy = read_legacy_micronutrient_period(
+            db,
+            user_id=user.id,
+            start=start,
+            end=end,
+            source=source,
+        )
+        response = legacy.to_public(start=start, end=end, source=source)
+    else:
         canonical = read_canonical_micronutrient_period(
             db,
             user_id=user.id,
@@ -233,13 +233,9 @@ def micronutrients(
             start=start,
             end=end,
         )
-        response = {
-            **response,
-            **canonical.to_public_value_scope(),
-            "source": None,
-            "last_updated_at": None,
-        }
-    elif settings.analytics_micronutrients_canonical_read_enabled:
+        response = canonical.to_public(start=start, end=end, source=None)
+    if selection is None and settings.analytics_micronutrients_canonical_read_enabled:
+        assert legacy is not None
         with suppress(Exception):
             evaluation = run_micronutrient_canonical_read(
                 user.id,
@@ -256,7 +252,8 @@ def micronutrients(
                 and evaluation.canonical is not None
             ):
                 response = {**response, **evaluation.canonical.to_public_value_scope()}
-    else:
+    elif selection is None:
+        assert legacy is not None
         with suppress(Exception):
             run_micronutrient_shadow(
                 user.id,
@@ -312,17 +309,18 @@ def micronutrients(
                 for provider in provider_metadata.providers
             ],
         }
-    with suppress(Exception):
-        run_micronutrient_metadata_shadow(
-            user.id,
-            start,
-            end,
-            source,
-            period,
-            legacy,
-            enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
-            max_days=settings.analytics_micronutrients_shadow_max_days,
-        )
+    if legacy is not None:
+        with suppress(Exception):
+            run_micronutrient_metadata_shadow(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
     return response
 
 

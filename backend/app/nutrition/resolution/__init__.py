@@ -36,6 +36,7 @@ from .metrics import (
     metric_definition,
 )
 from .parity import ParityDiagnostic, compare_decimal_parity
+from .period_reader import NutritionPeriodResolver, PeriodCandidates, resolve_provider_period
 from .providers import (
     NUTRIENT_READ_PROVIDER_RESOLVERS,
     PROVIDER_RESOLVERS,
@@ -60,12 +61,14 @@ __all__ = [
     "EvidenceKind",
     "MetricContribution",
     "MetricDefinition",
+    "NutritionPeriodResolver",
     "NutritionProviderDiscovery",
     "NutritionProviderIdentity",
     "NutritionProviderMetadata",
     "NutritionProviderMetadataSet",
     "NutritionProviderResolver",
     "ParityDiagnostic",
+    "PeriodCandidates",
     "ProviderCandidate",
     "ProviderCandidateContractError",
     "ProviderDiscoveryEvidence",
@@ -97,4 +100,5 @@ __all__ = [
     "resolve_daily_nutrients",
     "resolve_event_vs_summary",
     "resolve_provider_metric",
+    "resolve_provider_period",
 ]
