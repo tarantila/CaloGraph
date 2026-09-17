@@ -51,7 +51,7 @@ describe('MicronutrientsView source routing', () => {
     setLocale('de')
   })
 
-  it('keeps normal provider requests and normalized URLs source-free', async () => {
+  it('normalizes unsupported canonical All deep links to bounded range state', async () => {
     apiMock.mockResolvedValue(response())
 
     const { router, wrapper } = await mountView({
@@ -60,14 +60,12 @@ describe('MicronutrientsView source routing', () => {
     })
 
     expect(apiMock).toHaveBeenCalledWith(
-      '/analytics/micronutrients?start=2026-08-01&end=2026-08-31&period=all',
+      '/analytics/micronutrients?start=2026-08-01&end=2026-08-31',
     )
     expect(router.currentRoute.value.query).toEqual({
       start: '2026-08-01',
       end: '2026-08-31',
-      period: 'all',
     })
-    expect(router.currentRoute.value.query).not.toHaveProperty('source')
     wrapper.unmount()
   })
 

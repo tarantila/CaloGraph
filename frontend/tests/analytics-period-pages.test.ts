@@ -97,12 +97,12 @@ beforeEach(() => {
 })
 
 describe('analytics page responsive period integrations', () => {
-  it('offers the compact period family on Micronutrients', async () => {
+  it('offers bounded long-range presets on Micronutrients without All', async () => {
     const wrapper = await mountView(MicronutrientsView)
     const filter = wrapper.getComponent(AnalyticsPeriodFilter)
 
     expect(filter.findAll('.analytics-period-button').map((button) => button.text())).toEqual([
-      '7 Tage', '30 Tage', '60 Tage', 'Alle', 'Individuell',
+      '7 Tage', '30 Tage', '60 Tage', '90 Tage', '6 Monate', '1 Jahr', 'Individuell',
     ])
     await filter.get('.analytics-period-button').trigger('click')
     await flushPromises()

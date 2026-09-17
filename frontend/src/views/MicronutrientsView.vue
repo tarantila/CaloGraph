@@ -80,8 +80,16 @@ const source = ref(
 const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
 const start = ref(initialRange.start)
 const end = ref(initialRange.end)
-const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
-const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
+const compactPresets = computed<AnalyticsCompactPreset[]>(() => [
+  '7',
+  '30',
+  '60',
+  '90',
+  '180',
+  'year',
+  ...(source.value ? ['all' as const] : []),
+])
+const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets.value)
 const period = ref<AnalyticsCompactPreset | undefined>(
   analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
     ? periodCandidate
