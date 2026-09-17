@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
@@ -221,6 +221,39 @@ def test_range_metadata_requires_local_date_and_valid_micronutrient_field(
 
     assert result.providers[0].provider_key == "yazio"
     assert result.providers[0].latest_evidence_observed_at == LATEST_OBSERVED_AT
+
+def test_range_metadata_chunks_long_ranges_and_keeps_latest_evidence(db: Session, user: User) -> None:
+    calls: list[tuple[date, date]] = []
+
+    class Resolver:
+        provider_key = "yazio"
+        def discover_global_evidence(self, db, *, user_id):
+            del db, user_id
+            return ProviderDiscoveryEvidence(self.provider_key, None)
+
+
+        def discover_range_evidence(self, db, *, user_id, start, end):
+            del db, user_id
+            calls.append((start, end))
+            return ProviderDiscoveryEvidence(
+                self.provider_key,
+                OBSERVED_AT + timedelta(days=(end - DAY).days),
+            )
+
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY + timedelta(days=61),
+        provider_registry={"yazio": Resolver()},
+        provider_key="yazio",
+    )
+
+    assert calls == [
+        (DAY, DAY + timedelta(days=30)),
+        (DAY + timedelta(days=31), DAY + timedelta(days=61)),
+    ]
+    assert result.providers[0].latest_evidence_observed_at == OBSERVED_AT + timedelta(days=61)
 
 def test_range_metadata_can_limit_provider_registry(db: Session, user: User) -> None:
     calls: list[str] = []

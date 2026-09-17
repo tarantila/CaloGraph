@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Protocol
 from uuid import UUID
@@ -235,6 +235,37 @@ def discover_nutrition_providers(
 
 
 def discover_nutrition_provider_metadata(
+    db: Session,
+    *,
+    user_id: UUID,
+    start: date,
+    end: date,
+    provider_registry: Mapping[str, object] | None = None,
+    provider_key: str | None = None,
+) -> NutritionProviderMetadataSet:
+    """Read range-scoped provider metadata in bounded date windows."""
+    _validate_range(start, end)
+    metadata_by_provider: dict[str, NutritionProviderMetadata] = {}
+    chunk_start = start
+    while True:
+        chunk_end = chunk_start + timedelta(days=min(30, (end - chunk_start).days))
+        chunk_metadata = _discover_nutrition_provider_metadata_once(
+            db,
+            user_id=user_id,
+            start=chunk_start,
+            end=chunk_end,
+            provider_registry=provider_registry,
+            provider_key=provider_key,
+        )
+        for metadata in chunk_metadata.providers:
+            previous = metadata_by_provider.get(metadata.provider_key)
+            if previous is None or metadata.latest_evidence_observed_at > previous.latest_evidence_observed_at:
+                metadata_by_provider[metadata.provider_key] = metadata
+        if chunk_end == end:
+            return NutritionProviderMetadataSet(tuple(metadata_by_provider.values()))
+        chunk_start = chunk_end + timedelta(days=1)
+
+def _discover_nutrition_provider_metadata_once(
     db: Session,
     *,
     user_id: UUID,
