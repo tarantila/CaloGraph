@@ -1,15 +1,37 @@
-from datetime import UTC, date, datetime
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.analytics import service as analytics_service
 from app.analytics.service import budget_balance, daily_points, percentile
-from app.api.analytics import calendar, daily, micronutrients, trends
+from app.api.analytics import _range, calendar, daily, micronutrients, trends
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
 from app.models import NutritionTarget, TrackingOverride, User
 from app.services.import_service import persist_import
+
+
+@pytest.mark.parametrize("days", [1, 30, 31, 32, 90, 180, 365, 366, 3661])
+def test_shared_analytics_range_accepts_inclusive_bounded_lengths(days: int) -> None:
+    start = date(2024, 1, 1)
+    end = start + timedelta(days=days - 1)
+
+    assert _range(start, end, "UTC", 30) == (start, end)
+
+
+def test_shared_analytics_range_rejects_overlong_inverted_and_date_max_ranges() -> None:
+    with pytest.raises(HTTPException, match="zu groß") as too_large:
+        _range(date(2024, 1, 1), date(2034, 1, 10), "UTC", 30)
+    assert too_large.value.status_code == 422
+    with pytest.raises(HTTPException, match="nach") as inverted:
+        _range(date(2024, 2, 1), date(2024, 1, 1), "UTC", 30)
+    assert inverted.value.status_code == 422
+    assert _range(date.max, date.max, "UTC", 30) == (date.max, date.max)
 
 
 def metric(

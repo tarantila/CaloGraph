@@ -90,6 +90,14 @@ evidence of a deficiency and is not a supplement recommendation. Choline is
 shown without a percentage comparison because the EU table used here does not
 define an NRV for it.
 
+Canonical requests selected through a nutrition preference support inclusive
+bounded ranges of up to 3661 days. Provider reads remain bounded internally to
+contiguous chunks of at most 31 days; the public totals, averages, coverage,
+recorded days, and status are calculated once for the complete requested range.
+`period=all` remains unsupported for canonical preference requests and returns
+HTTP 422. Explicit legacy `source` requests retain their existing range and
+aggregation semantics.
+
 ## Micronutrient provider metadata
 
 The micronutrient response keeps the legacy `source`, `available_sources`, and

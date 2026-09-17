@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.analytics import micronutrient_shadow
 from app.analytics.micronutrient_shadow import read_canonical_micronutrient_period
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES
 from app.nutrition.enums import (
@@ -21,6 +20,7 @@ from app.nutrition.resolution import (
     MetricContribution,
     ProviderCandidate,
     canonical_unit,
+    period_reader,
     resolve_provider_period,
 )
 from app.nutrition.resolution.reasons import EvidenceKind, ReasonCode
@@ -121,6 +121,128 @@ def test_period_reader_uses_one_bounded_provider_read_and_validates_scope() -> N
     assert all(candidate.local_date == start for candidate in result[start].values())
 
 
+def test_period_reader_splits_long_ranges_into_contiguous_bounded_chunks(monkeypatch) -> None:
+    calls = []
+
+    def fake_period(db, **kwargs):
+        del db
+        calls.append(kwargs)
+        return _PeriodResolver().resolve_period(
+            None,
+            user_id=kwargs["user_id"],
+            source_instance_id=kwargs["source_instance_id"],
+            start=kwargs["start"],
+            end=kwargs["end"],
+            metric_keys=kwargs["metric_keys"],
+        )
+
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    start = date(2026, 1, 1)
+    end = start + timedelta(days=61)
+
+    chunks = list(
+        period_reader.iter_provider_period_chunks(
+            object(),
+            provider_key="test",
+            user_id=uuid4(),
+            source_instance_id=uuid4(),
+            start=start,
+            end=end,
+            metric_keys=tuple(CANONICAL_NUTRITION_METRICS),
+        )
+    )
+
+    assert [(chunk_start, chunk_end) for chunk_start, chunk_end, _ in chunks] == [
+        (start, start + timedelta(days=30)),
+        (start + timedelta(days=31), start + timedelta(days=61)),
+    ]
+    assert [len(candidates) for _, _, candidates in chunks] == [31, 31]
+    assert [call["max_days"] for call in calls] == [31, 31]
+
+
+def test_canonical_micronutrients_aggregate_long_range_without_average_of_averages(
+    monkeypatch, user
+) -> None:
+    calls = []
+    start = date(2026, 1, 1)
+    end = start + timedelta(days=61)
+    values = {
+        (start, "dietary_energy_kcal"): Decimal("1800"),
+        (start, "iron_mg"): Decimal("0"),
+        (start + timedelta(days=31), "dietary_energy_kcal"): Decimal("600"),
+        (start + timedelta(days=31), "iron_mg"): Decimal("40"),
+    }
+
+    def fake_period(db, **kwargs):
+        del db
+        calls.append(kwargs)
+        return {
+            current: {
+                metric_key: _candidate(
+                    user_id=kwargs["user_id"],
+                    local_date=current,
+                    metric_key=metric_key,
+                    value=values.get((current, metric_key)),
+                )
+                for metric_key in kwargs["metric_keys"]
+            }
+            for current in (
+                kwargs["start"] + timedelta(days=offset)
+                for offset in range((kwargs["end"] - kwargs["start"]).days + 1)
+            )
+        }
+
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    result = read_canonical_micronutrient_period(
+        db=object(),
+        user_id=user.id,
+        provider_key="test",
+        source_instance_id=user.id,
+        start=start,
+        end=end,
+    )
+
+    iron = next(item for item in result.nutrients if item.metric_type == "iron_mg")
+    assert [(call["start"], call["end"]) for call in calls] == [
+        (start, start + timedelta(days=30)),
+        (start + timedelta(days=31), end),
+    ]
+    assert result.recorded_days == 2
+    assert iron.total == Decimal("40")
+    assert iron.average_daily == Decimal("20")
+    assert iron.days_with_value == 2
+    assert iron.coverage_ratio == 1.0
+
+
+def test_canonical_micronutrients_accept_date_max_boundary(monkeypatch, user) -> None:
+    monkeypatch.setattr(
+        period_reader,
+        "resolve_provider_period",
+        lambda db, **kwargs: {
+            kwargs["start"]: {
+                metric_key: _candidate(
+                    user_id=kwargs["user_id"],
+                    local_date=kwargs["start"],
+                    metric_key=metric_key,
+                    value=None,
+                )
+                for metric_key in kwargs["metric_keys"]
+            }
+        },
+    )
+
+    result = read_canonical_micronutrient_period(
+        db=object(),
+        user_id=user.id,
+        provider_key="test",
+        source_instance_id=user.id,
+        start=date.max,
+        end=date.max,
+    )
+
+    assert result.recorded_days == 0
+
+
 def test_period_reader_rejects_ranges_longer_than_31_days() -> None:
     with pytest.raises(ValueError, match="31"):
         resolve_provider_period(
@@ -169,7 +291,7 @@ def test_canonical_period_aggregates_bounded_read_without_metric_loop(monkeypatc
             metric_keys=kwargs["metric_keys"],
         )
 
-    monkeypatch.setattr(micronutrient_shadow, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
 
     result = read_canonical_micronutrient_period(
         db=object(),

@@ -20,7 +20,7 @@ from app.database import SessionLocal
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample
 from app.nutrition.models import NutritionSourceObservation
-from app.nutrition.resolution import resolve_provider_period
+from app.nutrition.resolution import iter_provider_period_chunks
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
@@ -322,15 +322,6 @@ def read_canonical_micronutrient_period(
     primary_recorded_dates: set[date] = set()
     all_value_dates: set[date] = set()
     requested_metrics = tuple(CANONICAL_NUTRITION_METRICS)
-    candidates_by_day = resolve_provider_period(
-        db,
-        provider_key=provider_key,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        start=start,
-        end=end,
-        metric_keys=requested_metrics,
-    )
     canonical_source_rows = (
         db.execute(
             select(
@@ -350,24 +341,32 @@ def read_canonical_micronutrient_period(
         if isinstance(db, Session)
         else ()
     )
-    current = start
-    while current <= end:
-        candidate_values = {
-            metric_type: candidates_by_day[current][metric_type].value
-            for metric_type in requested_metrics
-        }
-        if any(
-            (value is not None and value > 0)
-            for metric_type, value in candidate_values.items()
-            if metric_type in PRIMARY_NUTRITION_METRICS
-        ):
-            primary_recorded_dates.add(current)
-        for metric_type in MICRONUTRIENT_METRIC_TYPES:
-            value = candidate_values.get(metric_type)
-            if value is not None:
-                values_by_metric[metric_type][current] = value
-                all_value_dates.add(current)
-        current += timedelta(days=1)
+    for chunk_start, chunk_end, candidates_by_day in iter_provider_period_chunks(
+        db,
+        provider_key=provider_key,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=requested_metrics,
+    ):
+        for offset in range((chunk_end - chunk_start).days + 1):
+            current = chunk_start + timedelta(days=offset)
+            candidate_values = {
+                metric_type: candidates_by_day[current][metric_type].value
+                for metric_type in requested_metrics
+            }
+            if any(
+                (value is not None and value > 0)
+                for metric_type, value in candidate_values.items()
+                if metric_type in PRIMARY_NUTRITION_METRICS
+            ):
+                primary_recorded_dates.add(current)
+            for metric_type in MICRONUTRIENT_METRIC_TYPES:
+                value = candidate_values.get(metric_type)
+                if value is not None:
+                    values_by_metric[metric_type][current] = value
+                    all_value_dates.add(current)
 
     recorded_dates = primary_recorded_dates or all_value_dates
     recorded_days = len(recorded_dates)

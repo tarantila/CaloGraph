@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Final, Protocol
@@ -156,6 +156,44 @@ def _validate_result(
         raise ValueError("period resolver returned dates outside the requested range")
     return MappingProxyType(validated)
 
+def iter_provider_period_chunks(
+    db: Session,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str] | None = None,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+) -> Iterator[tuple[date, date, PeriodCandidates]]:
+    """Yield contiguous bounded provider reads for one requested range."""
+    if type(start) is not date or type(end) is not date or start > end:
+        raise ValueError("period range must contain dates in ascending order")
+    if type(max_days) is not int or max_days < 1:
+        raise ValueError("max_days must be a positive integer")
+    chunk_start = start
+    while True:
+        remaining_days = (end - chunk_start).days
+        chunk_end = chunk_start + timedelta(days=min(max_days - 1, remaining_days))
+        yield (
+            chunk_start,
+            chunk_end,
+            resolve_provider_period(
+                db,
+                provider_key=provider_key,
+                user_id=user_id,
+                source_instance_id=source_instance_id,
+                start=chunk_start,
+                end=chunk_end,
+                metric_keys=metric_keys,
+                max_days=max_days,
+            ),
+        )
+        if chunk_end == end:
+            return
+        chunk_start = chunk_end + timedelta(days=1)
+
 
 def resolve_provider_period(
     db: Session,
@@ -202,4 +240,12 @@ def resolve_provider_period(
     )
 
 
-__all__ = ["NutritionPeriodResolver", "PeriodCandidates", "resolve_provider_period"]
+
+
+__all__ = [
+    "MAX_PROVIDER_PERIOD_DAYS",
+    "NutritionPeriodResolver",
+    "PeriodCandidates",
+    "iter_provider_period_chunks",
+    "resolve_provider_period",
+]

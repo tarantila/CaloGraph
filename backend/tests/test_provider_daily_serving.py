@@ -14,7 +14,7 @@ from app.analytics.provider_selection import (
 )
 from app.api import analytics as analytics_api
 from app.nutrition.enums import CoverageState, PresenceState, ResolutionState
-from app.nutrition.resolution import DAILY_PROJECTION_METRICS
+from app.nutrition.resolution import DAILY_PROJECTION_METRICS, period_reader
 from app.schemas import DailyPoint
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -161,7 +161,7 @@ def test_provider_daily_reads_projection_metrics_in_bounded_chunks(monkeypatch):
             for local_date in [kwargs["start"] + provider_daily.timedelta(days=offset)]
         }
 
-    monkeypatch.setattr(provider_daily, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
     monkeypatch.setattr(
         provider_daily,
         "_build_daily_point",
@@ -218,7 +218,7 @@ def test_provider_daily_accepts_date_max_boundary_without_overflow(monkeypatch):
             }
         }
 
-    monkeypatch.setattr(provider_daily, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
     monkeypatch.setattr(provider_daily, "_build_daily_point", lambda **kwargs: kwargs)
 
     class EmptyDb:
@@ -339,7 +339,7 @@ def test_provider_daily_empty_provider_data_returns_no_data_points(monkeypatch):
             del statement
             return SimpleNamespace(all=lambda: [])
 
-    monkeypatch.setattr(provider_daily, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
 
     result = provider_daily.read_provider_daily_points(
         EmptyDb(),

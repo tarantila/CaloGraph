@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -206,6 +209,49 @@ def test_micronutrients_without_source_uses_configured_provider(
     assert payload["last_updated_at"] is None
     assert payload["recorded_days"] == 0
     assert all(item["status"] == "no_data" for item in payload["nutrients"])
+
+
+@pytest.mark.parametrize("days", [1, 30, 31, 32, 90, 180, 365, 366])
+def test_micronutrients_preference_accepts_bounded_long_ranges(
+    client: TestClient,
+    user,
+    db,
+    days: int,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    end = date(2026, 1, 1)
+    start = end - timedelta(days=days - 1)
+    response = client.get(
+        f"/api/v1/analytics/micronutrients?start={start.isoformat()}&end={end.isoformat()}"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["start_date"] == start.isoformat()
+    assert payload["end_date"] == end.isoformat()
+    assert payload["recorded_days"] == 0
+    assert len(payload["nutrients"]) == 26
+
+
+def test_micronutrients_preference_keeps_period_all_rejected(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-01-01&end=2026-01-01&period=all"
+    )
+
+    assert response.status_code == 422
 
 def test_micronutrients_without_preference_keeps_legacy_yazio_fallback(
     client: TestClient,

@@ -36,7 +36,13 @@ from .metrics import (
     metric_definition,
 )
 from .parity import ParityDiagnostic, compare_decimal_parity
-from .period_reader import NutritionPeriodResolver, PeriodCandidates, resolve_provider_period
+from .period_reader import (
+    MAX_PROVIDER_PERIOD_DAYS,
+    NutritionPeriodResolver,
+    PeriodCandidates,
+    iter_provider_period_chunks,
+    resolve_provider_period,
+)
 from .providers import (
     NUTRIENT_READ_PROVIDER_RESOLVERS,
     PROVIDER_RESOLVERS,
@@ -54,6 +60,7 @@ from .sources import ProviderSourceBindings, ProviderSourceInstance
 __all__ = [
     "CANONICAL_NUTRITION_METRICS",
     "DAILY_PROJECTION_METRICS",
+    "MAX_PROVIDER_PERIOD_DAYS",
     "NUTRIENT_READ_PROVIDER_RESOLVERS",
     "PROVIDER_RESOLVERS",
     "AggregatedMetric",
@@ -95,6 +102,7 @@ __all__ = [
     "is_known_metric",
     "is_summary_usable",
     "is_unsupported_metric",
+    "iter_provider_period_chunks",
     "metric_definition",
     "resolve_daily_nutrient",
     "resolve_daily_nutrients",
