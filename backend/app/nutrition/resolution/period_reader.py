@@ -184,7 +184,7 @@ def iter_provider_period_chunks(
         yield (
             chunk_start,
             chunk_end,
-            resolve_provider_period(
+            _resolve_provider_period(
                 db,
                 provider_key=provider_key,
                 user_id=user_id,
@@ -203,6 +203,30 @@ def iter_provider_period_chunks(
 
 
 def resolve_provider_period(
+    db: Session,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str] | None = None,
+    resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+) -> PeriodCandidates:
+    return _resolve_provider_period(
+        db,
+        provider_key=provider_key,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=metric_keys,
+        resolver_registry=resolver_registry,
+        max_days=max_days,
+    )
+
+def _resolve_provider_period(
     db: Session,
     *,
     provider_key: str,

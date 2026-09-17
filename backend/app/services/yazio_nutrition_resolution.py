@@ -889,12 +889,18 @@ def _resolve_scope_metric(
     source_instance_id: UUID,
     local_date: date,
     metric_key: str,
+    current: Sequence[_CurrentEvent] | None = None,
+    summary_groups: Sequence[tuple[NutritionSourceObservation, ...]] | None = None,
 ) -> ProviderCandidate:
-    current = _current_events(
-        scope,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        local_date=local_date,
+    current = (
+        _current_events(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        if current is None
+        else current
     )
     event_candidate = build_event_candidate(
         provider_key=_PROVIDER,
@@ -904,11 +910,15 @@ def _resolve_scope_metric(
         contributions=_event_contributions(scope, current, metric_key, local_date),
         event_set_known=True,
     )
-    summary_groups = _summary_groups(
-        scope,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        local_date=local_date,
+    summary_groups = (
+        _summary_groups(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        if summary_groups is None
+        else summary_groups
     )
     summary_candidate: SummaryCandidate | None = None
     if len(summary_groups) == 1 and len(summary_groups[0]) == 1:
@@ -1025,6 +1035,24 @@ def resolve_yazio_period(
         end=end,
         metric_keys=supported_metric_keys,
     )
+    current_by_date = {
+        local_date: _current_events(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        for local_date in dates
+    }
+    summary_groups_by_date = {
+        local_date: _summary_groups(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        for local_date in dates
+    }
     return {
         local_date: {
             metric_key: (
@@ -1040,6 +1068,8 @@ def resolve_yazio_period(
                     source_instance_id=source_instance_id,
                     local_date=local_date,
                     metric_key=metric_key,
+                    current=current_by_date[local_date],
+                    summary_groups=summary_groups_by_date[local_date],
                 )
             )
             for metric_key in requested_metric_keys

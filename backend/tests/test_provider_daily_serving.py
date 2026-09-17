@@ -161,7 +161,7 @@ def test_provider_daily_reads_projection_metrics_in_bounded_chunks(monkeypatch):
             for local_date in [kwargs["start"] + provider_daily.timedelta(days=offset)]
         }
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
     monkeypatch.setattr(
         provider_daily,
         "_build_daily_point",
@@ -218,7 +218,7 @@ def test_provider_daily_accepts_date_max_boundary_without_overflow(monkeypatch):
             }
         }
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
     monkeypatch.setattr(provider_daily, "_build_daily_point", lambda **kwargs: kwargs)
 
     class EmptyDb:
@@ -339,7 +339,7 @@ def test_provider_daily_empty_provider_data_returns_no_data_points(monkeypatch):
             del statement
             return SimpleNamespace(all=lambda: [])
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
 
     result = provider_daily.read_provider_daily_points(
         EmptyDb(),

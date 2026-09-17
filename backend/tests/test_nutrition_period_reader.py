@@ -136,7 +136,7 @@ def test_period_reader_splits_long_ranges_into_contiguous_bounded_chunks(monkeyp
             metric_keys=kwargs["metric_keys"],
         )
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
     start = date(2026, 1, 1)
     end = start + timedelta(days=61)
 
@@ -193,7 +193,7 @@ def test_canonical_micronutrients_aggregate_long_range_without_average_of_averag
             )
         }
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
     result = read_canonical_micronutrient_period(
         db=object(),
         user_id=user.id,
@@ -218,7 +218,7 @@ def test_canonical_micronutrients_aggregate_long_range_without_average_of_averag
 def test_canonical_micronutrients_accept_date_max_boundary(monkeypatch, user) -> None:
     monkeypatch.setattr(
         period_reader,
-        "resolve_provider_period",
+        "_resolve_provider_period",
         lambda db, **kwargs: {
             kwargs["start"]: {
                 metric_key: _candidate(
@@ -292,7 +292,7 @@ def test_canonical_period_aggregates_bounded_read_without_metric_loop(monkeypatc
             metric_keys=kwargs["metric_keys"],
         )
 
-    monkeypatch.setattr(period_reader, "resolve_provider_period", fake_period)
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
 
     result = read_canonical_micronutrient_period(
         db=object(),
