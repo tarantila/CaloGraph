@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.importers.common import decimal_value
+from app.micronutrients import MICRONUTRIENT_BY_YAZIO_ID
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -87,8 +89,20 @@ _METRIC_KEYS = {
     "sugar": "sugar_g",
     "saturated_fat": "saturated_fat_g",
 }
-_NUTRIENT_UNITS = {"energy": "kcal", "protein": "g", "carb": "g", "fat": "g", "fiber": "g", "sugar": "g", "saturated_fat": "g", "salt": "g"}
+_NUTRIENT_UNITS = {
+    "energy": "kcal",
+    "protein": "g",
+    "carb": "g",
+    "fat": "g",
+    "fiber": "g",
+    "sugar": "g",
+    "saturated_fat": "g",
+    "salt": "g",
+}
 _UNITS = {**_NUTRIENT_UNITS, "energy_goal_kcal": "kcal"}
+_GRAM_TO_MG = Decimal("1000")
+_CANONICAL_VALUE_UNSET = object()
+_GRAM_TO_UG = Decimal("1000000")
 
 def _json_value(value: Any) -> Any:
     if dataclasses.is_dataclass(value):
@@ -127,7 +141,11 @@ def _safe_metadata(metadata: Mapping[str, Any] | None) -> dict[str, str | int | 
         elif isinstance(value, float):
             if value == value and abs(value) != float("inf"):
                 result[key] = value
-        elif isinstance(value, str) and len(value.encode()) <= _MAX_METADATA_TEXT:
+        elif (
+            isinstance(value, str)
+            and len(value.encode()) <= _MAX_METADATA_TEXT
+            and not any(term in value.lower() for term in _SENSITIVE_TERMS)
+        ):
             result[key] = value
     return {key: result[key] for key in sorted(result)[:_MAX_METADATA_ITEMS]}
 
@@ -144,10 +162,17 @@ def _validate_diary_dates(diary: YazioFoodDiary, requested_start: date, requeste
             raise ValueError("diary summary local_date must be within requested range")
 
 
-
 def _civil(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=None) if value is not None else None
 
+
+def _database_safe_value(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return decimal_value(value.normalize())
+    except (TypeError, ValueError):
+        return None
 
 def _presence(value: Decimal | None) -> str:
     if value is None:
@@ -157,6 +182,22 @@ def _presence(value: Decimal | None) -> str:
 
 def _canonical_value(nutrient: str, value: Decimal | None, *, supported: bool = True) -> Decimal | None:
     return value if supported and (nutrient in _UNITS or nutrient in _METRIC_KEYS.values()) else None
+
+
+def _additional_canonicalization(
+    provider_key: str, value: Decimal
+) -> tuple[str | None, Decimal | None, str | None, str | None]:
+    definition = MICRONUTRIENT_BY_YAZIO_ID.get(provider_key)
+    if definition is None:
+        return None, None, None, None
+    canonical_value = value
+    if definition.unit == "mg":
+        canonical_value *= _GRAM_TO_MG
+    elif definition.unit == "ug":
+        canonical_value *= _GRAM_TO_UG
+    else:
+        return None, None, None, None
+    return definition.metric_type, canonical_value, definition.unit, "g"
 
 
 def _metadata_with(metadata: Mapping[str, Any] | None, **values: Any) -> dict[str, Any]:
@@ -278,6 +319,7 @@ def _field(
     provider_field_path: str,
     value: Decimal | None,
     metric_key: str | None,
+    canonical_value: Decimal | object | None = _CANONICAL_VALUE_UNSET,
     canonical_supported: bool = True,
     canonical_unit: str | None,
     provider_raw_unit: str | None,
@@ -290,6 +332,27 @@ def _field(
     lineage_state: str = LineageState.CONFIRMED.value,
     provider_metadata: Mapping[str, Any] | None = None,
 ) -> NutritionFieldObservation:
+    safe_value = _database_safe_value(value)
+    if safe_value is None:
+        value = None
+        metric_key = None
+        canonical_unit = None
+        resolved_canonical_value = None
+        role = ObservationRole.PROVIDER.value
+    elif canonical_value is _CANONICAL_VALUE_UNSET:
+        value = safe_value
+        resolved_canonical_value = _canonical_value(
+            metric_key or "", safe_value, supported=canonical_supported
+        )
+    else:
+        value = safe_value
+        resolved_canonical_value = _database_safe_value(
+            cast(Decimal | None, canonical_value)
+        )
+        if resolved_canonical_value is None:
+            metric_key = None
+            canonical_unit = None
+            role = ObservationRole.PROVIDER.value
     existing = db.scalar(
         select(NutritionFieldObservation).where(
             NutritionFieldObservation.user_id == user_id,
@@ -303,7 +366,7 @@ def _field(
         existing.provider_raw_value_text = raw_text
         existing.provider_raw_unit = provider_raw_unit
         existing.metric_key = metric_key
-        existing.canonical_value = _canonical_value(metric_key or "", value, supported=canonical_supported)
+        existing.canonical_value = resolved_canonical_value
         existing.canonical_unit = canonical_unit
         existing.derived_from_field_observation_id = derived_from_field_observation_id
         existing.presence_state = presence_state or _presence(value)
@@ -321,7 +384,7 @@ def _field(
         provider_raw_value_text=raw_text,
         provider_raw_unit=provider_raw_unit,
         metric_key=metric_key,
-        canonical_value=_canonical_value(metric_key or "", value, supported=canonical_supported),
+        canonical_value=resolved_canonical_value,
         canonical_unit=canonical_unit,
         observation_role=role,
         derived_from_field_observation_id=derived_from_field_observation_id,
@@ -335,6 +398,35 @@ def _field(
     db.flush()
     _provenance(db, user_id=user_id, source_observation_id=source_observation_id, field_observation_id=field.id, lineage_state=lineage_state)
     return field
+
+
+def _additional_field(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_observation_id: UUID,
+    nutrient: str,
+    value: Decimal,
+    provider_metadata: Mapping[str, Any] | None,
+) -> None:
+    metric_key, canonical_value, canonical_unit, provider_raw_unit = _additional_canonicalization(
+        nutrient, value
+    )
+    _field(
+        db,
+        user_id=user_id,
+        source_observation_id=source_observation_id,
+        provider_field_path=f"nutrients.{nutrient}",
+        value=value,
+        metric_key=metric_key,
+        canonical_value=canonical_value,
+        canonical_unit=canonical_unit,
+        provider_raw_unit=provider_raw_unit,
+        role=ObservationRole.PROVIDER.value,
+        provider_metadata=provider_metadata,
+    )
+
+
 def _provenance(
     db: Session,
     *,
@@ -398,6 +490,8 @@ def _serving(
     profile_serving_id: UUID | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> NutritionServingObservation | None:
+    quantity = _database_safe_value(quantity)
+    amount = _database_safe_value(amount)
     if scope == ServingScope.PROFILE.value and (food_snapshot_id is None or amount is None or unit is None):
         return None
     if scope == ServingScope.EVENT.value and consumption_event_id is None:
@@ -432,7 +526,12 @@ def _serving(
     )
     db.add(item)
     db.flush()
-    _provenance(db, user_id=user_id, source_observation_id=source_observation_id, serving_observation_id=item.id)
+    _provenance(
+        db,
+        user_id=user_id,
+        source_observation_id=source_observation_id,
+        serving_observation_id=item.id,
+    )
     return item
 
 
@@ -460,16 +559,12 @@ def _profile_fields(
             provider_metadata=profile.metadata,
         )
     for nutrient, value in profile.nutrients.additional.items():
-        _field(
+        _additional_field(
             db,
             user_id=user_id,
             source_observation_id=source_observation_id,
-            provider_field_path=f"nutrients.{nutrient}",
+            nutrient=nutrient,
             value=value,
-            metric_key=None,
-            canonical_unit=None,
-            provider_raw_unit=None,
-            role=ObservationRole.PROVIDER.value,
             provider_metadata=profile.metadata,
         )
 
@@ -623,6 +718,7 @@ def _product_event(
     snapshots: dict[str, NutritionFoodSnapshot],
 ) -> None:
     snapshot = snapshots.get(item.product_id)
+    safe_amount = _database_safe_value(item.amount)
     resolved = snapshot is not None and snapshot.base_unit is not None
     observation = _event_observation(
         db,
@@ -667,10 +763,9 @@ def _product_event(
         provider_civil_datetime=_civil(item.provider_civil_datetime),
         provider_timezone=item.provider_timezone,
         local_date=item.local_date,
-        daytime=item.daytime,
-        amount=item.amount,
+        amount=safe_amount,
         amount_unit=snapshot.base_unit if snapshot else None,
-        presence_state=_presence(item.amount),
+        presence_state=_presence(safe_amount),
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value if resolved else ResolutionState.UNRESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
@@ -697,7 +792,7 @@ def _product_event(
         user_id=user_id,
         source_observation_id=observation.id,
         provider_field_path="amount",
-        value=item.amount,
+        value=safe_amount,
         metric_key=None,
         canonical_unit=snapshot.base_unit if snapshot else None,
         provider_raw_unit=snapshot.base_unit if snapshot else None,
@@ -765,16 +860,24 @@ def _simple_event(
     observation = _event_observation(db, user_id=user_id, run_id=run_id, source_instance_id=source_instance_id, item=item, namespace="yazio.simple_product", kind=ObservationKind.SIMPLE_PRODUCT.value)
     identity = get_or_create_external_identity(db, user_id=user_id, provider_key=_PROVIDER, namespace="yazio.simple_product", identity_value=item.consumed_item_id, identity_kind="simple_product", source_instance_id=source_instance_id, provider_metadata=_safe_metadata(item.metadata))
     metadata = _metadata_with(item.metadata, name=item.name, is_ai_generated=item.metadata.get("is_ai_generated"))
-    event = get_or_create_consumption_event(db, user_id=user_id, source_observation_id=observation.id, provider_key=_PROVIDER, source_instance_id=source_instance_id, event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value, logical_event_key=item.consumed_item_id, provider_civil_datetime=_civil(item.provider_civil_datetime), provider_timezone=item.provider_timezone, local_date=item.local_date, daytime=item.daytime, amount=item.amount, amount_unit=None, presence_state=_presence(item.amount), coverage_state=CoverageState.COMPLETE.value, resolution_state=ResolutionState.RESOLVED.value, lineage_state=LineageState.CONFIRMED.value, content_hash=_fingerprint(_simple_data(item)), provider_metadata=metadata)
+    safe_amount = _database_safe_value(item.amount)
+    event = get_or_create_consumption_event(db, user_id=user_id, source_observation_id=observation.id, provider_key=_PROVIDER, source_instance_id=source_instance_id, event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value, logical_event_key=item.consumed_item_id, provider_civil_datetime=_civil(item.provider_civil_datetime), provider_timezone=item.provider_timezone, local_date=item.local_date, daytime=item.daytime, amount=safe_amount, amount_unit=None, presence_state=_presence(safe_amount), coverage_state=CoverageState.COMPLETE.value, resolution_state=ResolutionState.RESOLVED.value, lineage_state=LineageState.CONFIRMED.value, content_hash=_fingerprint(_simple_data(item)), provider_metadata=metadata)
     _provenance(db, user_id=user_id, source_observation_id=observation.id, consumption_event_id=event.id)
     get_or_create_identity_link(db, user_id=user_id, external_identity_id=identity.id, link_role="event_identity", consumption_event_id=event.id)
-    _field(db, user_id=user_id, source_observation_id=observation.id, provider_field_path="amount", value=item.amount, metric_key=None, canonical_unit=None, provider_raw_unit=None, role=ObservationRole.PROVIDER.value, provider_metadata=item.metadata)
+    _field(db, user_id=user_id, source_observation_id=observation.id, provider_field_path="amount", value=safe_amount, metric_key=None, canonical_unit=None, provider_raw_unit=None, role=ObservationRole.PROVIDER.value, provider_metadata=item.metadata)
     for nutrient in _NUTRIENTS:
         value = _nutrient_value(item.nutrients, nutrient)
         metric_key = _metric_key(nutrient)
         _field(db, user_id=user_id, source_observation_id=observation.id, provider_field_path=f"nutrients.{nutrient}", value=value, metric_key=metric_key, canonical_unit=_nutrient_unit(nutrient) if metric_key is not None else None, provider_raw_unit=_nutrient_unit(nutrient), role=ObservationRole.PROVIDER.value, presence_state=_presence(value), provider_metadata=item.metadata)
     for nutrient, value in item.nutrients.additional.items():
-        _field(db, user_id=user_id, source_observation_id=observation.id, provider_field_path=f"nutrients.{nutrient}", value=value, metric_key=None, canonical_unit=None, provider_raw_unit=None, role=ObservationRole.PROVIDER.value, provider_metadata=item.metadata)
+        _additional_field(
+            db,
+            user_id=user_id,
+            source_observation_id=observation.id,
+            nutrient=nutrient,
+            value=value,
+            provider_metadata=item.metadata,
+        )
     _serving(db, user_id=user_id, source_observation_id=observation.id, scope=ServingScope.EVENT.value, label=item.serving, quantity=item.serving_quantity, amount=None, unit=None, consumption_event_id=event.id, metadata=item.metadata)
 
 
@@ -868,16 +971,12 @@ def _summary(
         provider_metadata=item.metadata,
     )
     for nutrient, value in item.nutrients.additional.items():
-        _field(
+        _additional_field(
             db,
             user_id=user_id,
             source_observation_id=observation.id,
-            provider_field_path=f"nutrients.{nutrient}",
+            nutrient=nutrient,
             value=value,
-            metric_key=None,
-            canonical_unit=None,
-            provider_raw_unit=None,
-            role=ObservationRole.PROVIDER.value,
             provider_metadata=item.metadata,
         )
 

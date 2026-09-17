@@ -28,7 +28,7 @@ from app.nutrition.projection.orchestration import (
     NutritionProjectionTransactionError,
     rebuild_nutrition_day,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.nutrition.resolution.reasons import EvidenceKind
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -302,7 +302,7 @@ def test_b6_builds_one_complete_daily_projection_from_one_policy_snapshot(db, us
             NutritionDailyProjectionFact.projection_id == projections[0].id,
         )
     ).all()
-    assert {fact.metric_key for fact in facts} == set(CANONICAL_METRICS)
+    assert {fact.metric_key for fact in facts} == set(DAILY_PROJECTION_METRICS)
     assert projections[0].priority_policy_id == policy.policy_id
 
 
@@ -335,7 +335,7 @@ def test_b6_uses_one_policy_at_and_collects_all_seven_metrics(
 
     assert result.status is ProjectionPersistenceStatus.CREATED
     assert policy_calls == [POLICY_AT]
-    assert metric_calls == list(CANONICAL_METRICS)
+    assert metric_calls == list(DAILY_PROJECTION_METRICS)
 
 
 def test_b6_identical_rebuild_is_unchanged(db, user) -> None:
@@ -415,7 +415,7 @@ def test_b6_no_value_day_persists_explicitly_unknown_facts(db, user) -> None:
 
     assert result.status is ProjectionPersistenceStatus.CREATED
     facts = db.scalars(select(NutritionDailyProjectionFact)).all()
-    assert len(facts) == len(CANONICAL_METRICS)
+    assert len(facts) == len(DAILY_PROJECTION_METRICS)
     assert all(fact.value is None for fact in facts)
     assert {fact.presence_state for fact in facts} == {"unknown"}
 
@@ -444,7 +444,7 @@ def test_b6_explicit_zero_remains_explicit_zero(db, user) -> None:
     rebuild_nutrition_day(db, user_id=user.id, local_date=DAY, policy_at=POLICY_AT)
 
     facts = db.scalars(select(NutritionDailyProjectionFact)).all()
-    assert len(facts) == len(CANONICAL_METRICS)
+    assert len(facts) == len(DAILY_PROJECTION_METRICS)
     assert all(fact.value == Decimal("0") for fact in facts)
     assert {fact.presence_state for fact in facts} == {"explicit_zero"}
 

@@ -199,6 +199,63 @@ def _ingest(
     )
 
 
+@pytest.mark.parametrize(
+    ("value", "expected_raw"),
+    [
+        (Decimal("2000000000"), Decimal("2000000000")),
+        (Decimal("0.1234567890123"), None),
+        (Decimal("1E+100"), None),
+        (Decimal("9" * 120), None),
+        (Decimal("-1"), None),
+        (Decimal("NaN"), None),
+        (Decimal("Infinity"), None),
+    ],
+)
+def test_unsafe_micronutrient_values_remain_provider_only(db, user, value, expected_raw):
+    point = _point(
+        nutrients=(
+            NutritionNutrient("VITAMIN_C", NutritionQuantity(value, "g")),
+        ),
+        total_carbohydrate=None,
+        total_fat=None,
+    )
+
+    _ingest(db, user, [point])
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path
+            == "nutritionLog.nutrients[0].VITAMIN_C"
+        )
+    )
+
+    assert field is not None
+    assert field.provider_raw_value_decimal == expected_raw
+    assert field.canonical_value is None
+    assert field.metric_key is None
+    assert field.observation_role == ObservationRole.PROVIDER.value
+
+def test_explicit_zero_micronutrient_remains_canonical(db, user):
+    point = _point(
+        nutrients=(NutritionNutrient("VITAMIN_C", NutritionQuantity(Decimal("0"), "g")),),
+        total_carbohydrate=None,
+        total_fat=None,
+    )
+
+    _ingest(db, user, [point])
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path
+            == "nutritionLog.nutrients[0].VITAMIN_C"
+        )
+    )
+
+    assert field is not None
+    assert field.provider_raw_value_decimal == Decimal("0")
+    assert field.canonical_value == Decimal("0")
+    assert field.metric_key == "vitamin_c_mg"
+    assert field.observation_role == ObservationRole.CANONICAL.value
+
+
 def _rows(db, model):
     return db.scalars(select(model).order_by(model.id)).all()
 
@@ -485,6 +542,91 @@ def test_duplicate_known_nutrients_keep_one_canonical_observation(db, user):
     assert canonical.canonical_value == Decimal("30")
 
 
+def test_micronutrient_enums_are_canonicalized_with_decimal_unit_conversion(db, user):
+    nutrients = (
+        NutritionNutrient("SODIUM", NutritionQuantity(0.5, "g")),
+        NutritionNutrient("VITAMIN_A", NutritionQuantity(800, "mcg")),
+        NutritionNutrient("CALCIUM", NutritionQuantity(0.8, "g")),
+        NutritionNutrient("IRON", NutritionQuantity(14, "mg")),
+        NutritionNutrient("VITAMIN_C", NutritionQuantity(80000, "ug")),
+        NutritionNutrient("VITAMIN_D", NutritionQuantity(1, None)),
+        NutritionNutrient("FUTURE_NUTRIENT", NutritionQuantity(2, "g")),
+        NutritionNutrient("ZINC", NutritionQuantity(1, "ounce")),
+    )
+    _ingest(
+        db,
+        user,
+        (
+            _point(
+                energy=None,
+                total_carbohydrate=None,
+                total_fat=None,
+                nutrients=nutrients,
+            ),
+        ),
+    )
+    fields = _rows(db, NutritionFieldObservation)
+    by_metric = {
+        field.metric_key: field
+        for field in fields
+        if field.metric_key in {"sodium_mg", "vitamin_a_ug", "calcium_mg", "iron_mg", "vitamin_c_mg"}
+    }
+    assert {
+        metric: (field.canonical_unit, field.canonical_value)
+        for metric, field in by_metric.items()
+    } == {
+        "sodium_mg": ("mg", Decimal("500.0")),
+        "vitamin_a_ug": ("ug", Decimal("800")),
+        "calcium_mg": ("mg", Decimal("800.0")),
+        "iron_mg": ("mg", Decimal("14")),
+        "vitamin_c_mg": ("mg", Decimal("80.000")),
+    }
+    unknown = next(field for field in fields if field.provider_field_path.endswith("FUTURE_NUTRIENT"))
+    assert unknown.metric_key is None
+    assert unknown.canonical_value is None
+    assert unknown.provider_raw_value_decimal == Decimal("2")
+    unsupported_unit = next(field for field in fields if field.provider_field_path.endswith("ZINC"))
+    missing_unit = next(field for field in fields if field.provider_field_path.endswith("VITAMIN_D"))
+    assert missing_unit.metric_key is None
+    assert missing_unit.canonical_value is None
+    assert missing_unit.provider_raw_value_decimal == Decimal("1")
+    assert unsupported_unit.metric_key is None
+    assert unsupported_unit.canonical_value is None
+    assert unsupported_unit.provider_raw_unit == "ounce"
+
+
+def test_google_folate_alias_precedence_is_deterministic(db, user):
+    _ingest(
+        db,
+        user,
+        (
+            _point(
+                energy=None,
+                total_carbohydrate=None,
+                total_fat=None,
+                nutrients=(
+                    NutritionNutrient("FOLIC_ACID", NutritionQuantity(200, "mcg")),
+                    NutritionNutrient("FOLATE", NutritionQuantity(100, "mcg")),
+                ),
+            ),
+        ),
+    )
+    folate_fields = [
+        field
+        for field in _rows(db, NutritionFieldObservation)
+        if field.provider_field_path.startswith("nutritionLog.nutrients")
+    ]
+    canonical = next(field for field in folate_fields if field.metric_key == "folate_ug")
+    provider_only = next(
+        field for field in folate_fields if field.provider_field_path.endswith("FOLIC_ACID")
+    )
+    assert canonical.canonical_value == Decimal("100")
+    assert provider_only.metric_key is None
+    assert provider_only.provider_raw_value_decimal == Decimal("200")
+
+
+
+
 def test_high_precision_json_quantity_survives_google_dto_ingestion(db, user):
     raw_value = "8996.632807816541"
     expected = Decimal(raw_value)
@@ -616,6 +758,35 @@ def test_short_semantic_serving_unit_is_persisted_in_valid_unit_columns(db, user
     assert len(unit_evidence) == 1
     assert unit_evidence[0].provider_raw_value_text == "g"
 
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [
+        Decimal("1000000000000"),
+        Decimal("0.1234567890123"),
+        Decimal("1E+100"),
+        Decimal("-1"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+    ],
+)
+def test_unsafe_serving_amounts_do_not_reach_numeric_sinks(db, user, amount):
+    serving = NutritionServing(
+        food_measurement_unit="g",
+        food_measurement_unit_display_name="grams",
+        amount=amount,
+    )
+
+    _ingest(db, user, (_point(serving=serving),))
+
+    event = db.scalar(select(NutritionConsumptionEvent))
+    observation = db.scalar(select(NutritionServingObservation))
+    assert event is not None
+    assert observation is not None
+    assert event.amount is None
+    assert observation.quantity is None
+    assert observation.amount is None
 
 def test_energy_from_fat_is_provider_evidence_without_canonical_metric(db, user):
     _ingest(

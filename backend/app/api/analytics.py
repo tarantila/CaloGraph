@@ -17,6 +17,12 @@ from app.analytics.daily_canonical import (
     run_daily_canonical_read,
 )
 from app.analytics.daily_shadow import run_daily_shadow
+from app.analytics.micronutrient_shadow import (
+    MicronutrientShadowState,
+    read_legacy_micronutrient_period,
+    run_micronutrient_canonical_read,
+    run_micronutrient_shadow,
+)
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     budget_balance_for_user,
@@ -32,7 +38,6 @@ from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
-from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample, ImportBatch, User
 from app.schemas import DailyPoint
 from app.services.achievements import unlock_achievement_keys
@@ -169,112 +174,44 @@ def micronutrients(
     start, end = _range(start, end, user.timezone, 30)
     _unlock_big_picture_if_requested(db, user, period)
 
-    all_source_rows = db.execute(
-        select(HealthSample.source_type, func.max(HealthSample.updated_at))
-        .where(
-            HealthSample.user_id == user.id,
-            HealthSample.local_date >= start,
-            HealthSample.local_date <= end,
-            HealthSample.metric_type.in_(MICRONUTRIENT_METRIC_TYPES),
-        )
-        .group_by(HealthSample.source_type)
-        .order_by(HealthSample.source_type)
-    ).all()
-
-    sample_query = select(HealthSample).where(
-        HealthSample.user_id == user.id,
-        HealthSample.local_date >= start,
-        HealthSample.local_date <= end,
-        HealthSample.metric_type.in_(MICRONUTRIENT_METRIC_TYPES),
+    legacy = read_legacy_micronutrient_period(
+        db,
+        user_id=user.id,
+        start=start,
+        end=end,
+        source=source,
     )
-    nutrition_day_query = (
-        select(HealthSample.local_date)
-        .where(
-            HealthSample.user_id == user.id,
-            HealthSample.local_date >= start,
-            HealthSample.local_date <= end,
-            HealthSample.metric_type.in_(PRIMARY_NUTRITION_METRICS),
-            HealthSample.value > 0,
-        )
-        .distinct()
-    )
-    if source:
-        sample_query = sample_query.where(HealthSample.source_type == source)
-        nutrition_day_query = nutrition_day_query.where(HealthSample.source_type == source)
-
-    samples = list(db.scalars(sample_query))
-    recorded_dates = set(db.scalars(nutrition_day_query))
-    if not recorded_dates:
-        recorded_dates = {sample.local_date for sample in samples}
-
-    totals: dict[str, Decimal] = defaultdict(Decimal)
-    days_with_value: dict[str, set[date]] = defaultdict(set)
-    for sample in samples:
-        totals[sample.metric_type] += sample.value
-        days_with_value[sample.metric_type].add(sample.local_date)
-
-    recorded_days = len(recorded_dates)
-    output = []
-    for definition in MICRONUTRIENTS:
-        total = totals.get(definition.metric_type)
-        available_days = len(days_with_value.get(definition.metric_type, set()))
-        average = total / recorded_days if total is not None and recorded_days else None
-        coverage_ratio = available_days / recorded_days if recorded_days else 0.0
-        reference_percent = (
-            average / definition.eu_nrv * Decimal("100")
-            if average is not None and definition.eu_nrv
-            else None
-        )
-        if average is None:
-            status = "no_data"
-        elif coverage_ratio < 0.7:
-            status = "insufficient_data"
-        elif reference_percent is not None and reference_percent < Decimal("80"):
-            status = "below_orientation"
-        else:
-            status = "covered"
-        output.append(
-            {
-                "id": definition.yazio_id,
-                "metric_type": definition.metric_type,
-                "label": definition.label,
-                "category": definition.category,
-                "unit": definition.unit,
-                "eu_nrv": serialize_decimal(definition.eu_nrv),
-                "total": serialize_decimal(total),
-                "average_daily": serialize_decimal(average),
-                "days_with_value": available_days,
-                "coverage_ratio": coverage_ratio,
-                "percent_of_nrv": serialize_decimal(reference_percent),
-                "status": status,
-            }
-        )
-
-    filtered_updated_at = max(
-        (sample.updated_at for sample in samples),
-        default=None,
-    )
-    return {
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "source": source,
-        "recorded_days": recorded_days,
-        "last_updated_at": filtered_updated_at.isoformat() if filtered_updated_at else None,
-        "available_sources": [
-            {
-                "source_type": source_type,
-                "last_updated_at": updated_at.isoformat() if updated_at else None,
-            }
-            for source_type, updated_at in all_source_rows
-        ],
-        "nutrients": output,
-        "definition": {
-            "reference": "EU-NRV für Erwachsene, Verordnung (EU) Nr. 1169/2011, Anhang XIII",
-            "average": "Summe im Zeitraum geteilt durch Tage mit Ernährungseinträgen derselben Quelle",
-            "coverage_threshold": 0.7,
-            "orientation_threshold_percent": 80,
-        },
-    }
+    response = legacy.to_public(start=start, end=end, source=source)
+    if settings.analytics_micronutrients_canonical_read_enabled:
+        with suppress(Exception):
+            evaluation = run_micronutrient_canonical_read(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=True,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
+            if (
+                evaluation.state is MicronutrientShadowState.MATCH
+                and evaluation.canonical is not None
+            ):
+                response = {**response, **evaluation.canonical.to_public_value_scope()}
+    else:
+        with suppress(Exception):
+            run_micronutrient_shadow(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=settings.analytics_micronutrients_shadow_read_enabled,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
+    return response
 
 
 @router.get("/dashboard/summary")

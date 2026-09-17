@@ -21,6 +21,8 @@ services:
       - ./.env.example:/workspace/.env.example:ro
       - ./.env.production.example:/workspace/.env.production.example:ro
       - ./docker-compose.yml:/workspace/docker-compose.yml:ro
+      - ./docker-compose.test.yml:/workspace/docker-compose.test.yml:ro
+      - ./.github:/workspace/.github:ro
       - ./docker-compose.dev.yml:/workspace/docker-compose.dev.yml:ro
   postgres-ci:
     image: postgres:18.6-alpine
@@ -66,6 +68,7 @@ services:
         tests/test_target_maintenance_migration_postgres.py
         tests/test_activity_energy_targets_migration_postgres.py
         tests/test_user_onboarding_migration_postgres.py
+        tests/test_apple_health_nutrition_postgres.py
     networks: [data]
 
   e2e:

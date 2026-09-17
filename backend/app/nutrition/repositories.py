@@ -791,6 +791,20 @@ def get_current_consumption_event(
     )
 
 
+def _event_values_match(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, datetime) and isinstance(expected, datetime):
+        actual_utc = (
+            actual.replace(tzinfo=UTC) if actual.tzinfo is None else actual.astimezone(UTC)
+        )
+        expected_utc = (
+            expected.replace(tzinfo=UTC)
+            if expected.tzinfo is None
+            else expected.astimezone(UTC)
+        )
+        return actual_utc == expected_utc
+    return bool(actual == expected)
+
+
 def _event_content_matches(
     latest: NutritionConsumptionEvent,
     *,
@@ -838,7 +852,10 @@ def _event_content_matches(
         ("resolution_state", resolution_state),
         ("lineage_state", lineage_state),
     )
-    return all(value is None or getattr(latest, field) == value for field, value in comparisons)
+    return all(
+        value is None or _event_values_match(getattr(latest, field), value)
+        for field, value in comparisons
+    )
 
 def get_or_create_consumption_event(
     db: Session,

@@ -57,7 +57,7 @@ from app.nutrition.models import (
     NutritionProjectionHead,
     NutritionSourceObservation,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 from app.schemas import DailyPoint
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -232,7 +232,8 @@ def _canonical_projection(
     )
     db.add(projection)
     db.flush()
-    for metric_key, definition in CANONICAL_METRICS.items():
+    for metric_key in DAILY_PROJECTION_METRICS:
+        definition = CANONICAL_NUTRITION_METRICS[metric_key]
         value = (
             calories
             if metric_key == "dietary_energy_kcal"

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 import app.source_priority.bootstrap as bootstrap_module
 from app.database import SessionLocal, engine
 from app.models import GoogleHealthConnection, User, YazioConnection
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.schemas_source_priority import NutritionPriorityUpdateRequest
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import (
@@ -440,7 +440,7 @@ def test_metric_specific_rules_covering_every_canonical_metric_are_existing_poli
             provider_key="yazio",
             priority_rank=1,
         )
-        for metric_key in CANONICAL_METRICS
+        for metric_key in DAILY_PROJECTION_METRICS
     )
     policy = _create_existing_policy(db, user, rules=rules)
 
@@ -451,8 +451,8 @@ def test_metric_specific_rules_covering_every_canonical_metric_are_existing_poli
     assert result.policy_version == 1
     assert result.available_provider_keys == ("yazio",)
     persisted_rules = _rules(db, user)
-    assert len(persisted_rules) == len(CANONICAL_METRICS)
-    assert {item.metric_key for item in persisted_rules} == set(CANONICAL_METRICS)
+    assert len(persisted_rules) == len(DAILY_PROJECTION_METRICS)
+    assert {item.metric_key for item in persisted_rules} == set(DAILY_PROJECTION_METRICS)
     assert all(
         item.data_area == "nutrition" and item.provider_key == "yazio" for item in persisted_rules
     )
@@ -463,7 +463,7 @@ def test_near_complete_metric_specific_policy_requires_configuration_without_mut
     db, user
 ) -> None:
     _add_yazio(db, user)
-    metric_keys = tuple(CANONICAL_METRICS)
+    metric_keys = tuple(DAILY_PROJECTION_METRICS)
     rules = tuple(
         PriorityRuleSpec(
             data_area="nutrition",

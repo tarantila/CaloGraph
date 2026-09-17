@@ -3,7 +3,18 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def _repository_root() -> Path:
+    candidates = (Path(__file__).resolve().parents[2], Path("/workspace"))
+    for candidate in candidates:
+        if (candidate / "docker-compose.yml").is_file() and (
+            candidate / ".github" / "workflows" / "ci.yml"
+        ).is_file():
+            return candidate
+    raise AssertionError("unable to locate the repository root")
+
+
+ROOT = _repository_root()
 EXACT_MINOR_TAG = re.compile(r"^postgres:\d+\.\d+-alpine$")
 PINNED_IMAGE = re.compile(r"^postgres:\d+\.\d+-alpine@sha256:[0-9a-f]{64}$")
 

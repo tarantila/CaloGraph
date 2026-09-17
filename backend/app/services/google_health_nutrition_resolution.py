@@ -33,7 +33,7 @@ from app.nutrition.resolution.contracts import (
     ProviderCandidate,
     build_event_candidate,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS, canonical_unit
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, canonical_unit
 from app.nutrition.resolution.reasons import EvidenceKind, ReasonCode
 from app.nutrition.resolution.resolver import resolve_event_vs_summary
 
@@ -159,7 +159,7 @@ def resolve_google_health_metric(
     metric_key: str,
 ) -> ProviderCandidate:
     """Resolve one Google Health metric from persisted current event evidence."""
-    if metric_key not in CANONICAL_METRICS:
+    if metric_key not in CANONICAL_NUTRITION_METRICS:
         return ProviderCandidate(
             provider_key=_PROVIDER,
             user_id=user_id,

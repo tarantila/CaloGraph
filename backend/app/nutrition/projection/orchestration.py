@@ -21,7 +21,7 @@ from app.nutrition.models import (
     NutritionSourceTombstone,
 )
 from app.nutrition.resolution.contracts import MetricContribution, ProviderCandidate
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.nutrition.resolution.providers import (
     PROVIDER_RESOLVERS,
     NutritionProviderResolver,
@@ -143,7 +143,7 @@ def _collect_selections(
     resolver_registry: Mapping[str, NutritionProviderResolver] | None,
 ) -> tuple[PrioritySelection, ...]:
     selections: list[PrioritySelection] = []
-    for metric_key in CANONICAL_METRICS:
+    for metric_key in DAILY_PROJECTION_METRICS:
         candidates = collect_provider_candidates(
             db,
             provider_sources=provider_sources,

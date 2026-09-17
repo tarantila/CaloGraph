@@ -9,6 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -17,6 +18,8 @@ from app.nutrition.enums import (
     ResolutionState,
 )
 from app.nutrition.resolution import (
+    CANONICAL_NUTRITION_METRICS,
+    DAILY_PROJECTION_METRICS,
     EventReconstructionCandidate,
     EvidenceKind,
     MetricContribution,
@@ -168,20 +171,34 @@ def summary_candidate(
     )
 
 
-def test_metric_registry_contains_only_canonical_v1_metrics() -> None:
-    expected = {
-        "dietary_energy_kcal": "kcal",
-        "protein_g": "g",
-        "carbohydrates_g": "g",
-        "fat_g": "g",
-        "fiber_g": "g",
-        "sugar_g": "g",
-        "saturated_fat_g": "g",
-    }
-    assert {key: metric_definition(key).canonical_unit for key in expected} == expected
-    assert all(is_known_metric(key) for key in expected)
+def test_metric_registry_separates_full_catalog_from_daily_projection() -> None:
+    expected_daily = (
+        "dietary_energy_kcal",
+        "protein_g",
+        "carbohydrates_g",
+        "fat_g",
+        "fiber_g",
+        "sugar_g",
+        "saturated_fat_g",
+    )
+    assert expected_daily == DAILY_PROJECTION_METRICS
+    assert len(DAILY_PROJECTION_METRICS) == 7
+    assert set(DAILY_PROJECTION_METRICS).isdisjoint(MICRONUTRIENT_METRIC_TYPES)
+    assert "sodium_mg" not in DAILY_PROJECTION_METRICS
+    assert "sodium_mg" in CANONICAL_NUTRITION_METRICS
+    assert set(MICRONUTRIENT_METRIC_TYPES) <= set(CANONICAL_NUTRITION_METRICS)
+    assert len(MICRONUTRIENTS) == 26
+    assert len(CANONICAL_NUTRITION_METRICS) == 34
+    assert all(is_known_metric(key) for key in CANONICAL_NUTRITION_METRICS)
     assert canonical_unit("salt") is None
     assert not is_known_metric("salt_g")
+
+
+def test_metric_registry_is_immutable() -> None:
+    with pytest.raises(TypeError):
+        CANONICAL_NUTRITION_METRICS["new_metric"] = metric_definition("protein_g")  # type: ignore[index]
+    with pytest.raises(TypeError):
+        DAILY_PROJECTION_METRICS[0] = "new_metric"  # type: ignore[index]
 
 
 def test_metric_contribution_is_immutable_and_requires_decimal_values() -> None:

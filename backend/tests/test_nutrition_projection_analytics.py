@@ -28,7 +28,7 @@ from app.nutrition.repositories import (
     create_projection_fact,
     set_projection_head,
 )
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 
@@ -81,9 +81,10 @@ def _ready_projection(
         input_watermark=WATERMARK,
         projection_status=status.value,
     )
-    values = values or {metric_key: Decimal("10.25") for metric_key in CANONICAL_METRICS}
+    values = values or {metric_key: Decimal("10.25") for metric_key in DAILY_PROJECTION_METRICS}
     fact_overrides = fact_overrides or {}
-    for metric_key, definition in CANONICAL_METRICS.items():
+    for metric_key in DAILY_PROJECTION_METRICS:
+        definition = CANONICAL_NUTRITION_METRICS[metric_key]
         value = values.get(metric_key, Decimal("10.25"))
         override = dict(fact_overrides.get(metric_key, {}))
         if value is None:
@@ -158,12 +159,13 @@ def test_ready_projection_returns_exactly_registry_metrics_in_order_with_identit
     assert day.projection_version == projection.projection_version == 1
     assert day.projection_status is ProjectionStatus.READY
     assert type(day.facts) is tuple
-    assert tuple(fact.metric_key for fact in day.facts) == tuple(CANONICAL_METRICS)
+    assert tuple(fact.metric_key for fact in day.facts) == tuple(DAILY_PROJECTION_METRICS)
     assert len(day.facts) == 7
     assert all(fact.value == Decimal("10.25") for fact in day.facts)
     assert all(type(fact.value) is Decimal for fact in day.facts)
     assert tuple(fact.unit for fact in day.facts) == tuple(
-        definition.canonical_unit for definition in CANONICAL_METRICS.values()
+        CANONICAL_NUTRITION_METRICS[metric_key].canonical_unit
+        for metric_key in DAILY_PROJECTION_METRICS
     )
 
     for fact in day.facts:
@@ -179,7 +181,7 @@ def test_ready_with_seven_no_value_facts_is_distinct_from_missing_head(db, user)
     projection = _ready_projection(
         db,
         user,
-        values={metric_key: None for metric_key in CANONICAL_METRICS},
+        values={metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
     )
 
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
@@ -199,7 +201,7 @@ def test_explicit_zero_is_preserved_as_decimal_value_and_primary_evidence(db, us
         db,
         user,
         values={
-            **{metric_key: None for metric_key in CANONICAL_METRICS},
+            **{metric_key: None for metric_key in DAILY_PROJECTION_METRICS},
             "protein_g": Decimal("0"),
         },
         fact_overrides={"protein_g": {"presence_state": PresenceState.EXPLICIT_ZERO.value}},
@@ -373,13 +375,13 @@ def test_facts_from_another_projection_scope_are_not_returned(db, user):
         db,
         user,
         version=1,
-        values={metric_key: Decimal("10.25") for metric_key in CANONICAL_METRICS},
+        values={metric_key: Decimal("10.25") for metric_key in DAILY_PROJECTION_METRICS},
     )
     second = _ready_projection(
         db,
         user,
         version=2,
-        values={metric_key: Decimal("20.50") for metric_key in CANONICAL_METRICS},
+        values={metric_key: Decimal("20.50") for metric_key in DAILY_PROJECTION_METRICS},
     )
     assert first.id != second.id
     set_projection_head(db, user.id, LOCAL_DATE, first.id)
@@ -421,8 +423,8 @@ def test_projection_fact_query_excludes_wrong_user_rows(db, user):
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)
 
     assert day.state is NutritionProjectionReadState.READY
-    assert len(day.facts) == len(CANONICAL_METRICS)
-    assert tuple(fact.metric_key for fact in day.facts) == tuple(CANONICAL_METRICS)
+    assert len(day.facts) == len(DAILY_PROJECTION_METRICS)
+    assert tuple(fact.metric_key for fact in day.facts) == tuple(DAILY_PROJECTION_METRICS)
 
 
 def test_projection_and_fact_scope_cannot_cross_users(db, user):
@@ -430,12 +432,12 @@ def test_projection_and_fact_scope_cannot_cross_users(db, user):
     requested = _ready_projection(
         db,
         user,
-        values={metric_key: Decimal("10.25") for metric_key in CANONICAL_METRICS},
+        values={metric_key: Decimal("10.25") for metric_key in DAILY_PROJECTION_METRICS},
     )
     _ready_projection(
         db,
         other,
-        values={metric_key: Decimal("20.50") for metric_key in CANONICAL_METRICS},
+        values={metric_key: Decimal("20.50") for metric_key in DAILY_PROJECTION_METRICS},
     )
 
     day = read_canonical_nutrition_day(db, user.id, LOCAL_DATE)

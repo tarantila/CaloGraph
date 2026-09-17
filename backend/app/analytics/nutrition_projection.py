@@ -20,7 +20,7 @@ from app.nutrition.enums import (
 from app.nutrition.models import NutritionDailyProjectionFact
 from app.nutrition.projection.contracts import validate_projection_decimal
 from app.nutrition.repositories import get_current_projection
-from app.nutrition.resolution.metrics import CANONICAL_METRICS
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 
 
 class NutritionProjectionReadState(StrEnum):
@@ -62,7 +62,7 @@ class CanonicalNutritionDay:
     calorie_usable: bool
 
 
-_EXPECTED_METRIC_KEYS = tuple(CANONICAL_METRICS)
+_EXPECTED_METRIC_KEYS = DAILY_PROJECTION_METRICS
 _METRIC_ORDER = {metric_key: index for index, metric_key in enumerate(_EXPECTED_METRIC_KEYS)}
 
 
@@ -156,7 +156,7 @@ def read_canonical_nutrition_day(
     canonical_facts: list[CanonicalNutritionFact] = []
     for metric_key in _EXPECTED_METRIC_KEYS:
         fact = facts_by_metric[metric_key]
-        definition = CANONICAL_METRICS[metric_key]
+        definition = CANONICAL_NUTRITION_METRICS[metric_key]
         if fact.user_id != user_id or fact.projection_id != projection.id:
             raise _read_error("projection fact is outside the requested scope")
         if fact.unit != definition.canonical_unit:

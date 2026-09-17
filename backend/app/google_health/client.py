@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
@@ -22,6 +21,7 @@ from app.google_health.errors import (
     GoogleHealthScopeError,
     GoogleHealthTransientError,
 )
+from app.importers.common import decimal_value
 
 GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/dataTypes/nutrition-log/dataPoints"
 GOOGLE_HEALTH_MAX_PAGE_SIZE = 100
@@ -614,27 +614,13 @@ def _optional_bounded_string(value: object, *, max_bytes: int = 512) -> str | No
     return None if value is None else _bounded_string(value, max_bytes=max_bytes)
 
 
-_PERSISTED_NUMERIC_MAX = Decimal("999999999999.999999999999")
-
-
-def _parse_nonnegative_number(value: object) -> Decimal | float:
+def _parse_nonnegative_number(value: object) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise ValueError
     try:
-        number_value = value if isinstance(value, Decimal) else float(value)
-        finite_value = float(number_value)
-        decimal_value = (
-            number_value if isinstance(number_value, Decimal) else Decimal(str(number_value))
-        )
-    except OverflowError, TypeError, ValueError:
+        return decimal_value(value)
+    except ValueError:
         raise ValueError from None
-    if (
-        not math.isfinite(finite_value)
-        or finite_value < 0
-        or decimal_value > _PERSISTED_NUMERIC_MAX
-    ):
-        raise ValueError
-    return number_value
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
