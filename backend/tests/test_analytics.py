@@ -34,6 +34,11 @@ def test_shared_analytics_range_rejects_overlong_inverted_and_date_max_ranges() 
     assert _range(date.max, date.max, "UTC", 30) == (date.max, date.max)
 
 
+def test_shared_analytics_range_rejects_default_underflow() -> None:
+    with pytest.raises(HTTPException, match="zu groß") as error:
+        _range(None, date.min, "UTC", 30)
+    assert error.value.status_code == 422
+
 def metric(
     day: int,
     name: str,

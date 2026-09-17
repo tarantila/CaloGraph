@@ -67,7 +67,12 @@ def _range(
     start: date | None, end: date | None, timezone: str, default_days: int = 30
 ) -> tuple[date, date]:
     resolved_end = end or datetime.now(ZoneInfo(timezone)).date()
-    resolved_start = start or (resolved_end - timedelta(days=default_days - 1))
+    try:
+        resolved_start = start or (resolved_end - timedelta(days=default_days - 1))
+    except OverflowError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="Datumsbereich ist zu groß") from exc
     if resolved_start > resolved_end:
         from fastapi import HTTPException
 
