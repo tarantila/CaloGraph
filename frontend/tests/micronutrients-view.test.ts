@@ -12,8 +12,8 @@ vi.mock('../src/api', () => ({
 }))
 
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
+import { isoDateInTimeZone, shiftIsoDate } from '../src/date-format'
 import { setLocale } from '../src/i18n'
-
 function response(overrides: Record<string, unknown> = {}) {
   return {
     start_date: '2026-08-01',
@@ -51,7 +51,7 @@ describe('MicronutrientsView source routing', () => {
     setLocale('de')
   })
 
-  it('normalizes unsupported canonical All deep links to bounded range state', async () => {
+  it('normalizes unsupported canonical All deep links to the safe default range', async () => {
     apiMock.mockResolvedValue(response())
 
     const { router, wrapper } = await mountView({
@@ -59,12 +59,13 @@ describe('MicronutrientsView source routing', () => {
       query: { start: '2026-08-01', end: '2026-08-31', period: 'all' },
     })
 
+    const today = isoDateInTimeZone('Europe/Berlin')
     expect(apiMock).toHaveBeenCalledWith(
-      '/analytics/micronutrients?start=2026-08-01&end=2026-08-31',
+      `/analytics/micronutrients?start=${shiftIsoDate(today, -29)}&end=${today}`,
     )
     expect(router.currentRoute.value.query).toEqual({
-      start: '2026-08-01',
-      end: '2026-08-31',
+      start: shiftIsoDate(today, -29),
+      end: today,
     })
     wrapper.unmount()
   })

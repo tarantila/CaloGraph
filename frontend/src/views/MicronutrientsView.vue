@@ -77,7 +77,10 @@ const explicitSource = route.query.source
 const source = ref(
   typeof explicitSource === 'string' && explicitSource.length > 0 ? explicitSource : undefined,
 )
-const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
+const unsupportedCanonicalAll = !source.value && route.query.period === 'all'
+const initialRange = unsupportedCanonicalAll
+  ? defaultRange
+  : resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
 const start = ref(initialRange.start)
 const end = ref(initialRange.end)
 const compactPresets = computed<AnalyticsCompactPreset[]>(() => [
