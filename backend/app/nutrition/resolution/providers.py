@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from .contracts import ProviderCandidate
+from .discovery import ProviderDiscoveryEvidence
 from .metrics import CANONICAL_NUTRITION_METRICS, UNSUPPORTED_METRIC_KEYS
 from .sources import (
     ProviderSourceBindings,
@@ -61,6 +62,33 @@ class YazioProviderResolver:
             metric_key=metric_key,
         )
 
+    def discover_global_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_yazio_provider_evidence
+
+        return discover_yazio_provider_evidence(db, user_id=user_id)
+
+    def discover_range_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        start: date,
+        end: date,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_yazio_provider_evidence
+
+        return discover_yazio_provider_evidence(
+            db,
+            user_id=user_id,
+            start=start,
+            end=end,
+        )
+
 
 class GoogleHealthProviderResolver:
     provider_key = "google_health"
@@ -82,6 +110,33 @@ class GoogleHealthProviderResolver:
             source_instance_id=source_instance_id,
             local_date=local_date,
             metric_key=metric_key,
+        )
+
+    def discover_global_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_google_health_provider_evidence
+
+        return discover_google_health_provider_evidence(db, user_id=user_id)
+
+    def discover_range_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        start: date,
+        end: date,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_google_health_provider_evidence
+
+        return discover_google_health_provider_evidence(
+            db,
+            user_id=user_id,
+            start=start,
+            end=end,
         )
 
 
@@ -107,6 +162,32 @@ class AppleHealthProviderResolver:
             metric_key=metric_key,
         )
 
+    def discover_global_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_apple_health_provider_evidence
+
+        return discover_apple_health_provider_evidence(db, user_id=user_id)
+
+    def discover_range_evidence(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        start: date,
+        end: date,
+    ) -> ProviderDiscoveryEvidence:
+        from .discovery import discover_apple_health_provider_evidence
+
+        return discover_apple_health_provider_evidence(
+            db,
+            user_id=user_id,
+            start=start,
+            end=end,
+        )
 
 _YAZIO_PROVIDER_RESOLVER = YazioProviderResolver()
 _GOOGLE_HEALTH_PROVIDER_RESOLVER = GoogleHealthProviderResolver()
