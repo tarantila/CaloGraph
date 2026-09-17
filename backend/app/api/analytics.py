@@ -269,13 +269,14 @@ def micronutrients(
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
     provider_metadata = None
-    with suppress(Exception):
-        provider_metadata = discover_nutrition_provider_metadata(
-            db,
-            user_id=user.id,
-            start=start,
-            end=end,
-        )
+    if selection is not None or settings.analytics_micronutrients_public_provider_metadata_enabled:
+        with suppress(Exception):
+            provider_metadata = discover_nutrition_provider_metadata(
+                db,
+                user_id=user.id,
+                start=start,
+                end=end,
+            )
     if selection is not None:
         selected_latest_evidence = (
             next(

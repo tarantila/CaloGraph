@@ -1265,6 +1265,11 @@ def test_public_provider_metadata_is_omitted_when_disabled(
         "app.api.analytics.settings.analytics_micronutrients_public_provider_metadata_enabled",
         False,
     )
+    discovery_calls: list[object] = []
+    monkeypatch.setattr(
+        "app.api.analytics.discover_nutrition_provider_metadata",
+        lambda *args, **kwargs: discovery_calls.append(object()),
+    )
 
     result = micronutrients(
         start=start,
@@ -1276,6 +1281,7 @@ def test_public_provider_metadata_is_omitted_when_disabled(
     )
 
     assert "providers" not in result
+    assert discovery_calls == []
 
 
 def test_public_provider_metadata_serializes_canonical_discovery(

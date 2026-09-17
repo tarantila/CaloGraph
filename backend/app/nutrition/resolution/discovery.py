@@ -571,19 +571,6 @@ def _provider_evidence(
                 source.local_date <= end,
             )
         )
-    all_events = tuple(
-        db.scalars(
-            select(event).where(
-                event.user_id == user_id,
-                event.provider_key == provider_key,
-                event.source_instance_id.in_(tuple(source_instance_ids)),
-            )
-        ).all()
-    )
-    event_groups: dict[tuple[str, object], list[Any]] = {}
-    for candidate in all_events:
-        event_groups.setdefault(_event_group_key(candidate), []).append(candidate)
-
     event_statement = select(event, source.observed_at).select_from(source).join(
         event,
         and_(
@@ -599,6 +586,39 @@ def _provider_evidence(
             and_(run.id == source.ingestion_run_id, run.user_id == user_id),
         )
     event_rows = db.execute(event_statement.where(*event_scope)).all()
+    candidate_events = tuple(candidate for candidate, _ in event_rows)
+    logical_event_keys = tuple(
+        {
+            candidate.logical_event_key
+            for candidate in candidate_events
+            if candidate.logical_event_key is not None
+        }
+    )
+    candidate_event_ids = tuple(
+        candidate.id for candidate in candidate_events if candidate.logical_event_key is None
+    )
+    event_group_conditions = []
+    if logical_event_keys:
+        event_group_conditions.append(event.logical_event_key.in_(logical_event_keys))
+    if candidate_event_ids:
+        event_group_conditions.append(event.id.in_(candidate_event_ids))
+    all_events = (
+        tuple(
+            db.scalars(
+                select(event).where(
+                    event.user_id == user_id,
+                    event.provider_key == provider_key,
+                    event.source_instance_id.in_(tuple(source_instance_ids)),
+                    or_(*event_group_conditions),
+                )
+            ).all()
+        )
+        if event_group_conditions
+        else ()
+    )
+    event_groups: dict[tuple[str, object], list[Any]] = {}
+    for candidate in all_events:
+        event_groups.setdefault(_event_group_key(candidate), []).append(candidate)
     event_observed_at = max(
         (
             observed_at
