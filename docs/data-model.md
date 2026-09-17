@@ -4,6 +4,9 @@
   unit, administrator flag, and lifecycle state. `is_active=true` requires
   `deactivated_at=NULL`; an inactive account requires a UTC deactivation
   timestamp.
+- `user_provider_preferences`: at most one provider key per user and
+  functional data area. The composite primary key is `(user_id, data_area)`;
+  the table stores provider identity only, never source-instance identifiers.
 - `user_profiles`: optional one-to-one personal information for a user:
   display name, gender, birth date, height, diet, voluntary health notes, and
   intolerances. All content fields are nullable; the user foreign key is the
@@ -47,9 +50,8 @@ Stable external IDs are unique per user, adapter, and source identifier.
 `(user_id, fingerprint)` additionally prevents duplicates without an external
 ID. Decimal values avoid rounding errors. Timestamps are stored in UTC;
 `local_date` is calculated during import using the user's time zone.
-
 Deleting an inactive user relies on database foreign-key cascades for all
-user-owned profile, authentication, recovery, import, nutrition, target,
-tracking, and YAZIO rows. Related rate-limit buckets use HMAC keys rather than
-foreign keys and are removed explicitly by the lifecycle service in the same
-transaction.
+user-owned profile, provider-preference, authentication, recovery, import,
+nutrition, target, tracking, and YAZIO rows. Related rate-limit buckets use
+HMAC keys rather than foreign keys and are removed explicitly by the lifecycle
+service in the same transaction.

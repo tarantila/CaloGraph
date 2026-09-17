@@ -31,6 +31,7 @@ from app.models import (
     User,
     UserOnboarding,
     UserProfile,
+    UserProviderPreference,
     UserSession,
     UserTotpCredential,
 )
@@ -40,10 +41,12 @@ from app.problem_types import (
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
+    PROVIDER_NOT_AVAILABLE,
     TARGET_VERSION_NOT_FOUND,
     VALIDATION_ERROR,
     ProblemHTTPException,
 )
+from app.provider_preferences import normalize_data_area, validate_provider_preference
 from app.schemas import (
     ActivitySourceResponse,
     MfaCodeRequest,
@@ -58,6 +61,10 @@ from app.schemas import (
     PersonalProfilePayload,
     PersonalProfileResponse,
     ProfileUpdate,
+    ProviderAvailabilityListResponse,
+    ProviderPreferenceListResponse,
+    ProviderPreferenceResponse,
+    ProviderPreferenceUpdate,
     RecoveryCodesResponse,
     TargetInput,
     TargetResponse,
@@ -98,6 +105,7 @@ from app.services.passkeys import (
     delete_passkey,
     list_passkeys,
 )
+from app.services.provider_preferences import provider_availability, provider_is_available
 from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
@@ -478,6 +486,122 @@ def update_profile(
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.get(
+    "/provider-preferences",
+    response_model=ProviderPreferenceListResponse,
+)
+def provider_preferences(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> ProviderPreferenceListResponse:
+    preferences = list(
+        db.scalars(
+            select(UserProviderPreference)
+            .where(UserProviderPreference.user_id == user.id)
+            .order_by(UserProviderPreference.data_area)
+        )
+    )
+    return ProviderPreferenceListResponse(
+        preferences=[ProviderPreferenceResponse.model_validate(item) for item in preferences]
+    )
+
+
+@router.get(
+    "/provider-availability/{data_area}",
+    response_model=ProviderAvailabilityListResponse,
+)
+def provider_availability_route(
+    data_area: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> ProviderAvailabilityListResponse:
+    try:
+        availability = provider_availability(db, user_id=user.id, data_area=data_area)
+    except ValueError as exc:
+        raise ProblemHTTPException(
+            status_code=422,
+            detail="Unbekannter fachlicher Datenbereich",
+            problem_type=VALIDATION_ERROR,
+        ) from exc
+    return ProviderAvailabilityListResponse(
+        data_area=data_area.strip().lower(),
+        providers=[
+            {
+                "provider_key": item.provider_key,
+                "available": item.available,
+                "status": item.status,
+            }
+            for item in availability
+        ],
+    )
+
+
+@router.put(
+    "/provider-preferences/{data_area}",
+    response_model=ProviderPreferenceResponse,
+)
+def update_provider_preference(
+    data_area: str,
+    payload: ProviderPreferenceUpdate,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> UserProviderPreference:
+    try:
+        normalized_area, normalized_provider = validate_provider_preference(
+            data_area, payload.provider_key
+        )
+    except ValueError as exc:
+        raise ProblemHTTPException(
+            status_code=422,
+            detail="Provider ist für diesen fachlichen Datenbereich nicht zulässig",
+            problem_type=VALIDATION_ERROR,
+        ) from exc
+    if not provider_is_available(
+        db,
+        user_id=user.id,
+        data_area=normalized_area,
+        provider_key=normalized_provider,
+    ):
+        raise ProblemHTTPException(
+            status_code=409,
+            detail="Provider ist für dieses Konto nicht verfügbar",
+            problem_type=PROVIDER_NOT_AVAILABLE,
+        )
+    preference = db.get(UserProviderPreference, (user.id, normalized_area))
+    if preference is None:
+        preference = UserProviderPreference(
+            user_id=user.id,
+            data_area=normalized_area,
+            provider_key=normalized_provider,
+        )
+        db.add(preference)
+    else:
+        preference.provider_key = normalized_provider
+    db.commit()
+    db.refresh(preference)
+    return preference
+
+
+@router.delete("/provider-preferences/{data_area}", status_code=204)
+def delete_provider_preference(
+    data_area: str,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        normalized_area = normalize_data_area(data_area)
+    except ValueError as exc:
+        raise ProblemHTTPException(
+            status_code=422,
+            detail="Unbekannter fachlicher Datenbereich",
+            problem_type=VALIDATION_ERROR,
+        ) from exc
+    preference = db.get(UserProviderPreference, (user.id, normalized_area))
+    if preference is not None:
+        db.delete(preference)
+        db.commit()
 
 
 @router.get("/mfa", response_model=MfaStatusResponse)

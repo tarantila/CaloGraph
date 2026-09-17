@@ -106,3 +106,18 @@ and a PostgreSQL advisory lock permits only one import per user across backend
 workers. Non-ZIP failures after a checkpoint are retained as `partial_failed`
 so a retry can continue idempotently; ZIP integrity, XML, and limit failures
 roll back their import completely.
+
+## User-selected nutrition provider
+
+Nutrition provider selection is a user-scoped setting, not URL state. The
+`user_provider_preferences` table stores one provider key for the `nutrition`
+data area; it does not store or expose a source-instance ID. The authenticated
+settings API exposes the preference and a separate provider-availability view.
+The analytics endpoint uses the stored preference when the `source` query
+parameter is omitted. An explicit `source` remains a Legacy compatibility
+path.
+
+If a configured provider is unavailable or cannot be resolved to exactly one
+owned source instance, analytics returns a safe problem response instead of
+silently falling back or switching providers. Missing preferences retain the
+temporary Legacy YAZIO behavior during migration.

@@ -3,10 +3,10 @@ from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import median
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -20,9 +20,15 @@ from app.analytics.daily_shadow import run_daily_shadow
 from app.analytics.micronutrient_metadata_shadow import run_micronutrient_metadata_shadow
 from app.analytics.micronutrient_shadow import (
     MicronutrientShadowState,
+    read_canonical_micronutrient_period,
     read_legacy_micronutrient_period,
     run_micronutrient_canonical_read,
     run_micronutrient_shadow,
+)
+from app.analytics.provider_selection import (
+    NutritionProviderNotReady,
+    NutritionProviderUnavailable,
+    resolve_nutrition_provider,
 )
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
@@ -41,6 +47,11 @@ from app.config import settings
 from app.database import get_db
 from app.models import HealthSample, ImportBatch, User
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.problem_types import (
+    PROVIDER_SELECTION_NOT_READY,
+    PROVIDER_SELECTION_UNAVAILABLE,
+    ProblemHTTPException,
+)
 from app.schemas import DailyPoint, MicronutrientResponse
 from app.services.achievements import unlock_achievement_keys
 
@@ -176,9 +187,34 @@ def micronutrients(
     period: Literal["all"] | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
+    request: Request = cast(Request, None),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 30)
-    _unlock_big_picture_if_requested(db, user, period)
+    explicit_legacy_source = request is None or "source" in request.query_params
+    selection = None
+    if not explicit_legacy_source:
+        try:
+            selection = resolve_nutrition_provider(db, user_id=user.id)
+        except NutritionProviderUnavailable as exc:
+            raise ProblemHTTPException(
+                status_code=503,
+                detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+                problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+            ) from exc
+        except NutritionProviderNotReady as exc:
+            raise ProblemHTTPException(
+                status_code=503,
+                detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+                problem_type=PROVIDER_SELECTION_NOT_READY,
+            ) from exc
+        if selection is not None and period == "all":
+            raise ProblemHTTPException(
+                status_code=422,
+                detail="Der konfigurierte Nutrition-Provider unterstützt den Gesamtzeitraum nicht.",
+                problem_type=PROVIDER_SELECTION_NOT_READY,
+            )
+    if selection is None:
+        _unlock_big_picture_if_requested(db, user, period)
 
     legacy = read_legacy_micronutrient_period(
         db,
@@ -188,7 +224,22 @@ def micronutrients(
         source=source,
     )
     response = legacy.to_public(start=start, end=end, source=source)
-    if settings.analytics_micronutrients_canonical_read_enabled:
+    if selection is not None:
+        canonical = read_canonical_micronutrient_period(
+            db,
+            user_id=user.id,
+            provider_key=selection.provider_key,
+            source_instance_id=selection.source_instance_id,
+            start=start,
+            end=end,
+        )
+        response = {
+            **response,
+            **canonical.to_public_value_scope(),
+            "source": None,
+            "last_updated_at": None,
+        }
+    elif settings.analytics_micronutrients_canonical_read_enabled:
         with suppress(Exception):
             evaluation = run_micronutrient_canonical_read(
                 user.id,
@@ -217,26 +268,49 @@ def micronutrients(
                 enabled=settings.analytics_micronutrients_shadow_read_enabled,
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
-    if settings.analytics_micronutrients_public_provider_metadata_enabled:
-        with suppress(Exception):
-            provider_metadata = discover_nutrition_provider_metadata(
-                db,
-                user_id=user.id,
-                start=start,
-                end=end,
-            )
-            response = {
-                **response,
-                "providers": [
-                    {
-                        "provider_key": provider.provider_key,
-                        "latest_evidence_observed_at": (
-                            provider.latest_evidence_observed_at.isoformat()
-                        ),
-                    }
+    provider_metadata = None
+    with suppress(Exception):
+        provider_metadata = discover_nutrition_provider_metadata(
+            db,
+            user_id=user.id,
+            start=start,
+            end=end,
+        )
+    if selection is not None:
+        selected_latest_evidence = (
+            next(
+                (
+                    provider.latest_evidence_observed_at
                     for provider in provider_metadata.providers
-                ],
-            }
+                    if provider.provider_key == selection.provider_key
+                ),
+                None,
+            )
+            if provider_metadata is not None
+            else None
+        )
+        response = {
+            **response,
+            "selected_provider": {
+                "provider_key": selection.provider_key,
+                "latest_evidence_observed_at": (
+                    selected_latest_evidence.isoformat() if selected_latest_evidence else None
+                ),
+            },
+        }
+    if settings.analytics_micronutrients_public_provider_metadata_enabled and provider_metadata is not None:
+        response = {
+            **response,
+            "providers": [
+                {
+                    "provider_key": provider.provider_key,
+                    "latest_evidence_observed_at": (
+                        provider.latest_evidence_observed_at.isoformat()
+                    ),
+                }
+                for provider in provider_metadata.providers
+            ],
+        }
     with suppress(Exception):
         run_micronutrient_metadata_shadow(
             user.id,
