@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.models import UserProviderPreference
+from app.models import User, UserProviderPreference
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy
@@ -24,6 +24,14 @@ class ProviderPreferenceSnapshot:
 def _legacy_table_available(db: Session) -> bool:
     bind = db.get_bind()
     return bool(bind is not None and sa.inspect(bind).has_table("user_provider_preferences"))
+
+
+def _lock_user_row(db: Session, user_id: UUID) -> None:
+    db.scalar(
+        sa.select(User.id)
+        .where(User.id == user_id)
+        .with_for_update()
+    )
 
 
 def _latest_policy(db: Session, user_id: UUID) -> SourcePriorityPolicy | None:
@@ -125,6 +133,7 @@ def replace_provider_preferences(
     data_area: str,
     provider_keys: Sequence[str],
 ) -> list[ProviderPreferenceSnapshot]:
+    _lock_user_row(db, user_id)
     normalized_keys = tuple(provider_keys)
     if not normalized_keys:
         raise ValueError("provider list must not be empty")
@@ -191,6 +200,7 @@ def set_provider_preference(
 
 
 def delete_provider_preference(db: Session, *, user_id: UUID, data_area: str) -> None:
+    _lock_user_row(db, user_id)
     current_policy = _latest_policy(db, user_id)
     if current_policy is None:
         _legacy_delete(db, user_id, data_area)

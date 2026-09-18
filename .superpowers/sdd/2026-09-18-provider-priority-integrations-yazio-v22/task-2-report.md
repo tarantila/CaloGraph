@@ -72,3 +72,12 @@
 - Targeted Task 2/3 command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
   - **79 passed, 1 warning**
+
+## Task 3 review fixes
+
+- Explicit `priority_rank` ordering is now honored when the request entries arrive inverted; rank validation and canonical persistence use the declared order.
+- Provider preference replacement and deletion lock the user row with `FOR UPDATE` before reading current policy/version state, serializing immutable version allocation and effective timestamps for concurrent writers.
+- Added inverted-rank and lock assertion regressions.
+- Review-fix targeted command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py`
+  - **32 passed**

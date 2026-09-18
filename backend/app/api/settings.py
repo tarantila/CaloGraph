@@ -513,9 +513,16 @@ def _normalized_provider_preference_list(
     if payload.provider_key is not None:
         raw_provider_keys = (payload.provider_key,)
     elif payload.providers is not None:
+        provider_entries = tuple(payload.providers)
+        if provider_entries and all(
+            getattr(item, "priority_rank", None) is not None for item in provider_entries
+        ):
+            provider_entries = tuple(
+                sorted(provider_entries, key=lambda item: getattr(item, "priority_rank"))
+            )
         raw_provider_keys = tuple(
             item.provider_key if hasattr(item, "provider_key") else item
-            for item in payload.providers
+            for item in provider_entries
         )
     else:
         raw_provider_keys = tuple(payload.provider_keys or ())

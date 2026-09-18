@@ -298,8 +298,8 @@ def test_provider_preference_put_replaces_complete_list_atomically(
         f"{PATH}/nutrition",
         json={
             "providers": [
-                {"provider_key": "yazio", "priority_rank": 1},
                 {"provider_key": "google_health", "priority_rank": 2},
+                {"provider_key": "yazio", "priority_rank": 1},
             ]
         },
     )
@@ -310,8 +310,8 @@ def test_provider_preference_put_replaces_complete_list_atomically(
         headers={"X-CSRF-Token": csrf},
         json={
             "providers": [
-                {"provider_key": "yazio", "priority_rank": 1},
                 {"provider_key": "google_health", "priority_rank": 2},
+                {"provider_key": "yazio", "priority_rank": 1},
             ]
         },
     )
@@ -370,6 +370,26 @@ def test_provider_preference_put_replaces_complete_list_atomically(
         ).id
         == other_policy.policy_id
     )
+
+
+def test_provider_priority_replacement_locks_user_row(db, user, monkeypatch) -> None:
+    statements = []
+    original_scalar = db.scalar
+
+    def scalar(statement, *args, **kwargs):
+        statements.append(statement)
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "scalar", scalar)
+    source_priority_compatibility.replace_provider_preferences(
+        db,
+        user_id=user.id,
+        data_area="nutrition",
+        provider_keys=("yazio",),
+    )
+    db.commit()
+
+    assert any(getattr(statement, "_for_update_arg", None) is not None for statement in statements)
 
 
 def test_provider_preference_delete_removes_all_entries_for_area(
