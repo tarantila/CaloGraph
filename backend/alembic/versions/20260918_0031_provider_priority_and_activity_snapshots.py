@@ -12,9 +12,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy import inspect
 
+from alembic import op
 from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPES
 
 revision: str = "20260918_0031"
