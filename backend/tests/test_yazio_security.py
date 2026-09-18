@@ -11,7 +11,6 @@ from app.config import settings
 from app.schemas import ImportSummary
 from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
-from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
 from app.services.yazio_provider import (
     YazioProviderInvalidResponseError,
     YazioProviderMetadata,
@@ -19,6 +18,7 @@ from app.services.yazio_provider import (
     YazioProviderRateLimitedError,
     YazioProviderResult,
 )
+from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,

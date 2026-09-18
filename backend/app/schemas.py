@@ -75,7 +75,7 @@ class ProviderPreferenceUpdate(BaseModel):
     provider_keys: list[str] | None = None
 
     @model_validator(mode="after")
-    def validate_preference_list(self) -> "ProviderPreferenceUpdate":
+    def validate_preference_list(self) -> ProviderPreferenceUpdate:
         forms = sum(
             value is not None
             for value in (self.provider_key, self.providers, self.provider_keys)

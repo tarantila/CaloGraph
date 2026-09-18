@@ -30,7 +30,6 @@ from app.models import (
     UserProfile,
 )
 from app.services.achievements import unlock_achievement_keys
-from app.services.provider_preferences import replace_activity_target_sources
 from app.services.data_export import (
     EXPORT_FORMAT,
     SUPPORTED_EXPORT_FORMAT_VERSIONS,
@@ -45,6 +44,7 @@ from app.services.data_export import (
     ExportTargetV3,
     ExportTrackingOverride,
 )
+from app.services.provider_preferences import replace_activity_target_sources
 
 EXPECTED_FILES = frozenset(
     {

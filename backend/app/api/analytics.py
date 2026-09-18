@@ -385,10 +385,10 @@ def weight(
     )
     latest_by_provider_day: dict[tuple[str, date], HealthSample] = {}
     for sample in samples:
-        provider_key = provider_by_source_type.get(sample.source_type)
-        if provider_key is None:
+        sample_provider_key = provider_by_source_type.get(sample.source_type)
+        if sample_provider_key is None:
             continue
-        key = (provider_key, sample.local_date)
+        key = (sample_provider_key, sample.local_date)
         previous = latest_by_provider_day.get(key)
         if previous is None or (sample.start_at, sample.id) > (previous.start_at, previous.id):
             latest_by_provider_day[key] = sample

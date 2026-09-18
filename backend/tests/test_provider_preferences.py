@@ -25,9 +25,9 @@ from app.provider_preferences import (
     validate_provider_preference,
 )
 from app.source_priority import compatibility as source_priority_compatibility
-from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
 
 PATH = "/api/v1/settings/provider-preferences"

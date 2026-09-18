@@ -69,6 +69,7 @@ from app.schemas import (
     PersonalProfileResponse,
     ProfileUpdate,
     ProviderAvailabilityListResponse,
+    ProviderPreferenceEntry,
     ProviderPreferenceListResponse,
     ProviderPreferenceResponse,
     ProviderPreferenceUpdate,
@@ -85,12 +86,6 @@ from app.schemas import (
     TrackingQualityResponse,
     UserResponse,
     WebAuthnOptionsResponse,
-)
-from app.source_priority.compatibility import (
-    ProviderPreferenceSnapshot,
-    delete_provider_preference as delete_source_priority_preference,
-    list_provider_preferences,
-    replace_provider_preferences,
 )
 from app.security_events import log_security_event, security_context_references, security_reference
 from app.services.achievements import unlock_achievement_keys
@@ -128,6 +123,14 @@ from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
     ensure_rate_limit_available,
+)
+from app.source_priority.compatibility import (
+    ProviderPreferenceSnapshot,
+    list_provider_preferences,
+    replace_provider_preferences,
+)
+from app.source_priority.compatibility import (
+    delete_provider_preference as delete_source_priority_preference,
 )
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
@@ -511,18 +514,27 @@ def _normalized_provider_preference_list(
     payload: ProviderPreferenceUpdate,
 ) -> tuple[str, tuple[str, ...]]:
     normalized_area = normalize_data_area(data_area)
+    raw_provider_keys: tuple[str, ...]
     if payload.provider_key is not None:
         raw_provider_keys = (payload.provider_key,)
     elif payload.providers is not None:
         provider_entries = tuple(payload.providers)
         if provider_entries and all(
-            getattr(item, "priority_rank", None) is not None for item in provider_entries
+            isinstance(item, ProviderPreferenceEntry) and item.priority_rank is not None
+            for item in provider_entries
         ):
             provider_entries = tuple(
-                sorted(provider_entries, key=lambda item: getattr(item, "priority_rank"))
+                sorted(
+                    provider_entries,
+                    key=lambda item: (
+                        item.priority_rank or 0
+                        if isinstance(item, ProviderPreferenceEntry)
+                        else 0
+                    )
+                )
             )
         raw_provider_keys = tuple(
-            item.provider_key if hasattr(item, "provider_key") else item
+            item.provider_key if isinstance(item, ProviderPreferenceEntry) else item
             for item in provider_entries
         )
     else:

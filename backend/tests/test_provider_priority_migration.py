@@ -138,7 +138,7 @@ def test_revision_is_linked_to_0030():
 
 def test_upgrade_migrates_preferences_and_activity_snapshots(tmp_path):
     engine = _sqlite_engine(tmp_path)
-    user_one, user_two, target_one, target_two = _seed_legacy(engine)
+    user_one, user_two, _, _ = _seed_legacy(engine)
 
     _apply(engine, _revision_module(), "upgrade")
 
