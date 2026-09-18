@@ -965,6 +965,28 @@ def test_weight_api_is_opt_in_and_user_scoped(client: TestClient, user, db) -> N
     }
 
 
+def test_activity_availability_accepts_explicit_zero_samples(client: TestClient, user, db) -> None:
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="apple_health_xml",
+        value=Decimal("0"),
+        local_date=date(2026, 9, 15),
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get(f"/api/v1/settings/provider-availability/{ACTIVITY_ENERGY_DATA_AREA}")
+
+    assert response.status_code == 200
+    statuses = {item["provider_key"]: item for item in response.json()["providers"]}
+    assert statuses["apple_health"] == {
+        "provider_key": "apple_health",
+        "available": True,
+        "status": "available",
+    }
+
 def test_activity_provider_change_creates_effective_target_version(
     client: TestClient,
     user,

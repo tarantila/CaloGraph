@@ -81,7 +81,9 @@ def _sample_provider_statuses(
     user_id: UUID,
     metric_type: str,
     source_types: dict[str, str],
+    include_zero: bool = False,
 ) -> dict[str, str]:
+    value_filter = HealthSample.value >= 0 if include_zero else HealthSample.value > 0
     evidenced = set(
         db.scalars(
             select(HealthSample.source_type)
@@ -89,7 +91,7 @@ def _sample_provider_statuses(
                 HealthSample.user_id == user_id,
                 HealthSample.metric_type == metric_type,
                 HealthSample.source_type.in_(source_types.values()),
-                HealthSample.value > 0,
+                value_filter,
             )
             .distinct()
         )
@@ -117,6 +119,7 @@ def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabi
         user_id=user_id,
         metric_type=ACTIVE_ENERGY_METRIC,
         source_types=ACTIVITY_PROVIDER_SOURCE_TYPES,
+        include_zero=True,
     )
     return _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)
 
