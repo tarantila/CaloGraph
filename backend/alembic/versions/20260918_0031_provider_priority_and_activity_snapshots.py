@@ -258,33 +258,36 @@ def _drop_preferences(bind: sa.Connection) -> None:
 
 
 def _recreate_preferences(bind: sa.Connection, rows: list[dict[str, object]]) -> None:
-    op.create_table(
+    preferences = sa.table(
         "user_provider_preferences",
-        sa.Column("user_id", sa.Uuid(), nullable=False),
-        sa.Column("data_area", sa.String(length=64), nullable=False),
-        sa.Column("provider_key", sa.String(length=64), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "length(data_area) > 0",
-            name="ck_provider_preferences_data_area",
-        ),
-        sa.CheckConstraint(
-            "length(provider_key) > 0",
-            name="ck_provider_preferences_provider_key",
-        ),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("user_id", "data_area"),
+        sa.column("user_id", sa.Uuid()),
+        sa.column("data_area", sa.String()),
+        sa.column("provider_key", sa.String()),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    if rows:
-        preferences = sa.table(
+    if "user_provider_preferences" not in inspect(bind).get_table_names():
+        op.create_table(
             "user_provider_preferences",
-            sa.column("user_id", sa.Uuid()),
-            sa.column("data_area", sa.String()),
-            sa.column("provider_key", sa.String()),
-            sa.column("created_at", sa.DateTime(timezone=True)),
-            sa.column("updated_at", sa.DateTime(timezone=True)),
+            sa.Column("user_id", sa.Uuid(), nullable=False),
+            sa.Column("data_area", sa.String(length=64), nullable=False),
+            sa.Column("provider_key", sa.String(length=64), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.CheckConstraint(
+                "length(data_area) > 0",
+                name="ck_provider_preferences_data_area",
+            ),
+            sa.CheckConstraint(
+                "length(provider_key) > 0",
+                name="ck_provider_preferences_provider_key",
+            ),
+            sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("user_id", "data_area"),
         )
+    else:
+        bind.execute(preferences.delete())
+    if rows:
         bind.execute(preferences.insert(), rows)
 
 
