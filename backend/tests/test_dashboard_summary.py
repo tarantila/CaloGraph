@@ -258,4 +258,3 @@ def test_dashboard_keeps_import_coverage_metadata_separate_from_canonical_values
     assert result["data_end_date"] == "2026-07-01"
     assert result["data_day_count"] == 1
     assert result["last_import_at"] == "2026-07-02T12:00:00"
-
