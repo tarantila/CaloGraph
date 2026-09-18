@@ -23,6 +23,8 @@ from app.provider_preferences import (
     normalize_provider_key,
     validate_provider_preference,
 )
+from app.source_priority import compatibility as source_priority_compatibility
+from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 
 PATH = "/api/v1/settings/provider-preferences"
 AVAILABILITY_PATH = "/api/v1/settings/provider-availability/nutrition"
@@ -131,9 +133,22 @@ def test_provider_preference_api_reads_writes_and_deletes_user_scoped_value(
     assert created.status_code == 200
     assert created.json() == {"data_area": "nutrition", "provider_key": "yazio"}
 
-    stored = db.get(UserProviderPreference, (user.id, "nutrition"))
+    latest = db.scalar(
+        select(SourcePriorityPolicy)
+        .where(SourcePriorityPolicy.user_id == user.id)
+        .order_by(SourcePriorityPolicy.version.desc())
+    )
+    assert latest is not None
+    stored = db.scalar(
+        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == latest.id)
+    )
     assert stored is not None
-    assert stored.provider_key == "yazio"
+    assert (stored.data_area, stored.metric_key, stored.provider_key, stored.priority_rank) == (
+        "nutrition",
+        None,
+        "yazio",
+        1,
+    )
 
     listed = client.get(PATH)
     assert listed.status_code == 200
@@ -145,9 +160,51 @@ def test_provider_preference_api_reads_writes_and_deletes_user_scoped_value(
         f"{PATH}/nutrition",
         headers={"X-CSRF-Token": csrf},
     )
-    db.expire_all()
-    assert db.get(UserProviderPreference, (user.id, "nutrition")) is None
+    latest = db.scalar(
+        select(SourcePriorityPolicy)
+        .where(SourcePriorityPolicy.user_id == user.id)
+        .order_by(SourcePriorityPolicy.version.desc())
+    )
+    assert latest is not None
+    assert db.scalar(
+        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == latest.id)
+    ) is None
     assert db.get(UserProviderPreference, (other.id, "nutrition")) is not None
+
+
+def test_provider_preference_write_uses_source_priority_policy_only(
+    db,
+    user,
+    monkeypatch,
+) -> None:
+    _add_yazio(db, user)
+    original_add = db.add
+
+    def add_without_legacy_mirror(instance, *args, **kwargs):
+        if isinstance(instance, UserProviderPreference):
+            pytest.fail("provider preference writes must not add legacy rows")
+        return original_add(instance, *args, **kwargs)
+
+    monkeypatch.setattr(db, "add", add_without_legacy_mirror)
+
+    snapshot = source_priority_compatibility.set_provider_preference(
+        db,
+        user_id=user.id,
+        data_area="nutrition",
+        provider_key="yazio",
+    )
+    db.commit()
+
+    assert snapshot.provider_key == "yazio"
+    policy = db.scalar(
+        select(SourcePriorityPolicy)
+        .where(SourcePriorityPolicy.user_id == user.id)
+        .order_by(SourcePriorityPolicy.version.desc())
+    )
+    assert policy is not None
+    assert db.scalar(
+        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == policy.id)
+    ) is not None
 
 
 def test_provider_preference_api_rejects_unavailable_provider(

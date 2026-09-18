@@ -83,34 +83,6 @@ def get_provider_preference(
     )
 
 
-def _legacy_set(db: Session, user_id: UUID, data_area: str, provider_key: str) -> None:
-    if not _legacy_table_available(db):
-        return
-    try:
-        preference = db.get(UserProviderPreference, (user_id, data_area))
-        if preference is None:
-            db.add(
-                UserProviderPreference(
-                    user_id=user_id,
-                    data_area=data_area,
-                    provider_key=provider_key,
-                )
-            )
-        else:
-            preference.provider_key = provider_key
-    except OperationalError:
-        db.rollback()
-
-
-def _legacy_delete(db: Session, user_id: UUID, data_area: str) -> None:
-    if not _legacy_table_available(db):
-        return
-    try:
-        preference = db.get(UserProviderPreference, (user_id, data_area))
-        if preference is not None:
-            db.delete(preference)
-    except OperationalError:
-        db.rollback()
 
 
 def _next_effective_from(
@@ -163,7 +135,6 @@ def set_provider_preference(
             effective_from,
             tuple(rules),
         )
-    _legacy_set(db, user_id, data_area, provider_key)
     return ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
 
 
@@ -188,7 +159,6 @@ def delete_provider_preference(db: Session, *, user_id: UUID, data_area: str) ->
                 _next_effective_from(db, user_id, datetime.now(UTC)),
                 tuple(rules),
             )
-    _legacy_delete(db, user_id, data_area)
 
 
 __all__ = [
