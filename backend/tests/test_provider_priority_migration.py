@@ -63,6 +63,7 @@ def _legacy_metadata():
         sa.Column("user_id", uuid_type, nullable=False),
         sa.Column("version", sa.Integer, nullable=False),
         sa.Column("effective_from", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     sa.Table(
         "source_priority_rules",
@@ -74,6 +75,7 @@ def _legacy_metadata():
         sa.Column("metric_key", sa.String(128)),
         sa.Column("provider_key", sa.String(64), nullable=False),
         sa.Column("priority_rank", sa.Integer, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     sa.Table(
         "user_provider_preferences",
@@ -165,6 +167,12 @@ def test_upgrade_migrates_preferences_and_activity_snapshots(tmp_path):
             (user_one.hex, 1),
             (user_two.hex, 1),
         }
+        assert connection.execute(
+            sa.text("SELECT COUNT(*) FROM source_priority_policies WHERE created_at IS NULL")
+        ).scalar_one() == 0
+        assert connection.execute(
+            sa.text("SELECT COUNT(*) FROM source_priority_rules WHERE created_at IS NULL")
+        ).scalar_one() == 0
         migrated_rules = connection.execute(
             sa.text(
                 "SELECT user_id, data_area, metric_key, provider_key, priority_rank "
@@ -194,6 +202,7 @@ def test_upgrade_preserves_existing_policy_and_uses_next_version(tmp_path):
                 user_id=user_one,
                 version=4,
                 effective_from=datetime(2026, 9, 1, tzinfo=UTC),
+                created_at=datetime(2026, 9, 1, tzinfo=UTC),
             )
         )
         connection.execute(
@@ -205,6 +214,7 @@ def test_upgrade_preserves_existing_policy_and_uses_next_version(tmp_path):
                 metric_key="protein_g",
                 provider_key="yazio",
                 priority_rank=1,
+                created_at=datetime(2026, 9, 1, tzinfo=UTC),
             )
         )
 
@@ -269,13 +279,14 @@ def test_downgrade_refuses_lossy_multiple_current_priorities(tmp_path):
         connection.execute(
             sa.text(
                 "INSERT INTO source_priority_rules "
-                "(id, user_id, policy_id, data_area, metric_key, provider_key, priority_rank) "
-                "VALUES (:id, :user_id, :policy_id, 'nutrition', NULL, 'google_health', 2)"
+                "(id, user_id, policy_id, data_area, metric_key, provider_key, priority_rank, created_at) "
+                "VALUES (:id, :user_id, :policy_id, 'nutrition', NULL, 'google_health', 2, :created_at)"
             ),
             {
                 "id": uuid4().hex,
                 "user_id": user_one.hex,
                 "policy_id": policy_id,
+                "created_at": _MIGRATION_AT,
             },
         )
 

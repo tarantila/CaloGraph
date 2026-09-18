@@ -35,4 +35,13 @@
 ## Concerns
 
 - PostgreSQL-specific execution was not run; the focused proof is isolated SQLite plus model/source-priority regression coverage.
-- Runtime analytics/API behavior and frontend/YAZIO files were intentionally left unchanged per the brief.
+- Frontend/YAZIO files were intentionally left unchanged per the brief.
+
+## Review fix
+
+- Policy and rule backfill rows now receive deterministic non-null `created_at` values.
+- `backend/app/source_priority/compatibility.py` is the sole compatibility facade for provider preference reads/writes; settings and analytics callers no longer query `UserProviderPreference` directly.
+- The legacy ORM mapping is retained only for compatibility with installations/tests where the pre-0031 table still exists; the 0031 upgrade still drops that table after migration.
+- Review-fix targeted command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
+  - **72 passed**

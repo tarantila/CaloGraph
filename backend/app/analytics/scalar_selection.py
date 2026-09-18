@@ -5,9 +5,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import UserProviderPreference
 from app.provider_preferences import validate_provider_preference
 from app.services.provider_preferences import provider_is_available
+from app.source_priority.compatibility import get_provider_preference
 
 
 class ScalarProviderSelectionError(RuntimeError):
@@ -36,7 +36,7 @@ def resolve_scalar_provider(
     data_area: str,
     source_types: dict[str, str],
 ) -> ScalarProviderSelection | None:
-    preference = db.get(UserProviderPreference, (user_id, data_area))
+    preference = get_provider_preference(db, user_id, data_area)
     if preference is None:
         return None
     try:

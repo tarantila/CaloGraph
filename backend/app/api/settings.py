@@ -35,7 +35,6 @@ from app.models import (
     User,
     UserOnboarding,
     UserProfile,
-    UserProviderPreference,
     UserSession,
     UserTotpCredential,
 )
@@ -86,6 +85,12 @@ from app.schemas import (
     TrackingQualityResponse,
     UserResponse,
     WebAuthnOptionsResponse,
+)
+from app.source_priority.compatibility import (
+    ProviderPreferenceSnapshot,
+    delete_provider_preference as delete_source_priority_preference,
+    list_provider_preferences,
+    set_provider_preference,
 )
 from app.security_events import log_security_event, security_context_references, security_reference
 from app.services.achievements import unlock_achievement_keys
@@ -508,13 +513,7 @@ def provider_preferences(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> ProviderPreferenceListResponse:
-    preferences = list(
-        db.scalars(
-            select(UserProviderPreference)
-            .where(UserProviderPreference.user_id == user.id)
-            .order_by(UserProviderPreference.data_area)
-        )
-    )
+    preferences = list_provider_preferences(db, user.id)
     return ProviderPreferenceListResponse(
         preferences=[ProviderPreferenceResponse.model_validate(item) for item in preferences]
     )
@@ -559,7 +558,7 @@ def update_provider_preference(
     payload: ProviderPreferenceUpdate,
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> UserProviderPreference:
+) -> ProviderPreferenceSnapshot:
     try:
         normalized_area, normalized_provider = validate_provider_preference(
             data_area, payload.provider_key
@@ -581,16 +580,12 @@ def update_provider_preference(
             detail="Provider ist für dieses Konto nicht verfügbar",
             problem_type=PROVIDER_NOT_AVAILABLE,
         )
-    preference = db.get(UserProviderPreference, (user.id, normalized_area))
-    if preference is None:
-        preference = UserProviderPreference(
-            user_id=user.id,
-            data_area=normalized_area,
-            provider_key=normalized_provider,
-        )
-        db.add(preference)
-    else:
-        preference.provider_key = normalized_provider
+    preference = set_provider_preference(
+        db,
+        user_id=user.id,
+        data_area=normalized_area,
+        provider_key=normalized_provider,
+    )
     if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
         apply_activity_provider_to_current_target(
             db,
@@ -598,7 +593,6 @@ def update_provider_preference(
             source_type=ACTIVITY_PROVIDER_SOURCE_TYPES[normalized_provider],
         )
     db.commit()
-    db.refresh(preference)
     return preference
 
 
@@ -616,10 +610,8 @@ def delete_provider_preference(
             detail="Unbekannter fachlicher Datenbereich",
             problem_type=VALIDATION_ERROR,
         ) from exc
-    preference = db.get(UserProviderPreference, (user.id, normalized_area))
-    if preference is not None:
-        db.delete(preference)
-        db.commit()
+    delete_source_priority_preference(db, user_id=user.id, data_area=normalized_area)
+    db.commit()
 
 
 @router.get("/mfa", response_model=MfaStatusResponse)

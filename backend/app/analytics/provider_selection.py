@@ -7,10 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import GoogleHealthConnection, UserProviderPreference, YazioConnection
+from app.models import GoogleHealthConnection, YazioConnection
 from app.nutrition.models import NutritionSourceObservation
 from app.provider_preferences import NUTRITION_DATA_AREA, validate_provider_preference
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
+from app.source_priority.compatibility import get_provider_preference
 
 
 class NutritionProviderSelectionError(RuntimeError):
@@ -76,7 +77,7 @@ def resolve_nutrition_provider(
     *,
     user_id: UUID,
 ) -> NutritionProviderSelection | None:
-    preference = db.get(UserProviderPreference, (user_id, NUTRITION_DATA_AREA))
+    preference = get_provider_preference(db, user_id, NUTRITION_DATA_AREA)
     if preference is None:
         return None
     try:

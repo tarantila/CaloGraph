@@ -69,9 +69,6 @@ class User(Base):
     google_health_oauth_flows: Mapped[list[GoogleHealthOAuthFlow]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    provider_preferences: Mapped[list[UserProviderPreference]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
@@ -94,7 +91,6 @@ class UserProviderPreference(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    user: Mapped[User] = relationship(back_populates="provider_preferences")
 
 
 class InstanceBootstrap(Base):

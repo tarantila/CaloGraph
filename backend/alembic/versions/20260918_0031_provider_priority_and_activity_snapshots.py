@@ -150,6 +150,7 @@ def _policy_tables() -> tuple[sa.TableClause, sa.TableClause]:
         sa.column("user_id", sa.Uuid()),
         sa.column("version", sa.Integer()),
         sa.column("effective_from", sa.DateTime(timezone=True)),
+        sa.column("created_at", sa.DateTime(timezone=True)),
     )
     rules = sa.table(
         "source_priority_rules",
@@ -160,6 +161,7 @@ def _policy_tables() -> tuple[sa.TableClause, sa.TableClause]:
         sa.column("metric_key", sa.String()),
         sa.column("provider_key", sa.String()),
         sa.column("priority_rank", sa.Integer()),
+        sa.column("created_at", sa.DateTime(timezone=True)),
     )
     return policies, rules
 
@@ -230,6 +232,7 @@ def _migrate_preferences(bind: sa.Connection) -> None:
                 user_id=user_id,
                 version=version,
                 effective_from=effective_from,
+                created_at=effective_from,
             )
         )
         bind.execute(
@@ -243,6 +246,7 @@ def _migrate_preferences(bind: sa.Connection) -> None:
                     "metric_key": None,
                     "provider_key": row["provider_key"],
                     "priority_rank": 1,
+                    "created_at": effective_from,
                 }
                 for row in grouped[user_id]
             ],
