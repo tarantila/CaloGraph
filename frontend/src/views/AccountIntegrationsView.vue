@@ -21,9 +21,12 @@ const syncingYazio = ref(false)
 const googleActionBusy = ref(false)
 const yazioMessage = ref('')
 const yazioError = ref('')
+const yazioLoadError = ref('')
 const syncMessage = ref('')
 const syncError = ref('')
+const syncWarning = ref('')
 const googleError = ref('')
+const googleMessage = ref('')
 const initialSetupSaved = ref(false)
 const error = ref('')
 const loading = ref(true)
@@ -38,10 +41,11 @@ const yazioCredentialsComplete = computed(
   () => Boolean(yazioEmail.value.trim()) && Boolean(yazioPassword.value)
     && (yazio.value?.configured === true || Boolean(yazioHistoryFrom.value && yazioHistoryTo.value)),
 )
-const yazioAvailable = computed(() => yazio.value?.available !== false)
+const yazioAvailable = computed(() => yazio.value?.available === true)
 const yazioStatusLabel = computed(() => {
+  if (!yazio.value) return t('accountIntegrations.notAvailable')
   if (!yazioAvailable.value) return t('settings.serverDisabled')
-  if (!yazio.value?.configured) return t('settings.notConfigured')
+  if (!yazio.value.configured) return t('settings.notConfigured')
   const historicalState = yazio.value.historical_sync?.state
   if (historicalState === 'pending') return t('settings.firstImportWaiting')
   if (historicalState === 'running') return t('settings.firstImportRunning')
@@ -58,7 +62,7 @@ const yazioHistoricalSyncFailed = computed(
 )
 const googleCanConnect = computed(() => {
   const state = google.value?.state
-  return google.value?.available === true && state !== 'active'
+  return google.value?.available === true && google.value.configured === true && state !== 'active'
 })
 const googleStatusLabel = computed(() => {
   switch (google.value?.state) {
@@ -74,38 +78,51 @@ const googleStatusLabel = computed(() => {
 function timestampLabel(value: string | null | undefined): string {
   return value ? formatGermanDateTime(value) : t('accountIntegrations.notAvailable')
 }
-
 async function load(): Promise<void> {
   const generation = ++loadGeneration
   stopYazioPolling()
   loading.value = true
   loaded.value = false
   error.value = ''
+  yazioLoadError.value = ''
   googleError.value = ''
+  googleMessage.value = ''
   initialSetupSaved.value = false
-  try {
-    const [result, googleResult] = await Promise.all([
-      api<YazioStatus>('/yazio/status'),
-      api<GoogleHealthStatus>('/google-health/status'),
-    ])
-    if (generation !== loadGeneration) return
-    yazio.value = result
-    google.value = googleResult
-    yazioMessage.value = ''
-    yazioError.value = ''
-    syncMessage.value = ''
-    syncError.value = ''
-    if (!result.configured) yazioHistoryTo.value = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-    loaded.value = true
+  yazio.value = null
+  google.value = null
+  const callbackState = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('google_health')
+  if (callbackState === 'connected') googleMessage.value = t('accountIntegrations.googleConnected')
+  if (callbackState === 'error') googleError.value = t('accountIntegrations.googleCallbackFailed')
+  const [yazioResult, googleResult] = await Promise.allSettled([
+    api<YazioStatus>('/yazio/status'),
+    api<GoogleHealthStatus>('/google-health/status'),
+  ])
+  if (generation !== loadGeneration) return
+  if (yazioResult.status === 'fulfilled') {
+    yazio.value = yazioResult.value
+    if (!yazioResult.value.configured) yazioHistoryTo.value = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
     scheduleYazioPolling()
-  } catch (cause) {
-    if (generation !== loadGeneration) return
-    error.value = cause instanceof ApiError
-      ? localizeApiError(cause, 'settingsUi.loadFailed')
+  } else {
+    yazioLoadError.value = yazioResult.reason instanceof ApiError
+      ? localizeApiError(yazioResult.reason, 'settingsUi.loadFailed')
       : t('settingsUi.loadFailed')
-  } finally {
-    if (generation === loadGeneration) loading.value = false
   }
+  if (googleResult.status === 'fulfilled') {
+    google.value = googleResult.value
+  } else {
+    googleError.value = googleResult.reason instanceof ApiError
+      ? localizeApiError(googleResult.reason, 'accountIntegrations.googleLoadFailed')
+      : t('accountIntegrations.googleLoadFailed')
+  }
+  yazioMessage.value = ''
+  yazioError.value = ''
+  syncMessage.value = ''
+  syncError.value = ''
+  syncWarning.value = ''
+  loaded.value = true
+  loading.value = false
 }
 
 function stopYazioPolling(): void {
@@ -191,11 +208,11 @@ async function syncYazio(): Promise<void> {
     syncingYazio.value
     || !yazioAvailable.value
     || !yazio.value?.configured
-    || !yazio.value.sync_enabled
   ) return
   syncingYazio.value = true
   syncMessage.value = ''
   syncError.value = ''
+  syncWarning.value = ''
   try {
     const result = await api<ImportSummary>('/yazio/sync', { method: 'POST' })
     syncMessage.value = t('accountIntegrations.manualSyncResult', {
@@ -203,8 +220,12 @@ async function syncYazio(): Promise<void> {
       updated: result.updated,
       unchanged: result.skipped,
     })
-    yazio.value = await api<YazioStatus>('/yazio/status')
-    scheduleYazioPolling()
+    try {
+      yazio.value = await api<YazioStatus>('/yazio/status')
+      scheduleYazioPolling()
+    } catch {
+      syncWarning.value = t('accountIntegrations.manualSyncRefreshFailed')
+    }
   } catch (cause) {
     syncError.value = cause instanceof ApiError
       ? localizeApiError(cause, 'accountIntegrations.manualSyncFailed')
@@ -265,6 +286,10 @@ void load()
         <p>{{ t('settingsUi.yazioDescription') }}</p>
         <div class="integration-panel yazio-credentials-panel">
           <h3>{{ t('accountIntegrations.credentialsTitle') }}</h3>
+          <div v-if="yazioLoadError" class="card error" role="alert">
+            <p>{{ yazioLoadError }}</p>
+            <button class="button compact-action" type="button" @click="load">{{ t('common.tryAgain') }}</button>
+          </div>
           <div v-if="yazioError" class="card error" role="alert">{{ yazioError }}</div>
           <p v-if="yazioMessage" class="setup-notice" role="status">{{ yazioMessage }}</p>
           <div v-if="initialSetupSaved" class="setup-notice" role="status">
@@ -346,12 +371,13 @@ void load()
           <button
             class="button secondary compact-action"
             type="button"
-            :disabled="syncingYazio || !yazioAvailable || !yazio?.configured || !yazio?.sync_enabled"
+            :disabled="syncingYazio || !yazioAvailable || !yazio?.configured"
             @click="syncYazio"
           >
             {{ syncingYazio ? t('accountIntegrations.manualSyncRunning') : t('accountIntegrations.manualSyncAction') }}
           </button>
           <p v-if="syncMessage" class="setup-notice" role="status">{{ syncMessage }}</p>
+          <p v-if="syncWarning" class="import-message warning" role="status">{{ syncWarning }}</p>
           <p v-if="syncError" class="import-message error" role="alert">{{ syncError }}</p>
         </div>
       </section>
@@ -364,7 +390,11 @@ void load()
           {{ t('accountIntegrations.lastSuccess') }}: {{ timestampLabel(google.last_success_at) }}
         </p>
         <p v-if="google?.last_error" class="import-message error" role="alert">{{ google.last_error }}</p>
-        <p v-if="googleError" class="import-message error" role="alert">{{ googleError }}</p>
+        <div v-if="googleError" class="import-message error" role="alert">
+          <p>{{ googleError }}</p>
+          <button v-if="!google" class="button compact-action" type="button" @click="load">{{ t('common.tryAgain') }}</button>
+        </div>
+        <p v-if="googleMessage" class="setup-notice" role="status">{{ googleMessage }}</p>
         <button
           v-if="googleCanConnect"
           class="button compact-action"

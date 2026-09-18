@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_csrf
@@ -31,8 +32,25 @@ def _oauth_error(exc: GoogleHealthOAuthError) -> HTTPException:
         "invalid_response": "Google Health-Antwort ist ungültig.",
         "credential_unavailable": "Google Health ist derzeit nicht verfügbar.",
     }.get(exc.code, "Google Health-Anfrage fehlgeschlagen.")
-    status = 429 if exc.code == "rate_limited" else 502 if exc.code in {"transient_error", "provider_error"} else exc.status_code
+    status = (
+        429
+        if exc.code == "rate_limited"
+        else 502
+        if exc.code in {"transient_error", "provider_error"}
+        else exc.status_code
+    )
     return HTTPException(status_code=status, detail=detail)
+
+
+def _wants_spa_redirect(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _oauth_spa_redirect(result: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"/konto/integrationen?google_health={result}",
+        status_code=303,
+    )
 
 
 @router.get("/status", response_model=GoogleHealthStatus)
@@ -60,7 +78,9 @@ def google_health_oauth_start(
     except GoogleHealthOAuthError as exc:
         raise _oauth_error(exc) from exc
     return GoogleHealthOAuthStartResponse(authorization_url=url)
-@router.get("/oauth/callback", response_model=GoogleHealthStatus)
+
+
+@router.get("/oauth/callback", response_model=None)
 def google_health_oauth_callback(
     request: Request,
     state: str | None = Query(default=None, max_length=512),
@@ -68,9 +88,9 @@ def google_health_oauth_callback(
     error: str | None = Query(default=None, max_length=128),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
-) -> GoogleHealthStatus:
+) -> GoogleHealthStatus | RedirectResponse:
     try:
-        return complete_google_health_oauth(
+        status = complete_google_health_oauth(
             db,
             user,
             state=state,
@@ -79,6 +99,13 @@ def google_health_oauth_callback(
             request=request,
         )
     except GoogleHealthDisabledError as exc:
+        if _wants_spa_redirect(request):
+            return _oauth_spa_redirect("error")
         raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.") from exc
     except GoogleHealthOAuthError as exc:
+        if _wants_spa_redirect(request):
+            return _oauth_spa_redirect("error")
         raise _oauth_error(exc) from exc
+    if _wants_spa_redirect(request):
+        return _oauth_spa_redirect("connected" if status.state == "active" else "error")
+    return status

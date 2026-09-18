@@ -3,10 +3,12 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+import app.api.google_health as google_health_api
 from app.api.google_health import _oauth_error
 from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
 from app.models import User
+from app.schemas_google_health import GoogleHealthStatus
 
 
 def _login(client: TestClient) -> str:
@@ -74,3 +76,25 @@ def test_google_health_disabled_is_safe(client: TestClient, user: User, monkeypa
 def test_rate_limited_callback_uses_http_429():
     response = _oauth_error(GoogleHealthOAuthError("rate_limited"))
     assert response.status_code == 429
+
+
+def test_browser_oauth_callback_redirects_to_integrations(
+    client: TestClient, user: User, monkeypatch
+):
+    _login(client)
+    monkeypatch.setattr(
+        google_health_api,
+        "complete_google_health_oauth",
+        lambda *args, **kwargs: GoogleHealthStatus(
+            available=True,
+            configured=True,
+            state="active",
+        ),
+    )
+    response = client.get(
+        "/api/v1/google-health/oauth/callback?state=test&code=code",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/konto/integrationen?google_health=connected"
