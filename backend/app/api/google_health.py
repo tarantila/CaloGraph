@@ -43,7 +43,32 @@ def _oauth_error(exc: GoogleHealthOAuthError) -> HTTPException:
 
 
 def _wants_spa_redirect(request: Request) -> bool:
-    return "text/html" in request.headers.get("accept", "").lower()
+    qualities: dict[str, float] = {}
+    for raw_item in request.headers.get("accept", "").split(","):
+        parts = [part.strip() for part in raw_item.split(";")]
+        media_type = parts[0].lower()
+        if media_type not in {"text/html", "application/json"}:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, value = parameter.partition("=")
+            if name.strip().lower() != "q" or not separator:
+                continue
+            try:
+                quality = max(0.0, min(1.0, float(value.strip())))
+            except ValueError:
+                quality = 0.0
+        qualities[media_type] = max(qualities.get(media_type, 0.0), quality)
+    html_quality = qualities.get("text/html", 0.0)
+    json_quality = qualities.get("application/json", 0.0)
+    return html_quality > 0 and html_quality > json_quality
+
+
+def _login_spa_redirect() -> RedirectResponse:
+    return RedirectResponse(
+        url="/login?next=/konto/integrationen&google_health=error",
+        status_code=303,
+    )
 
 
 def _oauth_spa_redirect(result: str) -> RedirectResponse:
@@ -86,9 +111,14 @@ def google_health_oauth_callback(
     state: str | None = Query(default=None, max_length=512),
     code: str | None = Query(default=None, max_length=4096),
     error: str | None = Query(default=None, max_length=128),
-    user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> GoogleHealthStatus | RedirectResponse:
+    try:
+        user = current_user(request, db)
+    except HTTPException as exc:
+        if _wants_spa_redirect(request) and exc.status_code == 401:
+            return _login_spa_redirect()
+        raise
     try:
         status = complete_google_health_oauth(
             db,

@@ -1,13 +1,16 @@
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 import app.api.google_health as google_health_api
 from app.api.google_health import _oauth_error
 from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
-from app.models import User
+from app.models import User, UserSession
 from app.schemas_google_health import GoogleHealthStatus
 
 
@@ -98,3 +101,48 @@ def test_browser_oauth_callback_redirects_to_integrations(
     )
     assert response.status_code == 303
     assert response.headers["location"] == "/konto/integrationen?google_health=connected"
+
+
+def test_expired_browser_oauth_callback_redirects_to_login(
+    client: TestClient, user: User, db: Session
+):
+    _login(client)
+    session = db.scalar(select(UserSession))
+    assert session is not None
+    session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.commit()
+
+    response = client.get(
+        "/api/v1/google-health/oauth/callback?state=test&code=code",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?next=/konto/integrationen&google_health=error"
+
+
+def test_browser_oauth_error_redirects_to_integrations(client: TestClient, user: User, monkeypatch):
+    _login(client)
+
+    def fail_oauth(*args, **kwargs):
+        raise GoogleHealthOAuthError("invalid_state")
+
+    monkeypatch.setattr(google_health_api, "complete_google_health_oauth", fail_oauth)
+    response = client.get(
+        "/api/v1/google-health/oauth/callback?state=expired&code=code",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/konto/integrationen?google_health=error"
+
+
+def test_callback_prefers_json_for_non_html_accept_values(client: TestClient):
+    for accept in ("text/html;q=0", "application/json,text/html"):
+        response = client.get(
+            "/api/v1/google-health/oauth/callback?state=test&code=code",
+            headers={"Accept": accept},
+            follow_redirects=False,
+        )
+        assert response.status_code == 401
+        assert "location" not in response.headers
