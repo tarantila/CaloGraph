@@ -325,19 +325,26 @@ def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
     return tuple(ranges)
 
 
-def _provider_has_complete_evidence(candidates: Mapping[str, Any]) -> bool:
-    for metric_type in CANONICAL_NUTRITION_METRICS:
+def _provider_has_complete_evidence(
+    candidates: Mapping[str, Any],
+    *,
+    require_micronutrient: bool,
+) -> bool:
+    if not require_micronutrient:
+        return any(
+            getattr(candidate, "value", None) is not None
+            for candidate in candidates.values()
+        )
+    for metric_type in MICRONUTRIENT_METRIC_TYPES:
         candidate = candidates.get(metric_type)
-        if candidate is None:
-            return False
-        if getattr(candidate, "coverage_state", None) != CoverageState.COMPLETE:
-            return False
-        if getattr(candidate, "resolution_state", None) != ResolutionState.RESOLVED:
-            return False
-    return any(
-        getattr(candidate, "value", None) is not None
-        for candidate in candidates.values()
-    )
+        if candidate is None or getattr(candidate, "value", None) is None:
+            continue
+        if (
+            getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
+            and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
+        ):
+            return True
+    return False
 
 
 def read_canonical_micronutrient_period(
@@ -423,7 +430,10 @@ def read_canonical_micronutrient_period(
                 ),
             ):
                 for current_date, candidate_values in candidates_by_day.items():
-                    if _provider_has_complete_evidence(candidate_values):
+                    if _provider_has_complete_evidence(
+                        candidate_values,
+                        require_micronutrient=len(ordered_sources) > 1,
+                    ):
                         selected_candidates_by_date[current_date] = candidate_values
                         unresolved_dates.discard(current_date)
     for candidate_values in selected_candidates_by_date.values():
