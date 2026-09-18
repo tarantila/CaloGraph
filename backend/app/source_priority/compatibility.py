@@ -65,6 +65,16 @@ def _legacy_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSn
         return []
 
 
+
+def _legacy_delete(db: Session, user_id: UUID, data_area: str) -> None:
+    if not _legacy_table_available(db):
+        return
+    row = db.get(UserProviderPreference, (user_id, data_area))
+    if row is not None:
+        db.delete(row)
+
+
+
 def list_provider_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
     policy = _latest_policy(db, user_id)
     if policy is not None:
@@ -140,26 +150,27 @@ def set_provider_preference(
 
 def delete_provider_preference(db: Session, *, user_id: UUID, data_area: str) -> None:
     current_policy = _latest_policy(db, user_id)
-    if current_policy is not None:
-        rules = [
-            PriorityRuleSpec(
-                data_area=rule.data_area,
-                metric_key=rule.metric_key,
-                provider_key=rule.provider_key,
-                priority_rank=rule.priority_rank,
-            )
-            for rule in list_rules(db, user_id, current_policy.id)
-            if not (rule.data_area == data_area and rule.metric_key is None)
-        ]
-        if len(rules) != len(list_rules(db, user_id, current_policy.id)):
-            create_policy_with_rules(
-                db,
-                user_id,
-                current_policy.version + 1,
-                _next_effective_from(db, user_id, datetime.now(UTC)),
-                tuple(rules),
-            )
-
+    if current_policy is None:
+        _legacy_delete(db, user_id, data_area)
+        return
+    rules = [
+        PriorityRuleSpec(
+            data_area=rule.data_area,
+            metric_key=rule.metric_key,
+            provider_key=rule.provider_key,
+            priority_rank=rule.priority_rank,
+        )
+        for rule in list_rules(db, user_id, current_policy.id)
+        if not (rule.data_area == data_area and rule.metric_key is None)
+    ]
+    if len(rules) != len(list_rules(db, user_id, current_policy.id)):
+        create_policy_with_rules(
+            db,
+            user_id,
+            current_policy.version + 1,
+            _next_effective_from(db, user_id, datetime.now(UTC)),
+            tuple(rules),
+        )
 
 __all__ = [
     "ProviderPreferenceSnapshot",

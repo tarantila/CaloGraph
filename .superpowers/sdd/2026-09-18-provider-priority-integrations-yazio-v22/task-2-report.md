@@ -48,8 +48,16 @@
 
 ## Follow-up review fix
 
-- Removed legacy provider-preference write mirroring from the compatibility facade; reads may still fall back to the legacy table when present, but all writes now create immutable `SourcePriorityPolicy`/`SourcePriorityRule` rows only.
-- Updated the provider-preference API regression to assert source-priority persistence and added a regression proving writes do not add legacy rows.
+- Removed legacy provider-preference setting mirroring from the compatibility facade; reads may still fall back to the legacy table when present, and policy-backed writes create immutable `SourcePriorityPolicy`/`SourcePriorityRule` rows only.
+- Updated the provider-preference API regression to assert source-priority persistence and added a regression proving setting a preference does not add legacy rows.
 - Follow-up targeted command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
   - **73 passed, 1 warning**
+
+## Transitional legacy-delete fix
+
+- A delete with no source-priority policy now removes the matching legacy row when the pre-0031 table is present, allowing legacy-only preferences to disappear from the read fallback. Policy-backed deletes never mutate legacy rows, and legacy delete database errors propagate without rollback/swallowing.
+- Added a regression covering API deletion of a legacy-only preference.
+- Transitional-delete targeted command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
+  - **74 passed, 1 warning**

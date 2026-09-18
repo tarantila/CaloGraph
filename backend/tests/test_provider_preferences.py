@@ -207,6 +207,29 @@ def test_provider_preference_write_uses_source_priority_policy_only(
     ) is not None
 
 
+def test_provider_preference_api_deletes_legacy_only_value(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    csrf = _login(client)
+
+    assert client.get(PATH).json() == {
+        "preferences": [{"data_area": "nutrition", "provider_key": "yazio"}]
+    }
+
+    deleted = client.delete(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert deleted.status_code == 204
+    db.expire_all()
+    assert db.get(UserProviderPreference, (user.id, "nutrition")) is None
+    assert client.get(PATH).json() == {"preferences": []}
+
+
 def test_provider_preference_api_rejects_unavailable_provider(
     client: TestClient,
     user,
