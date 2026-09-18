@@ -19,6 +19,7 @@ from app.analytics.service import PRIMARY_NUTRITION_METRICS, serialize_decimal
 from app.database import SessionLocal
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample
+from app.nutrition.enums import CoverageState, ResolutionState
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.resolution import iter_provider_period_chunks
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
@@ -324,6 +325,21 @@ def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
     return tuple(ranges)
 
 
+def _provider_has_complete_evidence(candidates: Mapping[str, Any]) -> bool:
+    for metric_type in CANONICAL_NUTRITION_METRICS:
+        candidate = candidates.get(metric_type)
+        if candidate is None:
+            return False
+        if getattr(candidate, "coverage_state", None) != CoverageState.COMPLETE:
+            return False
+        if getattr(candidate, "resolution_state", None) != ResolutionState.RESOLVED:
+            return False
+    return any(
+        getattr(candidate, "value", None) is not None
+        for candidate in candidates.values()
+    )
+
+
 def read_canonical_micronutrient_period(
     db: Session,
     *,
@@ -339,7 +355,11 @@ def read_canonical_micronutrient_period(
     days_by_metric: dict[str, int] = defaultdict(int)
     primary_recorded_days = 0
     all_value_days = 0
-    ordered_sources = tuple(provider_sources or ((provider_key, source_instance_id),))
+    ordered_sources = (
+        tuple(provider_sources)
+        if provider_sources is not None
+        else ((provider_key, source_instance_id),)
+    )
     if not ordered_sources or len({key for key, _ in ordered_sources}) != len(ordered_sources):
         raise ValueError("provider source list is empty or contains duplicates")
     if ordered_sources[0] != (provider_key, source_instance_id):
@@ -403,12 +423,7 @@ def read_canonical_micronutrient_period(
                 ),
             ):
                 for current_date, candidate_values in candidates_by_day.items():
-                    has_evidence = any(
-                        (candidate_values.get(metric_type) is not None)
-                        and (candidate_values[metric_type].value is not None)
-                        for metric_type in (*PRIMARY_NUTRITION_METRICS, *MICRONUTRIENT_METRIC_TYPES)
-                    )
-                    if has_evidence:
+                    if _provider_has_complete_evidence(candidate_values):
                         selected_candidates_by_date[current_date] = candidate_values
                         unresolved_dates.discard(current_date)
     for candidate_values in selected_candidates_by_date.values():

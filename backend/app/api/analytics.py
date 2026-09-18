@@ -426,8 +426,10 @@ def micronutrients(
         )
         response = legacy.to_public(start=start, end=end, source=source)
     else:
-        provider_sources = selection.provider_sources or (
-            (selection.provider_key, selection.source_instance_id),
+        provider_sources = (
+            selection.provider_sources
+            if selection.provider_sources is not None
+            else ((selection.provider_key, selection.source_instance_id),)
         )
         if len(provider_sources) == 1:
             canonical_read_context = NutritionEvidenceIndex(

@@ -221,7 +221,7 @@ def test_canonical_micronutrients_fall_back_per_day_in_priority_order(monkeypatc
     def fake_period(db, **kwargs):
         del db
         calls.append(kwargs["provider_key"])
-        has_values = kwargs["provider_key"] == "second"
+        provider_key = kwargs["provider_key"]
         return {
             local_date: {
                 metric_key: _candidate(
@@ -230,9 +230,13 @@ def test_canonical_micronutrients_fall_back_per_day_in_priority_order(monkeypatc
                     metric_key=metric_key,
                     value=(
                         Decimal("100")
-                        if has_values and metric_key == "dietary_energy_kcal"
+                        if provider_key == "first" and metric_key == "dietary_energy_kcal"
+                        else Decimal("100")
+                        if provider_key == "second" and metric_key == "dietary_energy_kcal"
                         else Decimal("7")
-                        if has_values and metric_key == "iron_mg"
+                        if provider_key == "second" and metric_key == "iron_mg"
+                        else Decimal("1")
+                        if provider_key == "second"
                         else None
                     ),
                 )
