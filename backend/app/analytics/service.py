@@ -67,6 +67,32 @@ def _target_for(targets: list[NutritionTarget], day: date) -> NutritionTarget | 
     )
 
 
+def _activity_sources_for_target(target: NutritionTarget) -> tuple[str, ...]:
+    snapshots = tuple(
+        snapshot.source_type
+        for snapshot in getattr(target, "activity_sources", ())
+        if snapshot.source_type
+    )
+    if snapshots:
+        return snapshots
+    if target.activity_source_type is not None:
+        return (target.activity_source_type,)
+    return ()
+
+
+def _activity_value_for_day(
+    *,
+    target: NutritionTarget,
+    day: date,
+    active_energy_by_source: dict[tuple[date, str], Decimal],
+) -> tuple[str | None, Decimal | None]:
+    for source_type in _activity_sources_for_target(target):
+        key = (day, source_type)
+        if key in active_energy_by_source:
+            return source_type, active_energy_by_source[key]
+    return None, None
+
+
 def _build_daily_point(
     *,
     day: date,
@@ -85,8 +111,12 @@ def _build_daily_point(
     activity_source_type = target.activity_source_type if target else None
     active_energy_kcal: Decimal | None = None
     activity_credit_kcal = Decimal()
-    if activity_mode == "full" and activity_source_type is not None:
-        active_energy_kcal = active_energy_by_source.get((day, activity_source_type))
+    if activity_mode == "full" and target is not None:
+        _, active_energy_kcal = _activity_value_for_day(
+            target=target,
+            day=day,
+            active_energy_by_source=active_energy_by_source,
+        )
         if active_energy_kcal is None:
             activity_data_status = "missing"
         else:

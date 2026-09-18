@@ -11,6 +11,7 @@ from app.models import (
     HealthSample,
     ImportBatch,
     NutritionTarget,
+    NutritionTargetActivitySource,
     User,
     UserProviderPreference,
     YazioConnection,
@@ -1004,3 +1005,94 @@ def test_activity_provider_change_creates_effective_target_version(
     assert targets[0].valid_to is not None
     assert targets[1].activity_source_type == "yazio_export_v1"
     assert targets[1].valid_from == targets[0].valid_to
+
+
+def test_activity_provider_priority_snapshots_preserve_history_and_same_day_updates(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="apple_health_xml",
+        value=Decimal("300"),
+        local_date=date(2026, 9, 15),
+    )
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="yazio_export_v1",
+        value=Decimal("400"),
+        local_date=date(2026, 9, 15),
+    )
+    db.commit()
+    csrf = _login(client)
+
+    first = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["yazio", "apple_health"]},
+    )
+
+    assert first.status_code == 200
+    db.expire_all()
+    targets = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.valid_from)
+        )
+    )
+    assert len(targets) == 2
+    historical, current = targets
+    first_snapshot_rows = list(
+        db.scalars(
+            select(NutritionTargetActivitySource)
+            .where(NutritionTargetActivitySource.target_id == current.id)
+            .order_by(NutritionTargetActivitySource.priority)
+        )
+    )
+    assert [(row.priority, row.provider_key, row.source_type) for row in first_snapshot_rows] == [
+        (1, "yazio", "yazio_export_v1"),
+        (2, "apple_health", "apple_health_xml"),
+    ]
+
+    second = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["apple_health", "yazio"]},
+    )
+
+    assert second.status_code == 200
+    db.expire_all()
+    targets_after_same_day_update = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.valid_from)
+        )
+    )
+    assert len(targets_after_same_day_update) == 2
+    historical_after_update, current_after_update = targets_after_same_day_update
+    assert historical_after_update.id == historical.id
+    assert historical_after_update.activity_source_type == "apple_health_xml"
+    assert current_after_update.id == current.id
+    assert current_after_update.activity_source_type == "apple_health_xml"
+    second_snapshot_rows = list(
+        db.scalars(
+            select(NutritionTargetActivitySource)
+            .where(NutritionTargetActivitySource.target_id == current.id)
+            .order_by(NutritionTargetActivitySource.priority)
+        )
+    )
+    assert [(row.priority, row.provider_key, row.source_type) for row in second_snapshot_rows] == [
+        (1, "apple_health", "apple_health_xml"),
+        (2, "yazio", "yazio_export_v1"),
+    ]

@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPES
 from app.config import settings
-from app.models import GoogleHealthConnection, HealthSample, User, YazioConnection
+from app.models import (
+    GoogleHealthConnection,
+    HealthSample,
+    NutritionTarget,
+    NutritionTargetActivitySource,
+    User,
+    YazioConnection,
+)
 from app.nutrition.resolution.discovery import discover_nutrition_providers
 from app.provider_preferences import (
     ACTIVITY_ENERGY_DATA_AREA,
@@ -126,20 +136,55 @@ def provider_availability(
         return _activity_availability(db, user_id)
     raise ValueError("unknown data area")
 
+
+def replace_activity_target_sources(
+    db: Session,
+    target: NutritionTarget,
+    source_types: Sequence[str],
+) -> None:
+    provider_by_source_type = {
+        source_type: provider_key
+        for provider_key, source_type in ACTIVITY_PROVIDER_SOURCE_TYPES.items()
+    }
+    unique_source_types = tuple(dict.fromkeys(source_types))
+    for snapshot in tuple(target.activity_sources):
+        db.delete(snapshot)
+    db.flush()
+    target.activity_sources = [
+        NutritionTargetActivitySource(
+            target_id=target.id,
+            user_id=target.user_id,
+            priority=priority,
+            provider_key=provider_by_source_type.get(source_type),
+            source_type=source_type,
+        )
+        for priority, source_type in enumerate(unique_source_types, start=1)
+    ]
+
+
+def _activity_target_sources(target: NutritionTarget) -> tuple[str, ...]:
+    snapshots = tuple(
+        snapshot.source_type
+        for snapshot in target.activity_sources
+        if snapshot.source_type
+    )
+    if snapshots:
+        return snapshots
+    return (target.activity_source_type,) if target.activity_source_type else ()
+
+
 def apply_activity_provider_to_current_target(
     db: Session,
     *,
     user: User,
-    source_type: str,
+    source_type: str | None = None,
+    source_types: Sequence[str] | None = None,
 ) -> None:
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    from app.models import NutritionTarget
-
     user_id = user.id
-    timezone = user.timezone
-    today = datetime.now(ZoneInfo(timezone)).date()
+    today = datetime.now(ZoneInfo(user.timezone)).date()
+    desired_sources = tuple(source_types or ((source_type,) if source_type else ()))
+    if not desired_sources:
+        return
     targets = list(
         db.scalars(
             select(NutritionTarget)
@@ -159,31 +204,37 @@ def apply_activity_provider_to_current_target(
     )
     if current is None or current.activity_mode != "full":
         return
-    if current.activity_source_type == source_type:
+    normalized_sources = tuple(dict.fromkeys(desired_sources))
+    if (
+        current.activity_source_type == normalized_sources[0]
+        and _activity_target_sources(current) == normalized_sources
+    ):
         return
     if current.valid_from == today:
-        current.activity_source_type = source_type
+        current.activity_source_type = normalized_sources[0]
+        replace_activity_target_sources(db, current, normalized_sources)
         return
     successor = next((item for item in targets if item.valid_from > today), None)
     current.valid_to = today
-    db.add(
-        NutritionTarget(
-            user_id=user_id,
-            valid_from=today,
-            valid_to=successor.valid_from if successor else None,
-            calories_kcal=current.calories_kcal,
-            maintenance_kcal=current.maintenance_kcal,
-            target_weight_min_kg=current.target_weight_min_kg,
-            target_weight_max_kg=current.target_weight_max_kg,
-            activity_mode=current.activity_mode,
-            activity_source_type=source_type,
-            protein_g=current.protein_g,
-            carbs_g=current.carbs_g,
-            fat_g=current.fat_g,
-            fiber_g=current.fiber_g,
-            water_ml=current.water_ml,
-        )
+    version = NutritionTarget(
+        user_id=user_id,
+        valid_from=today,
+        valid_to=successor.valid_from if successor else None,
+        calories_kcal=current.calories_kcal,
+        maintenance_kcal=current.maintenance_kcal,
+        target_weight_min_kg=current.target_weight_min_kg,
+        target_weight_max_kg=current.target_weight_max_kg,
+        activity_mode=current.activity_mode,
+        activity_source_type=normalized_sources[0],
+        protein_g=current.protein_g,
+        carbs_g=current.carbs_g,
+        fat_g=current.fat_g,
+        fiber_g=current.fiber_g,
+        water_ml=current.water_ml,
     )
+    db.add(version)
+    db.flush()
+    replace_activity_target_sources(db, version, normalized_sources)
 
 
 
@@ -204,4 +255,5 @@ __all__ = [
     "apply_activity_provider_to_current_target",
     "provider_availability",
     "provider_is_available",
+    "replace_activity_target_sources",
 ]

@@ -115,3 +115,26 @@
 ## Task 5 concerns
 
 - The focused proof used the isolated Docker test database; project-wide validation remains with the integration owner.
+
+## Task 6 Activity fallback and historical snapshots
+
+- Added snapshot-aware Activity resolution to the shared daily-point builder. For each local day, active energy is selected from the target’s immutable `NutritionTargetActivitySource` chain in priority order; source totals are never summed across providers. Targets without snapshots retain the legacy `activity_source_type` fallback.
+- Target creation and new target versions persist complete immutable snapshot rows, with `activity_source_type` retained as the priority-1 compatibility projection.
+- Activity provider-priority changes now create a new effective target version when the current target is historical, preserve prior target/snapshot rows, and replace only the current same-day snapshot chain. Snapshot replacement deletes old rows before inserting reordered priorities to respect the unique provider constraint.
+- Added regressions for per-day fallback without cross-provider summing, immutable historical chains, and same-day priority-chain replacement.
+- TDD red proof: the snapshot regression initially observed no snapshot rows after Activity provider preference replacement.
+- Targeted Activity consumer command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_analytics.py tests/test_provider_preferences.py tests/test_calendar_canonical.py tests/test_weekly_canonical.py tests/test_weekdays_canonical.py tests/test_trends_canonical.py tests/test_dashboard_summary.py`
+  - **160 passed**
+- Provider-daily regression:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_daily_serving.py`
+  - **14 passed**
+- Target API regression:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_auth_api.py -k 'target or activity'`
+  - **28 passed**
+- Compile proof:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci python -m py_compile app/services/provider_preferences.py app/api/settings.py app/analytics/service.py app/analytics/provider_daily.py app/analytics/daily_point_parity.py tests/test_analytics.py tests/test_provider_preferences.py`
+
+## Task 6 concerns
+
+- Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.

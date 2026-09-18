@@ -12,7 +12,7 @@ from app.analytics.service import budget_balance, daily_points, percentile
 from app.api.analytics import _range, calendar, daily, micronutrients, trends
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import NutritionTarget, TrackingOverride, User
+from app.models import NutritionTarget, NutritionTargetActivitySource, TrackingOverride, User
 from app.services.import_service import persist_import
 
 
@@ -465,6 +465,58 @@ def test_activity_credit_remains_zero_when_selected_source_has_no_day(
     assert point.activity_credit_kcal == Decimal()
     assert point.effective_budget_kcal == Decimal("2000")
     assert point.activity_data_status == "missing"
+def test_activity_priority_falls_back_per_day_without_cross_provider_sum(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = "yazio_export_v1"
+    db.add_all(
+        [
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=1,
+                provider_key="yazio",
+                source_type="yazio_export_v1",
+            ),
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=2,
+                provider_key="apple_health",
+                source_type="apple_health_xml",
+            ),
+        ]
+    )
+    samples = [
+        metric(1, "dietary_energy_kcal", "2100"),
+        metric(1, "active_energy_kcal", "200", "yazio_export_v1"),
+        metric(1, "active_energy_kcal", "500", "apple_health_xml"),
+        metric(2, "dietary_energy_kcal", "2100"),
+        metric(2, "active_energy_kcal", "500", "apple_health_xml"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test-activity-priority",
+        "test",
+    )
+
+    points = daily_points(db, user, date(2024, 1, 1), date(2024, 1, 2))
+
+    assert [point.active_energy_kcal for point in points] == [
+        Decimal("200"),
+        Decimal("500"),
+    ]
+    assert [point.activity_credit_kcal for point in points] == [
+        Decimal("200"),
+        Decimal("500"),
+    ]
+
+
 def test_daily_nutrition_source_filter_keeps_historical_activity_source(
     db: Session, user: User
 ) -> None:

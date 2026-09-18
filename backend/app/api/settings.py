@@ -122,6 +122,7 @@ from app.services.provider_preferences import (
     apply_activity_provider_to_current_target,
     provider_availability,
     provider_is_available,
+    replace_activity_target_sources,
 )
 from app.services.rate_limit import (
     check_rate_limit,
@@ -622,7 +623,10 @@ def update_provider_preference(
         apply_activity_provider_to_current_target(
             db,
             user=user,
-            source_type=ACTIVITY_PROVIDER_SOURCE_TYPES[normalized_providers[0]],
+            source_types=tuple(
+                ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key]
+                for provider_key in normalized_providers
+            ),
         )
     db.commit()
     return preferences[0]
@@ -950,6 +954,9 @@ def create_target(
         **payload.model_dump(),
     )
     db.add(target)
+    db.flush()
+    if target.activity_mode == "full" and target.activity_source_type is not None:
+        replace_activity_target_sources(db, target, (target.activity_source_type,))
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)
@@ -1026,12 +1033,21 @@ def update_target(
             **values,
         )
         db.add(version)
+        db.flush()
+        if version.activity_mode == "full" and version.activity_source_type is not None:
+            replace_activity_target_sources(db, version, (version.activity_source_type,))
         db.commit()
         db.refresh(version)
         _log_activity_target_change(version, user)
         return version
     for field, value in changes.items():
         setattr(target, field, value)
+    if "activity_mode" in changes or "activity_source_type" in changes:
+        replace_activity_target_sources(
+            db,
+            target,
+            (target.activity_source_type,) if target.activity_mode == "full" else (),
+        )
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)
