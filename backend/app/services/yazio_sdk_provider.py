@@ -649,10 +649,19 @@ def _weight_day(
     client: AuthenticatedClient,
     item_day: date,
 ) -> tuple[date, float | None]:
-    response = client.get_httpx_client().get(
-        f"{_base_url()}/v15/user/bodyvalues/weight/last",
-        params={"date": item_day.isoformat()},
-    )
+    try:
+        response = client.get_httpx_client().get(
+            f"{_base_url()}/v22/user/bodyvalues/weight/last",
+            params={"date": item_day.isoformat()},
+        )
+    except _ResponseTooLargeError as exc:
+        raise YazioProviderInvalidResponseError from exc
+    except httpx.TimeoutException as exc:
+        raise YazioProviderNetworkTimeoutError from exc
+    except httpx.RequestError as exc:
+        raise YazioProviderUnavailableError from exc
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise YazioProviderInvalidResponseError from exc
     try:
         _raise_for_status(response)
         _response_content_is_bounded(response)

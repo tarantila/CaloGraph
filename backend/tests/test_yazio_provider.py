@@ -48,6 +48,9 @@ class _Client:
 
     def get_httpx_client(self) -> _Client:
         return self
+    def get(self, _url: str, **_kwargs: Any) -> httpx.Response:
+        return httpx.Response(200, json={"value": None})
+
 
     def close(self) -> None:
         self.closed = True
@@ -124,7 +127,8 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
                 "carb": 240.0,
                 "fat": 70.0,
             },
-        }
+        },
+        "weight": {},
     }
     assert result.metadata.micronutrient_complete is False
     assert daily_calls[0]["start"] == "2026-08-01"
@@ -163,7 +167,10 @@ def test_sdk_omits_missing_and_null_values_and_supports_empty_range(
         "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2), False
     )
 
-    assert result.payload == {"days": {"2026-08-01": {}, "2026-08-02": {}}}
+    assert result.payload == {
+        "days": {"2026-08-01": {}, "2026-08-02": {}},
+        "weight": {},
+    }
 
 
 def test_sdk_rejects_out_of_range_dates_and_invalid_numbers(monkeypatch: pytest.MonkeyPatch) -> None:

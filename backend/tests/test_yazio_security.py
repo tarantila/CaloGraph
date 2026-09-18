@@ -4,14 +4,21 @@ import subprocess
 from datetime import date
 from typing import ClassVar
 
+import httpx
 import pytest
 
 from app.config import settings
 from app.schemas import ImportSummary
 from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
-from app.services.yazio_provider import YazioProviderMetadata, YazioProviderResult
 from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
+from app.services.yazio_provider import (
+    YazioProviderInvalidResponseError,
+    YazioProviderMetadata,
+    YazioProviderNetworkTimeoutError,
+    YazioProviderRateLimitedError,
+    YazioProviderResult,
+)
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,
@@ -183,7 +190,7 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
     assert calls == [("owner@example.com", True)]
 
 
-def test_sdk_weight_range_parses_bounded_endpoint_payload() -> None:
+def test_sdk_weight_range_uses_v22_endpoint_and_parses_bounded_payload() -> None:
     class _Response:
         status_code = 200
         headers: ClassVar[dict[str, str]] = {}
@@ -198,8 +205,11 @@ def test_sdk_weight_range_parses_bounded_endpoint_payload() -> None:
             return None
 
     class _HTTPClient:
-        @staticmethod
-        def get(*_args, **kwargs) -> _Response:
+        urls: ClassVar[list[str]] = []
+
+        @classmethod
+        def get(cls, url, **kwargs) -> _Response:
+            cls.urls.append(url)
             assert kwargs["params"] == {"date": "2026-08-01"}
             return _Response()
 
@@ -215,6 +225,67 @@ def test_sdk_weight_range_parses_bounded_endpoint_payload() -> None:
         max_workers=1,
     )
     assert result == {"2026-08-01": 72.5}
+    assert _HTTPClient.urls == ["https://yzapi.yazio.com/v22/user/bodyvalues/weight/last"]
+def test_sdk_weight_classifies_status_transport_and_numeric_failures() -> None:
+    class _Response:
+        status_code = 429
+        headers: ClassVar[dict[str, str]] = {"Retry-After": "999999"}
+        content = b""
+
+        @staticmethod
+        def json() -> dict[str, float]:
+            return {"value": 72.5}
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    class _HTTPClient:
+        def __init__(self, outcome) -> None:
+            self.outcome = outcome
+
+        def get(self, _url, **_kwargs):
+            if isinstance(self.outcome, BaseException):
+                raise self.outcome
+            return self.outcome
+
+    class _Authenticated:
+        def __init__(self, http_client) -> None:
+            self.http_client = http_client
+
+        def get_httpx_client(self) -> _HTTPClient:
+            return self.http_client
+
+    with pytest.raises(YazioProviderRateLimitedError) as rate_limited:
+        yazio_sdk_provider._fetch_weight_range(
+            _Authenticated(_HTTPClient(_Response())),
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            max_workers=1,
+        )
+    assert rate_limited.value.retry_after == 3_600
+
+    with pytest.raises(YazioProviderNetworkTimeoutError) as timed_out:
+        yazio_sdk_provider._fetch_weight_range(
+            _Authenticated(_HTTPClient(httpx.ReadTimeout("private-password"))),
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            max_workers=1,
+        )
+    assert "private-password" not in str(timed_out.value)
+
+    _Response.status_code = 200
+    _Response.headers = {}
+    _Response.json = staticmethod(lambda: {"value": -1})
+    with pytest.raises(YazioProviderInvalidResponseError):
+        yazio_sdk_provider._fetch_weight_range(
+            _Authenticated(_HTTPClient(_Response())),
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            max_workers=1,
+        )
+
+
 
 
 def test_worker_rejects_missing_provider_mode() -> None:

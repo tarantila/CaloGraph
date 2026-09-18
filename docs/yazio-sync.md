@@ -283,7 +283,7 @@ CaloGraph account through `user_id`.
 |---|---|---|
 | Sum of `energy.energy` across all meals | `dietary_energy_kcal` | kcal |
 | Daily `activity_energy`, when supplied | `active_energy_kcal` | kcal |
-| Daily body weight from `/user/bodyvalues/weight/last` | `weight_kg` | kg |
+| Daily body weight from SDK `/v22/user/bodyvalues/weight/last` (direct mode) or exporter `/v15/user/bodyvalues/weight/last` (legacy compatibility) | `weight_kg` | kg |
 | Sum of `nutrient.protein` | `protein_g` | g |
 | Sum of `nutrient.fat` | `fat_g` | g |
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
@@ -309,12 +309,15 @@ persisted. Even when general raw-payload retention is enabled, the YAZIO adapter
 does not store the complete export file. Re-fetching the same day updates stable
 daily values idempotently.
 
-The known YAZIO Weight endpoint was characterized from existing reference
-implementations. Productive SDK synchronization calls that endpoint through
-CaloGraph's own bounded SDK HTTP client and parses the payload in CaloGraph;
-`yazio-exporter` is not required for Weight. Values are normalized to kg and
-use `<local-date>:weight_kg` as their stable external ID; a corrected value
+The direct SDK Weight transport uses
+`https://yzapi.yazio.com/v22/user/bodyvalues/weight/last` through CaloGraph's
+bounded authenticated SDK HTTP client and parses the response in CaloGraph.
+It is independent of `yazio-exporter`; values are normalized to kg and use
+`<local-date>:weight_kg` as their stable external ID, so a corrected value
 updates that sample. A day omitted by YAZIO is not treated as a deletion.
+Only explicit `YAZIO_PROVIDER=legacy` uses the pinned exporter/v15-compatible
+transport for legacy Weight and micronutrient compatibility. The exporter is
+not used by SDK Weight synchronization.
 Micronutrients come from the 26 separate daily endpoints provided by
 `yazio-exporter==0.2.0`. Missing product details can therefore look like low
 intake. The analysis reports data coverage separately and treats values as a
