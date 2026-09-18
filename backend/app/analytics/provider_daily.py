@@ -53,12 +53,29 @@ def _tracking_inputs(day_candidates: Mapping[str, ProviderCandidate]) -> Trackin
 
 
 def _provider_has_evidence(day_candidates: Mapping[str, ProviderCandidate]) -> bool:
+    for metric_key in DAILY_PROJECTION_METRICS:
+        candidate = day_candidates.get(metric_key)
+        if candidate is None:
+            return False
+        if getattr(candidate, "resolution_state", None) in {
+            ResolutionState.CONFLICT,
+            ResolutionState.DUPLICATE_CANDIDATE,
+        }:
+            raise ProviderDailyReadError(
+                f"canonical provider returned unsafe resolution for {metric_key}"
+            )
+        if (
+            getattr(candidate, "coverage_state", None) is not CoverageState.COMPLETE
+            or getattr(candidate, "resolution_state", None) is not ResolutionState.RESOLVED
+        ):
+            return False
     return any(
-        getattr(candidate, "presence_state", None)
+        getattr(candidate, "value_contributing", False)
+        and getattr(candidate, "value", None) is not None
+        and getattr(candidate, "presence_state", None)
         in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
         for candidate in day_candidates.values()
     )
-
 
 def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[str, Decimal]:
     for metric_key in DAILY_PROJECTION_METRICS:

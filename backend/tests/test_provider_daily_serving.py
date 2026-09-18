@@ -269,19 +269,27 @@ def test_provider_daily_reads_projection_metrics_in_bounded_chunks(monkeypatch):
     assert all(call["user_id"] == USER_ID for call in calls)
     assert all(call["source_instance_id"] == SOURCE_INSTANCE_ID for call in calls)
 
-def _read_multi_provider_points(monkeypatch, *, first_missing: bool = False):
+def _read_multi_provider_points(
+    monkeypatch,
+    *,
+    first_missing: bool = False,
+    first_partial: bool = False,
+):
     calls = []
 
     def fake_period(db, **kwargs):
         del db
         calls.append(kwargs)
         first = kwargs["provider_key"] == "first"
-        return {
-            kwargs["start"]: _candidate_map(
-                Decimal("10") if first else Decimal("20"),
-                missing=first and first_missing,
-            )
-        }
+        candidates = _candidate_map(
+            Decimal("10") if first else Decimal("20"),
+            missing=first and first_missing,
+        )
+        if first and first_partial:
+            for candidate in candidates.values():
+                candidate.coverage_state = CoverageState.PARTIAL
+                candidate.resolution_state = ResolutionState.UNRESOLVED
+        return {kwargs["start"]: candidates}
 
     monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
     monkeypatch.setattr(provider_daily, "_build_daily_point", lambda **kwargs: kwargs)
@@ -319,6 +327,12 @@ def test_provider_daily_priority_falls_back_when_first_provider_has_no_data(monk
     result, _calls = _read_multi_provider_points(monkeypatch, first_missing=True)
 
     assert result[0]["values"], result[0]
+    assert result[0]["values"]["dietary_energy_kcal"] == Decimal("20")
+
+
+def test_provider_daily_priority_falls_back_from_partial_unresolved_provider(monkeypatch):
+    result, _calls = _read_multi_provider_points(monkeypatch, first_partial=True)
+
     assert result[0]["values"]["dietary_energy_kcal"] == Decimal("20")
 
 def test_provider_daily_priority_does_not_mix_metrics_between_providers(monkeypatch):

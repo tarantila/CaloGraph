@@ -90,3 +90,11 @@
 - Targeted Task 4 command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_nutrition_provider_boundary.py tests/test_nutrition_multi_provider_c0.py tests/test_provider_daily_serving.py`
   - **40 passed**
+
+## Task 4 review fix
+
+- Provider-day selection now requires all canonical daily metrics to have safe complete/resolved states before treating a provider as evidence-bearing; conflict/duplicate states fail closed, while partial/unresolved providers fall through to the next priority.
+- Added a regression for partial/unresolved first-provider data followed by a complete second provider.
+- Review-fix targeted command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_nutrition_provider_boundary.py tests/test_nutrition_multi_provider_c0.py tests/test_provider_daily_serving.py`
+  - **41 passed**
