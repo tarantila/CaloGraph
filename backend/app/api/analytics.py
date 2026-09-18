@@ -51,6 +51,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import HealthSample, ImportBatch, User
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
     PROVIDER_SELECTION_NOT_READY,
     PROVIDER_SELECTION_UNAVAILABLE,
@@ -290,6 +291,7 @@ def micronutrients(
                 problem_type=PROVIDER_SELECTION_NOT_READY,
             )
     legacy = None
+    canonical_read_context: NutritionEvidenceIndex | None = None
     if selection is None:
         # Migration compatibility: explicit source requests and no preference stay Legacy.
         _unlock_big_picture_if_requested(db, user, period)
@@ -302,6 +304,13 @@ def micronutrients(
         )
         response = legacy.to_public(start=start, end=end, source=source)
     else:
+        canonical_read_context = NutritionEvidenceIndex(
+            user_id=user.id,
+            provider_key=selection.provider_key,
+            source_instance_id=selection.source_instance_id,
+            start=start,
+            end=end,
+        )
         canonical = read_canonical_micronutrient_period(
             db,
             user_id=user.id,
@@ -309,6 +318,7 @@ def micronutrients(
             source_instance_id=selection.source_instance_id,
             start=start,
             end=end,
+            read_context=canonical_read_context,
         )
         response = canonical.to_public(start=start, end=end, source=None)
     if selection is None and settings.analytics_micronutrients_canonical_read_enabled:
@@ -349,6 +359,7 @@ def micronutrients(
                 db,
                 user_id=user.id,
                 start=start,
+                read_context=canonical_read_context,
                 end=end,
                 provider_key=(
                     selection.provider_key

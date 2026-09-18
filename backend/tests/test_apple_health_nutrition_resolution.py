@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analytics.micronutrient_shadow import read_canonical_micronutrient_period
 from app.models import User
 from app.nutrition.enums import CoverageState, LineageState, PresenceState, ResolutionState
 from app.nutrition.models import (
@@ -25,6 +26,8 @@ from app.nutrition.resolution import (
     resolve_daily_nutrient,
     resolve_daily_nutrients,
 )
+from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 from app.services.import_service import persist_apple_health_stream
 
@@ -430,3 +433,83 @@ def test_daily_reader_rejects_non_string_metric_keys(db: Session, user: User):
             local_date=DAY,
             metric_keys=(["protein_g"],),
         )
+def test_apple_period_reuses_revision_validation_across_metrics(
+    monkeypatch, db: Session, user: User
+):
+    import app.services.apple_health_nutrition_resolution as apple_resolution
+
+    _persist(
+        db,
+        user,
+        _payload(
+            _correlation(
+                "reuse-revision",
+                _record("HKQuantityTypeIdentifierDietaryProtein", "20", "g")
+                + _record("HKQuantityTypeIdentifierDietaryIron", "4", "mg"),
+            )
+        ),
+    )
+    calls = 0
+    original = apple_resolution._revision_chain_is_valid
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(apple_resolution, "_revision_chain_is_valid", counted)
+
+    result = apple_resolution.resolve_apple_health_period(
+        db,
+        user_id=user.id,
+        source_instance_id=apple_health_source_instance_id(user.id),
+        start=DAY,
+        end=DAY,
+        metric_keys=("protein_g", "iron_mg"),
+    )
+
+    assert result[DAY]["protein_g"].value == Decimal("20")
+    assert result[DAY]["iron_mg"].value == Decimal("4")
+    assert calls == 1
+
+
+def test_apple_read_context_excludes_non_micronutrient_only_evidence(
+    db: Session, user: User
+) -> None:
+    _persist(
+        db,
+        user,
+        _payload(
+            _correlation(
+                "metadata-primary-only",
+                _record("HKQuantityTypeIdentifierDietaryEnergyConsumed", "600", "kcal"),
+            )
+        ),
+    )
+    context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key="apple_health",
+        source_instance_id=apple_health_source_instance_id(user.id),
+        start=DAY,
+        end=DAY,
+    )
+
+    read_canonical_micronutrient_period(
+        db,
+        user_id=user.id,
+        provider_key="apple_health",
+        source_instance_id=apple_health_source_instance_id(user.id),
+        start=DAY,
+        end=DAY,
+        read_context=context,
+    )
+    metadata = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_key="apple_health",
+        read_context=context,
+    )
+
+    assert metadata.providers == ()

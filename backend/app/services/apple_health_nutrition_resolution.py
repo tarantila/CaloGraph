@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, not_, or_, select
+from sqlalchemy.orm import Session, aliased
 
+from app.micronutrients import MICRONUTRIENT_METRIC_TYPES
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -35,6 +36,7 @@ from app.nutrition.resolution.contracts import (
     build_event_candidate,
 )
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, canonical_unit
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.nutrition.resolution.reasons import EvidenceKind, ReasonCode
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 
@@ -157,8 +159,10 @@ def _event_tombstoned(
 def _revision_chain_is_valid(
     events: Sequence[NutritionConsumptionEvent],
     current: NutritionConsumptionEvent,
+    *,
+    by_id: Mapping[UUID, NutritionConsumptionEvent] | None = None,
 ) -> bool:
-    by_id = {event.id: event for event in events}
+    event_by_id = {event.id: event for event in events} if by_id is None else by_id
     cursor = current
     visited: set[UUID] = set()
     while cursor.revision > 1:
@@ -167,7 +171,7 @@ def _revision_chain_is_valid(
         visited.add(cursor.id)
         if cursor.supersedes_event_id is None or cursor.supersedes_revision != cursor.revision - 1:
             return False
-        previous = by_id.get(cursor.supersedes_event_id)
+        previous = event_by_id.get(cursor.supersedes_event_id)
         if previous is None or previous.revision != cursor.revision - 1:
             return False
         cursor = previous
@@ -191,6 +195,136 @@ def _current_event_groups(
         highest_revision = max(event.revision for event in candidates)
         current.append(tuple(event for event in candidates if event.revision == highest_revision))
     return tuple(current)
+
+
+def _revision_groups_by_date(
+    revision_groups: Sequence[tuple[NutritionConsumptionEvent, ...]],
+) -> Mapping[date, tuple[tuple[NutritionConsumptionEvent, ...], ...]]:
+    grouped: dict[date, list[tuple[NutritionConsumptionEvent, ...]]] = defaultdict(list)
+    for revision_group in revision_groups:
+        for local_date in {event.local_date for event in revision_group if event.local_date is not None}:
+            grouped[local_date].append(revision_group)
+    return {local_date: tuple(groups) for local_date, groups in grouped.items()}
+
+
+def _revision_chain_validity(
+    events: Sequence[NutritionConsumptionEvent],
+    revision_groups: Sequence[tuple[NutritionConsumptionEvent, ...]],
+) -> Mapping[UUID, bool]:
+    event_by_id = {event.id: event for event in events}
+    return {
+        event.id: _revision_chain_is_valid(events, event, by_id=event_by_id)
+        for revision_group in revision_groups
+        for event in revision_group
+    }
+
+
+
+
+def _latest_apple_evidence_observed_at(
+    scope: _AppleReadScope,
+    *,
+    events: Sequence[NutritionConsumptionEvent],
+    start: date,
+    end: date,
+    revision_chain_validity: Mapping[UUID, bool],
+) -> datetime | None:
+    max_source_revision: dict[tuple[str, str], int] = {}
+    source_ids_by_identity: dict[tuple[str, str], set[UUID]] = defaultdict(set)
+    for candidate_source in scope.sources.values():
+        if candidate_source.source_record_id is not None:
+            identity = (candidate_source.source_namespace, candidate_source.source_record_id)
+            max_source_revision[identity] = max(
+                max_source_revision.get(identity, candidate_source.source_revision),
+                candidate_source.source_revision,
+            )
+            source_ids_by_identity[identity].add(candidate_source.id)
+    current_source_ids = {
+        source.id
+        for source in scope.sources.values()
+        if source.source_record_id is None
+        or source.source_revision
+        == max_source_revision[(source.source_namespace, source.source_record_id)]
+    }
+    qualifying_field_source_ids: set[UUID] = set()
+    for (source_id, _), fields in scope.fields.items():
+        if any(
+            field.metric_key is not None and field.metric_key in MICRONUTRIENT_METRIC_TYPES
+            and field.canonical_value is not None
+            and field.canonical_unit == canonical_unit(field.metric_key)
+            and field.observation_role == ObservationRole.CANONICAL.value
+            and field.presence_state
+            in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            and field.coverage_state
+            in (CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)
+            and field.resolution_state == ResolutionState.RESOLVED.value
+            and field.lineage_state in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            for field in fields
+        ):
+            qualifying_field_source_ids.add(source_id)
+    tombstoned_source_ids: set[UUID] = set()
+    for tombstone in scope.tombstones:
+        if tombstone.source_observation_id is not None:
+            tombstoned_source_ids.add(tombstone.source_observation_id)
+        elif tombstone.source_record_id is not None:
+            tombstoned_source_ids.update(
+                source_ids_by_identity.get(
+                    (tombstone.source_namespace, tombstone.source_record_id),
+                    set(),
+                )
+            )
+    tombstoned_identity_ids = {
+        tombstone.external_identity_id
+        for tombstone in scope.tombstones
+        if tombstone.source_namespace == _SOURCE_NAMESPACE
+        and tombstone.external_identity_id is not None
+    }
+    tombstoned_event_ids = {
+        event.id
+        for event in events
+        if scope.identity_ids.get(event.id, frozenset()) & tombstoned_identity_ids
+    }
+
+    observed_at: list[datetime] = []
+    for revision_group in _current_event_groups(events):
+        if len(revision_group) != 1:
+            continue
+        event = revision_group[0]
+        if event.local_date is None or not start <= event.local_date <= end:
+            continue
+        source = scope.sources.get(event.source_observation_id)
+        if source is None:
+            continue
+        if (
+            source.user_id != event.user_id
+            or source.provider_key != _PROVIDER
+            or source.source_instance_id != event.source_instance_id
+            or source.observation_kind != ObservationKind.CONSUMPTION_EVENT.value
+            or source.source_namespace != _SOURCE_NAMESPACE
+            or source.local_date != event.local_date
+            or source.presence_state
+            not in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            or source.coverage_state
+            not in (CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)
+            or source.resolution_state != ResolutionState.RESOLVED.value
+            or source.lineage_state
+            not in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            or source.id not in current_source_ids
+            or event.event_kind != ConsumptionEventKind.PRODUCT.value
+            or event.presence_state
+            not in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            or event.coverage_state != CoverageState.COMPLETE.value
+            or event.resolution_state != ResolutionState.RESOLVED.value
+            or event.lineage_state
+            not in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            or not revision_chain_validity[event.id]
+            or source.id not in qualifying_field_source_ids
+            or source.id in tombstoned_source_ids
+            or event.id in tombstoned_event_ids
+        ):
+            continue
+        observed_at.append(source.observed_at)
+    return max(observed_at, default=None)
 
 
 def _query_events_for_day(
@@ -306,19 +440,78 @@ def _load_scope(
     source_instance_id: UUID,
     events: Sequence[NutritionConsumptionEvent],
     metric_keys: Sequence[str],
+    expand_source_identities: bool = False,
 ) -> _AppleReadScope:
     source_ids = {event.source_observation_id for event in events}
     source_rows = (
         db.scalars(
             select(NutritionSourceObservation).where(
                 NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
                 NutritionSourceObservation.id.in_(source_ids),
             )
         ).all()
         if source_ids
         else ()
     )
+    if expand_source_identities and source_ids:
+        source_identity_scope = (
+            select(
+                NutritionSourceObservation.source_namespace.label("source_namespace"),
+                NutritionSourceObservation.source_record_id.label("source_record_id"),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.id.in_(source_ids),
+                NutritionSourceObservation.source_record_id.is_not(None),
+            )
+            .distinct()
+            .subquery()
+        )
+        superseding_source = aliased(NutritionSourceObservation)
+        expanded_source_rows = db.scalars(
+            select(NutritionSourceObservation)
+            .join(
+                source_identity_scope,
+                (
+                    NutritionSourceObservation.source_namespace
+                    == source_identity_scope.c.source_namespace
+                )
+                & (
+                    NutritionSourceObservation.source_record_id
+                    == source_identity_scope.c.source_record_id
+                ),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                not_(
+                    exists(
+                        select(1).where(
+                            superseding_source.user_id == user_id,
+                            superseding_source.provider_key == _PROVIDER,
+                            superseding_source.source_instance_id == source_instance_id,
+                            superseding_source.source_namespace
+                            == NutritionSourceObservation.source_namespace,
+                            superseding_source.source_record_id
+                            == NutritionSourceObservation.source_record_id,
+                            superseding_source.source_record_id.is_not(None),
+                            superseding_source.source_revision
+                            > NutritionSourceObservation.source_revision,
+                        )
+                    )
+                ),
+            )
+        ).all()
+        source_rows = tuple(
+            {source.id: source for source in (*source_rows, *expanded_source_rows)}.values()
+        )
     sources = {source.id: source for source in source_rows}
+    source_scope_ids = tuple(sources)
 
     requested_metrics = tuple(metric_keys)
     field_rows = (
@@ -326,13 +519,13 @@ def _load_scope(
             select(NutritionFieldObservation)
             .where(
                 NutritionFieldObservation.user_id == user_id,
-                NutritionFieldObservation.source_observation_id.in_(source_ids),
+                NutritionFieldObservation.source_observation_id.in_(source_scope_ids),
                 NutritionFieldObservation.metric_key.in_(requested_metrics),
                 NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
             )
             .order_by(NutritionFieldObservation.provider_field_path, NutritionFieldObservation.id)
         ).all()
-        if source_ids and requested_metrics
+        if source_scope_ids and requested_metrics
         else ()
     )
     fields: dict[tuple[UUID, str], list[NutritionFieldObservation]] = defaultdict(list)
@@ -351,7 +544,7 @@ def _load_scope(
         for identity_id in event_identity_ids
     }
     tombstone_scope = [
-        NutritionSourceTombstone.source_observation_id.in_(source_ids),
+        NutritionSourceTombstone.source_observation_id.in_(source_scope_ids),
     ]
     if source_record_ids:
         tombstone_scope.append(NutritionSourceTombstone.source_record_id.in_(source_record_ids))
@@ -384,6 +577,7 @@ def _event_contributions_from_scope(
     local_date: date,
     metric_key: str,
     revision_groups: Sequence[tuple[NutritionConsumptionEvent, ...]] | None = None,
+    revision_chain_validity: Mapping[UUID, bool] | None = None,
 ) -> list[MetricContribution]:
     contributions: list[MetricContribution] = []
 
@@ -429,10 +623,13 @@ def _event_contributions_from_scope(
             or source.observation_kind != ObservationKind.CONSUMPTION_EVENT.value
             or source.local_date != local_date
             or event.event_kind != ConsumptionEventKind.PRODUCT.value
-            or not _revision_chain_is_valid(events, event)
+            or not (
+                revision_chain_validity[event.id]
+                if revision_chain_validity is not None
+                else _revision_chain_is_valid(events, event)
+            )
         ):
             continue
-
         event_state = _enum(ResolutionState, event.resolution_state, ResolutionState.UNRESOLVED)
         event_lineage = _enum(LineageState, event.lineage_state, LineageState.UNKNOWN)
         if event_state is not ResolutionState.RESOLVED:
@@ -613,6 +810,7 @@ def resolve_apple_health_period(
     end: date,
     metric_keys: Sequence[str],
     skip_source_instance_validation: bool = False,
+    read_context: NutritionEvidenceIndex | None = None,
 ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
     """Resolve all requested Apple nutrients for every date in one bounded read."""
     if type(start) is not date or type(end) is not date or start > end:
@@ -625,9 +823,19 @@ def resolve_apple_health_period(
     expected_source_instance_id = apple_health_source_instance_id(user_id)
     if source_instance_id != expected_source_instance_id:
         raise ValueError("source_instance_id must belong to the same user")
+    if read_context is not None and not read_context.contains(
+        user_id=user_id,
+        provider_key=_PROVIDER,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+    ):
+        raise ValueError("read_context scope does not contain Apple period")
 
     days = tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
     if not requested_metrics:
+        if read_context is not None:
+            read_context.mark_evidence_ready()
         return {local_date: {} for local_date in days}
 
     ranged_events, events = _query_events_for_period(
@@ -639,6 +847,8 @@ def resolve_apple_health_period(
     )
     event_dates = {event.local_date for event in ranged_events if event.local_date is not None}
     if not ranged_events:
+        if read_context is not None:
+            read_context.mark_evidence_ready()
         return {
             local_date: {
                 metric_key: _empty_candidate(
@@ -657,8 +867,22 @@ def resolve_apple_health_period(
         source_instance_id=source_instance_id,
         events=events,
         metric_keys=requested_metrics,
+        expand_source_identities=read_context is not None,
     )
     revision_groups = _current_event_groups(events)
+    revision_groups_by_date = _revision_groups_by_date(revision_groups)
+    revision_chain_validity = _revision_chain_validity(events, revision_groups)
+    if read_context is not None:
+        read_context.record_latest_evidence_observed_at(
+            _latest_apple_evidence_observed_at(
+                scope,
+                events=events,
+                start=start,
+                end=end,
+                revision_chain_validity=revision_chain_validity,
+            )
+        )
+        read_context.mark_evidence_ready()
     result: dict[date, Mapping[str, ProviderCandidate]] = {}
     for local_date in days:
         if local_date not in event_dates:
@@ -685,7 +909,8 @@ def resolve_apple_health_period(
                         source_instance_id=source_instance_id,
                         local_date=local_date,
                         metric_key=metric_key,
-                        revision_groups=revision_groups,
+                        revision_groups=revision_groups_by_date.get(local_date, ()),
+                        revision_chain_validity=revision_chain_validity,
                     ),
                     event_set_known=True,
                 )

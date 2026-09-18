@@ -22,6 +22,7 @@ from app.models import HealthSample
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.resolution import iter_provider_period_chunks
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 
@@ -315,11 +316,20 @@ def read_canonical_micronutrient_period(
     source_instance_id: UUID,
     start: date,
     end: date,
+    read_context: NutritionEvidenceIndex | None = None,
 ) -> MicronutrientPeriodResult:
     totals_by_metric: dict[str, Decimal] = defaultdict(Decimal)
     days_by_metric: dict[str, int] = defaultdict(int)
     primary_recorded_days = 0
     all_value_days = 0
+    if read_context is not None and not read_context.owns(
+        user_id=user_id,
+        provider_key=provider_key,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+    ):
+        raise ValueError("read_context scope does not match canonical period")
     requested_metrics = tuple(CANONICAL_NUTRITION_METRICS)
     canonical_source_rows = (
         db.execute(
@@ -348,6 +358,7 @@ def read_canonical_micronutrient_period(
         start=start,
         end=end,
         metric_keys=requested_metrics,
+        read_context=read_context,
     ):
         for offset in range((chunk_end - chunk_start).days + 1):
             current = chunk_start + timedelta(days=offset)
@@ -368,7 +379,8 @@ def read_canonical_micronutrient_period(
                 primary_recorded_days += 1
             if any_value:
                 all_value_days += 1
-
+    if read_context is not None:
+        read_context.mark_complete()
     recorded_days = primary_recorded_days or all_value_days
     metrics: list[MicronutrientMetricResult] = []
     for definition in MICRONUTRIENTS:

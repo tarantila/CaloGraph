@@ -31,6 +31,7 @@ from app.nutrition.models import (
     NutritionSourceTombstone,
 )
 from app.nutrition.resolution.metrics import canonical_unit
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,27 +243,76 @@ def discover_nutrition_provider_metadata(
     end: date,
     provider_registry: Mapping[str, object] | None = None,
     provider_key: str | None = None,
+    read_context: NutritionEvidenceIndex | None = None,
 ) -> NutritionProviderMetadataSet:
     """Read range-scoped provider metadata in bounded date windows."""
     _validate_range(start, end)
+    normalized_provider_key = (
+        NutritionProviderIdentity(provider_key).provider_key if provider_key is not None else None
+    )
+    registry = _provider_registry() if provider_registry is None else provider_registry
+    context_provider_key = None
+    if read_context is not None and read_context.matches(
+        user_id=user_id,
+        provider_key=read_context.provider_key,
+        source_instance_id=read_context.source_instance_id,
+        start=start,
+        end=end,
+    ):
+        context_provider_key = read_context.provider_key
+    provider_keys = (
+        (normalized_provider_key,)
+        if normalized_provider_key is not None
+        else tuple(sorted(registry))
+    )
+    if context_provider_key not in provider_keys or context_provider_key not in registry:
+        context_provider_key = None
+    if normalized_provider_key is not None and context_provider_key == normalized_provider_key:
+        assert read_context is not None
+        latest = read_context.latest_evidence_observed_at
+        return NutritionProviderMetadataSet(
+            ()
+            if latest is None
+            else (NutritionProviderMetadata(normalized_provider_key, latest),)
+        )
+    if context_provider_key is not None:
+        provider_keys = tuple(key for key in provider_keys if key != context_provider_key)
     metadata_by_provider: dict[str, NutritionProviderMetadata] = {}
+    if context_provider_key is not None:
+        assert read_context is not None
+        latest = read_context.latest_evidence_observed_at
+        if latest is not None:
+            metadata_by_provider[context_provider_key] = NutritionProviderMetadata(
+                context_provider_key, latest
+            )
+    if not provider_keys:
+        return NutritionProviderMetadataSet(
+            tuple(metadata_by_provider[key] for key in sorted(metadata_by_provider))
+        )
+
     chunk_start = start
     while True:
         chunk_end = chunk_start + timedelta(days=min(30, (end - chunk_start).days))
-        chunk_metadata = _discover_nutrition_provider_metadata_once(
-            db,
-            user_id=user_id,
-            start=chunk_start,
-            end=chunk_end,
-            provider_registry=provider_registry,
-            provider_key=provider_key,
-        )
-        for metadata in chunk_metadata.providers:
-            previous = metadata_by_provider.get(metadata.provider_key)
-            if previous is None or metadata.latest_evidence_observed_at > previous.latest_evidence_observed_at:
-                metadata_by_provider[metadata.provider_key] = metadata
+        for current_provider_key in provider_keys:
+            chunk_metadata = _discover_nutrition_provider_metadata_once(
+                db,
+                user_id=user_id,
+                start=chunk_start,
+                end=chunk_end,
+                provider_registry=registry,
+                provider_key=current_provider_key,
+            )
+            for metadata in chunk_metadata.providers:
+                previous = metadata_by_provider.get(metadata.provider_key)
+                if (
+                    previous is None
+                    or metadata.latest_evidence_observed_at > previous.latest_evidence_observed_at
+                ):
+                    metadata_by_provider[metadata.provider_key] = metadata
         if chunk_end == end:
-            return NutritionProviderMetadataSet(tuple(metadata_by_provider.values()))
+            return NutritionProviderMetadataSet(
+                tuple(metadata_by_provider[key] for key in sorted(metadata_by_provider))
+            )
         chunk_start = chunk_end + timedelta(days=1)
 
 def _discover_nutrition_provider_metadata_once(

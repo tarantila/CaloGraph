@@ -27,12 +27,14 @@ from app.nutrition.models import (
 from app.nutrition.resolution.discovery import (
     NutritionProviderDiscovery,
     NutritionProviderIdentity,
+    NutritionProviderMetadata,
     NutritionProviderMetadataSet,
     ProviderDiscoveryEvidence,
     discover_nutrition_provider_metadata,
     discover_nutrition_providers,
 )
 from app.nutrition.resolution.metrics import canonical_unit
+from app.nutrition.resolution.period_reader import NutritionEvidenceIndex
 
 DAY = date(2026, 9, 1)
 NEXT_DAY = date(2026, 9, 2)
@@ -476,3 +478,150 @@ def test_nutrient_registry_is_discovery_boundary_without_source_priority_crossov
     assert tuple(item.provider_key for item in result.providers) == ("google_health",)
     assert not hasattr(result.providers[0], "priority_rank")
     assert db.scalar(select(NutritionConsumptionEvent.id)) == event.id
+
+def test_selected_provider_metadata_reuses_complete_read_context(db: Session, user: User) -> None:
+    observed_at = LATEST_OBSERVED_AT
+    context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key="google_health",
+        source_instance_id=uuid4(),
+        start=DAY,
+        end=DAY,
+    )
+    context.record_latest_evidence_observed_at(observed_at)
+    context.mark_evidence_ready()
+    context.mark_complete()
+
+    class Resolver:
+        provider_key = "google_health"
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def discover_global_evidence(self, db, *, user_id):
+            raise AssertionError("global discovery must not run")
+
+        def discover_range_evidence(self, db, *, user_id, start, end):
+            self.calls += 1
+            raise AssertionError("range discovery must reuse the read context")
+
+    resolver = Resolver()
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_registry={"google_health": resolver},
+        provider_key="google_health",
+        read_context=context,
+    )
+
+    assert resolver.calls == 0
+    assert result == NutritionProviderMetadataSet(
+        (NutritionProviderMetadata("google_health", observed_at),)
+    )
+
+
+def test_public_provider_metadata_keeps_uncached_providers_with_context(
+    db: Session, user: User
+) -> None:
+    context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key="google_health",
+        source_instance_id=uuid4(),
+        start=DAY,
+        end=DAY,
+    )
+    context.record_latest_evidence_observed_at(LATEST_OBSERVED_AT)
+    context.mark_evidence_ready()
+    context.mark_complete()
+
+    class Resolver:
+        def __init__(self, provider_key: str, observed_at: datetime) -> None:
+            self.provider_key = provider_key
+            self.observed_at = observed_at
+            self.calls = 0
+
+        def discover_global_evidence(self, db, *, user_id):
+            raise AssertionError("global discovery must not run")
+
+        def discover_range_evidence(self, db, *, user_id, start, end):
+            del db, user_id, start, end
+            self.calls += 1
+            return ProviderDiscoveryEvidence(self.provider_key, self.observed_at)
+
+    google = Resolver("google_health", OBSERVED_AT)
+    yazio = Resolver("yazio", OBSERVED_AT)
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_registry={"google_health": google, "yazio": yazio},
+        read_context=context,
+    )
+
+    assert google.calls == 0
+    assert yazio.calls == 1
+    assert tuple(item.provider_key for item in result.providers) == ("google_health", "yazio")
+
+    yazio_context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key="yazio",
+        source_instance_id=uuid4(),
+        start=DAY,
+        end=DAY,
+    )
+    yazio_context.record_latest_evidence_observed_at(LATEST_OBSERVED_AT)
+    yazio_context.mark_evidence_ready()
+    yazio_context.mark_complete()
+    ordered = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_registry={"google_health": google, "yazio": yazio},
+        read_context=yazio_context,
+    )
+
+    assert tuple(item.provider_key for item in ordered.providers) == ("google_health", "yazio")
+
+
+def test_context_is_ignored_outside_explicit_provider_scope(db: Session, user: User) -> None:
+    context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key="google_health",
+        source_instance_id=uuid4(),
+        start=DAY,
+        end=DAY,
+    )
+    context.record_latest_evidence_observed_at(LATEST_OBSERVED_AT)
+    context.mark_evidence_ready()
+    context.mark_complete()
+
+    class Resolver:
+        provider_key = "yazio"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def discover_global_evidence(self, db, *, user_id):
+            raise AssertionError("global discovery must not run")
+
+        def discover_range_evidence(self, db, *, user_id, start, end):
+            del db, user_id, start, end
+            self.calls += 1
+            return ProviderDiscoveryEvidence(self.provider_key, OBSERVED_AT)
+
+    resolver = Resolver()
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_registry={"yazio": resolver},
+        provider_key="yazio",
+        read_context=context,
+    )
+
+    assert resolver.calls == 1
+    assert tuple(item.provider_key for item in result.providers) == ("yazio",)
