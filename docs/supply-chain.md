@@ -135,22 +135,25 @@ and package visibility are separate controls.
 
 ## GHCR retention
 
-The weekly cleanup workflow uses a 24-hour grace period. It classifies every
-package version and prints the package, version ID, creation time, tags and one
-of `PROTECTED`, `DELETE CANDIDATE`, `UNTAGGED REFERRER` or `SKIP`.
+The weekly cleanup workflow uses a seven-day retention window for temporary
+container versions and OCI metadata.
 
 - Exact stable tags matching `vX.Y.Z`, and the mutable `latest` and `edge` tags,
-  are protected.
-- Any version sharing a protected release digest is protected, including its
-  `sha-` and `run-` tags.
-- Untagged records are never deleted: they may be OCI referrers for provenance
-  or SBOM data.
-- Tagged non-release versions younger than 24 hours are skipped; older tagged
-  versions are deletion candidates.
-- Manual dispatch defaults to `dry_run=true`; scheduled runs explicitly delete
-  only candidates.
+  are protected indefinitely.
+- Any package version sharing one of those protected digests is also protected,
+  including its `sha-` and `run-` tags.
+- Untagged OCI referrers are inspected before deletion. Referrers whose
+  `subject.digest` points at a protected digest remain protected.
+- Tagged non-release versions, untagged non-referrer versions, and referrers for
+  unprotected subjects are deletion candidates once they are older than seven
+  days.
+- Package versions are deleted before their stored GitHub artifact attestations
+  are deleted by subject digest. A missing attestation is tolerated.
+- If an untagged manifest cannot be inspected safely, cleanup skips it instead
+  of guessing.
+- Manual dispatch defaults to `dry_run=true`; scheduled runs perform the actual
+  deletion.
 
 Cleanup, main-branch publication, and release promotion share the
 `container-image-promotions` concurrency group, so a retention decision cannot
-race publication or release-tag promotion. The workflow does not execute real
-cleanup from this repository session.
+race publication or release-tag promotion.
