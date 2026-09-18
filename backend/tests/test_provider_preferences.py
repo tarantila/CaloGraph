@@ -14,6 +14,7 @@ from app.models import (
     NutritionTargetActivitySource,
     User,
     UserProviderPreference,
+    UserProviderPriority,
     YazioConnection,
 )
 from app.provider_preferences import (
@@ -25,9 +26,7 @@ from app.provider_preferences import (
     validate_provider_preference,
 )
 from app.source_priority import compatibility as source_priority_compatibility
-from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
-from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
 
 PATH = "/api/v1/settings/provider-preferences"
@@ -58,15 +57,24 @@ def _add_yazio(db, user) -> None:
 
 
 def _add_priority_policy(db, user, *rules: PriorityRuleSpec):
-    policy = create_policy_with_rules(
-        db,
-        user.id,
-        version=1,
-        effective_from=datetime(2026, 9, 18, tzinfo=UTC),
-        rules=rules,
-    )
+    grouped = {}
+    for rule in rules:
+        grouped.setdefault(rule.data_area, []).append(rule)
+    for data_area, area_rules in grouped.items():
+        for rule in sorted(area_rules, key=lambda item: item.priority_rank):
+            db.add(
+                UserProviderPriority(
+                    user_id=user.id,
+                    data_area=data_area,
+                    priority=rule.priority_rank,
+                    provider_key=rule.provider_key,
+                )
+            )
     db.commit()
-    return policy
+    return tuple(
+        (rule.data_area, rule.provider_key, rule.priority_rank)
+        for rule in rules
+    )
 
 
 def _add_sample(
@@ -185,22 +193,14 @@ def test_provider_preference_api_reads_writes_and_deletes_user_scoped_value(
     assert created.status_code == 200
     assert created.json() == {"data_area": "nutrition", "provider_key": "yazio"}
 
-    latest = db.scalar(
-        select(SourcePriorityPolicy)
-        .where(SourcePriorityPolicy.user_id == user.id)
-        .order_by(SourcePriorityPolicy.version.desc())
-    )
-    assert latest is not None
     stored = db.scalar(
-        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == latest.id)
+        select(UserProviderPriority).where(
+            UserProviderPriority.user_id == user.id,
+            UserProviderPriority.data_area == "nutrition",
+        )
     )
     assert stored is not None
-    assert (stored.data_area, stored.metric_key, stored.provider_key, stored.priority_rank) == (
-        "nutrition",
-        None,
-        "yazio",
-        1,
-    )
+    assert (stored.provider_key, stored.priority) == ("yazio", 1)
 
     listed = client.get(PATH)
     assert listed.status_code == 200
@@ -212,19 +212,17 @@ def test_provider_preference_api_reads_writes_and_deletes_user_scoped_value(
         f"{PATH}/nutrition",
         headers={"X-CSRF-Token": csrf},
     )
-    latest = db.scalar(
-        select(SourcePriorityPolicy)
-        .where(SourcePriorityPolicy.user_id == user.id)
-        .order_by(SourcePriorityPolicy.version.desc())
-    )
-    assert latest is not None
+    db.expire_all()
     assert db.scalar(
-        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == latest.id)
+        select(UserProviderPriority).where(
+            UserProviderPriority.user_id == user.id,
+            UserProviderPriority.data_area == "nutrition",
+        )
     ) is None
     assert db.get(UserProviderPreference, (other.id, "nutrition")) is not None
 
 
-def test_provider_preference_write_uses_source_priority_policy_only(
+def test_provider_preference_write_uses_generic_priority_storage_only(
     db,
     user,
     monkeypatch,
@@ -248,14 +246,11 @@ def test_provider_preference_write_uses_source_priority_policy_only(
     db.commit()
 
     assert snapshot.provider_key == "yazio"
-    policy = db.scalar(
-        select(SourcePriorityPolicy)
-        .where(SourcePriorityPolicy.user_id == user.id)
-        .order_by(SourcePriorityPolicy.version.desc())
-    )
-    assert policy is not None
     assert db.scalar(
-        select(SourcePriorityRule).where(SourcePriorityRule.policy_id == policy.id)
+        select(UserProviderPriority).where(
+            UserProviderPriority.user_id == user.id,
+            UserProviderPriority.data_area == "nutrition",
+        )
     ) is not None
 
 
@@ -315,7 +310,7 @@ def test_provider_preference_put_replaces_complete_list_atomically(
     monkeypatch,
 ) -> None:
     _add_yazio(db, user)
-    initial = _add_priority_policy(
+    _add_priority_policy(
         db,
         user,
         PriorityRuleSpec("nutrition", None, "google_health", 1),
@@ -324,12 +319,11 @@ def test_provider_preference_put_replaces_complete_list_atomically(
     other = User(username="other", password_hash="not-used", timezone="Europe/Berlin")
     db.add(other)
     db.flush()
-    other_policy = _add_priority_policy(
+    _add_priority_policy(
         db,
         other,
         PriorityRuleSpec("nutrition", None, "yazio", 1),
     )
-    monkeypatch.setattr("app.api.settings.provider_is_available", lambda *args, **kwargs: True)
     csrf = _login(client)
 
     missing_csrf = client.put(
@@ -360,24 +354,15 @@ def test_provider_preference_put_replaces_complete_list_atomically(
             {"data_area": "nutrition", "provider_key": "google_health"},
         ]
     }
-    latest = db.scalar(
-        select(SourcePriorityPolicy)
-        .where(SourcePriorityPolicy.user_id == user.id)
-        .order_by(SourcePriorityPolicy.version.desc())
-    )
-    assert latest is not None
-    assert latest.id != initial.policy_id
     assert [
-        (rule.provider_key, rule.priority_rank)
-        for rule in db.scalars(
-            select(SourcePriorityRule)
+        (row.provider_key, row.priority)
+        for row in db.scalars(
+            select(UserProviderPriority)
             .where(
-                SourcePriorityRule.user_id == user.id,
-                SourcePriorityRule.policy_id == latest.id,
-                SourcePriorityRule.data_area == "nutrition",
-                SourcePriorityRule.metric_key.is_(None),
+                UserProviderPriority.user_id == user.id,
+                UserProviderPriority.data_area == "nutrition",
             )
-            .order_by(SourcePriorityRule.priority_rank)
+            .order_by(UserProviderPriority.priority)
         )
     ] == [("yazio", 1), ("google_health", 2)]
 
@@ -392,22 +377,27 @@ def test_provider_preference_put_replaces_complete_list_atomically(
         },
     )
     assert invalid.status_code == 422
-    assert (
-        db.scalar(
-            select(SourcePriorityPolicy)
-            .where(SourcePriorityPolicy.user_id == user.id)
-            .order_by(SourcePriorityPolicy.version.desc())
-        ).id
-        == latest.id
-    )
-    assert (
-        db.scalar(
-            select(SourcePriorityPolicy)
-            .where(SourcePriorityPolicy.user_id == other.id)
-            .order_by(SourcePriorityPolicy.version.desc())
-        ).id
-        == other_policy.policy_id
-    )
+    assert [
+        (row.provider_key, row.priority)
+        for row in db.scalars(
+            select(UserProviderPriority)
+            .where(
+                UserProviderPriority.user_id == user.id,
+                UserProviderPriority.data_area == "nutrition",
+            )
+            .order_by(UserProviderPriority.priority)
+        )
+    ] == [("yazio", 1), ("google_health", 2)]
+    assert [
+        (row.provider_key, row.priority)
+        for row in db.scalars(
+            select(UserProviderPriority)
+            .where(
+                UserProviderPriority.user_id == other.id,
+                UserProviderPriority.data_area == "nutrition",
+            )
+        )
+    ] == [("yazio", 1)]
 
 
 def test_provider_priority_replacement_locks_user_row(db, user, monkeypatch) -> None:
@@ -463,7 +453,6 @@ def test_provider_preference_put_rejects_invalid_rank_without_mutation(
 ) -> None:
     _add_yazio(db, user)
     _add_priority_policy(db, user, PriorityRuleSpec("nutrition", None, "yazio", 1))
-    monkeypatch.setattr("app.api.settings.provider_is_available", lambda *args, **kwargs: True)
     csrf = _login(client)
 
     response = client.put(
@@ -501,7 +490,7 @@ def test_provider_availability_keeps_stable_status_values(client: TestClient, us
     }
 
 
-def test_provider_preference_api_rejects_unavailable_provider(
+def test_provider_preference_api_persists_unavailable_provider(
     client: TestClient,
     user,
     db,
@@ -512,8 +501,11 @@ def test_provider_preference_api_rejects_unavailable_provider(
         headers={"X-CSRF-Token": csrf},
         json={"provider_key": "yazio"},
     )
-    assert response.status_code == 409
-    assert response.json()["type"] == "urn:calograph:problem:provider-not-available"
+    assert response.status_code == 200
+    assert response.json() == {"data_area": "nutrition", "provider_key": "yazio"}
+    assert client.get(PATH).json() == {
+        "preferences": [{"data_area": "nutrition", "provider_key": "yazio"}]
+    }
 
 
 def test_provider_availability_reports_owned_yazio_without_exposing_source_instance(

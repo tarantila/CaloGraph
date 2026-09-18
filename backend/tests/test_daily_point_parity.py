@@ -56,6 +56,7 @@ from app.models import (
     NutritionTarget,
     TrackingOverride,
     User,
+    UserProviderPriority,
     YazioConnection,
 )
 from app.nutrition.enums import (
@@ -1886,6 +1887,15 @@ def test_daily_endpoint_fails_closed_for_unavailable_provider_with_ready_project
         suffix="d4b-endpoint",
     )
     _d3b_projection(db, user, values)
+    db.add(
+        UserProviderPriority(
+            user_id=user.id,
+            data_area="nutrition",
+            priority=1,
+            provider_key="yazio",
+        )
+    )
+    db.commit()
 
     parity = compare_daily_point_range(
         db,

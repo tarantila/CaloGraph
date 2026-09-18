@@ -44,7 +44,6 @@ from app.problem_types import (
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
-    PROVIDER_NOT_AVAILABLE,
     TARGET_VERSION_NOT_FOUND,
     VALIDATION_ERROR,
     ProblemHTTPException,
@@ -116,7 +115,6 @@ from app.services.passkeys import (
 from app.services.provider_preferences import (
     apply_activity_provider_to_current_target,
     provider_availability,
-    provider_is_available,
     replace_activity_target_sources,
 )
 from app.services.rate_limit import (
@@ -613,18 +611,6 @@ def update_provider_preference(
             detail="Provider ist für diesen fachlichen Datenbereich nicht zulässig",
             problem_type=VALIDATION_ERROR,
         ) from exc
-    for normalized_provider in normalized_providers:
-        if not provider_is_available(
-            db,
-            user_id=user.id,
-            data_area=normalized_area,
-            provider_key=normalized_provider,
-        ):
-            raise ProblemHTTPException(
-                status_code=409,
-                detail="Provider ist für dieses Konto nicht verfügbar",
-                problem_type=PROVIDER_NOT_AVAILABLE,
-            )
     preferences = replace_provider_preferences(
         db,
         user_id=user.id,
@@ -910,13 +896,22 @@ def _activity_priority_chain(
     user_id: UUID,
     projection_source_type: str,
 ) -> tuple[str, ...]:
-    policy_sources = tuple(
-        ACTIVITY_PROVIDER_SOURCE_TYPES[preference.provider_key]
+    activity_preferences = tuple(
+        preference
         for preference in list_provider_preferences(db, user_id)
         if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
-        and preference.provider_key in ACTIVITY_PROVIDER_SOURCE_TYPES
     )
-    return policy_sources or (projection_source_type,)
+    policy_sources: list[str] = []
+    for preference in activity_preferences:
+        try:
+            policy_sources.append(ACTIVITY_PROVIDER_SOURCE_TYPES[preference.provider_key])
+        except KeyError as exc:
+            raise ProblemHTTPException(
+                status_code=422,
+                detail="Aktivitätsprovider ist ungültig konfiguriert",
+                problem_type=VALIDATION_ERROR,
+            ) from exc
+    return tuple(policy_sources) or (projection_source_type,)
 
 
 def _validate_activity_source(

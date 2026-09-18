@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import inspect
@@ -22,7 +20,7 @@ down_revision: str | None = "20260911_0030"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-MIGRATION_EFFECTIVE_FROM = datetime(2026, 9, 18, tzinfo=UTC)
+_USER_PRIORITY_TABLE = "user_provider_priorities"
 _ACTIVITY_TABLE = "nutrition_target_activity_sources"
 _TARGET_SCOPE_KEY = "uq_nutrition_targets_id_user"
 _ACTIVITY_PROVIDER_INDEX = "uq_nutrition_target_activity_sources_target_provider"
@@ -53,6 +51,43 @@ def _ensure_target_scope_key(bind: sa.Connection) -> None:
         )
 
 
+def _create_user_priority_table(bind: sa.Connection) -> None:
+    if _USER_PRIORITY_TABLE in inspect(bind).get_table_names():
+        return
+    op.create_table(
+        _USER_PRIORITY_TABLE,
+        sa.Column("user_id", sa.Uuid(), nullable=False),
+        sa.Column("data_area", sa.String(length=64), nullable=False),
+        sa.Column("priority", sa.Integer(), nullable=False),
+        sa.Column("provider_key", sa.String(length=64), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "length(data_area) > 0",
+            name="ck_user_provider_priorities_data_area",
+        ),
+        sa.CheckConstraint(
+            "length(provider_key) > 0",
+            name="ck_user_provider_priorities_provider_key",
+        ),
+        sa.CheckConstraint(
+            "priority >= 1",
+            name="ck_user_provider_priorities_priority",
+        ),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("user_id", "data_area", "priority"),
+        sa.UniqueConstraint(
+            "user_id",
+            "data_area",
+            "provider_key",
+            name="uq_user_provider_priorities_provider",
+        ),
+    )
+    op.create_index(
+        "ix_user_provider_priorities_user_area_priority",
+        _USER_PRIORITY_TABLE,
+        ["user_id", "data_area", "priority"],
+    )
 def _create_activity_table(bind: sa.Connection) -> None:
     _ensure_target_scope_key(bind)
     op.create_table(
@@ -143,61 +178,10 @@ def _backfill_activity_sources(bind: sa.Connection) -> None:
     )
 
 
-def _policy_tables() -> tuple[sa.TableClause, sa.TableClause]:
-    policies = sa.table(
-        "source_priority_policies",
-        sa.column("id", sa.Uuid()),
-        sa.column("user_id", sa.Uuid()),
-        sa.column("version", sa.Integer()),
-        sa.column("effective_from", sa.DateTime(timezone=True)),
-        sa.column("created_at", sa.DateTime(timezone=True)),
-    )
-    rules = sa.table(
-        "source_priority_rules",
-        sa.column("id", sa.Uuid()),
-        sa.column("user_id", sa.Uuid()),
-        sa.column("policy_id", sa.Uuid()),
-        sa.column("data_area", sa.String()),
-        sa.column("metric_key", sa.String()),
-        sa.column("provider_key", sa.String()),
-        sa.column("priority_rank", sa.Integer()),
-        sa.column("created_at", sa.DateTime(timezone=True)),
-    )
-    return policies, rules
 
 
-def _existing_policy_versions(
-    bind: sa.Connection,
-    policies: sa.TableClause,
-) -> dict[object, int]:
-    rows = bind.execute(
-        sa.select(policies.c.user_id, policies.c.version).order_by(
-            policies.c.user_id,
-            policies.c.version,
-        )
-    )
-    versions: dict[object, int] = {}
-    for row in rows:
-        versions[row.user_id] = max(versions.get(row.user_id, 0), int(row.version))
-    return versions
 
 
-def _effective_timestamp_is_taken(
-    bind: sa.Connection,
-    policies: sa.TableClause,
-    user_id: object,
-    effective_from: datetime,
-) -> bool:
-    rows = bind.execute(
-        sa.select(policies.c.effective_from).where(policies.c.user_id == user_id)
-    )
-    for row in rows:
-        value = row.effective_from
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        if value.astimezone(UTC) == effective_from:
-            return True
-    return False
 
 
 def _migrate_preferences(bind: sa.Connection) -> None:
@@ -206,51 +190,41 @@ def _migrate_preferences(bind: sa.Connection) -> None:
         sa.column("user_id", sa.Uuid()),
         sa.column("data_area", sa.String()),
         sa.column("provider_key", sa.String()),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    policies, rules = _policy_tables()
-    preference_rows = bind.execute(
+    priorities = sa.table(
+        _USER_PRIORITY_TABLE,
+        sa.column("user_id", sa.Uuid()),
+        sa.column("data_area", sa.String()),
+        sa.column("priority", sa.Integer()),
+        sa.column("provider_key", sa.String()),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
+    )
+    rows = bind.execute(
         sa.select(
             preferences.c.user_id,
             preferences.c.data_area,
             preferences.c.provider_key,
+            preferences.c.created_at,
+            preferences.c.updated_at,
         ).order_by(preferences.c.user_id, preferences.c.data_area)
     ).mappings()
-    grouped: dict[object, list[dict[str, object]]] = defaultdict(list)
-    for row in preference_rows:
-        grouped[row["user_id"]].append(row)
-
-    versions = _existing_policy_versions(bind, policies)
-    for user_id in sorted(grouped, key=str):
-        effective_from = MIGRATION_EFFECTIVE_FROM
-        while _effective_timestamp_is_taken(bind, policies, user_id, effective_from):
-            effective_from += timedelta(microseconds=1)
-        version = versions.get(user_id, 0) + 1
-        policy_id = uuid4()
-        bind.execute(
-            policies.insert().values(
-                id=policy_id,
-                user_id=user_id,
-                version=version,
-                effective_from=effective_from,
-                created_at=effective_from,
-            )
-        )
-        bind.execute(
-            rules.insert(),
-            [
-                {
-                    "id": uuid4(),
-                    "user_id": user_id,
-                    "policy_id": policy_id,
-                    "data_area": row["data_area"],
-                    "metric_key": None,
-                    "provider_key": row["provider_key"],
-                    "priority_rank": 1,
-                    "created_at": effective_from,
-                }
-                for row in grouped[user_id]
-            ],
-        )
+    bind.execute(
+        priorities.insert(),
+        [
+            {
+                "user_id": row["user_id"],
+                "data_area": row["data_area"],
+                "priority": 1,
+                "provider_key": row["provider_key"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ],
+    )
 
 
 def _drop_preferences(bind: sa.Connection) -> None:
@@ -291,56 +265,34 @@ def _recreate_preferences(bind: sa.Connection, rows: list[dict[str, object]]) ->
         bind.execute(preferences.insert(), rows)
 
 
-def _current_policy_rules(bind: sa.Connection) -> list[dict[str, object]]:
-    policies, rules = _policy_tables()
-    policy_rows = bind.execute(
-        sa.select(
-            policies.c.id,
-            policies.c.user_id,
-            policies.c.version,
-        ).order_by(policies.c.user_id, policies.c.version.desc(), policies.c.id)
-    ).mappings()
-    current_policy_by_user: dict[object, object] = {}
-    for row in policy_rows:
-        current_policy_by_user.setdefault(row["user_id"], row["id"])
-
-    current_rules: list[dict[str, object]] = []
-    for user_id, policy_id in current_policy_by_user.items():
-        rows = bind.execute(
-            sa.select(
-                rules.c.data_area,
-                rules.c.metric_key,
-                rules.c.provider_key,
-                rules.c.priority_rank,
-            )
-            .where(rules.c.user_id == user_id)
-            .where(rules.c.policy_id == policy_id)
-            .order_by(rules.c.data_area, rules.c.priority_rank, rules.c.id)
-        ).mappings()
-        for row in rows:
-            current_rules.append(
-                {
-                    "user_id": user_id,
-                    "data_area": row["data_area"],
-                    "metric_key": row["metric_key"],
-                    "provider_key": row["provider_key"],
-                    "priority_rank": row["priority_rank"],
-                }
-            )
-    return current_rules
-
-
 def _legacy_preference_rows(bind: sa.Connection) -> list[dict[str, object]]:
-    rows = _current_policy_rules(bind)
+    priorities = sa.table(
+        _USER_PRIORITY_TABLE,
+        sa.column("user_id", sa.Uuid()),
+        sa.column("data_area", sa.String()),
+        sa.column("priority", sa.Integer()),
+        sa.column("provider_key", sa.String()),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
+    )
+    rows = bind.execute(
+        sa.select(
+            priorities.c.user_id,
+            priorities.c.data_area,
+            priorities.c.priority,
+            priorities.c.provider_key,
+            priorities.c.created_at,
+            priorities.c.updated_at,
+        ).order_by(
+            priorities.c.user_id,
+            priorities.c.data_area,
+            priorities.c.priority,
+        )
+    ).mappings()
     seen: set[tuple[object, object]] = set()
     preferences: list[dict[str, object]] = []
     for row in rows:
         scope = (row["user_id"], row["data_area"])
-        if row["metric_key"] is not None:
-            raise RuntimeError(
-                "provider priority downgrade aborted: current metric-specific rules "
-                f"cannot be represented for user {row['user_id']} data_area {row['data_area']}"
-            )
         if scope in seen:
             raise RuntimeError(
                 "provider priority downgrade aborted: multiple current priorities "
@@ -352,11 +304,13 @@ def _legacy_preference_rows(bind: sa.Connection) -> list[dict[str, object]]:
                 "user_id": row["user_id"],
                 "data_area": row["data_area"],
                 "provider_key": row["provider_key"],
-                "created_at": MIGRATION_EFFECTIVE_FROM,
-                "updated_at": MIGRATION_EFFECTIVE_FROM,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
             }
         )
     return preferences
+
+
 
 
 def _drop_activity_table(bind: sa.Connection) -> None:
@@ -382,6 +336,7 @@ def _drop_owned_target_scope_key(bind: sa.Connection) -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    _create_user_priority_table(bind)
     _create_activity_table(bind)
     _backfill_activity_sources(bind)
     _migrate_preferences(bind)
@@ -392,5 +347,14 @@ def downgrade() -> None:
     bind = op.get_bind()
     preferences = _legacy_preference_rows(bind)
     _recreate_preferences(bind, preferences)
+    if _USER_PRIORITY_TABLE in inspect(bind).get_table_names():
+        if "ix_user_provider_priorities_user_area_priority" in {
+            item["name"] for item in inspect(bind).get_indexes(_USER_PRIORITY_TABLE)
+        }:
+            op.drop_index(
+                "ix_user_provider_priorities_user_area_priority",
+                table_name=_USER_PRIORITY_TABLE,
+            )
+        op.drop_table(_USER_PRIORITY_TABLE)
     _drop_activity_table(bind)
     _drop_owned_target_scope_key(bind)

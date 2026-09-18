@@ -78,8 +78,8 @@ function isSaving(area: DataArea): boolean {
   return savingAreas.value.has(area)
 }
 
-function canSave(area: DataArea): boolean {
-  return priorities.value[area].every((providerKey) => !isUnavailable(area, providerKey))
+function canSave(): boolean {
+  return true
 }
 
 function addProvider(area: DataArea): void {
@@ -139,7 +139,7 @@ async function load(): Promise<void> {
 }
 
 async function save(area: DataArea): Promise<void> {
-  if (!canSave(area) || isSaving(area)) return
+  if (!canSave() || isSaving(area)) return
   savingAreas.value = new Set([...savingAreas.value, area])
   error.value = ''
   message.value = ''
@@ -288,7 +288,7 @@ onMounted(() => { void load() })
         <p v-if="priorities[area.key].some((providerKey) => isUnavailable(area.key, providerKey))" class="provider-priority-warning" role="alert">
           {{ t('providerPreferencesUi.unavailableSaveHint') }}
         </p>
-        <button class="button compact-action provider-priority-save" type="submit" :disabled="isSaving(area.key) || !canSave(area.key)">
+        <button class="button compact-action provider-priority-save" type="submit" :disabled="isSaving(area.key) || !canSave()">
           {{ isSaving(area.key) ? t('providerPreferencesUi.saving') : t('providerPreferencesUi.save') }}
         </button>
       </form>

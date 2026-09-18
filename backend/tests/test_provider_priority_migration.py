@@ -145,6 +145,7 @@ def test_upgrade_migrates_preferences_and_activity_snapshots(tmp_path):
     inspector = inspect(engine)
     assert "nutrition_target_activity_sources" in inspector.get_table_names()
     assert "user_provider_preferences" not in inspector.get_table_names()
+    assert "user_provider_priorities" in inspector.get_table_names()
     with engine.connect() as connection:
         activity_rows = connection.execute(
             sa.text(
@@ -157,40 +158,30 @@ def test_upgrade_migrates_preferences_and_activity_snapshots(tmp_path):
             (1, None, "unknown_legacy_source"),
         }
 
-        policies = connection.execute(
+        priorities = connection.execute(
             sa.text(
-                "SELECT user_id, version, effective_from FROM source_priority_policies "
-                "ORDER BY user_id"
+                "SELECT user_id, data_area, priority, provider_key "
+                "FROM user_provider_priorities ORDER BY user_id, data_area"
             )
         ).all()
-        assert {(str(row[0]), row[1]) for row in policies} == {
-            (user_one.hex, 1),
-            (user_two.hex, 1),
+        assert {(str(row[0]), row[1], row[2], row[3]) for row in priorities} == {
+            (user_one.hex, "nutrition", 1, "yazio"),
+            (user_one.hex, "weight", 1, "apple_health"),
+            (user_two.hex, "activity_energy", 1, "google_health"),
         }
         assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM source_priority_policies WHERE created_at IS NULL")
+            sa.text("SELECT COUNT(*) FROM source_priority_policies")
         ).scalar_one() == 0
         assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM source_priority_rules WHERE created_at IS NULL")
+            sa.text("SELECT COUNT(*) FROM source_priority_rules")
         ).scalar_one() == 0
-        migrated_rules = connection.execute(
-            sa.text(
-                "SELECT user_id, data_area, metric_key, provider_key, priority_rank "
-                "FROM source_priority_rules ORDER BY user_id, data_area"
-            )
-        ).all()
-        assert {(str(row[0]), row[1], row[2], row[3], row[4]) for row in migrated_rules} == {
-            (user_one.hex, "nutrition", None, "yazio", 1),
-            (user_one.hex, "weight", None, "apple_health", 1),
-            (user_two.hex, "activity_energy", None, "google_health", 1),
-        }
 
 
-def test_upgrade_preserves_existing_policy_and_uses_next_version(tmp_path):
+def test_upgrade_preserves_existing_source_priority_policy_without_mixing_user_preferences(
+    tmp_path,
+):
     engine = _sqlite_engine(tmp_path)
     user_one, _, _, _ = _seed_legacy(engine)
-    metadata = sa.inspect(engine)
-    assert "source_priority_policies" in metadata.get_table_names()
     legacy_metadata = _legacy_metadata()
     policies = legacy_metadata.tables["source_priority_policies"]
     rules = legacy_metadata.tables["source_priority_rules"]
@@ -221,16 +212,22 @@ def test_upgrade_preserves_existing_policy_and_uses_next_version(tmp_path):
     _apply(engine, _revision_module(), "upgrade")
 
     with engine.connect() as connection:
-        migrated = connection.execute(
-            sa.select(policies.c.version).where(
-                policies.c.user_id == user_one,
-                policies.c.effective_from == _MIGRATION_AT,
-            )
-        ).scalar_one()
-        assert migrated == 5
+        assert connection.execute(
+            sa.select(sa.func.count()).select_from(policies)
+        ).scalar_one() == 1
         assert connection.execute(
             sa.select(policies.c.version).where(policies.c.id == existing_policy)
         ).scalar_one() == 4
+        assert connection.execute(
+            sa.select(sa.func.count()).select_from(rules)
+        ).scalar_one() == 1
+        assert connection.execute(
+            sa.text(
+                "SELECT provider_key FROM user_provider_priorities "
+                "WHERE user_id = :user_id AND data_area = 'nutrition'"
+            ),
+            {"user_id": user_one.hex},
+        ).scalar_one() == "yazio"
 
 
 def test_activity_snapshot_constraints_and_target_user_ownership(tmp_path):
@@ -269,24 +266,16 @@ def test_downgrade_refuses_lossy_multiple_current_priorities(tmp_path):
     user_one, _, _, _ = _seed_legacy(engine)
     _apply(engine, _revision_module(), "upgrade")
     with engine.begin() as connection:
-        policy_id = connection.execute(
-            sa.text(
-                "SELECT id FROM source_priority_policies "
-                "WHERE user_id = :user_id ORDER BY version DESC LIMIT 1"
-            ),
-            {"user_id": user_one.hex},
-        ).scalar_one()
         connection.execute(
             sa.text(
-                "INSERT INTO source_priority_rules "
-                "(id, user_id, policy_id, data_area, metric_key, provider_key, priority_rank, created_at) "
-                "VALUES (:id, :user_id, :policy_id, 'nutrition', NULL, 'google_health', 2, :created_at)"
+                "INSERT INTO user_provider_priorities "
+                "(user_id, data_area, priority, provider_key, created_at, updated_at) "
+                "VALUES (:user_id, 'nutrition', 2, 'google_health', :created_at, :updated_at)"
             ),
             {
-                "id": uuid4().hex,
                 "user_id": user_one.hex,
-                "policy_id": policy_id,
                 "created_at": _MIGRATION_AT,
+                "updated_at": _MIGRATION_AT,
             },
         )
 

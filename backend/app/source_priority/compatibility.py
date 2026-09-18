@@ -2,18 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.models import User, UserProviderPreference
-from app.source_priority.application import create_policy_with_rules
-from app.source_priority.contracts import PriorityRuleSpec
-from app.source_priority.models import SourcePriorityPolicy
-from app.source_priority.repositories import list_policies, list_rules
+from app.models import User, UserProviderPreference, UserProviderPriority
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,82 +17,49 @@ class ProviderPreferenceSnapshot:
     provider_key: str
 
 
-def _legacy_table_available(db: Session) -> bool:
-    bind = db.get_bind()
-    return bool(bind is not None and sa.inspect(bind).has_table("user_provider_preferences"))
+def _table_available(db: Session, table_name: str) -> bool:
+    return sa.inspect(db.connection()).has_table(table_name)
 
 
 def _lock_user_row(db: Session, user_id: UUID) -> None:
-    db.scalar(
-        sa.select(User.id)
-        .where(User.id == user_id)
-        .with_for_update()
-    )
+    db.scalar(sa.select(User.id).where(User.id == user_id).with_for_update())
 
 
-def _latest_policy(db: Session, user_id: UUID) -> SourcePriorityPolicy | None:
-    return db.scalar(
-        sa.select(SourcePriorityPolicy)
-        .where(SourcePriorityPolicy.user_id == user_id)
+def _generic_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
+    rows = db.scalars(
+        sa.select(UserProviderPriority)
+        .where(UserProviderPriority.user_id == user_id)
         .order_by(
-            SourcePriorityPolicy.version.desc(),
-            SourcePriorityPolicy.effective_from.desc(),
-            SourcePriorityPolicy.id.desc(),
+            UserProviderPriority.data_area,
+            UserProviderPriority.priority,
+            UserProviderPriority.provider_key,
         )
-        .limit(1)
     )
-
-def _policy_preferences(
-    db: Session,
-    user_id: UUID,
-    policy: SourcePriorityPolicy,
-) -> list[ProviderPreferenceSnapshot]:
-    rules = [
-        rule
-        for rule in list_rules(db, user_id, policy.id)
-        if rule.metric_key is None
-    ]
     return [
-        ProviderPreferenceSnapshot(data_area=rule.data_area, provider_key=rule.provider_key)
-        for rule in sorted(
-            rules,
-            key=lambda rule: (rule.data_area, rule.priority_rank, rule.provider_key, str(rule.id)),
-        )
+        ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
+        for row in rows
     ]
 
 
 def _legacy_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
-    if not _legacy_table_available(db):
+    if not _table_available(db, "user_provider_preferences"):
         return []
-    try:
-        rows = db.scalars(
-            sa.select(UserProviderPreference)
-            .where(UserProviderPreference.user_id == user_id)
-            .order_by(UserProviderPreference.data_area)
-        )
-        return [
-            ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
-            for row in rows
-        ]
-    except OperationalError:
-        db.rollback()
-        return []
-
-
-
-def _legacy_delete(db: Session, user_id: UUID, data_area: str) -> None:
-    if not _legacy_table_available(db):
-        return
-    row = db.get(UserProviderPreference, (user_id, data_area))
-    if row is not None:
-        db.delete(row)
-
+    rows = db.scalars(
+        sa.select(UserProviderPreference)
+        .where(UserProviderPreference.user_id == user_id)
+        .order_by(UserProviderPreference.data_area)
+    )
+    return [
+        ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
+        for row in rows
+    ]
 
 
 def list_provider_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
-    policy = _latest_policy(db, user_id)
-    if policy is not None:
-        return _policy_preferences(db, user_id, policy)
+    if _table_available(db, "user_provider_priorities"):
+        preferences = _generic_preferences(db, user_id)
+        if preferences:
+            return preferences
     return _legacy_preferences(db, user_id)
 
 
@@ -110,24 +72,6 @@ def get_provider_preference(
         (item for item in list_provider_preferences(db, user_id) if item.data_area == data_area),
         None,
     )
-
-
-
-
-def _next_effective_from(
-    db: Session,
-    user_id: UUID,
-    candidate: datetime,
-) -> datetime:
-    existing = {
-        policy.effective_from.astimezone(UTC)
-        if policy.effective_from.tzinfo is not None
-        else policy.effective_from.replace(tzinfo=UTC)
-        for policy in list_policies(db, user_id)
-    }
-    while candidate in existing:
-        candidate += timedelta(microseconds=1)
-    return candidate
 
 
 def replace_provider_preferences(
@@ -143,44 +87,37 @@ def replace_provider_preferences(
         raise ValueError("provider list must not be empty")
     if len(normalized_keys) != len(set(normalized_keys)):
         raise ValueError("provider list must not contain duplicates")
+    if not _table_available(db, "user_provider_priorities"):
+        raise RuntimeError("user provider priority table is not migrated")
 
-    current_policy = _latest_policy(db, user_id)
-    current_rules = list_rules(db, user_id, current_policy.id) if current_policy else []
-    current_area_rules = sorted(
-        (
-            rule
-            for rule in current_rules
-            if rule.data_area == data_area and rule.metric_key is None
-        ),
-        key=lambda rule: (rule.priority_rank, rule.provider_key, str(rule.id)),
-    )
-    if [rule.provider_key for rule in current_area_rules] == list(normalized_keys):
+    current = [
+        item.provider_key
+        for item in _generic_preferences(db, user_id)
+        if item.data_area == data_area
+    ]
+    if current == list(normalized_keys):
         return [
             ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
             for provider_key in normalized_keys
         ]
 
-    rules = [
-        PriorityRuleSpec(
-            data_area=rule.data_area,
-            metric_key=rule.metric_key,
-            provider_key=rule.provider_key,
-            priority_rank=rule.priority_rank,
+    db.execute(
+        sa.delete(UserProviderPriority).where(
+            UserProviderPriority.user_id == user_id,
+            UserProviderPriority.data_area == data_area,
         )
-        for rule in current_rules
-        if not (rule.data_area == data_area and rule.metric_key is None)
-    ]
-    rules.extend(
-        PriorityRuleSpec(data_area, None, provider_key, rank)
-        for rank, provider_key in enumerate(normalized_keys, start=1)
     )
-    version = current_policy.version + 1 if current_policy is not None else 1
-    create_policy_with_rules(
-        db,
-        user_id,
-        version,
-        _next_effective_from(db, user_id, datetime.now(UTC)),
-        tuple(rules),
+    now = datetime.now(UTC)
+    db.add_all(
+        UserProviderPriority(
+            user_id=user_id,
+            data_area=data_area,
+            provider_key=provider_key,
+            priority=priority,
+            created_at=now,
+            updated_at=now,
+        )
+        for priority, provider_key in enumerate(normalized_keys, start=1)
     )
     return [
         ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
@@ -205,28 +142,21 @@ def set_provider_preference(
 
 def delete_provider_preference(db: Session, *, user_id: UUID, data_area: str) -> None:
     _lock_user_row(db, user_id)
-    current_policy = _latest_policy(db, user_id)
-    if current_policy is None:
-        _legacy_delete(db, user_id, data_area)
-        return
-    rules = [
-        PriorityRuleSpec(
-            data_area=rule.data_area,
-            metric_key=rule.metric_key,
-            provider_key=rule.provider_key,
-            priority_rank=rule.priority_rank,
+    if _table_available(db, "user_provider_priorities"):
+        db.execute(
+            sa.delete(UserProviderPriority).where(
+                UserProviderPriority.user_id == user_id,
+                UserProviderPriority.data_area == data_area,
+            )
         )
-        for rule in list_rules(db, user_id, current_policy.id)
-        if not (rule.data_area == data_area and rule.metric_key is None)
-    ]
-    if len(rules) != len(list_rules(db, user_id, current_policy.id)):
-        create_policy_with_rules(
-            db,
-            user_id,
-            current_policy.version + 1,
-            _next_effective_from(db, user_id, datetime.now(UTC)),
-            tuple(rules),
+    if _table_available(db, "user_provider_preferences"):
+        db.execute(
+            sa.delete(UserProviderPreference).where(
+                UserProviderPreference.user_id == user_id,
+                UserProviderPreference.data_area == data_area,
+            )
         )
+
 
 __all__ = [
     "ProviderPreferenceSnapshot",

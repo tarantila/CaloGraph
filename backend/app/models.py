@@ -93,6 +93,40 @@ class UserProviderPreference(Base):
 
 
 
+class UserProviderPriority(Base):
+    __tablename__ = "user_provider_priorities"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "data_area",
+            "provider_key",
+            name="uq_user_provider_priorities_provider",
+        ),
+        CheckConstraint("length(data_area) > 0", name="ck_user_provider_priorities_data_area"),
+        CheckConstraint(
+            "length(provider_key) > 0",
+            name="ck_user_provider_priorities_provider_key",
+        ),
+        CheckConstraint("priority >= 1", name="ck_user_provider_priorities_priority"),
+        Index(
+            "ix_user_provider_priorities_user_area_priority",
+            "user_id",
+            "data_area",
+            "priority",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    data_area: Mapped[str] = mapped_column(String(64), primary_key=True)
+    priority: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
 class InstanceBootstrap(Base):
     __tablename__ = "instance_bootstrap"
 
