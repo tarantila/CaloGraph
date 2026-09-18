@@ -426,18 +426,23 @@ def micronutrients(
         )
         response = legacy.to_public(start=start, end=end, source=source)
     else:
-        canonical_read_context = NutritionEvidenceIndex(
-            user_id=user.id,
-            provider_key=selection.provider_key,
-            source_instance_id=selection.source_instance_id,
-            start=start,
-            end=end,
+        provider_sources = selection.provider_sources or (
+            (selection.provider_key, selection.source_instance_id),
         )
+        if len(provider_sources) == 1:
+            canonical_read_context = NutritionEvidenceIndex(
+                user_id=user.id,
+                provider_key=selection.provider_key,
+                source_instance_id=selection.source_instance_id,
+                start=start,
+                end=end,
+            )
         canonical = read_canonical_micronutrient_period(
             db,
             user_id=user.id,
             provider_key=selection.provider_key,
             source_instance_id=selection.source_instance_id,
+            provider_sources=provider_sources,
             start=start,
             end=end,
             read_context=canonical_read_context,

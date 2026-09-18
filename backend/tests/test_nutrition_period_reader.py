@@ -214,6 +214,48 @@ def test_canonical_micronutrients_aggregate_long_range_without_average_of_averag
     assert iron.days_with_value == 2
     assert iron.coverage_ratio == 1.0
 
+def test_canonical_micronutrients_fall_back_per_day_in_priority_order(monkeypatch, user) -> None:
+    calls = []
+    local_date = date(2026, 9, 1)
+
+    def fake_period(db, **kwargs):
+        del db
+        calls.append(kwargs["provider_key"])
+        has_values = kwargs["provider_key"] == "second"
+        return {
+            local_date: {
+                metric_key: _candidate(
+                    user_id=kwargs["user_id"],
+                    local_date=local_date,
+                    metric_key=metric_key,
+                    value=(
+                        Decimal("100")
+                        if has_values and metric_key == "dietary_energy_kcal"
+                        else Decimal("7")
+                        if has_values and metric_key == "iron_mg"
+                        else None
+                    ),
+                )
+                for metric_key in kwargs["metric_keys"]
+            }
+        }
+
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
+    result = read_canonical_micronutrient_period(
+        db=object(),
+        user_id=user.id,
+        provider_key="first",
+        source_instance_id=user.id,
+        provider_sources=(("first", user.id), ("second", uuid4())),
+        start=local_date,
+        end=local_date,
+    )
+
+    iron = next(item for item in result.nutrients if item.metric_type == "iron_mg")
+    assert calls == ["first", "second"]
+    assert result.recorded_days == 1
+    assert iron.total == Decimal("7")
+    assert iron.days_with_value == 1
 
 def test_canonical_micronutrients_accept_date_max_boundary(monkeypatch, user) -> None:
     monkeypatch.setattr(

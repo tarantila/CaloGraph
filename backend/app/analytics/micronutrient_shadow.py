@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.service import PRIMARY_NUTRITION_METRICS, serialize_decimal
@@ -308,12 +308,29 @@ def read_legacy_micronutrient_period(
     )
 
 
+def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
+    if not days:
+        return ()
+    ordered = sorted(days)
+    ranges: list[tuple[date, date]] = []
+    range_start = range_end = ordered[0]
+    for current in ordered[1:]:
+        if current == range_end + timedelta(days=1):
+            range_end = current
+            continue
+        ranges.append((range_start, range_end))
+        range_start = range_end = current
+    ranges.append((range_start, range_end))
+    return tuple(ranges)
+
+
 def read_canonical_micronutrient_period(
     db: Session,
     *,
     user_id: UUID,
     provider_key: str,
     source_instance_id: UUID,
+    provider_sources: Sequence[tuple[str, UUID]] | None = None,
     start: date,
     end: date,
     read_context: NutritionEvidenceIndex | None = None,
@@ -322,7 +339,12 @@ def read_canonical_micronutrient_period(
     days_by_metric: dict[str, int] = defaultdict(int)
     primary_recorded_days = 0
     all_value_days = 0
-    if read_context is not None and not read_context.owns(
+    ordered_sources = tuple(provider_sources or ((provider_key, source_instance_id),))
+    if not ordered_sources or len({key for key, _ in ordered_sources}) != len(ordered_sources):
+        raise ValueError("provider source list is empty or contains duplicates")
+    if ordered_sources[0] != (provider_key, source_instance_id):
+        raise ValueError("primary provider source must be first")
+    if read_context is not None and len(ordered_sources) == 1 and not read_context.owns(
         user_id=user_id,
         provider_key=provider_key,
         source_instance_id=source_instance_id,
@@ -339,10 +361,18 @@ def read_canonical_micronutrient_period(
             )
             .where(
                 NutritionSourceObservation.user_id == user_id,
-                NutritionSourceObservation.provider_key == provider_key,
-                NutritionSourceObservation.source_instance_id == source_instance_id,
                 NutritionSourceObservation.local_date >= start,
                 NutritionSourceObservation.local_date <= end,
+                or_(
+                    *(
+                        and_(
+                            NutritionSourceObservation.provider_key == current_provider_key,
+                            NutritionSourceObservation.source_instance_id
+                            == current_source_instance_id,
+                        )
+                        for current_provider_key, current_source_instance_id in ordered_sources
+                    )
+                ),
             )
             .group_by(NutritionSourceObservation.provider_key)
             .order_by(NutritionSourceObservation.provider_key)
@@ -350,35 +380,57 @@ def read_canonical_micronutrient_period(
         if isinstance(db, Session)
         else ()
     )
-    for chunk_start, chunk_end, candidates_by_day in iter_provider_period_chunks(
-        db,
-        provider_key=provider_key,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        start=start,
-        end=end,
-        metric_keys=requested_metrics,
-        read_context=read_context,
-    ):
-        for offset in range((chunk_end - chunk_start).days + 1):
-            current = chunk_start + timedelta(days=offset)
-            candidate_values = candidates_by_day[current]
-            primary_has_value = any(
-                (value := candidate_values[metric_type].value) is not None and value > 0
-                for metric_type in PRIMARY_NUTRITION_METRICS
-            )
-            any_value = False
-            for metric_type in MICRONUTRIENT_METRIC_TYPES:
-                value = candidate_values[metric_type].value
-                if value is None:
-                    continue
-                totals_by_metric[metric_type] += value
-                days_by_metric[metric_type] += 1
-                any_value = True
-            if primary_has_value:
-                primary_recorded_days += 1
-            if any_value:
-                all_value_days += 1
+    unresolved_dates = {
+        start + timedelta(days=offset) for offset in range((end - start).days + 1)
+    }
+    selected_candidates_by_date: dict[date, Mapping[str, Any]] = {}
+    for current_provider_key, current_source_instance_id in ordered_sources:
+        if not unresolved_dates:
+            break
+        for range_start, range_end in _contiguous_date_ranges(unresolved_dates):
+            for _, _, candidates_by_day in iter_provider_period_chunks(
+                db,
+                provider_key=current_provider_key,
+                user_id=user_id,
+                source_instance_id=current_source_instance_id,
+                start=range_start,
+                end=range_end,
+                metric_keys=requested_metrics,
+                read_context=(
+                    read_context
+                    if len(ordered_sources) == 1
+                    else None
+                ),
+            ):
+                for current_date, candidate_values in candidates_by_day.items():
+                    has_evidence = any(
+                        (candidate_values.get(metric_type) is not None)
+                        and (candidate_values[metric_type].value is not None)
+                        for metric_type in (*PRIMARY_NUTRITION_METRICS, *MICRONUTRIENT_METRIC_TYPES)
+                    )
+                    if has_evidence:
+                        selected_candidates_by_date[current_date] = candidate_values
+                        unresolved_dates.discard(current_date)
+    for candidate_values in selected_candidates_by_date.values():
+        primary_has_value = any(
+            (candidate := candidate_values.get(metric_type)) is not None
+            and candidate.value is not None
+            and candidate.value > 0
+            for metric_type in PRIMARY_NUTRITION_METRICS
+        )
+        any_value = False
+        for metric_type in MICRONUTRIENT_METRIC_TYPES:
+            candidate = candidate_values.get(metric_type)
+            value = candidate.value if candidate is not None else None
+            if value is None:
+                continue
+            totals_by_metric[metric_type] += value
+            days_by_metric[metric_type] += 1
+            any_value = True
+        if primary_has_value:
+            primary_recorded_days += 1
+        if any_value:
+            all_value_days += 1
     if read_context is not None:
         read_context.mark_complete()
     recorded_days = primary_recorded_days or all_value_days
