@@ -893,6 +893,20 @@ def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
     )
 
 
+def _activity_priority_chain(
+    db: Session,
+    user_id: UUID,
+    projection_source_type: str,
+) -> tuple[str, ...]:
+    policy_sources = tuple(
+        ACTIVITY_PROVIDER_SOURCE_TYPES[preference.provider_key]
+        for preference in list_provider_preferences(db, user_id)
+        if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
+        and preference.provider_key in ACTIVITY_PROVIDER_SOURCE_TYPES
+    )
+    return policy_sources or (projection_source_type,)
+
+
 def _validate_activity_source(
     db: Session,
     user: User,
@@ -948,15 +962,24 @@ def create_target(
     )
     if previous:
         previous.valid_to = payload.valid_from
+    target_values = payload.model_dump()
+    activity_sources: tuple[str, ...] = ()
+    if payload.activity_mode == "full" and payload.activity_source_type is not None:
+        activity_sources = _activity_priority_chain(
+            db,
+            user.id,
+            payload.activity_source_type,
+        )
+        target_values["activity_source_type"] = activity_sources[0]
     target = NutritionTarget(
         user_id=user.id,
         valid_to=later.valid_from if later else None,
-        **payload.model_dump(),
+        **target_values,
     )
     db.add(target)
     db.flush()
-    if target.activity_mode == "full" and target.activity_source_type is not None:
-        replace_activity_target_sources(db, target, (target.activity_source_type,))
+    if activity_sources:
+        replace_activity_target_sources(db, target, activity_sources)
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)
@@ -990,10 +1013,6 @@ def update_target(
         existing_source=target.activity_source_type,
     )
     today = datetime.now(ZoneInfo(user.timezone)).date()
-    source_changed = (
-        payload.activity_source_type is not None
-        and payload.activity_source_type != target.activity_source_type
-    )
     target_fields = (
         "calories_kcal",
         "maintenance_kcal",
@@ -1008,7 +1027,12 @@ def update_target(
         "water_ml",
     )
     changes = payload.model_dump(exclude={"valid_from"}, exclude_unset=True)
-    if source_changed and target.valid_from < today:
+    activity_changed = (
+        changes.get("activity_mode", target.activity_mode) != target.activity_mode
+        or changes.get("activity_source_type", target.activity_source_type)
+        != target.activity_source_type
+    )
+    if activity_changed and target.valid_from < today:
         if target.valid_to is not None and today >= target.valid_to:
             raise ProblemHTTPException(
                 status_code=409,
@@ -1025,6 +1049,14 @@ def update_target(
         )
         values = {field: getattr(target, field) for field in target_fields}
         values.update(changes)
+        version_activity_sources: tuple[str, ...] = ()
+        if values["activity_mode"] == "full" and values["activity_source_type"] is not None:
+            version_activity_sources = _activity_priority_chain(
+                db,
+                user.id,
+                values["activity_source_type"],
+            )
+            values["activity_source_type"] = version_activity_sources[0]
         target.valid_to = today
         version = NutritionTarget(
             user_id=user.id,
@@ -1034,15 +1066,14 @@ def update_target(
         )
         db.add(version)
         db.flush()
-        if version.activity_mode == "full" and version.activity_source_type is not None:
-            replace_activity_target_sources(db, version, (version.activity_source_type,))
+        replace_activity_target_sources(db, version, version_activity_sources)
         db.commit()
         db.refresh(version)
         _log_activity_target_change(version, user)
         return version
     for field, value in changes.items():
         setattr(target, field, value)
-    if "activity_mode" in changes or "activity_source_type" in changes:
+    if activity_changed:
         replace_activity_target_sources(
             db,
             target,

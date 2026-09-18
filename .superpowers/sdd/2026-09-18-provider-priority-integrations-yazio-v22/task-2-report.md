@@ -138,3 +138,21 @@
 ## Task 6 concerns
 
 - Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.
+
+## Task 6 review fixes
+
+- Historical Activity mode/source changes now version targets instead of mutating historical target rows or their immutable snapshot chains; full versions derive the complete current Activity policy chain. New targets likewise derive the complete current chain while retaining the priority-1 projection.
+- TDD red proof: the focused review regressions were added before the production fixes; the portable snapshot test then failed with a missing `activity_sources` export field. Historical and new-target regressions now pass against the completed implementation.
+- Review-fix targeted commands:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py -k 'historical_activity_mode or new_target_captures'` — **2 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_original_scope.py -k 'activity_snapshot_chain'` — **1 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py` — **39 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_original_scope.py -k 'portable'` — **26 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_analytics.py tests/test_provider_daily_serving.py` — **42 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_auth_api.py -k 'target or activity'` — **28 passed**
+- Compile proof:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci python -m py_compile app/api/settings.py app/services/data_export.py app/services/portable_import.py tests/test_provider_preferences.py tests/test_original_scope.py`
+
+## Task 6 review-fix concerns
+
+- Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.
