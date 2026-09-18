@@ -81,3 +81,12 @@
 - Review-fix targeted command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py`
   - **32 passed**
+
+## Task 4 Nutrition fallback
+
+- Provider-neutral Nutrition selection now reads the ordered `SourcePriorityPolicy` wildcard chain, skips globally unavailable owned providers, and fails closed for invalid or ambiguous source ownership/readiness.
+- Bounded provider-period reads evaluate each provider once per period chunk, then choose one provider per local day; the selected provider’s full canonical metric map is used without metric-by-metric mixing. Explicit `source=` requests remain on the legacy path.
+- Added regressions for first-provider wins, no-data fallback, unavailable/invalid/not-ready handling, complete-scope no-mixing, and bounded multi-provider reads.
+- Targeted Task 4 command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_nutrition_provider_boundary.py tests/test_nutrition_multi_provider_c0.py tests/test_provider_daily_serving.py`
+  - **40 passed**

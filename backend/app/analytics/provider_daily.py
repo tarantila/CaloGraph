@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Final
@@ -52,6 +52,14 @@ def _tracking_inputs(day_candidates: Mapping[str, ProviderCandidate]) -> Trackin
     return TrackingInputs("incomplete", 0, ("Ernährungsdaten vorhanden, aber kein Kalorienwert",))
 
 
+def _provider_has_evidence(day_candidates: Mapping[str, ProviderCandidate]) -> bool:
+    return any(
+        getattr(candidate, "presence_state", None)
+        in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
+        for candidate in day_candidates.values()
+    )
+
+
 def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[str, Decimal]:
     for metric_key in DAILY_PROJECTION_METRICS:
         resolution_state = getattr(day_candidates[metric_key], "resolution_state", None)
@@ -80,26 +88,46 @@ def read_provider_daily_points(
     db: Session,
     *,
     user_id: UUID,
-    provider_key: str,
-    source_instance_id: UUID,
     start: date,
     end: date,
+    provider_key: str | None = None,
+    source_instance_id: UUID | None = None,
+    provider_sources: Sequence[tuple[str, UUID]] | None = None,
 ) -> list[DailyPoint]:
-    """Serve DailyPoints from one owned provider without reading nutrition HealthSamples."""
+    """Serve DailyPoints from an ordered set of owned providers."""
     if start > end:
         raise ProviderDailyReadError("provider daily range is invalid")
-    candidates_by_date: dict[date, Mapping[str, ProviderCandidate]] = {}
+    if provider_sources is None:
+        if provider_key is None or source_instance_id is None:
+            raise ProviderDailyReadError("provider source is incomplete")
+        provider_sources = ((provider_key, source_instance_id),)
+    else:
+        provider_sources = tuple(provider_sources)
+        if not provider_sources:
+            raise ProviderDailyReadError("provider source list is empty")
+    if len({provider for provider, _source in provider_sources}) != len(provider_sources):
+        raise ProviderDailyReadError("provider source list contains duplicates")
+
+    candidates_by_provider_date: dict[
+        tuple[str, date], Mapping[str, ProviderCandidate]
+    ] = {}
     try:
-        for _, _, chunk_candidates in iter_provider_period_chunks(
-            db,
-            provider_key=provider_key,
-            user_id=user_id,
-            source_instance_id=source_instance_id,
-            start=start,
-            end=end,
-            metric_keys=DAILY_PROJECTION_METRICS,
-        ):
-            candidates_by_date.update(chunk_candidates)
+        for current_provider_key, current_source_instance_id in provider_sources:
+            for _, _, chunk_candidates in iter_provider_period_chunks(
+                db,
+                provider_key=current_provider_key,
+                user_id=user_id,
+                source_instance_id=current_source_instance_id,
+                start=start,
+                end=end,
+                metric_keys=DAILY_PROJECTION_METRICS,
+            ):
+                candidates_by_provider_date.update(
+                    {
+                        (current_provider_key, local_date): candidates
+                        for local_date, candidates in chunk_candidates.items()
+                    }
+                )
     except (ValueError, KeyError) as exc:
         raise ProviderDailyReadError("canonical provider returned an invalid period") from exc
 
@@ -144,12 +172,31 @@ def read_provider_daily_points(
     points: list[DailyPoint] = []
     for offset in range((end - start).days + 1):
         local_date = start + timedelta(days=offset)
-        day_candidates = candidates_by_date[local_date]
+        fallback_candidates: Mapping[str, ProviderCandidate] | None = None
+        day_candidates: Mapping[str, ProviderCandidate] | None = None
+        for current_provider_key, _source_instance_id in provider_sources:
+            candidates = candidates_by_provider_date.get((current_provider_key, local_date))
+            if candidates is None:
+                continue
+            if fallback_candidates is None:
+                fallback_candidates = candidates
+            if _provider_has_evidence(candidates):
+                day_candidates = candidates
+                break
+        if day_candidates is None:
+            day_candidates = fallback_candidates
+        if day_candidates is None:
+            raise ProviderDailyReadError("canonical provider returned no data for a requested day")
+        try:
+            values = _candidate_values(day_candidates)
+            tracking_inputs = _tracking_inputs(day_candidates)
+        except (KeyError, TypeError) as exc:
+            raise ProviderDailyReadError("canonical provider returned an incomplete metric scope") from exc
         points.append(
             _build_daily_point(
                 day=local_date,
-                values=_candidate_values(day_candidates),
-                tracking_inputs=_tracking_inputs(day_candidates),
+                values=values,
+                tracking_inputs=tracking_inputs,
                 active_energy_by_source=active_energy_by_source,
                 active_energy_sources_by_day=active_energy_sources_by_day,
                 targets=targets,

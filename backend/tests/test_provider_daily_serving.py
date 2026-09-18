@@ -7,8 +7,9 @@ from uuid import UUID
 
 import pytest
 
-from app.analytics import provider_daily
+from app.analytics import provider_daily, provider_selection
 from app.analytics.provider_selection import (
+    NutritionProviderNotReady,
     NutritionProviderSelection,
     NutritionProviderUnavailable,
 )
@@ -20,6 +21,7 @@ from app.schemas import DailyPoint
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 SOURCE_INSTANCE_ID = UUID("22222222-2222-2222-2222-222222222222")
 DAY = date(2026, 9, 1)
+SOURCE_INSTANCE_ID_B = UUID("33333333-3333-3333-3333-333333333333")
 
 
 def _point() -> DailyPoint:
@@ -44,6 +46,19 @@ def _point() -> DailyPoint:
         tracking_score=1,
         tracking_reasons=["Kalorienwert vorhanden"],
     )
+
+
+def _candidate_map(base: Decimal, *, missing: bool = False) -> dict[str, SimpleNamespace]:
+    return {
+        metric_key: SimpleNamespace(
+            value=None if missing else base + Decimal(index),
+            value_contributing=not missing,
+            presence_state=PresenceState.MISSING if missing else PresenceState.SUPPLIED,
+            coverage_state=CoverageState.UNKNOWN if missing else CoverageState.COMPLETE,
+            resolution_state=ResolutionState.UNRESOLVED if missing else ResolutionState.RESOLVED,
+        )
+        for index, metric_key in enumerate(DAILY_PROJECTION_METRICS)
+    }
 
 
 def test_daily_preference_serves_canonical_provider_without_legacy_value_read(monkeypatch):
@@ -78,6 +93,61 @@ def test_daily_preference_serves_canonical_provider_without_legacy_value_read(mo
     )
 
     assert result == [_point()]
+
+
+def test_nutrition_provider_selection_skips_unavailable_priority_entries(monkeypatch):
+    monkeypatch.setattr(
+        provider_selection,
+        "list_provider_preferences",
+        lambda *args, **kwargs: [
+            SimpleNamespace(data_area="nutrition", provider_key="google_health"),
+            SimpleNamespace(data_area="nutrition", provider_key="yazio"),
+        ],
+    )
+    monkeypatch.setattr(
+        provider_selection,
+        "_available_owned_source_instance_ids",
+        lambda db, *, user_id, provider_key: ()
+        if provider_key == "google_health"
+        else (SOURCE_INSTANCE_ID,),
+    )
+
+    selection = provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
+
+    assert selection is not None
+    assert selection.provider_key == "yazio"
+    assert selection.provider_sources == (("yazio", SOURCE_INSTANCE_ID),)
+
+
+def test_nutrition_provider_selection_fails_closed_for_invalid_priority(monkeypatch):
+    monkeypatch.setattr(
+        provider_selection,
+        "list_provider_preferences",
+        lambda *args, **kwargs: [
+            SimpleNamespace(data_area="nutrition", provider_key="unknown")
+        ],
+    )
+
+    with pytest.raises(NutritionProviderNotReady):
+        provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
+
+
+def test_nutrition_provider_selection_fails_when_all_priority_entries_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        provider_selection,
+        "list_provider_preferences",
+        lambda *args, **kwargs: [
+            SimpleNamespace(data_area="nutrition", provider_key="yazio")
+        ],
+    )
+    monkeypatch.setattr(
+        provider_selection,
+        "_available_owned_source_instance_ids",
+        lambda *args, **kwargs: (),
+    )
+
+    with pytest.raises(NutritionProviderUnavailable):
+        provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
 
 
 def test_daily_explicit_source_keeps_legacy_path(monkeypatch):
@@ -199,7 +269,65 @@ def test_provider_daily_reads_projection_metrics_in_bounded_chunks(monkeypatch):
     assert all(call["user_id"] == USER_ID for call in calls)
     assert all(call["source_instance_id"] == SOURCE_INSTANCE_ID for call in calls)
 
-def test_provider_daily_accepts_date_max_boundary_without_overflow(monkeypatch):
+def _read_multi_provider_points(monkeypatch, *, first_missing: bool = False):
+    calls = []
+
+    def fake_period(db, **kwargs):
+        del db
+        calls.append(kwargs)
+        first = kwargs["provider_key"] == "first"
+        return {
+            kwargs["start"]: _candidate_map(
+                Decimal("10") if first else Decimal("20"),
+                missing=first and first_missing,
+            )
+        }
+
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
+    monkeypatch.setattr(provider_daily, "_build_daily_point", lambda **kwargs: kwargs)
+
+    class EmptyDb:
+        def scalars(self, statement):
+            del statement
+            return []
+
+        def execute(self, statement):
+            del statement
+            return SimpleNamespace(all=lambda: [])
+
+    result = provider_daily.read_provider_daily_points(
+        EmptyDb(),
+        user_id=USER_ID,
+        provider_sources=(
+            ("first", SOURCE_INSTANCE_ID),
+            ("second", SOURCE_INSTANCE_ID_B),
+        ),
+        start=DAY,
+        end=DAY,
+    )
+    return result, calls
+
+
+def test_provider_daily_priority_uses_first_provider_with_data(monkeypatch):
+    result, calls = _read_multi_provider_points(monkeypatch)
+
+    assert [call["provider_key"] for call in calls] == ["first", "second"]
+    assert result[0]["values"]["dietary_energy_kcal"] == Decimal("10")
+
+
+def test_provider_daily_priority_falls_back_when_first_provider_has_no_data(monkeypatch):
+    result, _calls = _read_multi_provider_points(monkeypatch, first_missing=True)
+
+    assert result[0]["values"], result[0]
+    assert result[0]["values"]["dietary_energy_kcal"] == Decimal("20")
+
+def test_provider_daily_priority_does_not_mix_metrics_between_providers(monkeypatch):
+    result, _calls = _read_multi_provider_points(monkeypatch)
+
+    assert result[0]["values"]
+    assert all(value < Decimal("20") for value in result[0]["values"].values())
+
+
     calls = []
     candidate = SimpleNamespace(
         value=Decimal("1"),

@@ -189,6 +189,10 @@ def _read_preferred_daily_points(
             user_id=user_id,
             provider_key=selection.provider_key,
             source_instance_id=selection.source_instance_id,
+            provider_sources=(
+                selection.provider_sources
+                or ((selection.provider_key, selection.source_instance_id),)
+            ),
             start=start,
             end=end,
         )
