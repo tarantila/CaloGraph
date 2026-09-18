@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -135,6 +136,24 @@ def test_browser_oauth_error_redirects_to_integrations(client: TestClient, user:
     )
     assert response.status_code == 303
     assert response.headers["location"] == "/konto/integrationen?google_health=error"
+
+
+def test_browser_callback_revalidation_401_redirects_to_login(
+    client: TestClient, user: User, monkeypatch
+):
+    _login(client)
+
+    def fail_revalidation(*args, **kwargs):
+        raise HTTPException(status_code=401, detail="Sitzung ungültig")
+
+    monkeypatch.setattr(google_health_api, "complete_google_health_oauth", fail_revalidation)
+    response = client.get(
+        "/api/v1/google-health/oauth/callback?state=valid&code=code",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?next=/konto/integrationen&google_health=error"
 
 
 def test_callback_prefers_json_for_non_html_accept_values(client: TestClient):

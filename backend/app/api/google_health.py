@@ -128,6 +128,10 @@ def google_health_oauth_callback(
             error=error,
             request=request,
         )
+    except HTTPException as exc:
+        if _wants_spa_redirect(request) and exc.status_code == 401:
+            return _login_spa_redirect()
+        raise
     except GoogleHealthDisabledError as exc:
         if _wants_spa_redirect(request):
             return _oauth_spa_redirect("error")
