@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
-from datetime import date
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, not_, select
+from sqlalchemy.orm import Session, aliased
 
+from app.micronutrients import MICRONUTRIENT_METRIC_TYPES
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -34,6 +36,7 @@ from app.nutrition.resolution.contracts import (
     build_event_candidate,
 )
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, canonical_unit
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.nutrition.resolution.reasons import EvidenceKind, ReasonCode
 from app.nutrition.resolution.resolver import resolve_event_vs_summary
 
@@ -112,8 +115,13 @@ def _field_contribution(field: NutritionFieldObservation, metric_key: str, linea
     )
 
 
-def _revision_chain_is_valid(events: Sequence[NutritionConsumptionEvent], current: NutritionConsumptionEvent) -> bool:
-    by_id = {event.id: event for event in events}
+def _revision_chain_is_valid(
+    events: Sequence[NutritionConsumptionEvent],
+    current: NutritionConsumptionEvent,
+    *,
+    by_id: Mapping[UUID, NutritionConsumptionEvent] | None = None,
+) -> bool:
+    event_by_id = {event.id: event for event in events} if by_id is None else by_id
     cursor = current
     visited: set[UUID] = set()
     while cursor.revision > 1:
@@ -122,14 +130,16 @@ def _revision_chain_is_valid(events: Sequence[NutritionConsumptionEvent], curren
         visited.add(cursor.id)
         if cursor.supersedes_event_id is None or cursor.supersedes_revision != cursor.revision - 1:
             return False
-        previous = by_id.get(cursor.supersedes_event_id)
+        previous = event_by_id.get(cursor.supersedes_event_id)
         if previous is None or previous.revision != cursor.revision - 1:
             return False
         cursor = previous
     return cursor.supersedes_event_id is None and cursor.supersedes_revision is None
 
 
-def _current_events(events: Sequence[NutritionConsumptionEvent]) -> tuple[tuple[NutritionConsumptionEvent, ...], ...]:
+def _current_events(
+    events: Sequence[NutritionConsumptionEvent],
+) -> tuple[tuple[NutritionConsumptionEvent, ...], ...]:
     grouped: dict[tuple[str, str], list[NutritionConsumptionEvent]] = defaultdict(list)
     for event in events:
         key = ("logical", event.logical_event_key) if event.logical_event_key else ("id", str(event.id))
@@ -142,6 +152,119 @@ def _current_events(events: Sequence[NutritionConsumptionEvent]) -> tuple[tuple[
     return tuple(current)
 
 
+def _revision_chain_validity(
+    events: Sequence[NutritionConsumptionEvent],
+    current_events: Sequence[tuple[NutritionConsumptionEvent, ...]],
+) -> Mapping[UUID, bool]:
+    event_by_id = {event.id: event for event in events}
+    return {
+        event.id: _revision_chain_is_valid(events, event, by_id=event_by_id)
+        for revision_group in current_events
+        for event in revision_group
+    }
+
+
+def _current_events_by_date(
+    current_events: Sequence[tuple[NutritionConsumptionEvent, ...]],
+    *,
+    start: date,
+    end: date,
+) -> Mapping[date, tuple[tuple[NutritionConsumptionEvent, ...], ...]]:
+    grouped: dict[date, list[tuple[NutritionConsumptionEvent, ...]]] = defaultdict(list)
+    for revision_group in current_events:
+        if len(revision_group) > 1:
+            # Preserve the legacy diagnostic fan-out for duplicate current candidates.
+            for offset in range((end - start).days + 1):
+                grouped[start + timedelta(days=offset)].append(revision_group)
+            continue
+        for local_date in {event.local_date for event in revision_group if event.local_date is not None}:
+            grouped[local_date].append(revision_group)
+    return {local_date: tuple(groups) for local_date, groups in grouped.items()}
+
+
+
+def _latest_google_evidence_observed_at(
+    scope: _GoogleReadScope,
+    *,
+    start: date,
+    end: date,
+    revision_chain_validity: Mapping[UUID, bool],
+) -> datetime | None:
+    max_source_revision: dict[tuple[str, str], int] = {}
+    for candidate_source in scope.sources.values():
+        if candidate_source.source_record_id is not None:
+            identity = (candidate_source.source_namespace, candidate_source.source_record_id)
+            max_source_revision[identity] = max(
+                max_source_revision.get(identity, candidate_source.source_revision),
+                candidate_source.source_revision,
+            )
+    current_source_ids = {
+        source.id
+        for source in scope.sources.values()
+        if source.source_record_id is None
+        or source.source_revision
+        == max_source_revision[(source.source_namespace, source.source_record_id)]
+    }
+    qualifying_field_source_ids: set[UUID] = set()
+    for (source_id, _), fields in scope.fields.items():
+        if any(
+            field.metric_key is not None
+            and field.metric_key in MICRONUTRIENT_METRIC_TYPES
+            and field.canonical_value is not None
+            and field.canonical_unit == canonical_unit(field.metric_key)
+            and field.observation_role == ObservationRole.CANONICAL.value
+            and field.presence_state
+            in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            and field.coverage_state
+            in (CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)
+            and field.resolution_state == ResolutionState.RESOLVED.value
+            and field.lineage_state in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            for field in fields
+        ):
+            qualifying_field_source_ids.add(source_id)
+
+    observed_at: list[datetime] = []
+    for revision_group in _current_events(scope.events):
+        if len(revision_group) != 1:
+            continue
+        event = revision_group[0]
+        if event.local_date is None or not start <= event.local_date <= end:
+            continue
+        source = scope.sources.get(event.source_observation_id)
+        if source is None:
+            continue
+        if (
+            source.user_id != event.user_id
+            or source.provider_key != _PROVIDER
+            or source.source_instance_id != event.source_instance_id
+            or source.observation_kind != ObservationKind.CONSUMPTION_EVENT.value
+            or source.source_namespace != _EVENT_NAMESPACE
+            or source.local_date != event.local_date
+            or source.presence_state
+            not in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            or source.coverage_state
+            not in (CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)
+            or source.resolution_state != ResolutionState.RESOLVED.value
+            or source.lineage_state
+            not in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            or source.id not in current_source_ids
+            or event.event_kind
+            not in (ConsumptionEventKind.PRODUCT.value, ConsumptionEventKind.SIMPLE_PRODUCT.value)
+            or event.presence_state
+            not in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            or event.coverage_state != CoverageState.COMPLETE.value
+            or event.resolution_state != ResolutionState.RESOLVED.value
+            or event.lineage_state
+            not in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+            or not revision_chain_validity[event.id]
+            or source.id not in qualifying_field_source_ids
+            or not _run_is_complete(scope.runs.get(source.ingestion_run_id))
+        ):
+            continue
+        observed_at.append(source.observed_at)
+    return max(observed_at, default=None)
+
+
 def _run_is_complete(run: NutritionIngestionRun | None) -> bool:
     return bool(
         run is not None
@@ -150,39 +273,145 @@ def _run_is_complete(run: NutritionIngestionRun | None) -> bool:
     )
 
 
-def resolve_google_health_metric(
+@dataclass(frozen=True, slots=True)
+class _GoogleReadScope:
+    events: tuple[NutritionConsumptionEvent, ...]
+    sources: Mapping[UUID, NutritionSourceObservation]
+    fields: Mapping[tuple[UUID, str], tuple[NutritionFieldObservation, ...]]
+    runs: Mapping[UUID, NutritionIngestionRun]
+
+
+def _load_google_scope(
     db: Session,
     *,
     user_id: UUID,
     source_instance_id: UUID,
-    local_date: date,
-    metric_key: str,
-) -> ProviderCandidate:
-    """Resolve one Google Health metric from persisted current event evidence."""
-    if metric_key not in CANONICAL_NUTRITION_METRICS:
-        return ProviderCandidate(
-            provider_key=_PROVIDER,
-            user_id=user_id,
-            local_date=local_date,
-            metric_key=metric_key,
-            value=None,
-            unit=None,
-            selected_granularity=None,
-            presence_state=PresenceState.UNSUPPORTED,
-            coverage_state=CoverageState.UNKNOWN,
-            resolution_state=ResolutionState.UNRESOLVED,
-            lineage_state=LineageState.UNKNOWN,
-            source_lineage=(),
-            reason_code=ReasonCode.UNSUPPORTED_METRIC,
+    events: tuple[NutritionConsumptionEvent, ...],
+    metric_keys: Sequence[str],
+    expand_source_identities: bool = False,
+) -> _GoogleReadScope:
+    source_ids = {event.source_observation_id for event in events}
+    source_filters = [
+        NutritionSourceObservation.user_id == user_id,
+        NutritionSourceObservation.provider_key == _PROVIDER,
+        NutritionSourceObservation.source_instance_id == source_instance_id,
+        NutritionSourceObservation.id.in_(source_ids),
+    ]
+    source_rows = (
+        tuple(db.scalars(select(NutritionSourceObservation).where(*source_filters)).all())
+        if source_ids
+        else ()
+    )
+    if expand_source_identities and source_ids:
+        source_identity_scope = (
+            select(
+                NutritionSourceObservation.source_namespace.label("source_namespace"),
+                NutritionSourceObservation.source_record_id.label("source_record_id"),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.id.in_(source_ids),
+                NutritionSourceObservation.source_record_id.is_not(None),
+            )
+            .distinct()
+            .subquery()
         )
+        superseding_source = aliased(NutritionSourceObservation)
+        expanded_source_rows = db.scalars(
+            select(NutritionSourceObservation)
+            .join(
+                source_identity_scope,
+                (
+                    NutritionSourceObservation.source_namespace
+                    == source_identity_scope.c.source_namespace
+                )
+                & (
+                    NutritionSourceObservation.source_record_id
+                    == source_identity_scope.c.source_record_id
+                ),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                not_(
+                    exists(
+                        select(1).where(
+                            superseding_source.user_id == user_id,
+                            superseding_source.provider_key == _PROVIDER,
+                            superseding_source.source_instance_id == source_instance_id,
+                            superseding_source.source_namespace
+                            == NutritionSourceObservation.source_namespace,
+                            superseding_source.source_record_id
+                            == NutritionSourceObservation.source_record_id,
+                            superseding_source.source_record_id.is_not(None),
+                            superseding_source.source_revision
+                            > NutritionSourceObservation.source_revision,
+                        )
+                    )
+                ),
+            )
+        ).all()
+        source_rows = tuple(
+            {source.id: source for source in (*source_rows, *expanded_source_rows)}.values()
+        )
+    sources = {source.id: source for source in source_rows}
+    source_scope_ids = tuple(sources)
 
-    validate_source_instance(
-        db,
-        user_id=user_id,
-        provider_key=_PROVIDER,
-        source_instance_id=source_instance_id,
+    supported_metric_keys = tuple(
+        metric_key for metric_key in metric_keys if metric_key in CANONICAL_NUTRITION_METRICS
+    )
+    fields_by_scope: dict[tuple[UUID, str], list[NutritionFieldObservation]] = defaultdict(list)
+    if source_scope_ids and supported_metric_keys:
+        field_rows = db.scalars(
+            select(NutritionFieldObservation)
+            .where(
+                NutritionFieldObservation.user_id == user_id,
+                NutritionFieldObservation.source_observation_id.in_(source_scope_ids),
+                NutritionFieldObservation.metric_key.in_(supported_metric_keys),
+                NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
+            )
+            .order_by(
+                NutritionFieldObservation.source_observation_id,
+                NutritionFieldObservation.metric_key,
+                NutritionFieldObservation.provider_field_path,
+                NutritionFieldObservation.id,
+            )
+        ).all()
+        for field in field_rows:
+            if field.metric_key is not None:
+                fields_by_scope[(field.source_observation_id, field.metric_key)].append(field)
+
+    run_ids = {source.ingestion_run_id for source in sources.values()}
+    run_rows = (
+        db.scalars(
+            select(NutritionIngestionRun).where(
+                NutritionIngestionRun.user_id == user_id,
+                NutritionIngestionRun.provider_key == _PROVIDER,
+                NutritionIngestionRun.source_instance_id == source_instance_id,
+                NutritionIngestionRun.id.in_(run_ids),
+            )
+        ).all()
+        if run_ids
+        else ()
+    )
+    return _GoogleReadScope(
+        events=events,
+        sources=sources,
+        fields={scope: tuple(items) for scope, items in fields_by_scope.items()},
+        runs={run.id: run for run in run_rows},
     )
 
+
+def _load_google_metric_scope(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    metric_key: str,
+) -> _GoogleReadScope:
     events = tuple(
         db.scalars(
             select(NutritionConsumptionEvent)
@@ -198,37 +427,109 @@ def resolve_google_health_metric(
             )
         ).all()
     )
-    source_ids = {event.source_observation_id for event in events}
-    sources = (
-        {
-            source.id: source
-            for source in db.scalars(
-                select(NutritionSourceObservation).where(
-                    NutritionSourceObservation.user_id == user_id,
-                    NutritionSourceObservation.id.in_(source_ids),
-                )
-            ).all()
-        }
-        if source_ids
-        else {}
-    )
-    run_ids = {source.ingestion_run_id for source in sources.values()}
-    runs = (
-        {
-            run.id: run
-            for run in db.scalars(
-                select(NutritionIngestionRun).where(
-                    NutritionIngestionRun.user_id == user_id,
-                    NutritionIngestionRun.id.in_(run_ids),
-                )
-            ).all()
-        }
-        if run_ids
-        else {}
+    return _load_google_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        events=events,
+        metric_keys=(metric_key,),
     )
 
+
+def _load_google_period_scope(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str],
+    expand_source_identities: bool = False,
+) -> _GoogleReadScope:
+    events = tuple(
+        db.scalars(
+            select(NutritionConsumptionEvent)
+            .where(
+                NutritionConsumptionEvent.user_id == user_id,
+                NutritionConsumptionEvent.provider_key == _PROVIDER,
+                NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                NutritionConsumptionEvent.local_date >= start,
+                NutritionConsumptionEvent.local_date <= end,
+            )
+            .order_by(
+                NutritionConsumptionEvent.logical_event_key,
+                NutritionConsumptionEvent.revision,
+                NutritionConsumptionEvent.id,
+            )
+        ).all()
+    )
+    logical_keys = tuple(
+        sorted(
+            {
+                event.logical_event_key
+                for event in events
+                if event.logical_event_key is not None
+            }
+        )
+    )
+    if logical_keys:
+        events = tuple(
+            db.scalars(
+                select(NutritionConsumptionEvent)
+                .where(
+                    NutritionConsumptionEvent.user_id == user_id,
+                    NutritionConsumptionEvent.provider_key == _PROVIDER,
+                    NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                    NutritionConsumptionEvent.logical_event_key.in_(logical_keys),
+                )
+                .order_by(
+                    NutritionConsumptionEvent.logical_event_key,
+                    NutritionConsumptionEvent.revision,
+                    NutritionConsumptionEvent.id,
+                )
+            ).all()
+        )
+    return _load_google_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        events=events,
+        metric_keys=metric_keys,
+        expand_source_identities=expand_source_identities,
+    )
+
+def _unsupported_candidate(*, user_id: UUID, local_date: date, metric_key: str) -> ProviderCandidate:
+    return ProviderCandidate(
+        provider_key=_PROVIDER,
+        user_id=user_id,
+        local_date=local_date,
+        metric_key=metric_key,
+        value=None,
+        unit=None,
+        selected_granularity=None,
+        presence_state=PresenceState.UNSUPPORTED,
+        coverage_state=CoverageState.UNKNOWN,
+        resolution_state=ResolutionState.UNRESOLVED,
+        lineage_state=LineageState.UNKNOWN,
+        source_lineage=(),
+        reason_code=ReasonCode.UNSUPPORTED_METRIC,
+    )
+
+
+def _resolve_google_health_metric_from_scope(
+    scope: _GoogleReadScope,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+    metric_key: str,
+    current_events: tuple[tuple[NutritionConsumptionEvent, ...], ...] | None = None,
+    revision_chain_validity: Mapping[UUID, bool] | None = None,
+) -> ProviderCandidate:
     contributions: list[MetricContribution] = []
-    for revision_group in _current_events(events):
+    for revision_group in (
+        _current_events(scope.events) if current_events is None else current_events
+    ):
         if len(revision_group) != 1:
             contributions.extend(
                 _missing_contribution(
@@ -245,7 +546,7 @@ def resolve_google_health_metric(
         event = revision_group[0]
         if event.local_date != local_date:
             continue
-        source = sources.get(event.source_observation_id)
+        source = scope.sources.get(event.source_observation_id)
         source_valid = bool(
             source is not None
             and source.provider_key == _PROVIDER
@@ -267,7 +568,11 @@ def resolve_google_health_metric(
                 event_state is not ResolutionState.RESOLVED
                 and event.event_kind != ConsumptionEventKind.PRODUCT.value
             )
-            or not _revision_chain_is_valid(events, event)
+            or not (
+                revision_chain_validity[event.id]
+                if revision_chain_validity is not None
+                else _revision_chain_is_valid(scope.events, event)
+            )
         ):
             contributions.append(
                 _missing_contribution(
@@ -283,17 +588,7 @@ def resolve_google_health_metric(
             continue
         assert source is not None
 
-        fields = tuple(
-            db.scalars(
-                select(NutritionFieldObservation).where(
-                    NutritionFieldObservation.user_id == user_id,
-                    NutritionFieldObservation.source_observation_id == event.source_observation_id,
-                    NutritionFieldObservation.metric_key == metric_key,
-                    NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
-                )
-                .order_by(NutritionFieldObservation.provider_field_path, NutritionFieldObservation.id)
-            ).all()
-        )
+        fields = scope.fields.get((event.source_observation_id, metric_key), ())
         if len(fields) != 1:
             contributions.append(
                 _missing_contribution(
@@ -317,7 +612,7 @@ def resolve_google_health_metric(
             _lineage_state(event.lineage_state, source.lineage_state, field.lineage_state),
         )
         contributions.append(contribution)
-        source_run = runs.get(source.ingestion_run_id)
+        source_run = scope.runs.get(source.ingestion_run_id)
         if (
             contribution.value is None
             or field.coverage_state != CoverageState.COMPLETE.value
@@ -346,5 +641,137 @@ def resolve_google_health_metric(
     return resolve_event_vs_summary(event_candidate, None)
 
 
+def resolve_google_health_metric(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+    metric_key: str,
+) -> ProviderCandidate:
+    """Resolve one Google Health metric from persisted current event evidence."""
+    if metric_key not in CANONICAL_NUTRITION_METRICS:
+        return _unsupported_candidate(
+            user_id=user_id,
+            local_date=local_date,
+            metric_key=metric_key,
+        )
 
-__all__ = ["resolve_google_health_metric"]
+    validate_source_instance(
+        db,
+        user_id=user_id,
+        provider_key=_PROVIDER,
+        source_instance_id=source_instance_id,
+    )
+    scope = _load_google_metric_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        metric_key=metric_key,
+    )
+    return _resolve_google_health_metric_from_scope(
+        scope,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        local_date=local_date,
+        metric_key=metric_key,
+    )
+
+
+def resolve_google_health_period(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str],
+    skip_source_instance_validation: bool = False,
+    read_context: NutritionEvidenceIndex | None = None,
+) -> Mapping[date, Mapping[str, ProviderCandidate]]:
+    if type(start) is not date or type(end) is not date or start > end:
+        raise ValueError("period range must contain dates in ascending order")
+    requested_metrics = tuple(metric_keys)
+    if len(requested_metrics) != len(set(requested_metrics)):
+        raise ValueError("duplicate metric key")
+    supported_metrics = tuple(
+        metric_key
+        for metric_key in requested_metrics
+        if metric_key in CANONICAL_NUTRITION_METRICS
+    )
+    if supported_metrics:
+        if not skip_source_instance_validation:
+            validate_source_instance(
+                db,
+                user_id=user_id,
+                provider_key=_PROVIDER,
+                source_instance_id=source_instance_id,
+            )
+        scope = _load_google_period_scope(
+            db,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            start=start,
+            end=end,
+            metric_keys=supported_metrics,
+            expand_source_identities=read_context is not None,
+        )
+        current_events = _current_events(scope.events)
+        current_events_by_date = _current_events_by_date(
+            current_events,
+            start=start,
+            end=end,
+        )
+        revision_chain_validity = _revision_chain_validity(scope.events, current_events)
+    else:
+        scope = None
+        current_events = ()
+        current_events_by_date = {}
+        revision_chain_validity = {}
+    if read_context is not None:
+        if not read_context.contains(
+            user_id=user_id,
+            provider_key=_PROVIDER,
+            source_instance_id=source_instance_id,
+            start=start,
+            end=end,
+        ):
+            raise ValueError("read_context scope does not contain Google period")
+        read_context.record_latest_evidence_observed_at(
+            _latest_google_evidence_observed_at(
+                scope,
+                start=start,
+                end=end,
+                revision_chain_validity=revision_chain_validity,
+            )
+            if scope is not None
+            else None
+        )
+        read_context.mark_evidence_ready()
+
+    resolved: dict[date, Mapping[str, ProviderCandidate]] = {}
+    for offset in range((end - start).days + 1):
+        current_date = start + timedelta(days=offset)
+        day_result: dict[str, ProviderCandidate] = {}
+        for metric_key in requested_metrics:
+            if metric_key not in CANONICAL_NUTRITION_METRICS:
+                day_result[metric_key] = _unsupported_candidate(
+                    user_id=user_id,
+                    local_date=current_date,
+                    metric_key=metric_key,
+                )
+            else:
+                assert scope is not None
+                day_result[metric_key] = _resolve_google_health_metric_from_scope(
+                    scope,
+                    user_id=user_id,
+                    source_instance_id=source_instance_id,
+                    local_date=current_date,
+                    metric_key=metric_key,
+                    current_events=current_events_by_date.get(current_date, ()),
+                    revision_chain_validity=revision_chain_validity,
+                )
+        resolved[current_date] = day_result
+    return resolved
+
+__all__ = ["resolve_google_health_metric", "resolve_google_health_period"]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -207,6 +210,115 @@ def test_micronutrients_without_source_uses_configured_provider(
     assert payload["recorded_days"] == 0
     assert all(item["status"] == "no_data" for item in payload["nutrients"])
 
+
+@pytest.mark.parametrize("days", [1, 30, 31, 32, 90, 180, 365, 366])
+def test_micronutrients_preference_accepts_bounded_long_ranges(
+    client: TestClient,
+    user,
+    db,
+    days: int,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    end = date(2026, 1, 1)
+    start = end - timedelta(days=days - 1)
+    response = client.get(
+        f"/api/v1/analytics/micronutrients?start={start.isoformat()}&end={end.isoformat()}"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["start_date"] == start.isoformat()
+    assert payload["end_date"] == end.isoformat()
+    assert payload["recorded_days"] == 0
+    assert len(payload["nutrients"]) == 26
+
+
+def test_micronutrients_preference_keeps_period_all_rejected(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-01-01&end=2026-01-01&period=all"
+    )
+
+    assert response.status_code == 422
+
+def test_micronutrients_without_preference_keeps_legacy_yazio_fallback(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    from app.analytics.micronutrient_shadow import (
+        MicronutrientEvaluation,
+        MicronutrientShadowState,
+    )
+
+    _login(client)
+    monkeypatch.setattr(
+        "app.api.analytics.settings.analytics_micronutrients_canonical_read_enabled", True
+    )
+    canonical_calls = 0
+
+    def observe_canonical(*args, **kwargs):
+        nonlocal canonical_calls
+        canonical_calls += 1
+        return MicronutrientEvaluation(state=MicronutrientShadowState.NOT_COMPARABLE)
+
+    monkeypatch.setattr("app.api.analytics.run_micronutrient_canonical_read", observe_canonical)
+
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-09-01&end=2026-09-01"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert canonical_calls == 1
+    assert payload["source"] == "yazio_export_v1"
+    assert "selected_provider" not in payload
+    assert payload["recorded_days"] == 0
+
+def test_micronutrients_preference_path_never_reads_legacy_values(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    _add_yazio(db, user)
+    db.add(UserProviderPreference(user_id=user.id, data_area="nutrition", provider_key="yazio"))
+    db.commit()
+    _login(client)
+
+    def fail_legacy(*args, **kwargs):
+        raise AssertionError("configured provider path must not read legacy values")
+
+    discovery_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.api.analytics.discover_nutrition_provider_metadata",
+        lambda *args, **kwargs: discovery_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr("app.api.analytics.read_legacy_micronutrient_period", fail_legacy)
+    response = client.get(
+        "/api/v1/analytics/micronutrients?start=2026-09-01&end=2026-09-01"
+    )
+
+    assert response.status_code == 200
+    assert discovery_calls[0]["provider_key"] == "yazio"
+    payload = response.json()
+    assert payload["source"] is None
+    assert payload["selected_provider"]["provider_key"] == "yazio"
+    assert payload["recorded_days"] == 0
+    assert all(item["status"] == "no_data" for item in payload["nutrients"])
 
 def test_micronutrients_explicit_legacy_source_bypasses_provider_preference(
     client: TestClient,

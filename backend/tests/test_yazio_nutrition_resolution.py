@@ -27,7 +27,11 @@ from app.nutrition.models import (
 )
 from app.nutrition.resolution import ReasonCode, resolve_daily_nutrient
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
-from app.services.yazio_nutrition_resolution import resolve_yazio_day, resolve_yazio_metric
+from app.services.yazio_nutrition_resolution import (
+    resolve_yazio_day,
+    resolve_yazio_metric,
+    resolve_yazio_period,
+)
 from app.services.yazio_provider import (
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
@@ -352,6 +356,49 @@ def test_current_event_revision_replaces_old_revision(db, user):
 
     assert result.value == Decimal("20")
     assert len(result.source_lineage) == 1
+
+
+def test_period_current_revision_moved_to_other_date_replaces_old_date(db, user):
+    connection = _connection(db, user)
+    _ingest(
+        db,
+        user,
+        connection,
+        _diary(
+            products=(_product("moved", "product-1", local_date=DAY),),
+            profiles=(_profile("product-1", Decimal("10")),),
+        ),
+    )
+    _ingest(
+        db,
+        user,
+        connection,
+        _diary(
+            products=(_product("moved", "product-1", local_date=NEXT_DAY),),
+            profiles=(_profile("product-1", Decimal("10")),),
+            summary_date=NEXT_DAY,
+        ),
+    )
+
+    old_day = resolve_yazio_period(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        start=DAY,
+        end=DAY,
+        metric_keys=(METRIC,),
+    )
+    new_day = resolve_yazio_period(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        start=NEXT_DAY,
+        end=NEXT_DAY,
+        metric_keys=(METRIC,),
+    )
+
+    assert old_day[DAY][METRIC].value is None
+    assert new_day[NEXT_DAY][METRIC].value == Decimal("10")
 
 
 def test_tombstoned_current_revision_does_not_fall_back_to_old_revision(db, user):

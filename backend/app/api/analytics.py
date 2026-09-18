@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from statistics import median
 from typing import Any, Literal, cast
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -25,13 +26,16 @@ from app.analytics.micronutrient_shadow import (
     run_micronutrient_canonical_read,
     run_micronutrient_shadow,
 )
+from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
 from app.analytics.provider_selection import (
     NutritionProviderNotReady,
+    NutritionProviderSelection,
     NutritionProviderUnavailable,
     resolve_nutrition_provider,
 )
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
+    budget_balance,
     budget_balance_for_user,
     budget_classification,
     daily_points,
@@ -47,6 +51,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import HealthSample, ImportBatch, User
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
     PROVIDER_SELECTION_NOT_READY,
     PROVIDER_SELECTION_UNAVAILABLE,
@@ -56,13 +61,19 @@ from app.schemas import DailyPoint, MicronutrientResponse
 from app.services.achievements import unlock_achievement_keys
 
 router = APIRouter(tags=["Analytics"])
+_DEFAULT_RESOLVE_NUTRITION_PROVIDER = resolve_nutrition_provider
 
 
 def _range(
     start: date | None, end: date | None, timezone: str, default_days: int = 30
 ) -> tuple[date, date]:
     resolved_end = end or datetime.now(ZoneInfo(timezone)).date()
-    resolved_start = start or (resolved_end - timedelta(days=default_days - 1))
+    try:
+        resolved_start = start or (resolved_end - timedelta(days=default_days - 1))
+    except OverflowError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="Datumsbereich ist zu groß") from exc
     if resolved_start > resolved_end:
         from fastapi import HTTPException
 
@@ -101,6 +112,59 @@ def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
     return budget_balance_for_user(db, user)
 
 
+def _preferred_nutrition_provider(
+    db: Session, user_id: UUID
+) -> NutritionProviderSelection | None:
+    if (
+        resolve_nutrition_provider is _DEFAULT_RESOLVE_NUTRITION_PROVIDER
+        and not isinstance(db, Session)
+    ):
+        return None
+    try:
+        return resolve_nutrition_provider(db, user_id=user_id)
+    except AttributeError:
+        if not hasattr(db, "get"):
+            return None
+        raise
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+def _read_preferred_daily_points(
+    db: Session,
+    *,
+    user_id: UUID,
+    selection: NutritionProviderSelection,
+    start: date,
+    end: date,
+) -> list[DailyPoint]:
+    try:
+        return read_provider_daily_points(
+            db,
+            user_id=user_id,
+            provider_key=selection.provider_key,
+            source_instance_id=selection.source_instance_id,
+            start=start,
+            end=end,
+        )
+    except ProviderDailyReadError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(
     start: date | None = None,
@@ -113,42 +177,53 @@ def daily(
     db: Session = Depends(get_db),
 ) -> list[DailyPoint]:
     start, end = _range(start, end, user.timezone)
-    _unlock_big_picture_if_requested(db, user, period)
-    points = daily_points(db, user, start, end, source)
-    if tracking:
-        statuses = set(tracking.split(","))
-        points = [point for point in points if point.tracking_status in statuses]
-    if weekday is not None:
-        points = [point for point in points if point.date.weekday() == weekday]
-    # D4B owns canonical comparison for eligible requests.  Ineligible D4B
-    # requests retain the existing D4A observation path when configured.
-    if settings.analytics_daily_canonical_read_enabled:
-        canonical_eligibility = check_daily_canonical_read_eligibility(
-            enabled=True,
-            source=source,
-            tracking=tracking,
-            weekday=weekday,
-            start=start,
-            end=end,
-            period=period,
-            max_days=31,
-        )
-        with suppress(Exception):
-            canonical_outcome = run_daily_canonical_read(
-                user.id,
-                start,
-                end,
-                source,
-                tracking,
-                weekday,
-                period=period,
+    selection = _preferred_nutrition_provider(db, user.id) if source is None else None
+
+    if selection is None:
+        _unlock_big_picture_if_requested(db, user, period)
+        points = daily_points(db, user, start, end, source)
+        # D4B owns canonical comparison for eligible requests.  Ineligible D4B
+        # requests retain the existing D4A observation path when configured.
+        if settings.analytics_daily_canonical_read_enabled:
+            canonical_eligibility = check_daily_canonical_read_eligibility(
                 enabled=True,
+                source=source,
+                tracking=tracking,
+                weekday=weekday,
+                start=start,
+                end=end,
+                period=period,
                 max_days=31,
-                legacy_points=tuple(points),
             )
-            if canonical_outcome.points is not None:
-                points = list(canonical_outcome.points)
-        if canonical_eligibility.state is not DailyCanonicalState.MATCH:
+            with suppress(Exception):
+                canonical_outcome = run_daily_canonical_read(
+                    user.id,
+                    start,
+                    end,
+                    source,
+                    tracking,
+                    weekday,
+                    period=period,
+                    enabled=True,
+                    max_days=31,
+                    legacy_points=tuple(points),
+                )
+                if canonical_outcome.points is not None:
+                    points = list(canonical_outcome.points)
+            if canonical_eligibility.state is not DailyCanonicalState.MATCH:
+                with suppress(Exception):
+                    run_daily_shadow(
+                        user.id,
+                        start,
+                        end,
+                        source,
+                        tracking,
+                        weekday,
+                        enabled=settings.analytics_daily_shadow_read_enabled,
+                        max_days=settings.analytics_daily_shadow_max_days,
+                    )
+        else:
+            # The shadow read is strictly observational and must never affect the Legacy request.
             with suppress(Exception):
                 run_daily_shadow(
                     user.id,
@@ -161,18 +236,20 @@ def daily(
                     max_days=settings.analytics_daily_shadow_max_days,
                 )
     else:
-        # The shadow read is strictly observational and must never affect the Legacy request.
-        with suppress(Exception):
-            run_daily_shadow(
-                user.id,
-                start,
-                end,
-                source,
-                tracking,
-                weekday,
-                enabled=settings.analytics_daily_shadow_read_enabled,
-                max_days=settings.analytics_daily_shadow_max_days,
-            )
+        # Preference serving must not read Legacy nutrition history or trigger its achievement write hook.
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+        )
+
+    if tracking:
+        statuses = set(tracking.split(","))
+        points = [point for point in points if point.tracking_status in statuses]
+    if weekday is not None:
+        points = [point for point in points if point.date.weekday() == weekday]
     return points
 
 @router.get(
@@ -213,18 +290,27 @@ def micronutrients(
                 detail="Der konfigurierte Nutrition-Provider unterstützt den Gesamtzeitraum nicht.",
                 problem_type=PROVIDER_SELECTION_NOT_READY,
             )
+    legacy = None
+    canonical_read_context: NutritionEvidenceIndex | None = None
     if selection is None:
+        # Migration compatibility: explicit source requests and no preference stay Legacy.
         _unlock_big_picture_if_requested(db, user, period)
-
-    legacy = read_legacy_micronutrient_period(
-        db,
-        user_id=user.id,
-        start=start,
-        end=end,
-        source=source,
-    )
-    response = legacy.to_public(start=start, end=end, source=source)
-    if selection is not None:
+        legacy = read_legacy_micronutrient_period(
+            db,
+            user_id=user.id,
+            start=start,
+            end=end,
+            source=source,
+        )
+        response = legacy.to_public(start=start, end=end, source=source)
+    else:
+        canonical_read_context = NutritionEvidenceIndex(
+            user_id=user.id,
+            provider_key=selection.provider_key,
+            source_instance_id=selection.source_instance_id,
+            start=start,
+            end=end,
+        )
         canonical = read_canonical_micronutrient_period(
             db,
             user_id=user.id,
@@ -232,14 +318,11 @@ def micronutrients(
             source_instance_id=selection.source_instance_id,
             start=start,
             end=end,
+            read_context=canonical_read_context,
         )
-        response = {
-            **response,
-            **canonical.to_public_value_scope(),
-            "source": None,
-            "last_updated_at": None,
-        }
-    elif settings.analytics_micronutrients_canonical_read_enabled:
+        response = canonical.to_public(start=start, end=end, source=None)
+    if selection is None and settings.analytics_micronutrients_canonical_read_enabled:
+        assert legacy is not None
         with suppress(Exception):
             evaluation = run_micronutrient_canonical_read(
                 user.id,
@@ -256,7 +339,8 @@ def micronutrients(
                 and evaluation.canonical is not None
             ):
                 response = {**response, **evaluation.canonical.to_public_value_scope()}
-    else:
+    elif selection is None:
+        assert legacy is not None
         with suppress(Exception):
             run_micronutrient_shadow(
                 user.id,
@@ -275,7 +359,14 @@ def micronutrients(
                 db,
                 user_id=user.id,
                 start=start,
+                read_context=canonical_read_context,
                 end=end,
+                provider_key=(
+                    selection.provider_key
+                    if selection is not None
+                    and not settings.analytics_micronutrients_public_provider_metadata_enabled
+                    else None
+                ),
             )
     if selection is not None:
         selected_latest_evidence = (
@@ -312,17 +403,18 @@ def micronutrients(
                 for provider in provider_metadata.providers
             ],
         }
-    with suppress(Exception):
-        run_micronutrient_metadata_shadow(
-            user.id,
-            start,
-            end,
-            source,
-            period,
-            legacy,
-            enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
-            max_days=settings.analytics_micronutrients_shadow_max_days,
-        )
+    if legacy is not None:
+        with suppress(Exception):
+            run_micronutrient_metadata_shadow(
+                user.id,
+                start,
+                end,
+                source,
+                period,
+                legacy,
+                enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
+                max_days=settings.analytics_micronutrients_shadow_max_days,
+            )
     return response
 
 
@@ -331,7 +423,17 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     today = datetime.now(ZoneInfo(user.timezone)).date()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
-    points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+    else:
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=week_start - timedelta(days=7),
+            end=week_end,
+        )
     points_through_today = [point for point in points if point.date <= today]
     today_point = points_through_today[-1]
     current_week = [point for point in points if week_start <= point.date <= today]
@@ -346,6 +448,8 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     protein_values = [
         point.protein_g for point in points_through_today[-7:] if point.protein_g is not None
     ]
+    # Import-/Coverage-Metadaten bleiben bewusst HealthSample-basiert; sie sind
+    # keine Provenance-Aussage über die Canonical-Nutrition-Werte oben.
     last_import = db.scalar(
         select(ImportBatch)
         .where(ImportBatch.user_id == user.id, ImportBatch.status.like("completed%"))
@@ -399,21 +503,31 @@ def weekly(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
-    points = daily_points(db, user, start, end)
-    requested_days = (end - start).days + 1
-    if (
-        settings.analytics_weekly_canonical_read_enabled
-        and requested_days <= 31
-    ):
-        with suppress(Exception):
-            canonical_outcome = run_weekly_canonical_read(
-                user.id,
-                start,
-                end,
-                legacy_points=tuple(points),
-            )
-            if canonical_outcome.points is not None:
-                points = list(canonical_outcome.points)
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        points = daily_points(db, user, start, end)
+        requested_days = (end - start).days + 1
+        if (
+            settings.analytics_weekly_canonical_read_enabled
+            and requested_days <= 31
+        ):
+            with suppress(Exception):
+                canonical_outcome = run_weekly_canonical_read(
+                    user.id,
+                    start,
+                    end,
+                    legacy_points=tuple(points),
+                )
+                if canonical_outcome.points is not None:
+                    points = list(canonical_outcome.points)
+    else:
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+        )
     grouped: dict[date, list[DailyPoint]] = defaultdict(list)
     for point in points:
         week_start = point.date - timedelta(days=(point.date.weekday() - user.week_starts_on) % 7)
@@ -489,22 +603,33 @@ def weekdays(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 180)
-    _unlock_big_picture_if_requested(db, user, period)
-    points = daily_points(db, user, start, end)
-    if (
-        settings.analytics_weekdays_canonical_read_enabled
-        and period != "all"
-        and (end - start).days + 1 <= 31
-    ):
-        with suppress(Exception):
-            canonical_outcome = run_weekdays_canonical_read(
-                user.id,
-                start,
-                end,
-                legacy_points=tuple(points),
-            )
-            if canonical_outcome.points is not None:
-                points = list(canonical_outcome.points)
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        _unlock_big_picture_if_requested(db, user, period)
+        points = daily_points(db, user, start, end)
+        if (
+            settings.analytics_weekdays_canonical_read_enabled
+            and period != "all"
+            and (end - start).days + 1 <= 31
+        ):
+            with suppress(Exception):
+                canonical_outcome = run_weekdays_canonical_read(
+                    user.id,
+                    start,
+                    end,
+                    legacy_points=tuple(points),
+                )
+                if canonical_outcome.points is not None:
+                    points = list(canonical_outcome.points)
+    else:
+        # Preference serving must not read Legacy nutrition history or trigger its achievement write hook.
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+        )
     groups: dict[int, list[DailyPoint]] = defaultdict(list)
     for point in points:
         groups[point.date.weekday()].append(point)
@@ -559,24 +684,41 @@ def trends(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
-    _unlock_big_picture_if_requested(db, user, period)
-    points = daily_points(db, user, start, end)
-    requested_days = (end - start).days + 1
-    if (
-        settings.analytics_trends_canonical_read_enabled
-        and period != "all"
-        and requested_days <= 31
-    ):
-        with suppress(Exception):
-            canonical_outcome = run_trends_canonical_read(
-                user.id,
-                start,
-                end,
-                legacy_points=tuple(points),
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        _unlock_big_picture_if_requested(db, user, period)
+        points = daily_points(db, user, start, end)
+        requested_days = (end - start).days + 1
+        if (
+            settings.analytics_trends_canonical_read_enabled
+            and period != "all"
+            and requested_days <= 31
+        ):
+            with suppress(Exception):
+                canonical_outcome = run_trends_canonical_read(
+                    user.id,
+                    start,
+                    end,
+                    legacy_points=tuple(points),
+                )
+                if canonical_outcome.points is not None:
+                    points = list(canonical_outcome.points)
+        historical_budget_balance = _historical_budget_balance(db, user)
+    else:
+        if period == "all":
+            raise ProblemHTTPException(
+                status_code=422,
+                detail="Der konfigurierte Nutrition-Provider unterstützt den Gesamtzeitraum nicht.",
+                problem_type=PROVIDER_SELECTION_NOT_READY,
             )
-            if canonical_outcome.points is not None:
-                points = list(canonical_outcome.points)
-    historical_budget_balance = _historical_budget_balance(db, user)
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+        )
+        historical_budget_balance = budget_balance(points)
     if include_incomplete:
         points = [point.model_copy() for point in points]
     output = []
@@ -621,17 +763,27 @@ def calendar(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 31)
-    points = daily_points(db, user, start, end)
-    if settings.analytics_calendar_canonical_read_enabled:
-        with suppress(Exception):
-            canonical_outcome = run_calendar_canonical_read(
-                user.id,
-                start,
-                end,
-                legacy_points=points,
-            )
-            if canonical_outcome.points is not None:
-                points = list(canonical_outcome.points)
+    selection = _preferred_nutrition_provider(db, user.id)
+    if selection is None:
+        points = daily_points(db, user, start, end)
+        if settings.analytics_calendar_canonical_read_enabled:
+            with suppress(Exception):
+                canonical_outcome = run_calendar_canonical_read(
+                    user.id,
+                    start,
+                    end,
+                    legacy_points=points,
+                )
+                if canonical_outcome.points is not None:
+                    points = list(canonical_outcome.points)
+    else:
+        points = _read_preferred_daily_points(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+        )
     output = []
     for point in points:
         classification = budget_classification(point)

@@ -163,78 +163,6 @@ def test_legacy_micronutrients_source_none_aggregates_all_sources(db: Session, u
 
 
 
-def test_canonical_period_uses_one_fixed_catalog_read_per_day(monkeypatch, user: User) -> None:
-    calls: list[date] = []
-
-    def fake_resolve_daily_nutrients(
-        db: object, **kwargs: object
-    ) -> tuple[SimpleNamespace, ...]:
-        del db
-        current_day = kwargs["local_date"]
-        metric_keys = kwargs["metric_keys"]
-        assert isinstance(current_day, date)
-        assert set(metric_keys) >= set(MICRONUTRIENT_METRIC_TYPES)
-        calls.append(current_day)
-        values = {
-            (date(2024, 1, 1), "dietary_energy_kcal"): Decimal("1800"),
-            (date(2024, 1, 1), "iron_mg"): Decimal("7"),
-            (date(2024, 1, 2), "iron_mg"): Decimal("14"),
-        }
-        return tuple(
-            SimpleNamespace(value=values.get((current_day, metric_type)))
-            for metric_type in metric_keys
-        )
-
-    monkeypatch.setattr(micronutrient_shadow, "resolve_daily_nutrients", fake_resolve_daily_nutrients)
-
-    result = read_canonical_micronutrient_period(
-        db=object(),
-        user_id=user.id,
-        provider_key="yazio",
-        source_instance_id=user.id,
-        start=date(2024, 1, 1),
-        end=date(2024, 1, 2),
-    )
-    iron = next(item for item in result.nutrients if item.metric_type == "iron_mg")
-
-    assert calls == [date(2024, 1, 1), date(2024, 1, 2)]
-    assert result.recorded_days == 1
-    assert iron.total == Decimal("21")
-    assert iron.average_daily == Decimal("21")
-    assert iron.days_with_value == 2
-
-
-def test_canonical_period_falls_back_to_micronutrient_days_without_primary_values(
-    monkeypatch, user: User
-) -> None:
-    def fake_resolve_daily_nutrients(
-        db: object, **kwargs: object
-    ) -> tuple[SimpleNamespace, ...]:
-        del db
-        current_day = kwargs["local_date"]
-        metric_keys = kwargs["metric_keys"]
-        values = {
-            (date(2024, 1, 1), "iron_mg"): Decimal("7"),
-            (date(2024, 1, 2), "vitamin_d_ug"): Decimal("10"),
-        }
-        return tuple(
-            SimpleNamespace(value=values.get((current_day, metric_type)))
-            for metric_type in metric_keys
-        )
-
-    monkeypatch.setattr(micronutrient_shadow, "resolve_daily_nutrients", fake_resolve_daily_nutrients)
-
-    result = read_canonical_micronutrient_period(
-        db=object(),
-        user_id=user.id,
-        provider_key="yazio",
-        source_instance_id=user.id,
-        start=date(2024, 1, 1),
-        end=date(2024, 1, 2),
-    )
-
-    assert result.recorded_days == 2
-
 
 def test_micronutrient_parity_exposes_closed_classification_set() -> None:
     legacy = MicronutrientPeriodResult(
@@ -697,6 +625,8 @@ def test_yazio_legacy_and_canonical_micronutrients_have_decimal_parity(
 
     assert parity.classification is MicronutrientParityClassification.MATCH
     assert next(item for item in canonical.nutrients if item.metric_type == "iron_mg").total == Decimal("7")
+    assert canonical.filtered_updated_at is not None
+    assert canonical.available_sources == (("yazio", canonical.filtered_updated_at),)
 
 
 def test_micronutrient_parity_detects_value_and_missing_side_differences() -> None:

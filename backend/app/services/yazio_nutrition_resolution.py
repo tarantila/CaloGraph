@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.nutrition.enums import (
     ConsumptionEventKind,
@@ -281,6 +282,187 @@ def _load_scope(
     )
 
 
+def _load_period_scope(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str],
+) -> _ReadScope:
+    events = tuple(
+        db.scalars(
+            select(NutritionConsumptionEvent)
+            .where(
+                NutritionConsumptionEvent.user_id == user_id,
+                NutritionConsumptionEvent.provider_key == _PROVIDER,
+                NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                NutritionConsumptionEvent.local_date >= start,
+                NutritionConsumptionEvent.local_date <= end,
+            )
+            .order_by(
+                NutritionConsumptionEvent.local_date,
+                NutritionConsumptionEvent.logical_event_key,
+                NutritionConsumptionEvent.revision.desc(),
+                NutritionConsumptionEvent.id,
+            )
+        ).all()
+    )
+    logical_event_keys = {
+        event.logical_event_key for event in events if event.logical_event_key is not None
+    }
+    if logical_event_keys:
+        expanded_events = tuple(
+            db.scalars(
+                select(NutritionConsumptionEvent)
+                .where(
+                    NutritionConsumptionEvent.user_id == user_id,
+                    NutritionConsumptionEvent.provider_key == _PROVIDER,
+                    NutritionConsumptionEvent.source_instance_id == source_instance_id,
+                    NutritionConsumptionEvent.logical_event_key.in_(logical_event_keys),
+                )
+                .order_by(
+                    NutritionConsumptionEvent.logical_event_key,
+                    NutritionConsumptionEvent.revision.desc(),
+                    NutritionConsumptionEvent.id,
+                )
+            ).all()
+        )
+        events = tuple({event.id: event for event in (*events, *expanded_events)}.values())
+
+    summary_sources = tuple(
+        db.scalars(
+            select(NutritionSourceObservation)
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.observation_kind == ObservationKind.DAILY_SUMMARY.value,
+                NutritionSourceObservation.source_namespace == _SUMMARY_NAMESPACE,
+                NutritionSourceObservation.local_date >= start,
+                NutritionSourceObservation.local_date <= end,
+            )
+            .order_by(
+                NutritionSourceObservation.local_date,
+                NutritionSourceObservation.source_record_id,
+                NutritionSourceObservation.source_revision.desc(),
+                NutritionSourceObservation.id,
+            )
+        ).all()
+    )
+
+    snapshot_ids = {event.food_snapshot_id for event in events if event.food_snapshot_id is not None}
+    snapshots = tuple(
+        db.scalars(
+            select(NutritionFoodSnapshot).where(
+                NutritionFoodSnapshot.user_id == user_id,
+                NutritionFoodSnapshot.id.in_(snapshot_ids),
+            )
+        ).all()
+    ) if snapshot_ids else ()
+    event_source_ids = {event.source_observation_id for event in events}
+    snapshot_source_ids = {snapshot.source_observation_id for snapshot in snapshots}
+    source_ids = event_source_ids | snapshot_source_ids | {source.id for source in summary_sources}
+    source_rows = tuple(
+        db.scalars(
+            select(NutritionSourceObservation).where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == _PROVIDER,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.id.in_(source_ids),
+            )
+        ).all()
+    ) if source_ids else ()
+    sources = {source.id: source for source in source_rows}
+
+    fields = tuple(
+        db.scalars(
+            select(NutritionFieldObservation)
+            .where(
+                NutritionFieldObservation.user_id == user_id,
+                NutritionFieldObservation.source_observation_id.in_(source_ids),
+                NutritionFieldObservation.metric_key.in_(metric_keys),
+            )
+            .order_by(
+                NutritionFieldObservation.source_observation_id,
+                NutritionFieldObservation.provider_field_path,
+                NutritionFieldObservation.observation_role,
+                NutritionFieldObservation.id,
+            )
+        ).all()
+    ) if source_ids and metric_keys else ()
+    field_map: dict[UUID, list[NutritionFieldObservation]] = defaultdict(list)
+    parent_ids = {
+        field.derived_from_field_observation_id
+        for field in fields
+        if field.derived_from_field_observation_id is not None
+    }
+    for field in fields:
+        field_map[field.source_observation_id].append(field)
+    parent_fields = (
+        {
+            field.id: field
+            for field in db.scalars(
+                select(NutritionFieldObservation).where(
+                    NutritionFieldObservation.user_id == user_id,
+                    NutritionFieldObservation.id.in_(parent_ids),
+                )
+            ).all()
+        }
+        if parent_ids
+        else {}
+    )
+
+    current_identity_ids = _current_links(
+        db,
+        user_id=user_id,
+        event_ids=[event.id for event in events],
+    )
+    identity_ids = (
+        set().union(*current_identity_ids.values()) if current_identity_ids else set()
+    )
+    tombstone_scope: list[ColumnElement[bool]] = []
+    if source_ids:
+        tombstone_scope.append(NutritionSourceTombstone.source_observation_id.in_(source_ids))
+    if identity_ids:
+        tombstone_scope.append(NutritionSourceTombstone.external_identity_id.in_(identity_ids))
+    source_identity_pairs = tuple(
+        (source.source_namespace, source.source_record_id)
+        for source in sources.values()
+        if source.source_record_id is not None
+    )
+    if source_identity_pairs:
+        tombstone_scope.extend(
+            [
+                (
+                    NutritionSourceTombstone.source_namespace == namespace
+                )
+                & (NutritionSourceTombstone.source_record_id == source_record_id)
+                for namespace, source_record_id in source_identity_pairs
+            ]
+        )
+    tombstones = tuple(
+        db.scalars(
+            select(NutritionSourceTombstone).where(
+                NutritionSourceTombstone.user_id == user_id,
+                NutritionSourceTombstone.provider_key == _PROVIDER,
+                NutritionSourceTombstone.source_instance_id == source_instance_id,
+                or_(*tombstone_scope),
+            )
+        ).all()
+    ) if tombstone_scope else ()
+    return _ReadScope(
+        events=events,
+        sources=sources,
+        fields={source_id: tuple(items) for source_id, items in field_map.items()},
+        parent_fields=parent_fields,
+        snapshots={snapshot.id: snapshot for snapshot in snapshots},
+        tombstones=tombstones,
+        current_event_identity_ids=current_identity_ids,
+    )
+
+
 def _revision_chain_is_valid(events: Sequence[NutritionConsumptionEvent], current: NutritionConsumptionEvent) -> bool:
     by_id = {event.id: event for event in events}
     cursor = current
@@ -298,20 +480,29 @@ def _revision_chain_is_valid(events: Sequence[NutritionConsumptionEvent], curren
     return cursor.supersedes_event_id is None and cursor.supersedes_revision is None
 
 
-def _current_events(scope: _ReadScope, *, user_id: UUID, source_instance_id: UUID, local_date: date) -> tuple[_CurrentEvent, ...]:
-    grouped: dict[tuple[str, object], list[NutritionConsumptionEvent]] = defaultdict(list)
-    current: list[_CurrentEvent] = []
+def _current_events(
+    scope: _ReadScope,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+) -> tuple[_CurrentEvent, ...]:
+    all_grouped: dict[tuple[str, object], list[NutritionConsumptionEvent]] = defaultdict(list)
     for event in scope.events:
         key: tuple[str, object] = (
             ("logical", event.logical_event_key)
             if event.logical_event_key is not None
             else ("id", event.id)
         )
-        grouped[key].append(event)
-    for key in sorted(grouped, key=lambda item: (item[0], str(item[1]))):
-        candidates = grouped[key]
+        all_grouped[key].append(event)
+    current: list[_CurrentEvent] = []
+    for key in sorted(all_grouped, key=lambda item: (item[0], str(item[1]))):
+        candidates = all_grouped[key]
         highest_revision = max(event.revision for event in candidates)
         highest = tuple(event for event in candidates if event.revision == highest_revision)
+        highest_on_date = tuple(event for event in highest if event.local_date == local_date)
+        if not highest_on_date:
+            continue
         if any(
             _event_tombstoned(
                 event,
@@ -319,13 +510,13 @@ def _current_events(scope: _ReadScope, *, user_id: UUID, source_instance_id: UUI
                 scope.tombstones,
                 scope.current_event_identity_ids,
             )
-            for event in highest
+            for event in highest_on_date
         ):
             continue
-        if len(highest) > 1:
-            current.append(_CurrentEvent(highest, ResolutionState.DUPLICATE_CANDIDATE))
+        if len(highest_on_date) > 1:
+            current.append(_CurrentEvent(highest_on_date, ResolutionState.DUPLICATE_CANDIDATE))
             continue
-        event = highest[0]
+        event = highest_on_date[0]
         state = (
             ResolutionState.RESOLVED
             if _revision_chain_is_valid(candidates, event)
@@ -575,7 +766,10 @@ def _summary_candidate(
     fields = tuple(
         field
         for field in scope.fields.get(observation.id, ())
-        if field.observation_role == ObservationRole.PROVIDER.value
+        if (
+            field.observation_role == ObservationRole.PROVIDER.value
+            and field.metric_key == metric_key
+        )
     )
     if len(fields) != 1:
         resolution = ResolutionState.DUPLICATE_CANDIDATE if len(fields) > 1 else ResolutionState.UNRESOLVED
@@ -688,35 +882,25 @@ def _unsupported_candidate(*, user_id: UUID, local_date: date, metric_key: str) 
     )
 
 
-def resolve_yazio_metric(
-    db: Session,
+def _resolve_scope_metric(
+    scope: _ReadScope,
     *,
     user_id: UUID,
     source_instance_id: UUID,
     local_date: date,
     metric_key: str,
+    current: Sequence[_CurrentEvent] | None = None,
+    summary_groups: Sequence[tuple[NutritionSourceObservation, ...]] | None = None,
 ) -> ProviderCandidate:
-    """Resolve one persisted YAZIO metric without mutating the session."""
-    if metric_key not in CANONICAL_NUTRITION_METRICS:
-        return _unsupported_candidate(user_id=user_id, local_date=local_date, metric_key=metric_key)
-    validate_source_instance(
-        db,
-        user_id=user_id,
-        provider_key=_PROVIDER,
-        source_instance_id=source_instance_id,
-    )
-    scope = _load_scope(
-        db,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        local_date=local_date,
-        metric_key=metric_key,
-    )
-    current = _current_events(
-        scope,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        local_date=local_date,
+    current = (
+        _current_events(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        if current is None
+        else current
     )
     event_candidate = build_event_candidate(
         provider_key=_PROVIDER,
@@ -726,11 +910,15 @@ def resolve_yazio_metric(
         contributions=_event_contributions(scope, current, metric_key, local_date),
         event_set_known=True,
     )
-    summary_groups = _summary_groups(
-        scope,
-        user_id=user_id,
-        source_instance_id=source_instance_id,
-        local_date=local_date,
+    summary_groups = (
+        _summary_groups(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        if summary_groups is None
+        else summary_groups
     )
     summary_candidate: SummaryCandidate | None = None
     if len(summary_groups) == 1 and len(summary_groups[0]) == 1:
@@ -765,6 +953,132 @@ def resolve_yazio_metric(
     return resolve_event_vs_summary(event_candidate, summary_candidate)
 
 
+def resolve_yazio_metric(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    local_date: date,
+    metric_key: str,
+) -> ProviderCandidate:
+    """Resolve one persisted YAZIO metric without mutating the session."""
+    if metric_key not in CANONICAL_NUTRITION_METRICS:
+        return _unsupported_candidate(user_id=user_id, local_date=local_date, metric_key=metric_key)
+    validate_source_instance(
+        db,
+        user_id=user_id,
+        provider_key=_PROVIDER,
+        source_instance_id=source_instance_id,
+    )
+    scope = _load_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        local_date=local_date,
+        metric_key=metric_key,
+    )
+    return _resolve_scope_metric(
+        scope,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        local_date=local_date,
+        metric_key=metric_key,
+    )
+
+def resolve_yazio_period(
+    db: Session,
+    *,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str],
+    skip_source_instance_validation: bool = False,
+) -> Mapping[date, Mapping[str, ProviderCandidate]]:
+    """Resolve a bounded YAZIO metric matrix with one database scope load."""
+    requested_metric_keys = tuple(dict.fromkeys(metric_keys))
+    dates = tuple(
+        start + timedelta(days=offset)
+        for offset in range(max((end - start).days + 1, 0))
+    )
+    if not dates:
+        return {}
+    supported_metric_keys = tuple(
+        metric_key
+        for metric_key in requested_metric_keys
+        if metric_key in CANONICAL_NUTRITION_METRICS
+    )
+    if not supported_metric_keys:
+        return {
+            local_date: {
+                metric_key: _unsupported_candidate(
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                )
+                for metric_key in requested_metric_keys
+            }
+            for local_date in dates
+        }
+    if not skip_source_instance_validation:
+        validate_source_instance(
+            db,
+            user_id=user_id,
+            provider_key=_PROVIDER,
+            source_instance_id=source_instance_id,
+        )
+    scope = _load_period_scope(
+        db,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=supported_metric_keys,
+    )
+    current_by_date = {
+        local_date: _current_events(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        for local_date in dates
+    }
+    summary_groups_by_date = {
+        local_date: _summary_groups(
+            scope,
+            user_id=user_id,
+            source_instance_id=source_instance_id,
+            local_date=local_date,
+        )
+        for local_date in dates
+    }
+    return {
+        local_date: {
+            metric_key: (
+                _unsupported_candidate(
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                )
+                if metric_key not in CANONICAL_NUTRITION_METRICS
+                else _resolve_scope_metric(
+                    scope,
+                    user_id=user_id,
+                    source_instance_id=source_instance_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                    current=current_by_date[local_date],
+                    summary_groups=summary_groups_by_date[local_date],
+                )
+            )
+            for metric_key in requested_metric_keys
+        }
+        for local_date in dates
+    }
+
+
+
 def resolve_yazio_day(
     db: Session,
     *,
@@ -783,3 +1097,5 @@ def resolve_yazio_day(
         )
         for metric_key in DAILY_PROJECTION_METRICS
     }
+
+__all__ = ["resolve_yazio_day", "resolve_yazio_metric", "resolve_yazio_period"]

@@ -19,8 +19,10 @@ from app.analytics.service import PRIMARY_NUTRITION_METRICS, serialize_decimal
 from app.database import SessionLocal
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample
-from app.nutrition.resolution.daily_reader import resolve_daily_nutrients
+from app.nutrition.models import NutritionSourceObservation
+from app.nutrition.resolution import iter_provider_period_chunks
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
+from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 
@@ -314,47 +316,76 @@ def read_canonical_micronutrient_period(
     source_instance_id: UUID,
     start: date,
     end: date,
+    read_context: NutritionEvidenceIndex | None = None,
 ) -> MicronutrientPeriodResult:
-    values_by_metric: dict[str, dict[date, Decimal]] = {
-        metric_type: {} for metric_type in MICRONUTRIENT_METRIC_TYPES
-    }
-    primary_recorded_dates: set[date] = set()
-    all_value_dates: set[date] = set()
-    current = start
+    totals_by_metric: dict[str, Decimal] = defaultdict(Decimal)
+    days_by_metric: dict[str, int] = defaultdict(int)
+    primary_recorded_days = 0
+    all_value_days = 0
+    if read_context is not None and not read_context.owns(
+        user_id=user_id,
+        provider_key=provider_key,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+    ):
+        raise ValueError("read_context scope does not match canonical period")
     requested_metrics = tuple(CANONICAL_NUTRITION_METRICS)
-    while current <= end:
-        candidates = resolve_daily_nutrients(
-            db,
-            provider_key=provider_key,
-            user_id=user_id,
-            source_instance_id=source_instance_id,
-            local_date=current,
-            metric_keys=requested_metrics,
-        )
-        candidate_values = {
-            metric_type: candidate.value
-            for metric_type, candidate in zip(requested_metrics, candidates, strict=True)
-        }
-        if any(
-            (value is not None and value > 0)
-            for metric_type, value in candidate_values.items()
-            if metric_type in PRIMARY_NUTRITION_METRICS
-        ):
-            primary_recorded_dates.add(current)
-        for metric_type in MICRONUTRIENT_METRIC_TYPES:
-            value = candidate_values.get(metric_type)
-            if value is not None:
-                values_by_metric[metric_type][current] = value
-                all_value_dates.add(current)
-        current += timedelta(days=1)
-
-    recorded_dates = primary_recorded_dates or all_value_dates
-    recorded_days = len(recorded_dates)
+    canonical_source_rows = (
+        db.execute(
+            select(
+                NutritionSourceObservation.provider_key,
+                func.max(NutritionSourceObservation.observed_at),
+            )
+            .where(
+                NutritionSourceObservation.user_id == user_id,
+                NutritionSourceObservation.provider_key == provider_key,
+                NutritionSourceObservation.source_instance_id == source_instance_id,
+                NutritionSourceObservation.local_date >= start,
+                NutritionSourceObservation.local_date <= end,
+            )
+            .group_by(NutritionSourceObservation.provider_key)
+            .order_by(NutritionSourceObservation.provider_key)
+        ).all()
+        if isinstance(db, Session)
+        else ()
+    )
+    for chunk_start, chunk_end, candidates_by_day in iter_provider_period_chunks(
+        db,
+        provider_key=provider_key,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=requested_metrics,
+        read_context=read_context,
+    ):
+        for offset in range((chunk_end - chunk_start).days + 1):
+            current = chunk_start + timedelta(days=offset)
+            candidate_values = candidates_by_day[current]
+            primary_has_value = any(
+                (value := candidate_values[metric_type].value) is not None and value > 0
+                for metric_type in PRIMARY_NUTRITION_METRICS
+            )
+            any_value = False
+            for metric_type in MICRONUTRIENT_METRIC_TYPES:
+                value = candidate_values[metric_type].value
+                if value is None:
+                    continue
+                totals_by_metric[metric_type] += value
+                days_by_metric[metric_type] += 1
+                any_value = True
+            if primary_has_value:
+                primary_recorded_days += 1
+            if any_value:
+                all_value_days += 1
+    if read_context is not None:
+        read_context.mark_complete()
+    recorded_days = primary_recorded_days or all_value_days
     metrics: list[MicronutrientMetricResult] = []
     for definition in MICRONUTRIENTS:
-        values = values_by_metric[definition.metric_type]
-        total = sum(values.values(), Decimal()) if values else None
-        available_days = len(values)
+        total = totals_by_metric.get(definition.metric_type)
+        available_days = days_by_metric.get(definition.metric_type, 0)
         average = total / recorded_days if total is not None and recorded_days else None
         coverage_ratio = available_days / recorded_days if recorded_days else 0.0
         reference_percent = (
@@ -382,7 +413,17 @@ def read_canonical_micronutrient_period(
                 coverage_ratio=coverage_ratio,
             )
         )
-    return MicronutrientPeriodResult(recorded_days=recorded_days, nutrients=tuple(metrics))
+    return MicronutrientPeriodResult(
+        recorded_days=recorded_days,
+        nutrients=tuple(metrics),
+        filtered_updated_at=max(
+            (updated_at for _, updated_at in canonical_source_rows if updated_at is not None),
+            default=None,
+        ),
+        available_sources=tuple(
+            (source_type, updated_at) for source_type, updated_at in canonical_source_rows
+        ),
+    )
 
 
 def compare_micronutrient_periods(

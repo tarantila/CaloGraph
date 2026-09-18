@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.analytics.micronutrient_shadow import read_canonical_micronutrient_period
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.enums import (
     CoverageState,
@@ -31,6 +32,8 @@ from app.nutrition.resolution import (
     resolve_daily_nutrient,
     resolve_provider_metric,
 )
+from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
+from app.nutrition.resolution.period_reader import NutritionEvidenceIndex
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     resolve_default_provider_sources,
@@ -696,3 +699,106 @@ def test_google_health_daily_reader_accepts_sodium_and_micronutrient(db, user):
     assert sodium.unit == "mg"
     assert iron.value == Decimal("4")
     assert iron.unit == "mg"
+def test_google_period_reuses_revision_validation_across_metrics(monkeypatch, db, user) -> None:
+    import app.services.google_health_nutrition_resolution as google_resolution
+
+    connection = _connection(db, user)
+    run = _run(db, user, connection)
+    _event(
+        db,
+        user,
+        connection,
+        run,
+        key="reuse-protein",
+        value=Decimal("9"),
+        metric_key="protein_g",
+    )
+    _event(
+        db,
+        user,
+        connection,
+        run,
+        key="reuse-iron",
+        value=Decimal("4"),
+        metric_key="iron_mg",
+    )
+    calls = 0
+    original = google_resolution._revision_chain_is_valid
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(google_resolution, "_revision_chain_is_valid", counted)
+
+    result = google_resolution.resolve_google_health_period(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        start=DAY,
+        end=DAY,
+        metric_keys=("protein_g", "iron_mg"),
+    )
+
+    assert result[DAY]["protein_g"].value == Decimal("9")
+    assert result[DAY]["iron_mg"].value == Decimal("4")
+    assert calls == 2
+
+
+def test_google_period_rejects_descending_range(db, user) -> None:
+    import app.services.google_health_nutrition_resolution as google_resolution
+
+    connection = _connection(db, user)
+
+    with pytest.raises(ValueError, match="period range"):
+        google_resolution.resolve_google_health_period(
+            db,
+            user_id=user.id,
+            source_instance_id=connection.id,
+            start=DAY,
+            end=date(2024, 1, 1),
+            metric_keys=("iron_mg",),
+        )
+
+
+def test_google_period_read_context_reuses_qualified_metadata(db, user) -> None:
+    connection = _connection(db, user)
+    run = _run(db, user, connection)
+    _, source = _event(
+        db,
+        user,
+        connection,
+        run,
+        key="metadata-reuse",
+        value=Decimal("9"),
+        metric_key="iron_mg",
+    )
+    context = NutritionEvidenceIndex(
+        user_id=user.id,
+        provider_key=GOOGLE,
+        source_instance_id=connection.id,
+        start=DAY,
+        end=DAY,
+    )
+
+    read_canonical_micronutrient_period(
+        db,
+        user_id=user.id,
+        provider_key=GOOGLE,
+        source_instance_id=connection.id,
+        start=DAY,
+        end=DAY,
+        read_context=context,
+    )
+    result = discover_nutrition_provider_metadata(
+        db,
+        user_id=user.id,
+        start=DAY,
+        end=DAY,
+        provider_key=GOOGLE,
+        read_context=context,
+    )
+
+    assert len(result.providers) == 1
+    assert result.providers[0].latest_evidence_observed_at == source.observed_at

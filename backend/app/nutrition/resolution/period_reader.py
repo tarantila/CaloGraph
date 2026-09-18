@@ -1,0 +1,305 @@
+"""Bounded provider-scoped period reads for canonical nutrition serving."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from datetime import date, timedelta
+from types import MappingProxyType
+from typing import Any, Final, Protocol
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from .contracts import ProviderCandidate
+from .metrics import CANONICAL_NUTRITION_METRICS
+from .providers import ProviderNotAvailableError
+from .read_context import NutritionEvidenceIndex
+
+MAX_PROVIDER_PERIOD_DAYS: Final = 31
+
+
+class NutritionPeriodResolver(Protocol):
+    provider_key: str
+
+    def resolve_period(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+        start: date,
+        end: date,
+        metric_keys: Sequence[str],
+        skip_source_instance_validation: bool = False,
+        read_context: NutritionEvidenceIndex | None = None,
+    ) -> Mapping[date, Mapping[str, ProviderCandidate]]: ...
+
+
+PeriodCandidates = Mapping[date, Mapping[str, ProviderCandidate]]
+
+class _FunctionPeriodResolver:
+    def __init__(
+        self,
+        provider_key: str,
+        reader: Callable[..., Mapping[date, Mapping[str, ProviderCandidate]]],
+        *,
+        supports_read_context: bool = False,
+    ) -> None:
+        self.provider_key = provider_key
+        self._reader = reader
+        self._supports_read_context = supports_read_context
+
+    def resolve_period(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        source_instance_id: UUID,
+        start: date,
+        end: date,
+        metric_keys: Sequence[str],
+        skip_source_instance_validation: bool = False,
+        read_context: NutritionEvidenceIndex | None = None,
+    ) -> Mapping[date, Mapping[str, ProviderCandidate]]:
+        kwargs: dict[str, object] = {
+            "user_id": user_id,
+            "source_instance_id": source_instance_id,
+            "start": start,
+            "end": end,
+            "metric_keys": metric_keys,
+        }
+        if skip_source_instance_validation:
+            kwargs["skip_source_instance_validation"] = True
+        if read_context is not None and self._supports_read_context:
+            kwargs["read_context"] = read_context
+        return self._reader(db, **kwargs)
+
+
+
+
+def _normalize_metric_keys(metric_keys: Sequence[str] | None) -> tuple[str, ...]:
+    if metric_keys is None:
+        return tuple(CANONICAL_NUTRITION_METRICS)
+    requested = tuple(metric_keys)
+    if len(requested) != len(set(requested)):
+        raise ValueError("duplicate metric key")
+    unknown = tuple(key for key in requested if key not in CANONICAL_NUTRITION_METRICS)
+    if unknown:
+        raise ValueError("metric key must be canonical nutrition metric")
+    requested_set = set(requested)
+    return tuple(key for key in CANONICAL_NUTRITION_METRICS if key in requested_set)
+
+
+def _normalize_provider_key(provider_key: str) -> str:
+    if not isinstance(provider_key, str):
+        raise ValueError("provider_key must be a string")
+    normalized = provider_key.strip().lower()
+    if not normalized or any(character.isspace() for character in normalized):
+        raise ValueError("provider_key must be a non-empty token")
+    return normalized
+
+
+def _default_registry() -> Mapping[str, NutritionPeriodResolver]:
+    from app.services.apple_health_nutrition_resolution import resolve_apple_health_period
+    from app.services.google_health_nutrition_resolution import resolve_google_health_period
+    from app.services.yazio_nutrition_resolution import resolve_yazio_period
+
+    return MappingProxyType(
+        {
+            "apple_health": _FunctionPeriodResolver(
+                "apple_health", resolve_apple_health_period, supports_read_context=True
+            ),
+            "google_health": _FunctionPeriodResolver(
+                "google_health", resolve_google_health_period, supports_read_context=True
+            ),
+            "yazio": _FunctionPeriodResolver("yazio", resolve_yazio_period),
+        }
+    )
+
+
+def _validate_candidate(
+    candidate: object,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    local_date: date,
+    metric_key: str,
+) -> ProviderCandidate:
+    if not isinstance(candidate, ProviderCandidate):
+        raise ValueError("period resolver must return ProviderCandidate values")
+    for field_name, expected, actual in (
+        ("provider_key", provider_key, candidate.provider_key),
+        ("user_id", user_id, candidate.user_id),
+        ("local_date", local_date, candidate.local_date),
+        ("metric_key", metric_key, candidate.metric_key),
+    ):
+        if actual != expected:
+            raise ValueError(f"period candidate {field_name} does not match request")
+    return candidate
+
+
+def _validate_result(
+    result: object,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: tuple[str, ...],
+) -> PeriodCandidates:
+    if not isinstance(result, Mapping):
+        raise ValueError("period resolver must return a date mapping")
+    expected_dates = tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
+    validated: dict[date, Mapping[str, ProviderCandidate]] = {}
+    for local_date in expected_dates:
+        day_result = result.get(local_date)
+        if not isinstance(day_result, Mapping):
+            raise ValueError("period resolver must return one metric mapping per day")
+        if set(day_result) != set(metric_keys):
+            raise ValueError("period resolver must return the requested metric set for every day")
+        validated[local_date] = MappingProxyType(
+            {
+                metric_key: _validate_candidate(
+                    day_result[metric_key],
+                    provider_key=provider_key,
+                    user_id=user_id,
+                    local_date=local_date,
+                    metric_key=metric_key,
+                )
+                for metric_key in metric_keys
+            }
+        )
+    if set(result) != set(expected_dates):
+        raise ValueError("period resolver returned dates outside the requested range")
+    return MappingProxyType(validated)
+
+def iter_provider_period_chunks(
+    db: Session,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str] | None = None,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+    read_context: NutritionEvidenceIndex | None = None,
+) -> Iterator[tuple[date, date, PeriodCandidates]]:
+    """Yield contiguous bounded provider reads for one requested range."""
+    if type(start) is not date or type(end) is not date or start > end:
+        raise ValueError("period range must contain dates in ascending order")
+    if type(max_days) is not int or max_days < 1:
+        raise ValueError("max_days must be a positive integer")
+    chunk_start = start
+    skip_source_instance_validation = False
+    while True:
+        remaining_days = (end - chunk_start).days
+        chunk_end = chunk_start + timedelta(days=min(max_days - 1, remaining_days))
+        yield (
+            chunk_start,
+            chunk_end,
+            _resolve_provider_period(
+                db,
+                provider_key=provider_key,
+                user_id=user_id,
+                source_instance_id=source_instance_id,
+                start=chunk_start,
+                end=chunk_end,
+                metric_keys=metric_keys,
+                read_context=read_context,
+                max_days=max_days,
+                skip_source_instance_validation=skip_source_instance_validation,
+            ),
+        )
+        if chunk_end == end:
+            return
+        skip_source_instance_validation = True
+        chunk_start = chunk_end + timedelta(days=1)
+
+def resolve_provider_period(
+    db: Session,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str] | None = None,
+    resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+    read_context: NutritionEvidenceIndex | None = None,
+) -> PeriodCandidates:
+    return _resolve_provider_period(
+        db,
+        provider_key=provider_key,
+        user_id=user_id,
+        source_instance_id=source_instance_id,
+        start=start,
+        end=end,
+        metric_keys=metric_keys,
+        resolver_registry=resolver_registry,
+        max_days=max_days,
+        read_context=read_context,
+    )
+
+
+def _resolve_provider_period(
+    db: Session,
+    *,
+    provider_key: str,
+    user_id: UUID,
+    source_instance_id: UUID,
+    start: date,
+    end: date,
+    metric_keys: Sequence[str] | None = None,
+    resolver_registry: Mapping[str, NutritionPeriodResolver] | None = None,
+    max_days: int = MAX_PROVIDER_PERIOD_DAYS,
+    skip_source_instance_validation: bool = False,
+    read_context: NutritionEvidenceIndex | None = None,
+) -> PeriodCandidates:
+    """Resolve a complete canonical metric matrix with one bounded provider read."""
+    if type(start) is not date or type(end) is not date or start > end:
+        raise ValueError("period range must contain dates in ascending order")
+    if type(max_days) is not int or max_days < 1:
+        raise ValueError("max_days must be a positive integer")
+    if (end - start).days + 1 > max_days:
+        raise ValueError(f"period range must not exceed {max_days} days")
+    requested_metrics = _normalize_metric_keys(metric_keys)
+    normalized_provider_key = _normalize_provider_key(provider_key)
+    registry = _default_registry() if resolver_registry is None else resolver_registry
+    resolver = registry.get(normalized_provider_key)
+    if resolver is None or not callable(getattr(resolver, "resolve_period", None)):
+        raise ProviderNotAvailableError(
+            f"period resolver is not registered: {normalized_provider_key}"
+        )
+    resolver_kwargs: dict[str, Any] = {
+        "user_id": user_id,
+        "source_instance_id": source_instance_id,
+        "start": start,
+        "end": end,
+        "metric_keys": requested_metrics,
+    }
+    if skip_source_instance_validation:
+        resolver_kwargs["skip_source_instance_validation"] = True
+    if read_context is not None and getattr(resolver, "_supports_read_context", False):
+        resolver_kwargs["read_context"] = read_context
+    result = resolver.resolve_period(db, **resolver_kwargs)
+    return _validate_result(
+        result,
+        provider_key=normalized_provider_key,
+        user_id=user_id,
+        start=start,
+        end=end,
+        metric_keys=requested_metrics,
+    )
+
+
+
+
+__all__ = [
+    "MAX_PROVIDER_PERIOD_DAYS",
+    "NutritionPeriodResolver",
+    "PeriodCandidates",
+    "iter_provider_period_chunks",
+    "resolve_provider_period",
+]
