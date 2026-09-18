@@ -25,6 +25,7 @@ from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioConnectionDisabled,
+    YazioSdkNotConfigured,
     YazioSyncError,
     YazioVersionBlockedError,
     due_yazio_connection_ids,
@@ -715,6 +716,29 @@ def test_yazio_api_status_and_manual_sync_are_user_scoped(
     assert called_for == user.id
 
 
+
+def test_yazio_manual_api_reports_missing_sdk_configuration(
+    client: TestClient,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "")
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    response = client.post(
+        "/api/v1/yazio/sync",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Der YAZIO-SDK ist nicht konfiguriert."
+
 def test_initial_range_runs_in_bounded_chunks_before_regular_sync(
     db: Session,
     user: User,
@@ -988,8 +1012,9 @@ def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
     configure_yazio_connection(user, "owner@example.com", "yazio-password")
     monkeypatch.setattr(settings, "yazio_enabled", True)
     monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
 
-    def fake_sdk_fetch(*_args):
+    def fake_sdk_fetch(*_args, **_kwargs):
         return {
             "2026-07-23": {
                 "daily_summary": {
@@ -1025,3 +1050,94 @@ def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
     assert batch.connector_variant == "sdk-v22"
     assert batch.source_type == "yazio_export_v1"
     assert batch.client_identifier == "yazio-exporter"
+
+
+def test_manual_sync_forces_sdk_v22_provider_mode(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    monkeypatch.setattr(settings, "yazio_provider", "legacy")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "sdk-secret")
+    captured: dict[str, object] = {}
+
+    def fake_sync(*_args, **kwargs):
+        captured.update(kwargs)
+        return ImportSummary(
+            status="completed",
+            received=0,
+            inserted=0,
+            updated=0,
+            skipped=0,
+        )
+
+    monkeypatch.setattr(yazio_sync, "_sync_yazio_user_unlocked", fake_sync)
+    summary = run_manual_yazio_sync(
+        user.id,
+        sync_days=1,
+        now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+    )
+
+    assert summary.status == "completed"
+    assert captured["provider_mode"] == "sdk"
+
+
+def test_manual_sync_requires_sdk_configuration(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "")
+    monkeypatch.setattr(
+        yazio_sync,
+        "_sync_yazio_user_unlocked",
+        lambda *_args, **_kwargs: pytest.fail("manual sync reached provider without SDK config"),
+    )
+
+    with pytest.raises(YazioSdkNotConfigured, match="SDK"):
+        run_manual_yazio_sync(
+            user.id,
+            sync_days=1,
+            now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+        )
+
+
+def test_scheduler_gate_is_separate_from_manual_sync(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    stored.historical_sync_state = "completed"
+    stored.next_sync_at = datetime(2026, 7, 23, 7, tzinfo=UTC)
+    db.commit()
+    monkeypatch.setattr(settings, "yazio_scheduler_enabled", False)
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "sdk-secret")
+    monkeypatch.setattr(
+        yazio_sync,
+        "_sync_yazio_user_unlocked",
+        lambda *_args, **_kwargs: ImportSummary(
+            status="completed",
+            received=0,
+            inserted=0,
+            updated=0,
+            skipped=0,
+        ),
+    )
+
+    assert run_due_yazio_syncs(now=datetime(2026, 7, 23, 8, tzinfo=UTC)) == (0, 0)
+    assert (
+        run_manual_yazio_sync(
+            user.id,
+            sync_days=1,
+            now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+        ).status
+        == "completed"
+    )

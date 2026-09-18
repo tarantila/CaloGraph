@@ -271,6 +271,7 @@ def test_yazio_templates_and_compose_require_explicit_provider() -> None:
         assert "YAZIO_SDK_USER_AGENT" not in content
         assert "YAZIO_SDK_CLIENT_ID" not in content
     assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
+    assert compose.count("YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}") == 2
     assert compose.count("YAZIO_PROVIDER: ${YAZIO_PROVIDER-}") == 2
     assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
     assert "${YAZIO_PROVIDER:-legacy}" not in compose

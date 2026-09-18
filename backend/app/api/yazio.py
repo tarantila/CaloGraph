@@ -26,12 +26,13 @@ from app.services.yazio_sync import (
     YazioConnectionNotConfigured,
     YazioDisabled,
     YazioInvalidResponseError,
-    YazioNetworkTimeoutError,
+    YazioSdkNotConfigured,
     YazioOperationCapacityExceeded,
     YazioOperationDeadlineExceeded,
     YazioRateLimitedError,
     YazioSyncError,
     YazioUnavailableError,
+    YazioNetworkTimeoutError,
     YazioVersionBlockedError,
     configure_yazio_connection,
     effective_sync_days,
@@ -94,6 +95,8 @@ def _raise_yazio_http_error(exc: YazioSyncError) -> NoReturn:
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after)},
         ) from exc
+    if isinstance(exc, YazioSdkNotConfigured):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if isinstance(exc, YazioDisabled):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if isinstance(

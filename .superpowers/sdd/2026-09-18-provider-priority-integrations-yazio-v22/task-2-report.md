@@ -172,3 +172,19 @@
 ## Task 6 follow-up concerns
 
 - Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.
+
+## Task 7 YAZIO manual sync and scheduler separation
+
+- Manual sync remains authenticated and user-scoped through the existing encrypted `YazioConnection`, but real manual transport now forces provider mode `sdk` and records the `sdk-v22` connector variant; the manual path cannot select the legacy provider.
+- Missing SDK client configuration raises the explicit `YazioSdkNotConfigured` error and maps to a sanitized HTTP 503 response. Credential-validation transport is likewise SDK-only.
+- Scheduler enablement is a separate `YAZIO_SCHEDULER_ENABLED` setting exposed through compose/example configuration. Scheduler entry points are gated by it while each connection’s existing `sync_enabled` semantics and operation-capacity guard remain unchanged.
+- TDD red proof: the new focused tests initially failed at collection because `YazioSdkNotConfigured` did not yet exist.
+- Targeted proofs:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_yazio_sync.py` — **31 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_yazio_domain_sync.py tests/test_yazio_daily_trigger.py tests/test_yazio_security.py` — **41 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_config.py -k 'yazio_templates_and_compose_require_explicit_provider'` — **1 passed**
+  - `python3 -m py_compile backend/app/services/yazio_sync.py backend/app/api/yazio.py backend/app/api/admin.py backend/tests/test_yazio_sync.py` — passed
+
+## Task 7 concerns
+
+- Project-wide validation remains with the integration owner; no frontend, provider-priority, fallback, live database, or destructive operations were used.

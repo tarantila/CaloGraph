@@ -254,6 +254,7 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_enabled: bool = False
+    yazio_scheduler_enabled: bool = True
     yazio_nutrition_domain_write_enabled: bool = False
     yazio_provider: Literal["legacy", "sdk"] | None = None
     yazio_api_base_url: str = Field(

@@ -94,6 +94,7 @@ def _enable_sdk_rollout(
 ) -> None:
     monkeypatch.setattr(settings, "yazio_enabled", True)
     monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
     monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
 
     def fetch_domain(email, password, start_day, end_day):
