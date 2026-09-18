@@ -177,6 +177,21 @@ def test_upgrade_migrates_preferences_and_activity_snapshots(tmp_path):
         ).scalar_one() == 0
 
 
+def test_upgrade_handles_empty_legacy_preferences(tmp_path):
+    engine = _sqlite_engine(tmp_path)
+    metadata = _legacy_metadata()
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(metadata.tables["users"].insert().values(id=uuid4()))
+
+    _apply(engine, _revision_module(), "upgrade")
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT COUNT(*) FROM user_provider_priorities")
+        ).scalar_one() == 0
+
+
 def test_upgrade_preserves_existing_source_priority_policy_without_mixing_user_preferences(
     tmp_path,
 ):

@@ -202,29 +202,32 @@ def _migrate_preferences(bind: sa.Connection) -> None:
         sa.column("created_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    rows = bind.execute(
-        sa.select(
-            preferences.c.user_id,
-            preferences.c.data_area,
-            preferences.c.provider_key,
-            preferences.c.created_at,
-            preferences.c.updated_at,
-        ).order_by(preferences.c.user_id, preferences.c.data_area)
-    ).mappings()
-    bind.execute(
-        priorities.insert(),
-        [
-            {
-                "user_id": row["user_id"],
-                "data_area": row["data_area"],
-                "priority": 1,
-                "provider_key": row["provider_key"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            }
-            for row in rows
-        ],
+    rows = list(
+        bind.execute(
+            sa.select(
+                preferences.c.user_id,
+                preferences.c.data_area,
+                preferences.c.provider_key,
+                preferences.c.created_at,
+                preferences.c.updated_at,
+            ).order_by(preferences.c.user_id, preferences.c.data_area)
+        ).mappings()
     )
+    if rows:
+        bind.execute(
+            priorities.insert(),
+            [
+                {
+                    "user_id": row["user_id"],
+                    "data_area": row["data_area"],
+                    "priority": 1,
+                    "provider_key": row["provider_key"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ],
+        )
 
 
 def _drop_preferences(bind: sa.Connection) -> None:
