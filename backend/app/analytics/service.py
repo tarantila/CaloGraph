@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.activity import ACTIVE_ENERGY_METRIC
 from app.models import (
@@ -186,6 +186,7 @@ def daily_points(
     targets = list(
         db.scalars(
             select(NutritionTarget)
+            .options(selectinload(NutritionTarget.activity_sources))
             .where(NutritionTarget.user_id == user.id)
             .order_by(NutritionTarget.valid_from)
         )
@@ -318,6 +319,7 @@ def budget_balance_for_user(
     targets = list(
         db.scalars(
             select(NutritionTarget)
+            .options(selectinload(NutritionTarget.activity_sources))
             .where(NutritionTarget.user_id == user.id)
             .order_by(NutritionTarget.valid_from)
         )

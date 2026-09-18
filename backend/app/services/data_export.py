@@ -16,7 +16,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.models import (
@@ -516,6 +516,7 @@ def _import_batches(db: Session, user_id: UUID) -> Iterator[ExportImportBatch]:
 def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
     statement = (
         select(NutritionTarget)
+        .options(selectinload(NutritionTarget.activity_sources))
         .where(NutritionTarget.user_id == user_id)
         .order_by(NutritionTarget.valid_from, NutritionTarget.id)
         .execution_options(stream_results=True)

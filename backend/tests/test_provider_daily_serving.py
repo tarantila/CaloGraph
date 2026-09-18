@@ -319,7 +319,7 @@ def _read_multi_provider_points(
 def test_provider_daily_priority_uses_first_provider_with_data(monkeypatch):
     result, calls = _read_multi_provider_points(monkeypatch)
 
-    assert [call["provider_key"] for call in calls] == ["first", "second"]
+    assert [call["provider_key"] for call in calls] == ["first"]
     assert result[0]["values"]["dietary_energy_kcal"] == Decimal("10")
 
 

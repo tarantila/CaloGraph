@@ -103,6 +103,7 @@ export interface YazioHistoricalSync {
 export interface YazioStatus {
   available: boolean
   configured: boolean
+  scheduler_enabled: boolean
   sync_enabled: boolean
   sync_interval_minutes: number | null
   sync_days: number | null

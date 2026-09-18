@@ -44,8 +44,8 @@ const yazioCredentialsComplete = computed(
 const yazioAvailable = computed(() => yazio.value?.available === true)
 const yazioStatusLabel = computed(() => {
   if (!yazio.value) return t('accountIntegrations.notAvailable')
-  if (!yazioAvailable.value) return t('settings.serverDisabled')
   if (!yazio.value.configured) return t('settings.notConfigured')
+  if (yazio.value?.scheduler_enabled === false) return t('accountIntegrations.schedulerPaused')
   const historicalState = yazio.value.historical_sync?.state
   if (historicalState === 'pending') return t('settings.firstImportWaiting')
   if (historicalState === 'running') return t('settings.firstImportRunning')
@@ -55,7 +55,7 @@ const yazioStatusLabel = computed(() => {
 })
 const yazioHistoricalSyncActive = computed(() => {
   const state = yazio.value?.historical_sync?.state
-  return yazioAvailable.value && (state === 'pending' || state === 'running')
+  return yazioAvailable.value && yazio.value?.scheduler_enabled !== false && (state === 'pending' || state === 'running')
 })
 const yazioHistoricalSyncFailed = computed(
   () => yazio.value?.historical_sync?.state === 'failed',
@@ -345,7 +345,7 @@ void load()
           <h3>{{ t('accountIntegrations.statusTitle') }}</h3>
           <dl class="integration-details">
             <div><dt>{{ t('settingsUi.statusLabel') }}</dt><dd>{{ yazioStatusLabel }}</dd></div>
-            <div><dt>{{ t('accountIntegrations.scheduler') }}</dt><dd>{{ yazio?.sync_enabled ? t('accountIntegrations.schedulerActive') : t('accountIntegrations.schedulerPaused') }}</dd></div>
+            <div><dt>{{ t('accountIntegrations.scheduler') }}</dt><dd>{{ yazio?.scheduler_enabled !== false && yazio?.sync_enabled ? t('accountIntegrations.schedulerActive') : t('accountIntegrations.schedulerPaused') }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastAttempt') }}</dt><dd>{{ timestampLabel(yazio?.last_attempt_at) }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastSuccess') }}</dt><dd>{{ timestampLabel(yazio?.last_success_at) }}</dd></div>
             <div><dt>{{ t('accountIntegrations.nextSync') }}</dt><dd>{{ timestampLabel(yazio?.next_sync_at) }}</dd></div>

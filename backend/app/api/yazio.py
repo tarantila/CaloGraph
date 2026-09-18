@@ -166,11 +166,13 @@ def _status_response(connection: YazioConnection | None) -> YazioStatusResponse:
         return YazioStatusResponse(
             available=settings.yazio_enabled,
             configured=False,
+            scheduler_enabled=settings.yazio_scheduler_enabled,
             sync_enabled=False,
         )
     return YazioStatusResponse(
         available=settings.yazio_enabled,
         configured=True,
+        scheduler_enabled=settings.yazio_scheduler_enabled,
         sync_enabled=connection.sync_enabled,
         sync_interval_minutes=effective_sync_interval_minutes(connection),
         sync_days=effective_sync_days(connection),

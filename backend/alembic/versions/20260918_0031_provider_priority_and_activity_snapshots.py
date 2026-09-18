@@ -125,22 +125,22 @@ def _backfill_activity_sources(bind: sa.Connection) -> None:
         sa.column("source_type", sa.String()),
     )
     provider_by_source_type = _activity_source_type_provider_keys()
-    rows = bind.execute(
-        sa.select(targets.c.id, targets.c.user_id, targets.c.activity_source_type).where(
-            targets.c.activity_source_type.is_not(None)
+    provider_key = sa.case(
+        provider_by_source_type,
+        value=targets.c.activity_source_type,
+    )
+    bind.execute(
+        activity_sources.insert().from_select(
+            ["target_id", "user_id", "priority", "provider_key", "source_type"],
+            sa.select(
+                targets.c.id,
+                targets.c.user_id,
+                sa.literal(1),
+                provider_key,
+                targets.c.activity_source_type,
+            ).where(targets.c.activity_source_type.is_not(None)),
         )
-    ).mappings()
-    for row in rows:
-        source_type = row["activity_source_type"]
-        bind.execute(
-            activity_sources.insert().values(
-                target_id=row["id"],
-                user_id=row["user_id"],
-                priority=1,
-                provider_key=provider_by_source_type.get(source_type),
-                source_type=source_type,
-            )
-        )
+    )
 
 
 def _policy_tables() -> tuple[sa.TableClause, sa.TableClause]:

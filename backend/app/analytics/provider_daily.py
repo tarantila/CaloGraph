@@ -8,7 +8,7 @@ from typing import Final
 from uuid import UUID
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.activity import ACTIVE_ENERGY_METRIC
 from app.analytics.service import TrackingInputs, _build_daily_point
@@ -99,6 +99,22 @@ def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[s
             if value is not None:
                 values[daily_point_field] = value
     return values
+def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
+    if not days:
+        return ()
+    ordered = sorted(days)
+    ranges: list[tuple[date, date]] = []
+    range_start = ordered[0]
+    range_end = range_start
+    for current in ordered[1:]:
+        if current == range_end + timedelta(days=1):
+            range_end = current
+            continue
+        ranges.append((range_start, range_end))
+        range_start = range_end = current
+    ranges.append((range_start, range_end))
+    return tuple(ranges)
+
 
 
 def read_provider_daily_points(
@@ -128,29 +144,46 @@ def read_provider_daily_points(
     candidates_by_provider_date: dict[
         tuple[str, date], Mapping[str, ProviderCandidate]
     ] = {}
+    unresolved_dates = {
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+    }
     try:
         for current_provider_key, current_source_instance_id in provider_sources:
-            for _, _, chunk_candidates in iter_provider_period_chunks(
-                db,
-                provider_key=current_provider_key,
-                user_id=user_id,
-                source_instance_id=current_source_instance_id,
-                start=start,
-                end=end,
-                metric_keys=DAILY_PROJECTION_METRICS,
-            ):
-                candidates_by_provider_date.update(
-                    {
-                        (current_provider_key, local_date): candidates
-                        for local_date, candidates in chunk_candidates.items()
-                    }
-                )
+            if not unresolved_dates:
+                break
+            for range_start, range_end in _contiguous_date_ranges(unresolved_dates):
+                for _, _, chunk_candidates in iter_provider_period_chunks(
+                    db,
+                    provider_key=current_provider_key,
+                    user_id=user_id,
+                    source_instance_id=current_source_instance_id,
+                    start=range_start,
+                    end=range_end,
+                    metric_keys=DAILY_PROJECTION_METRICS,
+                ):
+                    candidates_by_provider_date.update(
+                        {
+                            (current_provider_key, local_date): candidates
+                            for local_date, candidates in chunk_candidates.items()
+                        }
+                    )
+            unresolved_dates.difference_update(
+                local_date
+                for local_date in tuple(unresolved_dates)
+                if (candidates := candidates_by_provider_date.get(
+                    (current_provider_key, local_date)
+                ))
+                is not None
+                and _provider_has_evidence(candidates)
+            )
     except (ValueError, KeyError) as exc:
         raise ProviderDailyReadError("canonical provider returned an invalid period") from exc
 
     targets = list(
         db.scalars(
             select(NutritionTarget)
+            .options(selectinload(NutritionTarget.activity_sources))
             .where(NutritionTarget.user_id == user_id)
             .order_by(NutritionTarget.valid_from)
         )

@@ -36,13 +36,16 @@ def _lock_user_row(db: Session, user_id: UUID) -> None:
 
 
 def _latest_policy(db: Session, user_id: UUID) -> SourcePriorityPolicy | None:
-    policies = list_policies(db, user_id)
-    return max(
-        policies,
-        key=lambda policy: (policy.version, policy.effective_from, str(policy.id)),
-        default=None,
+    return db.scalar(
+        sa.select(SourcePriorityPolicy)
+        .where(SourcePriorityPolicy.user_id == user_id)
+        .order_by(
+            SourcePriorityPolicy.version.desc(),
+            SourcePriorityPolicy.effective_from.desc(),
+            SourcePriorityPolicy.id.desc(),
+        )
+        .limit(1)
     )
-
 
 def _policy_preferences(
     db: Session,

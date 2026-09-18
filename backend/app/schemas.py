@@ -379,6 +379,7 @@ class YazioHistoricalSyncResponse(BaseModel):
 class YazioStatusResponse(BaseModel):
     available: bool = True
     configured: bool
+    scheduler_enabled: bool
     sync_enabled: bool
     sync_interval_minutes: int | None = None
     sync_days: int | None = None
