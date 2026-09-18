@@ -8,7 +8,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.calendar_canonical import run_calendar_canonical_read
@@ -312,8 +312,9 @@ def weight(
             "selected_provider": None,
             "points": [],
         }
+    provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
     source_identifier: str | None = None
-    if selection.provider_key == "yazio":
+    if any(provider_key == "yazio" for provider_key, _ in provider_sources):
         connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
         if connection is None:
             raise ProblemHTTPException(
@@ -322,23 +323,46 @@ def weight(
                 problem_type=PROVIDER_SELECTION_NOT_READY,
             )
         source_identifier = connection.source_identifier
-    sample_filters = [
-        HealthSample.user_id == user.id,
-        HealthSample.metric_type == WEIGHT_METRIC,
-        HealthSample.source_type == selection.source_type,
-        HealthSample.local_date >= start,
-        HealthSample.local_date <= end,
-    ]
-    if source_identifier is not None:
-        sample_filters.append(HealthSample.source_identifier == source_identifier)
+
+    provider_by_source_type = {
+        source_type: provider_key for provider_key, source_type in provider_sources
+    }
+    provider_filters = []
+    for provider_key, source_type in provider_sources:
+        source_filter = [
+            HealthSample.source_type == source_type,
+        ]
+        if provider_key == "yazio":
+            source_filter.append(HealthSample.source_identifier == source_identifier)
+        provider_filters.append(and_(*source_filter))
     samples = list(
         db.scalars(
             select(HealthSample)
-            .where(*sample_filters)
+            .where(
+                HealthSample.user_id == user.id,
+                HealthSample.metric_type == WEIGHT_METRIC,
+                HealthSample.local_date >= start,
+                HealthSample.local_date <= end,
+                or_(*provider_filters),
+            )
             .order_by(HealthSample.local_date, HealthSample.start_at, HealthSample.id)
         )
     )
-    latest_by_day = {sample.local_date: sample for sample in samples}
+    latest_by_provider_day: dict[tuple[str, date], HealthSample] = {}
+    for sample in samples:
+        provider_key = provider_by_source_type.get(sample.source_type)
+        if provider_key is None:
+            continue
+        key = (provider_key, sample.local_date)
+        previous = latest_by_provider_day.get(key)
+        if previous is None or (sample.start_at, sample.id) > (previous.start_at, previous.id):
+            latest_by_provider_day[key] = sample
+
+    latest_by_day: dict[date, HealthSample] = {}
+    for provider_key, _ in provider_sources:
+        for (sample_provider, sample_day), sample in latest_by_provider_day.items():
+            if sample_provider == provider_key and sample_day not in latest_by_day:
+                latest_by_day[sample_day] = sample
     return {
         "start_date": start,
         "end_date": end,

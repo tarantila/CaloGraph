@@ -27,8 +27,10 @@ from app.source_priority import compatibility as source_priority_compatibility
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
+from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
 
 PATH = "/api/v1/settings/provider-preferences"
+WEIGHT_PATH = "/api/v1/analytics/weight"
 AVAILABILITY_PATH = "/api/v1/settings/provider-availability/nutrition"
 PASSWORD = "correct-horse-battery-staple"
 
@@ -95,6 +97,41 @@ def _add_sample(
             original_unit="kg" if metric_type == "weight_kg" else "kcal",
             start_at=timestamp,
             end_at=timestamp,
+            local_date=local_date,
+            timezone="UTC",
+        )
+    )
+
+
+def _add_weight_sample(
+    db,
+    user,
+    *,
+    source_type: str,
+    value: Decimal,
+    local_date: date,
+    start_at: datetime,
+    source_identifier: str,
+) -> None:
+    batch = ImportBatch(user_id=user.id, source_type=source_type, status="completed")
+    db.add(batch)
+    db.flush()
+    external_id = f"{source_type}-{start_at.isoformat()}"
+    db.add(
+        HealthSample(
+            user_id=user.id,
+            import_batch_id=batch.id,
+            external_sample_id=external_id,
+            fingerprint=f"{external_id}-{user.id}".replace("-", "")[:64],
+            source_type=source_type,
+            source_identifier=source_identifier,
+            metric_type="weight_kg",
+            value=value,
+            unit="kg",
+            original_value=value,
+            original_unit="kg",
+            start_at=start_at,
+            end_at=start_at,
             local_date=local_date,
             timezone="UTC",
         )
@@ -715,6 +752,165 @@ def test_micronutrients_without_source_rejects_unavailable_saved_provider(
     assert response.status_code == 503
     assert response.json()["type"] == "urn:calograph:problem:provider-selection-unavailable"
     assert db.get(UserProviderPreference, (user.id, "nutrition")) is not None
+def test_weight_priority_prefers_yazio_over_apple(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["yazio"],
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="yazio-account",
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["apple_health"],
+        value=Decimal("71.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 9, tzinfo=UTC),
+        source_identifier="apple-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 1),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 2),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "yazio"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 72.5}]
+
+
+def test_weight_priority_prefers_apple_over_yazio(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["yazio"],
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="yazio-account",
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["apple_health"],
+        value=Decimal("71.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 9, tzinfo=UTC),
+        source_identifier="apple-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 1),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 2),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "apple_health"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
+
+
+def test_weight_priority_falls_back_to_health_auto_export_without_forward_fill(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    previous_day = date(2026, 9, 14)
+    day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["yazio"],
+        value=Decimal("72.5"),
+        local_date=previous_day,
+        start_at=datetime(2026, 9, 14, 8, tzinfo=UTC),
+        source_identifier="yazio-account",
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["health_auto_export"],
+        value=Decimal("70.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 9, tzinfo=UTC),
+        source_identifier="health-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 1),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 2),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "health_auto_export", 3),
+    )
+    _login(client)
+
+    response = client.get(
+        WEIGHT_PATH,
+        params={"start": day, "end": day + timedelta(days=1)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "yazio"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 70.5}]
+
+
+def test_weight_priority_uses_latest_actual_sample_within_provider_day(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["yazio"],
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="yazio-account",
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["yazio"],
+        value=Decimal("71.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 12, tzinfo=UTC),
+        source_identifier="yazio-account",
+    )
+    _add_priority_policy(db, user, PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 1))
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
+
+
 def test_weight_api_is_opt_in_and_user_scoped(client: TestClient, user, db) -> None:
     sample_day = date(2026, 9, 15)
     _add_yazio(db, user)

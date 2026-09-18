@@ -98,3 +98,20 @@
 - Review-fix targeted command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_nutrition_provider_boundary.py tests/test_nutrition_multi_provider_c0.py tests/test_provider_daily_serving.py`
   - **41 passed**
+
+## Task 5 Weight fallback
+
+- Weight serving now carries the ordered, available scalar provider chain from the existing `SourcePriorityPolicy` compatibility facade.
+- Weight reads use one bounded, user-scoped `HealthSample` query for all prioritized providers, apply the YAZIO connection `source_identifier`, choose the first provider with an actual sample for each local day, and choose the latest timestamp within that provider/day.
+- Missing days remain missing: no synthetic YAZIO last-on-or-before behavior and no forward-fill. Existing response shape and configured `selected_provider` semantics remain unchanged.
+- Added regressions for YAZIO-over-Apple, Apple-over-YAZIO, no-sample fallback to Health Auto Export, no forward-fill, latest-of-day, and user isolation.
+- TDD red proof: the new fallback test failed before implementation with an empty points list.
+- Targeted command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py`
+  - **36 passed**
+- Compile proof:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci python -m py_compile app/analytics/scalar_selection.py app/api/analytics.py tests/test_provider_preferences.py`
+
+## Task 5 concerns
+
+- The focused proof used the isolated Docker test database; project-wide validation remains with the integration owner.
