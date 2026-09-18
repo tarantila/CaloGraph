@@ -115,6 +115,19 @@ export interface YazioStatus {
   last_error: string | null
 }
 
+export type GoogleHealthState = 'disabled' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+
+export interface GoogleHealthStatus {
+  available: boolean
+  configured: boolean
+  state: GoogleHealthState
+  granted_scopes: string[]
+  refresh_token_expires_at: string | null
+  last_attempt_at: string | null
+  last_success_at: string | null
+  last_error: string | null
+}
+
 export type DecimalTransport = string | number | null
 
 export interface Target {
