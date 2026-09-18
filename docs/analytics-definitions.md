@@ -31,11 +31,13 @@ updated in place because it has no earlier effective day.
 
 ## Weight history
 
-Weight is read as a scalar daily history from the provider selected for the
-`weight` data area. CaloGraph never sums providers or silently falls back to a
-different source. Without a persisted selection, the weight endpoint returns no
-points; an unavailable persisted selection fails closed. Multiple samples on one
-local day resolve to the latest sample by timestamp.
+Weight is read as a scalar daily history from the ordered providers selected
+for the `weight` data area. CaloGraph never sums providers: each local day
+uses the first configured provider with an actual sample. An unavailable
+provider is skipped only within that persisted priority chain; if no configured
+provider can resolve a day, that day remains without a value and a completely
+unavailable selection fails closed. Multiple samples on one local day resolve
+to the latest sample by timestamp.
 
 ## Activity presentation
 

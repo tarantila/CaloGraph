@@ -56,8 +56,6 @@ from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
 from app.models import HealthSample, ImportBatch, User, YazioConnection
-from app.nutrition.enums import ProjectionStatus
-from app.nutrition.models import NutritionDailyProjection
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -120,27 +118,6 @@ def _complete_budget(days: list[DailyPoint], field: str) -> Decimal | None:
 
 def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
     return budget_balance_for_user(db, user)
-def _has_ready_daily_projection(
-    db: Session,
-    *,
-    user_id: UUID,
-    start: date,
-    end: date,
-) -> bool:
-    if not isinstance(db, Session):
-        return False
-    return (
-        db.scalar(
-            select(NutritionDailyProjection.id)
-            .where(
-                NutritionDailyProjection.user_id == user_id,
-                NutritionDailyProjection.local_date.between(start, end),
-                NutritionDailyProjection.projection_status == ProjectionStatus.READY.value,
-            )
-            .limit(1)
-        )
-        is not None
-    )
 
 
 
@@ -240,18 +217,7 @@ def daily(
     db: Session = Depends(get_db),
 ) -> list[DailyPoint]:
     start, end = _range(start, end, user.timezone)
-    try:
-        selection = _preferred_nutrition_provider(db, user.id) if source is None else None
-    except ProblemHTTPException:
-        if source is None and _has_ready_daily_projection(
-            db,
-            user_id=user.id,
-            start=start,
-            end=end,
-        ):
-            selection = None
-        else:
-            raise
+    selection = _preferred_nutrition_provider(db, user.id) if source is None else None
 
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
