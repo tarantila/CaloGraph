@@ -521,13 +521,22 @@ def validate_yazio_credentials(
     password: str,
     *,
     operation_key: object | None = None,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> None:
     _require_yazio_enabled()
-    _require_yazio_sdk_configured()
+    selected_provider = provider_mode or settings.yazio_provider
+    if selected_provider not in {"legacy", "sdk"}:
+        raise YazioSyncError("Der YAZIO-Provider ist nicht konfiguriert.")
+    if selected_provider == "sdk":
+        _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
     try:
         with yazio_operation_slot(operation_key or _yazio_operation_key(email)):
-            validate_yazio_credentials_transport(email, password, provider_mode="sdk")
+            validate_yazio_credentials_transport(
+                email,
+                password,
+                provider_mode=selected_provider,
+            )
     except YazioOperationBusy as exc:
         raise YazioOperationCapacityExceeded(
             "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."

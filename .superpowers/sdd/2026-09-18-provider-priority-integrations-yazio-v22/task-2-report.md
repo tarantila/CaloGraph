@@ -188,3 +188,11 @@
 ## Task 7 concerns
 
 - Project-wide validation remains with the integration owner; no frontend, provider-priority, fallback, live database, or destructive operations were used.
+
+## Task 7 review fix
+
+- Credential validation now defaults to the configured provider, preserving the documented legacy rollback path without requiring an SDK secret; only the manual sync transport supplies the explicit SDK-v22 provider mode.
+- TDD red proof: the new legacy-validation regression failed with `YazioSdkNotConfigured` before this compatibility fix.
+- Review-fix proofs:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_yazio_sync.py -k 'legacy_credential_validation_uses_configured_provider or manual_sync_forces_sdk or manual_sync_requires_sdk or scheduler_gate_is_separate or manual_api_reports_missing_sdk_configuration'` — **5 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_yazio_sync.py` — **32 passed**

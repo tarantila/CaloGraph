@@ -1052,6 +1052,23 @@ def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
     assert batch.client_identifier == "yazio-exporter"
 
 
+def test_legacy_credential_validation_uses_configured_provider_without_sdk_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_provider", "legacy")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "")
+    captured: dict[str, str] = {}
+
+    def fake_validate(_email: str, _password: str, *, provider_mode: str) -> None:
+        captured["provider_mode"] = provider_mode
+
+    monkeypatch.setattr(yazio_sync, "validate_yazio_credentials_transport", fake_validate)
+
+    yazio_sync.validate_yazio_credentials("owner@example.com", "yazio-password")
+
+    assert captured["provider_mode"] == "legacy"
+
 def test_manual_sync_forces_sdk_v22_provider_mode(
     db: Session,
     user: User,
