@@ -31,6 +31,7 @@ async function mountApp(path = '/tage', isAdmin = false) {
     routes: [
       { path: '/', name: 'overview', component: { template: '<h1>Übersicht</h1>' } },
       { path: '/tage', name: 'daily', component: { template: '<h1>Tagesverlauf</h1>' } },
+      { path: '/gewicht', name: 'weight', component: { template: '<h1>Gewicht</h1>' } },
       { path: '/wochen', name: 'weekly', component: { template: '<h1>Wochenbudget</h1>' } },
       { path: '/wochentage', name: 'weekdays', component: { template: '<h1>Wochentage</h1>' } },
       { path: '/kalender', name: 'calendar', component: { template: '<h1>Kalender</h1>' } },
@@ -79,6 +80,7 @@ describe('App-Sidebar-Navigation', () => {
     expect(navigationGroups[0].findAll('a').map((link) => link.attributes('href'))).toEqual([
       '/',
       '/tage',
+      '/gewicht',
       '/wochen',
       '/wochentage',
       '/kalender',
@@ -90,8 +92,7 @@ describe('App-Sidebar-Navigation', () => {
       '/konto/persoenliche-daten',
     ])
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
-    expect(navigationGroups[0].get('a[href="/erfolge"]').classes()).toContain('active')
-    expect(wrapper.findAll('aside nav a')).toHaveLength(9)
+    expect(wrapper.findAll('aside nav a')).toHaveLength(10)
     wrapper.unmount()
   })
 

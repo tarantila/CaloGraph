@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import { ApiError, api, localizeApiError } from '../api'
 import { i18n } from '../i18n'
 
 const t = i18n.global.t.bind(i18n.global)
 
-type ProviderKey = 'apple_health' | 'google_health' | 'yazio'
+type DataArea = 'nutrition' | 'weight' | 'activity_energy'
+type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
 type ProviderStatus = 'available' | 'disabled' | 'not_configured' | 'reauth_required' | 'no_data'
 
 interface PreferenceResponse {
-  data_area: string
+  data_area: DataArea
   provider_key: ProviderKey
 }
 
@@ -21,19 +22,21 @@ interface Availability {
 }
 
 interface AvailabilityResponse {
-  data_area: string
+  data_area: DataArea
   providers: Availability[]
 }
 
-const selectedProvider = ref<ProviderKey | ''>('')
-const providers = ref<Availability[]>([])
+const areas: Array<{ key: DataArea; title: string; description: string }> = [
+  { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle', description: 'providerPreferencesUi.nutritionDescription' },
+  { key: 'weight', title: 'providerPreferencesUi.weightTitle', description: 'providerPreferencesUi.weightDescription' },
+  { key: 'activity_energy', title: 'providerPreferencesUi.activityTitle', description: 'providerPreferencesUi.activityDescription' },
+]
+const selections = ref<Record<DataArea, ProviderKey | ''>>({ nutrition: '', weight: '', activity_energy: '' })
+const providers = ref<Record<DataArea, Availability[]>>({ nutrition: [], weight: [], activity_energy: [] })
 const loading = ref(true)
-const saving = ref(false)
+const savingArea = ref<DataArea | null>(null)
 const error = ref('')
 const message = ref('')
-
-const selectedAvailability = computed(() => providers.value.find((item) => item.provider_key === selectedProvider.value))
-const canSave = computed(() => !selectedProvider.value || selectedAvailability.value?.available === true)
 
 function providerLabel(providerKey: ProviderKey): string {
   return t(`providerPreferencesUi.providers.${providerKey}`)
@@ -43,16 +46,33 @@ function statusLabel(status: ProviderStatus): string {
   return t(`providerPreferencesUi.status.${status}`)
 }
 
+function emptyLabel(area: DataArea): string {
+  return area === 'nutrition'
+    ? t('providerPreferencesUi.useLegacy')
+    : t('providerPreferencesUi.useNoProvider')
+}
+
+function availability(area: DataArea, providerKey: ProviderKey | ''): Availability | undefined {
+  return providers.value[area].find((item) => item.provider_key === providerKey)
+}
+
+function canSave(area: DataArea): boolean {
+  const provider = selections.value[area]
+  return !provider || availability(area, provider)?.available === true
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [preferenceResponse, availabilityResponse] = await Promise.all([
+    const [preferenceResponse, ...availabilityResponses] = await Promise.all([
       api<{ preferences: PreferenceResponse[] }>('/settings/provider-preferences'),
-      api<AvailabilityResponse>('/settings/provider-availability/nutrition'),
+      ...areas.map(({ key }) => api<AvailabilityResponse>(`/settings/provider-availability/${key}`)),
     ])
-    providers.value = availabilityResponse.providers
-    selectedProvider.value = preferenceResponse.preferences.find((item) => item.data_area === 'nutrition')?.provider_key ?? ''
+    for (const response of availabilityResponses) providers.value[response.data_area] = response.providers
+    for (const preference of preferenceResponse.preferences) {
+      if (preference.data_area in selections.value) selections.value[preference.data_area] = preference.provider_key
+    }
   } catch (cause) {
     error.value = cause instanceof ApiError
       ? localizeApiError(cause, 'providerPreferencesUi.loadFailed')
@@ -62,19 +82,20 @@ async function load(): Promise<void> {
   }
 }
 
-async function save(): Promise<void> {
-  if (!canSave.value) return
-  saving.value = true
+async function save(area: DataArea): Promise<void> {
+  if (!canSave(area)) return
+  savingArea.value = area
   error.value = ''
   message.value = ''
   try {
-    if (selectedProvider.value) {
-      await api<PreferenceResponse>('/settings/provider-preferences/nutrition', {
+    const provider = selections.value[area]
+    if (provider) {
+      await api<PreferenceResponse>(`/settings/provider-preferences/${area}`, {
         method: 'PUT',
-        body: JSON.stringify({ provider_key: selectedProvider.value }),
+        body: JSON.stringify({ provider_key: provider }),
       })
     } else {
-      await api<void>('/settings/provider-preferences/nutrition', { method: 'DELETE' })
+      await api<void>(`/settings/provider-preferences/${area}`, { method: 'DELETE' })
     }
     message.value = t('providerPreferencesUi.saved')
   } catch (cause) {
@@ -82,7 +103,7 @@ async function save(): Promise<void> {
       ? localizeApiError(cause, 'providerPreferencesUi.saveFailed')
       : t('providerPreferencesUi.saveFailed')
   } finally {
-    saving.value = false
+    savingArea.value = null
   }
 }
 
@@ -100,26 +121,29 @@ onMounted(() => { void load() })
   <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">
     {{ t('common.loading') }}
   </div>
-  <section v-else class="card form-card" :aria-busy="saving">
+  <div v-else class="provider-preference-grid">
     <div v-if="error" class="card error" role="alert">{{ error }}</div>
     <p v-if="message" class="setup-notice" role="status">{{ message }}</p>
-    <form class="form-grid" @submit.prevent="save">
-      <label class="field">
-        <span>{{ t('providerPreferencesUi.providerLabel') }}</span>
-        <select v-model="selectedProvider" name="nutrition-provider">
-          <option value="">{{ t('providerPreferencesUi.useLegacy') }}</option>
-          <option v-for="provider in providers" :key="provider.provider_key" :value="provider.provider_key">
-            {{ providerLabel(provider.provider_key) }} · {{ statusLabel(provider.status) }}
-          </option>
-        </select>
-      </label>
-      <p class="table-secondary">{{ t('providerPreferencesUi.selectionHelp') }}</p>
-      <p v-if="selectedAvailability && !selectedAvailability.available" class="import-message error" role="alert">
-        {{ t('providerPreferencesUi.unavailable') }}
-      </p>
-      <button class="button compact-action" type="submit" :disabled="saving || !canSave">
-        {{ saving ? t('providerPreferencesUi.saving') : t('common.save') }}
-      </button>
-    </form>
-  </section>
+    <section v-for="area in areas" :key="area.key" class="card form-card" :aria-busy="savingArea === area.key">
+      <h2>{{ t(area.title) }}</h2>
+      <p class="table-secondary">{{ t(area.description) }}</p>
+      <form class="form-grid" @submit.prevent="save(area.key)">
+        <label class="field">
+          <span>{{ t('providerPreferencesUi.providerLabel') }}</span>
+          <select v-model="selections[area.key]" :name="`${area.key}-provider`">
+            <option value="">{{ emptyLabel(area.key) }}</option>
+            <option v-for="provider in providers[area.key]" :key="provider.provider_key" :value="provider.provider_key">
+              {{ providerLabel(provider.provider_key) }} · {{ statusLabel(provider.status) }}
+            </option>
+          </select>
+        </label>
+        <p v-if="selections[area.key] && availability(area.key, selections[area.key])?.available === false" class="import-message error" role="alert">
+          {{ t('providerPreferencesUi.unavailable') }}
+        </p>
+        <button class="button compact-action" type="submit" :disabled="savingArea !== null || !canSave(area.key)">
+          {{ savingArea === area.key ? t('providerPreferencesUi.saving') : t('common.save') }}
+        </button>
+      </form>
+    </section>
+  </div>
 </template>

@@ -293,6 +293,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: .95rem;
 }
+.metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .95rem; }
+.metric-card { padding: 1.2rem 1.25rem; }
+.metric-card strong { display: block; margin-top: .45rem; color: #f7f9fc; font-size: clamp(1.7rem, 2.6vw, 2.3rem); }
+.metric-card small, .metric-label { color: var(--muted); font-size: .75rem; }
+.provider-preference-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .95rem; }
+.provider-preference-grid .form-card { width: 100%; }
 .metric-card {
   min-height: 174px;
   padding: 1.22rem 1.25rem;
@@ -2359,7 +2365,7 @@ td strong { color: #f0f4f9; font-weight: 600; }
 }
 
 @media (max-width: 620px) {
-  .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid { grid-template-columns: 1fr; }
+  .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid, .metric-grid, .provider-preference-grid { grid-template-columns: 1fr; }
 
   .backup-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .backup-overview-grid > .backup-metric:last-child .backup-metric-value { font-size: .7rem; letter-spacing: -.02em; white-space: nowrap; }

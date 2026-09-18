@@ -30,6 +30,7 @@ const auth = useAuthStore()
 const target = reactive(createEmptyTargetDraft())
 const targets = ref<Target[]>([])
 const activitySources = ref<ActivitySourceType[]>([])
+const activityProviderPreference = ref<string | null>(null)
 const targetToDelete = ref<Target | null>(null)
 const deletingTarget = ref(false)
 const targetDeleteError = ref('')
@@ -110,12 +111,24 @@ const selectableActivitySources = computed(() => {
   if (target.activity_source_type) sourceTypes.add(target.activity_source_type)
   return [...sourceTypes].sort()
 })
+const activityPreferenceSource = computed<ActivitySourceType | null>(() => {
+  const sources: Record<string, ActivitySourceType> = {
+    apple_health: 'apple_health_xml',
+    health_auto_export: 'health_auto_export_v2',
+    yazio: 'yazio_export_v1',
+  }
+  return activityProviderPreference.value ? sources[activityProviderPreference.value] ?? null : null
+})
+
+const activityManagedByPreference = computed(() => activityPreferenceSource.value !== null)
 
 const activityEnabled = computed({
   get: () => target.activity_mode === 'full',
   set: (enabled: boolean) => {
     target.activity_mode = enabled ? 'full' : 'off'
-    if (!enabled) target.activity_source_type = null
+    target.activity_source_type = enabled
+      ? target.activity_source_type ?? activityPreferenceSource.value
+      : null
   },
 })
 
@@ -131,15 +144,19 @@ function activitySourceLabel(sourceType: ActivitySourceType | null) {
 }
 
 async function loadTargets() {
-  const [targetResult, sourceResult] = await Promise.all([
+  const [targetResult, sourceResult, preferenceResult] = await Promise.all([
     api<Target[]>('/settings/targets'),
     api<Array<{ source_type: ActivitySourceType }>>('/settings/activity-sources'),
+    api<{ preferences?: Array<{ data_area: string; provider_key: string }> }>('/settings/provider-preferences'),
   ])
   targetResult.forEach((item) => targetWeightFromTarget(item))
   targets.value = targetResult
   activitySources.value = Array.isArray(sourceResult)
     ? sourceResult.map((item) => item.source_type)
     : []
+  activityProviderPreference.value = Array.isArray(preferenceResult?.preferences)
+    ? preferenceResult.preferences.find((item) => item.data_area === 'activity_energy')?.provider_key ?? null
+    : null
   const currentTarget = targetResult.find((item) => item.valid_to == null) ?? targetResult[0]
   if (currentTarget) {
     target.calories_kcal = Number(currentTarget.calories_kcal)
@@ -304,11 +321,14 @@ void load()
               <span :class="['activity-status-badge', { active: activityEnabled }]">{{ activityEnabled ? t('activity.statusActive') : t('activity.statusDisabled') }}</span>
             </legend>
             <p class="activity-description">{{ t('activity.description') }}</p>
+            <p v-if="activityManagedByPreference" class="activity-description">
+              {{ t('activity.managedByPreference', { source: activitySourceLabel(target.activity_source_type) }) }}
+            </p>
             <label class="activity-toggle-row">
               <span>{{ t('activity.enabled') }}</span>
-              <input v-model="activityEnabled" type="checkbox" role="switch" :disabled="!selectableActivitySources.length" />
+              <input v-model="activityEnabled" type="checkbox" role="switch" :disabled="!selectableActivitySources.length && !activityManagedByPreference" />
             </label>
-            <div v-if="activityEnabled" class="activity-source-settings">
+            <div v-if="activityEnabled && !activityManagedByPreference" class="activity-source-settings">
               <label class="field">
                 {{ t('activity.sourceLabel') }}
                 <select v-model="target.activity_source_type" name="activity-source" required>
@@ -319,7 +339,7 @@ void load()
                 </select>
               </label>
             </div>
-            <small v-if="!selectableActivitySources.length" class="activity-source-unavailable">
+            <small v-if="!selectableActivitySources.length && !activityManagedByPreference" class="activity-source-unavailable">
               {{ t('activity.noSources') }}
             </small>
           </fieldset>

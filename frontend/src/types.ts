@@ -51,6 +51,18 @@ export interface DailyPoint {
   average_28d?: number | null
   classification?: string
 }
+export interface WeightPoint {
+  date: string
+  weight_kg: number
+}
+
+export interface WeightResponse {
+  start_date: string
+  end_date: string
+  selected_provider: { provider_key: string } | null
+  points: WeightPoint[]
+}
+
 
 export interface ImportBatch {
   id: string

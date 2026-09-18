@@ -5,9 +5,18 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
+from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPES
+from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
+
 NUTRITION_DATA_AREA: Final = "nutrition"
+WEIGHT_DATA_AREA: Final = "weight"
+ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"
 SUPPORTED_PROVIDER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {NUTRITION_DATA_AREA: frozenset({"apple_health", "google_health", "yazio"})}
+    {
+        NUTRITION_DATA_AREA: frozenset({"apple_health", "google_health", "yazio"}),
+        WEIGHT_DATA_AREA: frozenset(WEIGHT_PROVIDER_SOURCE_TYPES),
+        ACTIVITY_ENERGY_DATA_AREA: frozenset(ACTIVITY_PROVIDER_SOURCE_TYPES),
+    }
 )
 
 
@@ -48,8 +57,10 @@ def validate_provider_preference(data_area: str, provider_key: str) -> tuple[str
 
 
 __all__ = [
+    "ACTIVITY_ENERGY_DATA_AREA",
     "NUTRITION_DATA_AREA",
     "SUPPORTED_PROVIDER_KEYS",
+    "WEIGHT_DATA_AREA",
     "ProviderAvailability",
     "normalize_data_area",
     "normalize_provider_key",

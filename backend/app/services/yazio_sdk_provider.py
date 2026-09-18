@@ -645,6 +645,48 @@ def _widget_activity(
         raise YazioProviderInvalidResponseError
     return item_day, _numeric(_field(widget, "activity_energy"))
 
+def _weight_day(
+    client: AuthenticatedClient,
+    item_day: date,
+) -> tuple[date, float | None]:
+    response = client.get_httpx_client().get(
+        f"{_base_url()}/v15/user/bodyvalues/weight/last",
+        params={"date": item_day.isoformat()},
+    )
+    try:
+        _raise_for_status(response)
+        _response_content_is_bounded(response)
+        payload = response.json()
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise YazioProviderInvalidResponseError from exc
+    finally:
+        response.close()
+    if payload is None:
+        return item_day, None
+    if not isinstance(payload, Mapping):
+        raise YazioProviderInvalidResponseError
+    return item_day, _numeric(payload.get("value", _MISSING))
+
+
+def _fetch_weight_range(
+    client: AuthenticatedClient,
+    start_day: date,
+    end_day: date,
+    *,
+    max_workers: int,
+) -> dict[str, float]:
+    requested_days = (
+        start_day + timedelta(days=offset)
+        for offset in range((end_day - start_day).days + 1)
+    )
+    weights: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for item_day, value in executor.map(partial(_weight_day, client), requested_days):
+            if value is not None:
+                weights[item_day.isoformat()] = value
+    return weights
+
+
 
 class YazioSdkProvider:
     """Map safe v22 SDK responses into the legacy parser envelope."""
@@ -853,8 +895,14 @@ class YazioSdkProvider:
                     if activity is not None:
                         days[item_day.isoformat()]["activity_energy"] = activity
 
+            weight = _fetch_weight_range(
+                authenticated,
+                start_day,
+                end_day,
+                max_workers=settings.yazio_request_workers,
+            )
             return YazioProviderResult(
-                payload={"days": days},
+                payload={"days": days, "weight": weight},
                 metadata=YazioProviderMetadata(
                     micronutrient_complete=False,
                     provider_mode="sdk",

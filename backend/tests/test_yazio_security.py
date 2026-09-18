@@ -2,12 +2,13 @@ import io
 import json
 import subprocess
 from datetime import date
+from typing import ClassVar
 
 import pytest
 
 from app.config import settings
 from app.schemas import ImportSummary
-from app.services import yazio_sync, yazio_transport
+from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_provider import YazioProviderMetadata, YazioProviderResult
 from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
@@ -145,7 +146,10 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
         def fetch(self, email, password, start_day, end_day, include_micronutrients):
             calls.append((email, include_micronutrients))
             return YazioProviderResult(
-                payload={"days": [{"local_date": start_day.isoformat()}]},
+                payload={
+                    "days": [{"local_date": start_day.isoformat()}],
+                    "weight": {"2026-08-01": 72.5},
+                },
                 metadata=YazioProviderMetadata(
                     micronutrient_complete=False,
                     provider_mode="sdk",
@@ -153,6 +157,11 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
             )
 
     monkeypatch.setattr(yazio_transport, "get_yazio_provider", lambda mode: _Provider())
+    monkeypatch.setattr(
+        yazio_transport,
+        "_login",
+        lambda *_args: pytest.fail("SDK worker must use the SDK provider authentication"),
+    )
     result = _execute_worker(
         {
             "operation": "fetch",
@@ -167,9 +176,45 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
             "request_workers": 3,
         }
     )
-
-    assert result == {"days": [{"local_date": "2026-08-01"}]}
+    assert result == {
+        "days": [{"local_date": "2026-08-01"}],
+        "weight": {"2026-08-01": 72.5},
+    }
     assert calls == [("owner@example.com", True)]
+
+
+def test_sdk_weight_range_parses_bounded_endpoint_payload() -> None:
+    class _Response:
+        status_code = 200
+        headers: ClassVar[dict[str, str]] = {}
+        content = b'{"value":72.5}'
+
+        @staticmethod
+        def json() -> dict[str, float]:
+            return {"value": 72.5}
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    class _HTTPClient:
+        @staticmethod
+        def get(*_args, **kwargs) -> _Response:
+            assert kwargs["params"] == {"date": "2026-08-01"}
+            return _Response()
+
+    class _Authenticated:
+        @staticmethod
+        def get_httpx_client() -> _HTTPClient:
+            return _HTTPClient()
+
+    result = yazio_sdk_provider._fetch_weight_range(
+        _Authenticated(),
+        date(2026, 8, 1),
+        date(2026, 8, 1),
+        max_workers=1,
+    )
+    assert result == {"2026-08-01": 72.5}
 
 
 def test_worker_rejects_missing_provider_mode() -> None:

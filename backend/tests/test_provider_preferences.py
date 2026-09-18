@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.models import User, UserProviderPreference, YazioConnection
+from app.models import (
+    HealthSample,
+    ImportBatch,
+    NutritionTarget,
+    User,
+    UserProviderPreference,
+    YazioConnection,
+)
 from app.provider_preferences import (
+    ACTIVITY_ENERGY_DATA_AREA,
     NUTRITION_DATA_AREA,
     SUPPORTED_PROVIDER_KEYS,
+    WEIGHT_DATA_AREA,
     normalize_provider_key,
     validate_provider_preference,
 )
@@ -38,6 +48,41 @@ def _add_yazio(db, user) -> None:
         )
     )
     db.commit()
+
+
+def _add_sample(
+    db,
+    user,
+    *,
+    metric_type: str,
+    source_type: str,
+    value: Decimal,
+    local_date: date,
+    source_identifier: str = "test-source",
+) -> None:
+    batch = ImportBatch(user_id=user.id, source_type=source_type, status="completed")
+    db.add(batch)
+    db.flush()
+    timestamp = datetime.combine(local_date, datetime.min.time(), tzinfo=UTC)
+    db.add(
+        HealthSample(
+            user_id=user.id,
+            import_batch_id=batch.id,
+            external_sample_id=f"{source_type}-{metric_type}-{local_date}",
+            fingerprint=f"{source_type}-{metric_type}-{local_date}-{user.id}".replace("-", "")[:64],
+            source_type=source_type,
+            source_identifier=source_identifier,
+            metric_type=metric_type,
+            value=value,
+            unit="kg" if metric_type == "weight_kg" else "kcal",
+            original_value=value,
+            original_unit="kg" if metric_type == "weight_kg" else "kcal",
+            start_at=timestamp,
+            end_at=timestamp,
+            local_date=local_date,
+            timezone="UTC",
+        )
+    )
 
 
 def test_provider_preference_domain_accepts_canonical_nutrition_provider() -> None:
@@ -357,3 +402,96 @@ def test_micronutrients_without_source_rejects_unavailable_saved_provider(
     assert response.status_code == 503
     assert response.json()["type"] == "urn:calograph:problem:provider-selection-unavailable"
     assert db.get(UserProviderPreference, (user.id, "nutrition")) is not None
+def test_weight_api_is_opt_in_and_user_scoped(client: TestClient, user, db) -> None:
+    sample_day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_sample(
+        db,
+        user,
+        metric_type="weight_kg",
+        source_type="yazio_export_v1",
+        value=Decimal("72.5"),
+        local_date=sample_day,
+        source_identifier="yazio-account",
+    )
+    other = User(username="other-weight", password_hash="not-used", timezone="Europe/Berlin")
+    db.add(other)
+    db.flush()
+    _add_sample(
+        db,
+        other,
+        metric_type="weight_kg",
+        source_type="yazio_export_v1",
+        value=Decimal("99"),
+        local_date=sample_day,
+    )
+    db.commit()
+    _login(client)
+    without_preference = client.get(
+        "/api/v1/analytics/weight?start=2026-09-15&end=2026-09-15"
+    )
+    assert without_preference.status_code == 200
+    assert without_preference.json()["selected_provider"] is None
+    assert without_preference.json()["points"] == []
+
+    db.add(
+        UserProviderPreference(
+            user_id=user.id,
+            data_area=WEIGHT_DATA_AREA,
+            provider_key="yazio",
+        )
+    )
+    db.commit()
+    response = client.get(
+        "/api/v1/analytics/weight?start=2026-09-15&end=2026-09-15"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "start_date": "2026-09-15",
+        "end_date": "2026-09-15",
+        "selected_provider": {"provider_key": "yazio"},
+        "points": [{"date": "2026-09-15", "weight_kg": 72.5}],
+    }
+
+
+def test_activity_provider_change_creates_effective_target_version(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="yazio_export_v1",
+        value=Decimal("400"),
+        local_date=date(2026, 9, 15),
+    )
+    db.commit()
+    csrf = _login(client)
+
+    response = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_key": "yazio"},
+    )
+
+    assert response.status_code == 200
+    db.expire_all()
+    targets = list(
+        db.scalars(
+            select(NutritionTarget)
+            .where(NutritionTarget.user_id == user.id)
+            .order_by(NutritionTarget.valid_from)
+        )
+    )
+    assert len(targets) == 2
+    assert targets[0].activity_source_type == "apple_health_xml"
+    assert targets[0].valid_to is not None
+    assert targets[1].activity_source_type == "yazio_export_v1"
+    assert targets[1].valid_from == targets[0].valid_to

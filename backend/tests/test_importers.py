@@ -53,6 +53,7 @@ def test_unit_conversions() -> None:
     with pytest.raises(ImportFieldError, match="Einheit wird nicht unterstützt"):
         normalize_value(Decimal("1"), "mg", "kcal")
 
+    assert normalize_value(Decimal("154.323583"), "lb", "kg") == Decimal("70.000000")
 
 def test_decimal_values_fit_the_database_contract() -> None:
     assert decimal_value("999999999999.123456789012") == Decimal(
@@ -129,10 +130,14 @@ def test_health_auto_export_and_unknown_type() -> None:
         "Europe/Berlin",
     )
     assert result.received == 5
-    assert len(result.samples) == 2
-    assert {sample.metric_type for sample in result.samples} == {"protein_g", "active_energy_kcal"}
+    assert len(result.samples) == 3
+    assert {sample.metric_type for sample in result.samples} == {
+        "protein_g",
+        "active_energy_kcal",
+        "weight_kg",
+    }
     assert result.unknown_types == {"unknown_private_metric"}
-    assert result.unknown_count == 3
+    assert result.unknown_count == 2
 
 
 def test_cal_energy_converts_in_json_and_apple_health_xml() -> None:
@@ -553,6 +558,29 @@ def test_apple_food_correlation_bounds_legacy_child_fields() -> None:
     correlation = next(record.food_correlation for record in records if record.food_correlation)
     assert sample.source_name is None
     assert correlation.external_uuid is None
+
+
+def test_yazio_weight_is_normalized_and_identified_by_local_day() -> None:
+    result = parse_yazio_export(
+        {
+            "weight": {
+                "2026-07-20": {"value": 154.323583, "unit": "lb"},
+                "2026-07-21": 70,
+            }
+        },
+        "Europe/Berlin",
+    )
+
+    assert result.received == 2
+    assert [sample.metric_type for sample in result.samples] == ["weight_kg", "weight_kg"]
+    assert [sample.value for sample in result.samples] == [
+        Decimal("70.000000"),
+        Decimal("70.000000"),
+    ]
+    assert [sample.external_sample_id for sample in result.samples] == [
+        "2026-07-20:weight_kg",
+        "2026-07-21:weight_kg",
+    ]
 
 
 def test_yazio_days_export_is_aggregated_without_meal_details() -> None:

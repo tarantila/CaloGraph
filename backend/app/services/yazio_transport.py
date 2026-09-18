@@ -570,6 +570,7 @@ def _login(client: _BoundedYazioClient, email: str, password: str) -> str:
     return token
 
 
+
 def _execute_worker(payload: dict[str, object]) -> object:
     operation = payload.get("operation")
     email = payload.get("email")
@@ -620,6 +621,8 @@ def _execute_worker(payload: dict[str, object]) -> object:
             from app.services.yazio_provider import YazioProviderInvalidResponseError
 
             raise YazioProviderInvalidResponseError from exc
+        if start_day > end_day or (end_day - start_day).days >= 366:
+            raise ValueError("Invalid YAZIO date range")
         aggregate = provider.fetch(
             email,
             password,
@@ -685,8 +688,10 @@ def _execute_worker(payload: dict[str, object]) -> object:
                 else {}
             ),
         }
+
     finally:
         client.session.close()
+
 
 
 def _worker_main() -> int:

@@ -10,7 +10,11 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_SOURCE_TYPES
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPES,
+    ACTIVITY_SOURCE_TYPES,
+)
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -46,7 +50,11 @@ from app.problem_types import (
     VALIDATION_ERROR,
     ProblemHTTPException,
 )
-from app.provider_preferences import normalize_data_area, validate_provider_preference
+from app.provider_preferences import (
+    ACTIVITY_ENERGY_DATA_AREA,
+    normalize_data_area,
+    validate_provider_preference,
+)
 from app.schemas import (
     ActivitySourceResponse,
     MfaCodeRequest,
@@ -105,7 +113,11 @@ from app.services.passkeys import (
     delete_passkey,
     list_passkeys,
 )
-from app.services.provider_preferences import provider_availability, provider_is_available
+from app.services.provider_preferences import (
+    apply_activity_provider_to_current_target,
+    provider_availability,
+    provider_is_available,
+)
 from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
@@ -579,6 +591,12 @@ def update_provider_preference(
         db.add(preference)
     else:
         preference.provider_key = normalized_provider
+    if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
+        apply_activity_provider_to_current_target(
+            db,
+            user=user,
+            source_type=ACTIVITY_PROVIDER_SOURCE_TYPES[normalized_provider],
+        )
     db.commit()
     db.refresh(preference)
     return preference
@@ -940,7 +958,55 @@ def update_target(
         payload,
         existing_source=target.activity_source_type,
     )
-    for field, value in payload.model_dump(exclude={"valid_from"}).items():
+    today = datetime.now(ZoneInfo(user.timezone)).date()
+    source_changed = (
+        payload.activity_source_type is not None
+        and payload.activity_source_type != target.activity_source_type
+    )
+    target_fields = (
+        "calories_kcal",
+        "maintenance_kcal",
+        "target_weight_min_kg",
+        "target_weight_max_kg",
+        "activity_mode",
+        "activity_source_type",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "fiber_g",
+        "water_ml",
+    )
+    changes = payload.model_dump(exclude={"valid_from"}, exclude_unset=True)
+    if source_changed and target.valid_from < today:
+        if target.valid_to is not None and today >= target.valid_to:
+            raise ProblemHTTPException(
+                status_code=409,
+                detail="Historische Budgetversionen dürfen nicht nachträglich geändert werden",
+                problem_type=VALIDATION_ERROR,
+            )
+        later = db.scalar(
+            select(NutritionTarget.valid_from)
+            .where(
+                NutritionTarget.user_id == user.id,
+                NutritionTarget.valid_from > today,
+            )
+            .order_by(NutritionTarget.valid_from)
+        )
+        values = {field: getattr(target, field) for field in target_fields}
+        values.update(changes)
+        target.valid_to = today
+        version = NutritionTarget(
+            user_id=user.id,
+            valid_from=today,
+            valid_to=later,
+            **values,
+        )
+        db.add(version)
+        db.commit()
+        db.refresh(version)
+        _log_activity_target_change(version, user)
+        return version
+    for field, value in changes.items():
         setattr(target, field, value)
     db.commit()
     db.refresh(target)

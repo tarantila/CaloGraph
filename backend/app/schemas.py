@@ -569,6 +569,20 @@ class DailyPoint(BaseModel):
     tracking_status: TrackingStatus
     tracking_score: int
     tracking_reasons: list[str]
+class WeightPoint(BaseModel):
+    date: date
+    weight_kg: float
+
+
+class WeightSelectedProviderResponse(BaseModel):
+    provider_key: str
+
+
+class WeightResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: WeightSelectedProviderResponse | None
+    points: list[WeightPoint]
 
 
 class MicronutrientSelectedProviderResponse(BaseModel):

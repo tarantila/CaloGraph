@@ -163,6 +163,11 @@ or environment configuration is required.
 2. Open **Importe** in CaloGraph.
 3. Select and import the files one after another.
 
+When a YAZIO connection is configured, JSON and file uploads use that
+connection's stable source identifier as well. Therefore imported `weight_kg`
+samples remain visible when YAZIO is selected as the weight provider; an
+explicit `X-Client-Identifier` remains a separate source instance.
+
 The adapter supports the exporter's original date object, a wrapper shaped as
 `{ "days": { ... } }`, and the original `nutrients.json`. It also accepts
 simple daily objects containing `energy`, `protein`, `carb`, and `fat`.
@@ -278,6 +283,7 @@ CaloGraph account through `user_id`.
 |---|---|---|
 | Sum of `energy.energy` across all meals | `dietary_energy_kcal` | kcal |
 | Daily `activity_energy`, when supplied | `active_energy_kcal` | kcal |
+| Daily body weight from `/user/bodyvalues/weight/last` | `weight_kg` | kg |
 | Sum of `nutrient.protein` | `protein_g` | g |
 | Sum of `nutrient.fat` | `fat_g` | g |
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
@@ -303,6 +309,12 @@ persisted. Even when general raw-payload retention is enabled, the YAZIO adapter
 does not store the complete export file. Re-fetching the same day updates stable
 daily values idempotently.
 
+The known YAZIO Weight endpoint was characterized from existing reference
+implementations. Productive SDK synchronization calls that endpoint through
+CaloGraph's own bounded SDK HTTP client and parses the payload in CaloGraph;
+`yazio-exporter` is not required for Weight. Values are normalized to kg and
+use `<local-date>:weight_kg` as their stable external ID; a corrected value
+updates that sample. A day omitted by YAZIO is not treated as a deletion.
 Micronutrients come from the 26 separate daily endpoints provided by
 `yazio-exporter==0.2.0`. Missing product details can therefore look like low
 intake. The analysis reports data coverage separately and treats values as a
