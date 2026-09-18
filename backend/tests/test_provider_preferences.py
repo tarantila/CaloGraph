@@ -25,6 +25,8 @@ from app.provider_preferences import (
 )
 from app.source_priority import compatibility as source_priority_compatibility
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
+from app.source_priority.application import create_policy_with_rules
+from app.source_priority.contracts import PriorityRuleSpec
 
 PATH = "/api/v1/settings/provider-preferences"
 AVAILABILITY_PATH = "/api/v1/settings/provider-availability/nutrition"
@@ -50,6 +52,18 @@ def _add_yazio(db, user) -> None:
         )
     )
     db.commit()
+
+
+def _add_priority_policy(db, user, *rules: PriorityRuleSpec):
+    policy = create_policy_with_rules(
+        db,
+        user.id,
+        version=1,
+        effective_from=datetime(2026, 9, 18, tzinfo=UTC),
+        rules=rules,
+    )
+    db.commit()
+    return policy
 
 
 def _add_sample(
@@ -228,6 +242,205 @@ def test_provider_preference_api_deletes_legacy_only_value(
     db.expire_all()
     assert db.get(UserProviderPreference, (user.id, "nutrition")) is None
     assert client.get(PATH).json() == {"preferences": []}
+
+
+def test_provider_preferences_get_is_grouped_and_keeps_unavailable_persisted_entries(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec("nutrition", None, "yazio", 2),
+        PriorityRuleSpec("weight", None, "yazio", 1),
+        PriorityRuleSpec("nutrition", None, "google_health", 1),
+    )
+    _login(client)
+
+    response = client.get(PATH)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "preferences": [
+            {"data_area": "nutrition", "provider_key": "google_health"},
+            {"data_area": "nutrition", "provider_key": "yazio"},
+            {"data_area": "weight", "provider_key": "yazio"},
+        ]
+    }
+
+
+def test_provider_preference_put_replaces_complete_list_atomically(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    _add_yazio(db, user)
+    initial = _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec("nutrition", None, "google_health", 1),
+        PriorityRuleSpec("nutrition", None, "yazio", 2),
+    )
+    other = User(username="other", password_hash="not-used", timezone="Europe/Berlin")
+    db.add(other)
+    db.flush()
+    other_policy = _add_priority_policy(
+        db,
+        other,
+        PriorityRuleSpec("nutrition", None, "yazio", 1),
+    )
+    monkeypatch.setattr("app.api.settings.provider_is_available", lambda *args, **kwargs: True)
+    csrf = _login(client)
+
+    missing_csrf = client.put(
+        f"{PATH}/nutrition",
+        json={
+            "providers": [
+                {"provider_key": "yazio", "priority_rank": 1},
+                {"provider_key": "google_health", "priority_rank": 2},
+            ]
+        },
+    )
+    assert missing_csrf.status_code == 403
+
+    replaced = client.put(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "providers": [
+                {"provider_key": "yazio", "priority_rank": 1},
+                {"provider_key": "google_health", "priority_rank": 2},
+            ]
+        },
+    )
+    assert replaced.status_code == 200
+    assert client.get(PATH).json() == {
+        "preferences": [
+            {"data_area": "nutrition", "provider_key": "yazio"},
+            {"data_area": "nutrition", "provider_key": "google_health"},
+        ]
+    }
+    latest = db.scalar(
+        select(SourcePriorityPolicy)
+        .where(SourcePriorityPolicy.user_id == user.id)
+        .order_by(SourcePriorityPolicy.version.desc())
+    )
+    assert latest is not None
+    assert latest.id != initial.policy_id
+    assert [
+        (rule.provider_key, rule.priority_rank)
+        for rule in db.scalars(
+            select(SourcePriorityRule)
+            .where(
+                SourcePriorityRule.user_id == user.id,
+                SourcePriorityRule.policy_id == latest.id,
+                SourcePriorityRule.data_area == "nutrition",
+                SourcePriorityRule.metric_key.is_(None),
+            )
+            .order_by(SourcePriorityRule.priority_rank)
+        )
+    ] == [("yazio", 1), ("google_health", 2)]
+
+    invalid = client.put(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "providers": [
+                {"provider_key": "yazio", "priority_rank": 1},
+                {"provider_key": "yazio", "priority_rank": 2},
+            ]
+        },
+    )
+    assert invalid.status_code == 422
+    assert (
+        db.scalar(
+            select(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == user.id)
+            .order_by(SourcePriorityPolicy.version.desc())
+        ).id
+        == latest.id
+    )
+    assert (
+        db.scalar(
+            select(SourcePriorityPolicy)
+            .where(SourcePriorityPolicy.user_id == other.id)
+            .order_by(SourcePriorityPolicy.version.desc())
+        ).id
+        == other_policy.policy_id
+    )
+
+
+def test_provider_preference_delete_removes_all_entries_for_area(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec("nutrition", None, "google_health", 1),
+        PriorityRuleSpec("nutrition", None, "yazio", 2),
+        PriorityRuleSpec("weight", None, "yazio", 1),
+    )
+    csrf = _login(client)
+
+    deleted = client.delete(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert deleted.status_code == 204
+    assert client.get(PATH).json() == {
+        "preferences": [{"data_area": "weight", "provider_key": "yazio"}]
+    }
+
+
+def test_provider_preference_put_rejects_invalid_rank_without_mutation(
+    client: TestClient,
+    user,
+    db,
+    monkeypatch,
+) -> None:
+    _add_yazio(db, user)
+    _add_priority_policy(db, user, PriorityRuleSpec("nutrition", None, "yazio", 1))
+    monkeypatch.setattr("app.api.settings.provider_is_available", lambda *args, **kwargs: True)
+    csrf = _login(client)
+
+    response = client.put(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "providers": [
+                {"provider_key": "yazio", "priority_rank": 2},
+                {"provider_key": "google_health", "priority_rank": 3},
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get(PATH).json() == {
+        "preferences": [{"data_area": "nutrition", "provider_key": "yazio"}]
+    }
+
+
+def test_provider_availability_keeps_stable_status_values(client: TestClient, user, db) -> None:
+    _add_yazio(db, user)
+    _login(client)
+
+    response = client.get(AVAILABILITY_PATH)
+
+    assert response.status_code == 200
+    statuses = {item["provider_key"]: item["status"] for item in response.json()["providers"]}
+    assert statuses["yazio"] == "available"
+    assert set(statuses.values()) <= {
+        "available",
+        "disabled",
+        "not_configured",
+        "reauth_required",
+        "no_data",
+    }
 
 
 def test_provider_preference_api_rejects_unavailable_provider(

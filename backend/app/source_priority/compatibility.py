@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.exc import OperationalError
@@ -40,10 +40,17 @@ def _policy_preferences(
     user_id: UUID,
     policy: SourcePriorityPolicy,
 ) -> list[ProviderPreferenceSnapshot]:
-    return [
-        ProviderPreferenceSnapshot(data_area=rule.data_area, provider_key=rule.provider_key)
+    rules = [
+        rule
         for rule in list_rules(db, user_id, policy.id)
         if rule.metric_key is None
+    ]
+    return [
+        ProviderPreferenceSnapshot(data_area=rule.data_area, provider_key=rule.provider_key)
+        for rule in sorted(
+            rules,
+            key=lambda rule: (rule.data_area, rule.priority_rank, rule.provider_key, str(rule.id)),
+        )
     ]
 
 
@@ -78,7 +85,7 @@ def _legacy_delete(db: Session, user_id: UUID, data_area: str) -> None:
 def list_provider_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
     policy = _latest_policy(db, user_id)
     if policy is not None:
-        return sorted(_policy_preferences(db, user_id, policy), key=lambda item: item.data_area)
+        return _policy_preferences(db, user_id, policy)
     return _legacy_preferences(db, user_id)
 
 
@@ -111,6 +118,63 @@ def _next_effective_from(
     return candidate
 
 
+def replace_provider_preferences(
+    db: Session,
+    *,
+    user_id: UUID,
+    data_area: str,
+    provider_keys: Sequence[str],
+) -> list[ProviderPreferenceSnapshot]:
+    normalized_keys = tuple(provider_keys)
+    if not normalized_keys:
+        raise ValueError("provider list must not be empty")
+    if len(normalized_keys) != len(set(normalized_keys)):
+        raise ValueError("provider list must not contain duplicates")
+
+    current_policy = _latest_policy(db, user_id)
+    current_rules = list_rules(db, user_id, current_policy.id) if current_policy else []
+    current_area_rules = sorted(
+        (
+            rule
+            for rule in current_rules
+            if rule.data_area == data_area and rule.metric_key is None
+        ),
+        key=lambda rule: (rule.priority_rank, rule.provider_key, str(rule.id)),
+    )
+    if [rule.provider_key for rule in current_area_rules] == list(normalized_keys):
+        return [
+            ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
+            for provider_key in normalized_keys
+        ]
+
+    rules = [
+        PriorityRuleSpec(
+            data_area=rule.data_area,
+            metric_key=rule.metric_key,
+            provider_key=rule.provider_key,
+            priority_rank=rule.priority_rank,
+        )
+        for rule in current_rules
+        if not (rule.data_area == data_area and rule.metric_key is None)
+    ]
+    rules.extend(
+        PriorityRuleSpec(data_area, None, provider_key, rank)
+        for rank, provider_key in enumerate(normalized_keys, start=1)
+    )
+    version = current_policy.version + 1 if current_policy is not None else 1
+    create_policy_with_rules(
+        db,
+        user_id,
+        version,
+        _next_effective_from(db, user_id, datetime.now(UTC)),
+        tuple(rules),
+    )
+    return [
+        ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
+        for provider_key in normalized_keys
+    ]
+
+
 def set_provider_preference(
     db: Session,
     *,
@@ -118,34 +182,12 @@ def set_provider_preference(
     data_area: str,
     provider_key: str,
 ) -> ProviderPreferenceSnapshot:
-    current_policy = _latest_policy(db, user_id)
-    current = get_provider_preference(db, user_id, data_area)
-    if current_policy is None:
-        rules: list[PriorityRuleSpec] = []
-        version = 1
-    else:
-        rules = [
-            PriorityRuleSpec(
-                data_area=rule.data_area,
-                metric_key=rule.metric_key,
-                provider_key=rule.provider_key,
-                priority_rank=rule.priority_rank,
-            )
-            for rule in list_rules(db, user_id, current_policy.id)
-            if not (rule.data_area == data_area and rule.metric_key is None)
-        ]
-        version = current_policy.version + 1
-    if current is None or current.provider_key != provider_key:
-        rules.append(PriorityRuleSpec(data_area, None, provider_key, 1))
-        effective_from = _next_effective_from(db, user_id, datetime.now(UTC))
-        create_policy_with_rules(
-            db,
-            user_id,
-            version,
-            effective_from,
-            tuple(rules),
-        )
-    return ProviderPreferenceSnapshot(data_area=data_area, provider_key=provider_key)
+    return replace_provider_preferences(
+        db,
+        user_id=user_id,
+        data_area=data_area,
+        provider_keys=(provider_key,),
+    )[0]
 
 
 def delete_provider_preference(db: Session, *, user_id: UUID, data_area: str) -> None:
@@ -177,5 +219,6 @@ __all__ = [
     "delete_provider_preference",
     "get_provider_preference",
     "list_provider_preferences",
+    "replace_provider_preferences",
     "set_provider_preference",
 ]

@@ -61,3 +61,14 @@
 - Transitional-delete targeted command:
   - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
   - **74 passed, 1 warning**
+
+## Task 3 priority API
+
+- Extended provider preference PUT payloads with complete ordered provider lists (`providers` entries or `provider_keys`) while preserving the legacy single `provider_key` form.
+- GET now returns deterministic entries grouped by `data_area` and ascending wildcard `priority_rank`; persisted providers remain visible regardless of current availability.
+- Complete-list replacement validates the entire list, provider support, availability, duplicate keys, and contiguous ranks before creating one immutable policy; invalid requests leave the prior policy unchanged.
+- DELETE removes all wildcard preference entries for the requested area in one immutable policy version; availability remains a separate endpoint with stable status literals.
+- Added focused tests for ordering, atomic replacement, validation/duplicates/ranks, CSRF, user isolation, delete-all, persisted unavailable providers, and availability statuses.
+- Targeted Task 2/3 command:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_priority_migration.py tests/test_provider_preferences.py tests/test_source_priority_a2.py tests/test_source_priority_b4.py tests/test_google_health_migration.py`
+  - **79 passed, 1 warning**

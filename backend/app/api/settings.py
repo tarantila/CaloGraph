@@ -90,7 +90,7 @@ from app.source_priority.compatibility import (
     ProviderPreferenceSnapshot,
     delete_provider_preference as delete_source_priority_preference,
     list_provider_preferences,
-    set_provider_preference,
+    replace_provider_preferences,
 )
 from app.security_events import log_security_event, security_context_references, security_reference
 from app.services.achievements import unlock_achievement_keys
@@ -505,6 +505,30 @@ def update_profile(
     return user
 
 
+def _normalized_provider_preference_list(
+    data_area: str,
+    payload: ProviderPreferenceUpdate,
+) -> tuple[str, tuple[str, ...]]:
+    normalized_area = normalize_data_area(data_area)
+    if payload.provider_key is not None:
+        raw_provider_keys = (payload.provider_key,)
+    elif payload.providers is not None:
+        raw_provider_keys = tuple(
+            item.provider_key if hasattr(item, "provider_key") else item
+            for item in payload.providers
+        )
+    else:
+        raw_provider_keys = tuple(payload.provider_keys or ())
+
+    normalized_provider_keys = tuple(
+        validate_provider_preference(normalized_area, provider_key)[1]
+        for provider_key in raw_provider_keys
+    )
+    if len(normalized_provider_keys) != len(set(normalized_provider_keys)):
+        raise ValueError("provider list must not contain duplicates")
+    return normalized_area, normalized_provider_keys
+
+
 @router.get(
     "/provider-preferences",
     response_model=ProviderPreferenceListResponse,
@@ -560,8 +584,8 @@ def update_provider_preference(
     db: Session = Depends(get_db),
 ) -> ProviderPreferenceSnapshot:
     try:
-        normalized_area, normalized_provider = validate_provider_preference(
-            data_area, payload.provider_key
+        normalized_area, normalized_providers = _normalized_provider_preference_list(
+            data_area, payload
         )
     except ValueError as exc:
         raise ProblemHTTPException(
@@ -569,31 +593,32 @@ def update_provider_preference(
             detail="Provider ist für diesen fachlichen Datenbereich nicht zulässig",
             problem_type=VALIDATION_ERROR,
         ) from exc
-    if not provider_is_available(
+    for normalized_provider in normalized_providers:
+        if not provider_is_available(
+            db,
+            user_id=user.id,
+            data_area=normalized_area,
+            provider_key=normalized_provider,
+        ):
+            raise ProblemHTTPException(
+                status_code=409,
+                detail="Provider ist für dieses Konto nicht verfügbar",
+                problem_type=PROVIDER_NOT_AVAILABLE,
+            )
+    preferences = replace_provider_preferences(
         db,
         user_id=user.id,
         data_area=normalized_area,
-        provider_key=normalized_provider,
-    ):
-        raise ProblemHTTPException(
-            status_code=409,
-            detail="Provider ist für dieses Konto nicht verfügbar",
-            problem_type=PROVIDER_NOT_AVAILABLE,
-        )
-    preference = set_provider_preference(
-        db,
-        user_id=user.id,
-        data_area=normalized_area,
-        provider_key=normalized_provider,
+        provider_keys=normalized_providers,
     )
     if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
         apply_activity_provider_to_current_target(
             db,
             user=user,
-            source_type=ACTIVITY_PROVIDER_SOURCE_TYPES[normalized_provider],
+            source_type=ACTIVITY_PROVIDER_SOURCE_TYPES[normalized_providers[0]],
         )
     db.commit()
-    return preference
+    return preferences[0]
 
 
 @router.delete("/provider-preferences/{data_area}", status_code=204)
