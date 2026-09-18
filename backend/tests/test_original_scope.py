@@ -407,20 +407,20 @@ def test_portable_activity_snapshot_chain_round_trip(client, user, db) -> None:
     assert export.status_code == 200
     with ZipFile(io.BytesIO(export.content)) as archive:
         exported_targets = json.loads(archive.read("targets.json"))
+    assert "target_id" not in exported_targets[0]
     assert exported_targets[0]["activity_sources"] == [
         {
-            "target_id": str(target.id),
             "priority": 1,
             "provider_key": "yazio",
             "source_type": "yazio_export_v1",
         },
         {
-            "target_id": str(target.id),
             "priority": 2,
             "provider_key": "apple_health",
             "source_type": "apple_health_xml",
         },
     ]
+    assert all("target_id" not in source for source in exported_targets[0]["activity_sources"])
 
     db.query(NutritionTargetActivitySource).filter(
         NutritionTargetActivitySource.target_id == target.id

@@ -1098,6 +1098,94 @@ def test_activity_provider_priority_snapshots_preserve_history_and_same_day_upda
     ]
 
 
+def test_current_day_target_put_preserves_complete_activity_policy_chain(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    today = datetime.now(UTC).date()
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.valid_from = today
+    target.activity_mode = "off"
+    target.activity_source_type = None
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="apple_health_xml",
+        value=Decimal("300"),
+        local_date=today,
+    )
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="yazio_export_v1",
+        value=Decimal("400"),
+        local_date=today,
+    )
+    db.commit()
+    csrf = _login(client)
+
+    preference = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["yazio", "apple_health"]},
+    )
+    assert preference.status_code == 200
+    db.expire_all()
+    target = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from == today,
+        )
+    )
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    db.commit()
+
+    response = client.put(
+        f"/api/v1/settings/targets/{today.isoformat()}",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": today.isoformat(),
+            "calories_kcal": "2000",
+            "maintenance_kcal": None,
+            "target_weight_min_kg": None,
+            "target_weight_max_kg": None,
+            "activity_mode": "full",
+            "activity_source_type": "yazio_export_v1",
+            "protein_g": "120",
+            "carbs_g": None,
+            "fat_g": None,
+            "fiber_g": None,
+        },
+    )
+
+    assert response.status_code == 200
+    db.expire_all()
+    target = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from == today,
+        )
+    )
+    assert target is not None
+    assert target.activity_source_type == "yazio_export_v1"
+    snapshots = list(
+        db.scalars(
+            select(NutritionTargetActivitySource)
+            .where(NutritionTargetActivitySource.target_id == target.id)
+            .order_by(NutritionTargetActivitySource.priority)
+        )
+    )
+    assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
+        (1, "yazio", "yazio_export_v1"),
+        (2, "apple_health", "apple_health_xml"),
+    ]
+
+
 def test_historical_activity_mode_change_preserves_target_and_snapshot_chain(
     client: TestClient,
     user,

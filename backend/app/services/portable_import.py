@@ -83,8 +83,6 @@ def _activity_source_types_for_import(target: ExportTarget) -> tuple[str, ...]:
         )
     if target.activity_mode != "full" or target.activity_source_type is None:
         raise PortableImportError("Aktivitäts-Snapshotkette ist für dieses Ziel ungültig")
-    if target.target_id is None:
-        raise PortableImportError("Aktivitäts-Snapshotkette ohne Ziel-ID ist ungültig")
     if len(snapshots) > len(ACTIVITY_SOURCE_TYPES):
         raise PortableImportError("Aktivitäts-Snapshotkette ist zu lang")
     expected_priorities = set(range(1, len(snapshots) + 1))
@@ -98,8 +96,6 @@ def _activity_source_types_for_import(target: ExportTarget) -> tuple[str, ...]:
     seen_provider_keys: set[str] = set()
     ordered_snapshots = sorted(snapshots, key=lambda snapshot: snapshot.priority)
     for snapshot in ordered_snapshots:
-        if snapshot.target_id != target.target_id:
-            raise PortableImportError("Aktivitäts-Snapshot gehört zu einem anderen Ziel")
         if snapshot.source_type not in ACTIVITY_SOURCE_TYPES:
             raise PortableImportError("Aktivitäts-Snapshotquelle ist ungültig")
         if snapshot.source_type in seen_source_types:

@@ -1074,11 +1074,12 @@ def update_target(
     for field, value in changes.items():
         setattr(target, field, value)
     if activity_changed:
-        replace_activity_target_sources(
-            db,
-            target,
-            (target.activity_source_type,) if target.activity_mode == "full" else (),
+        activity_sources = (
+            _activity_priority_chain(db, user.id, target.activity_source_type)
+            if target.activity_mode == "full" and target.activity_source_type is not None
+            else ()
         )
+        replace_activity_target_sources(db, target, activity_sources)
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)

@@ -124,14 +124,12 @@ class ExportSettings(BaseModel):
 
 
 class ExportActivitySource(BaseModel):
-    target_id: UUID | None = None
     priority: int = Field(ge=1)
     provider_key: str | None = None
     source_type: str
 
 
 class _ExportTargetBase(BaseModel):
-    target_id: UUID | None = None
     valid_from: date
     valid_to: date | None
     calories_kcal: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
@@ -524,7 +522,6 @@ def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
     )
     for target in db.scalars(statement).yield_per(500):
         yield ExportTarget(
-            target_id=target.id,
             valid_from=target.valid_from,
             valid_to=target.valid_to,
             calories_kcal=target.calories_kcal,
@@ -535,7 +532,6 @@ def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
             activity_source_type=target.activity_source_type,
             activity_sources=[
                 ExportActivitySource(
-                    target_id=snapshot.target_id,
                     priority=snapshot.priority,
                     provider_key=snapshot.provider_key,
                     source_type=snapshot.source_type,

@@ -156,3 +156,19 @@
 ## Task 6 review-fix concerns
 
 - Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.
+
+## Task 6 follow-up review fixes
+
+- Direct current-day target updates now rebuild the complete current Activity policy snapshot chain instead of collapsing it to the explicitly edited source.
+- Portable target exports no longer include internal target IDs. Import validates the nested snapshot chain by priority, source/provider uniqueness and mapping, projection parity, and legacy projection fallback without requiring IDs.
+- TDD red proof: the direct current-day PUT regression failed with only priority 1 before the in-place chain fix; the ID-free export regression failed while target IDs were serialized.
+- Follow-up targeted commands:
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py -k 'current_day_target_put_preserves'` — **1 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_original_scope.py -k 'activity_snapshot_chain_round_trip'` — **1 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_provider_preferences.py` — **40 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci pytest tests/test_original_scope.py -k 'portable'` — **26 passed**
+  - `docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm --build backend-ci python -m py_compile app/api/settings.py app/services/data_export.py app/services/portable_import.py tests/test_provider_preferences.py tests/test_original_scope.py` — passed
+
+## Task 6 follow-up concerns
+
+- Project-wide validation remains with the integration owner; no frontend/YAZIO files or live databases were touched.
