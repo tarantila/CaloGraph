@@ -330,21 +330,27 @@ def _provider_has_complete_evidence(
     *,
     require_micronutrient: bool,
 ) -> bool:
+    def is_complete(candidate: Any) -> bool:
+        return (
+            getattr(candidate, "value", None) is not None
+            and getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
+            and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
+        )
+
     if not require_micronutrient:
         return any(
             getattr(candidate, "value", None) is not None
             for candidate in candidates.values()
         )
-    for metric_type in MICRONUTRIENT_METRIC_TYPES:
-        candidate = candidates.get(metric_type)
-        if candidate is None or getattr(candidate, "value", None) is None:
-            continue
-        if (
-            getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
-            and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
-        ):
-            return True
-    return False
+    has_primary = any(
+        is_complete(candidates.get(metric_type))
+        for metric_type in PRIMARY_NUTRITION_METRICS
+    )
+    has_micronutrient = any(
+        is_complete(candidates.get(metric_type))
+        for metric_type in MICRONUTRIENT_METRIC_TYPES
+    )
+    return has_primary and has_micronutrient
 
 
 def read_canonical_micronutrient_period(
