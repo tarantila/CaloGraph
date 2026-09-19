@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import GoogleHealthConnection, YazioConnection
 from app.nutrition.models import NutritionSourceObservation
-from app.provider_preferences import NUTRITION_DATA_AREA, validate_provider_preference
+from app.provider_preferences import (
+    NUTRITION_DATA_AREA,
+    effective_provider_order,
+    validate_provider_preference,
+)
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 from app.source_priority.compatibility import list_provider_preferences
 
@@ -77,26 +81,21 @@ def resolve_nutrition_provider(
     *,
     user_id: UUID,
 ) -> NutritionProviderSelection | None:
-    preferences = [
+    saved_preferences = [
         item
         for item in list_provider_preferences(db, user_id)
         if item.data_area == NUTRITION_DATA_AREA
     ]
-    if not preferences:
-        return None
+    try:
+        provider_keys = effective_provider_order(
+            NUTRITION_DATA_AREA,
+            tuple(item.provider_key for item in saved_preferences),
+        )
+    except ValueError as exc:
+        raise NutritionProviderNotReady("configured provider is invalid") from exc
 
     provider_sources: list[tuple[str, UUID]] = []
-    seen_provider_keys: set[str] = set()
-    for preference in preferences:
-        try:
-            _, provider_key = validate_provider_preference(
-                NUTRITION_DATA_AREA, preference.provider_key
-            )
-        except ValueError as exc:
-            raise NutritionProviderNotReady("configured provider is invalid") from exc
-        if provider_key in seen_provider_keys:
-            raise NutritionProviderNotReady("configured provider is duplicated")
-        seen_provider_keys.add(provider_key)
+    for provider_key in provider_keys:
         source_instance_ids = _available_owned_source_instance_ids(
             db,
             user_id=user_id,
@@ -109,6 +108,8 @@ def resolve_nutrition_provider(
         provider_sources.append((provider_key, source_instance_ids[0]))
 
     if not provider_sources:
+        if not saved_preferences:
+            return None
         raise NutritionProviderUnavailable("configured providers are unavailable")
     provider_key, source_instance_id = provider_sources[0]
     return NutritionProviderSelection(provider_key, source_instance_id, tuple(provider_sources))

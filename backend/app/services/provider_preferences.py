@@ -41,7 +41,7 @@ def _availability(
             available=statuses[provider_key] == "available",
             status=statuses[provider_key],
         )
-        for provider_key in sorted(SUPPORTED_PROVIDER_KEYS[data_area])
+        for provider_key in SUPPORTED_PROVIDER_KEYS[data_area]
     )
 
 

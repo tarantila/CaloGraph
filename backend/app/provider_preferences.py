@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
@@ -11,13 +11,33 @@ from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
 NUTRITION_DATA_AREA: Final = "nutrition"
 WEIGHT_DATA_AREA: Final = "weight"
 ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"
-SUPPORTED_PROVIDER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
+SUPPORTED_PROVIDER_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        NUTRITION_DATA_AREA: frozenset({"apple_health", "google_health", "yazio"}),
-        WEIGHT_DATA_AREA: frozenset(WEIGHT_PROVIDER_SOURCE_TYPES),
-        ACTIVITY_ENERGY_DATA_AREA: frozenset(ACTIVITY_PROVIDER_SOURCE_TYPES),
+        NUTRITION_DATA_AREA: ("google_health", "yazio", "apple_health"),
+        WEIGHT_DATA_AREA: ("yazio", "apple_health", "health_auto_export"),
+        ACTIVITY_ENERGY_DATA_AREA: ("yazio", "apple_health", "health_auto_export"),
     }
 )
+
+
+def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tuple[str, ...]:
+    """Return saved providers followed by missing providers in registry order."""
+    normalized_area = normalize_data_area(data_area)
+    supported = SUPPORTED_PROVIDER_KEYS.get(normalized_area)
+    if supported is None:
+        raise ValueError("unknown data area")
+    effective: list[str] = []
+    seen: set[str] = set()
+    for provider_key in provider_keys:
+        normalized_provider = normalize_provider_key(provider_key)
+        if normalized_provider not in supported:
+            raise ValueError("provider is not supported for data area")
+        if normalized_provider in seen:
+            raise ValueError("provider list must not contain duplicates")
+        seen.add(normalized_provider)
+        effective.append(normalized_provider)
+    effective.extend(provider_key for provider_key in supported if provider_key not in seen)
+    return tuple(effective)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +82,7 @@ __all__ = [
     "SUPPORTED_PROVIDER_KEYS",
     "WEIGHT_DATA_AREA",
     "ProviderAvailability",
+    "effective_provider_order",
     "normalize_data_area",
     "normalize_provider_key",
     "validate_provider_preference",

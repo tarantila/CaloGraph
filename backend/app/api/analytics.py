@@ -415,7 +415,7 @@ def micronutrients(
     legacy = None
     canonical_read_context: NutritionEvidenceIndex | None = None
     if selection is None:
-        # Migration compatibility: explicit source requests and no preference stay Legacy.
+        # Explicit source requests and empty unavailable registries retain Legacy compatibility.
         _unlock_big_picture_if_requested(db, user, period)
         legacy = read_legacy_micronutrient_period(
             db,

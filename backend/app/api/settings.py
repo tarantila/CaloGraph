@@ -50,6 +50,7 @@ from app.problem_types import (
 )
 from app.provider_preferences import (
     ACTIVITY_ENERGY_DATA_AREA,
+    effective_provider_order,
     normalize_data_area,
     validate_provider_preference,
 )
@@ -618,12 +619,15 @@ def update_provider_preference(
         provider_keys=normalized_providers,
     )
     if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
+        activity_provider_keys = effective_provider_order(
+            normalized_area, normalized_providers
+        )
         apply_activity_provider_to_current_target(
             db,
             user=user,
             source_types=tuple(
                 ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key]
-                for provider_key in normalized_providers
+                for provider_key in activity_provider_keys
             ),
         )
     db.commit()
@@ -901,17 +905,21 @@ def _activity_priority_chain(
         for preference in list_provider_preferences(db, user_id)
         if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
     )
-    policy_sources: list[str] = []
-    for preference in activity_preferences:
-        try:
-            policy_sources.append(ACTIVITY_PROVIDER_SOURCE_TYPES[preference.provider_key])
-        except KeyError as exc:
-            raise ProblemHTTPException(
-                status_code=422,
-                detail="Aktivitätsprovider ist ungültig konfiguriert",
-                problem_type=VALIDATION_ERROR,
-            ) from exc
-    return tuple(policy_sources) or (projection_source_type,)
+    if not activity_preferences:
+        provider_keys = (
+            provider_key
+            for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
+            if ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] != projection_source_type
+        )
+        return (
+            projection_source_type,
+            *(ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] for provider_key in provider_keys),
+        )
+    provider_keys = effective_provider_order(
+        ACTIVITY_ENERGY_DATA_AREA,
+        tuple(preference.provider_key for preference in activity_preferences),
+    )
+    return tuple(ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] for provider_key in provider_keys)
 
 
 def _validate_activity_source(

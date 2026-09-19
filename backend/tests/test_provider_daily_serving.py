@@ -113,10 +113,59 @@ def test_nutrition_provider_selection_skips_unavailable_priority_entries(monkeyp
     )
 
     selection = provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
+    assert selection is not None
+    assert selection.provider_key == "yazio"
+    assert selection.provider_sources == (
+        ("yazio", SOURCE_INSTANCE_ID),
+        ("apple_health", SOURCE_INSTANCE_ID),
+    )
+
+
+def test_nutrition_provider_selection_appends_missing_registry_providers(monkeypatch):
+    monkeypatch.setattr(
+        provider_selection,
+        "list_provider_preferences",
+        lambda *args, **kwargs: [
+            SimpleNamespace(data_area="nutrition", provider_key="apple_health"),
+        ],
+    )
+    monkeypatch.setattr(
+        provider_selection,
+        "_available_owned_source_instance_ids",
+        lambda db, *, user_id, provider_key: {
+            "apple_health": (SOURCE_INSTANCE_ID,),
+            "yazio": (SOURCE_INSTANCE_ID_B,),
+        }.get(provider_key, ()),
+    )
+
+    selection = provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
+
+    assert selection is not None
+    assert selection.provider_key == "apple_health"
+    assert selection.provider_sources == (
+        ("apple_health", SOURCE_INSTANCE_ID),
+        ("yazio", SOURCE_INSTANCE_ID_B),
+    )
+
+
+def test_nutrition_provider_selection_uses_registry_when_preferences_are_empty(monkeypatch):
+    monkeypatch.setattr(
+        provider_selection,
+        "list_provider_preferences",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        provider_selection,
+        "_available_owned_source_instance_ids",
+        lambda db, *, user_id, provider_key: (SOURCE_INSTANCE_ID,)
+        if provider_key == "yazio"
+        else (),
+    )
+
+    selection = provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
 
     assert selection is not None
     assert selection.provider_key == "yazio"
-    assert selection.provider_sources == (("yazio", SOURCE_INSTANCE_ID),)
 
 
 def test_nutrition_provider_selection_fails_closed_for_invalid_priority(monkeypatch):

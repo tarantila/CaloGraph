@@ -523,11 +523,6 @@ def test_provider_availability_reports_owned_yazio_without_exposing_source_insta
         "data_area": "nutrition",
         "providers": [
             {
-                "provider_key": "apple_health",
-                "available": False,
-                "status": "no_data",
-            },
-            {
                 "provider_key": "google_health",
                 "available": False,
                 "status": "disabled",
@@ -537,11 +532,46 @@ def test_provider_availability_reports_owned_yazio_without_exposing_source_insta
                 "available": True,
                 "status": "available",
             },
+            {
+                "provider_key": "apple_health",
+                "available": False,
+                "status": "no_data",
+            },
         ],
     }
     assert "source_instance" not in response.text
     assert str(user.id) not in response.text
 
+
+def test_provider_availability_uses_registry_order_for_weight(
+    client: TestClient, user
+) -> None:
+    _login(client)
+
+    response = client.get("/api/v1/settings/provider-availability/weight")
+
+    assert response.status_code == 200
+    assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "yazio",
+        "apple_health",
+        "health_auto_export",
+    ]
+
+
+
+
+def test_provider_preference_api_rejects_unsupported_provider_with_422(
+    client: TestClient, user
+) -> None:
+    csrf = _login(client)
+
+    response = client.put(
+        f"{PATH}/nutrition",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_key": "withings"},
+    )
+
+    assert response.status_code == 422
 
 def test_nutrition_preference_resolution_uses_owned_provider_without_source_instance_publication(
     user,
@@ -567,13 +597,17 @@ def test_nutrition_preference_resolution_uses_owned_provider_without_source_inst
     assert selection.source_instance_id != other_source_id
 
 
-def test_nutrition_preference_resolution_returns_none_without_persisted_preference(
+def test_nutrition_preference_resolution_uses_registry_without_persisted_preference(
     user,
     db,
 ) -> None:
     from app.analytics.provider_selection import resolve_nutrition_provider
 
-    assert resolve_nutrition_provider(db, user_id=user.id) is None
+    _add_yazio(db, user)
+    selection = resolve_nutrition_provider(db, user_id=user.id)
+
+    assert selection is not None
+    assert selection.provider_key == "yazio"
 
 
 def test_micronutrients_without_source_uses_configured_provider(
@@ -904,7 +938,9 @@ def test_weight_priority_uses_latest_actual_sample_within_provider_day(
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
 
 
-def test_weight_api_is_opt_in_and_user_scoped(client: TestClient, user, db) -> None:
+def test_weight_api_uses_effective_registry_without_persisted_preference(
+    client: TestClient, user, db
+) -> None:
     sample_day = date(2026, 9, 15)
     _add_yazio(db, user)
     _add_sample(
@@ -933,29 +969,10 @@ def test_weight_api_is_opt_in_and_user_scoped(client: TestClient, user, db) -> N
         "/api/v1/analytics/weight?start=2026-09-15&end=2026-09-15"
     )
     assert without_preference.status_code == 200
-    assert without_preference.json()["selected_provider"] is None
-    assert without_preference.json()["points"] == []
-
-    db.add(
-        UserProviderPreference(
-            user_id=user.id,
-            data_area=WEIGHT_DATA_AREA,
-            provider_key="yazio",
-        )
-    )
-    db.commit()
-    response = client.get(
-        "/api/v1/analytics/weight?start=2026-09-15&end=2026-09-15"
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "start_date": "2026-09-15",
-        "end_date": "2026-09-15",
-        "selected_provider": {"provider_key": "yazio"},
-        "points": [{"date": "2026-09-15", "weight_kg": 72.5}],
-    }
-
+    assert without_preference.json()["selected_provider"] == {"provider_key": "yazio"}
+    assert without_preference.json()["points"] == [
+        {"date": sample_day.isoformat(), "weight_kg": 72.5}
+    ]
 
 def test_activity_availability_accepts_explicit_zero_samples(client: TestClient, user, db) -> None:
     _add_sample(
@@ -972,6 +989,11 @@ def test_activity_availability_accepts_explicit_zero_samples(client: TestClient,
     response = client.get(f"/api/v1/settings/provider-availability/{ACTIVITY_ENERGY_DATA_AREA}")
 
     assert response.status_code == 200
+    assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "yazio",
+        "apple_health",
+        "health_auto_export",
+    ]
     statuses = {item["provider_key"]: item for item in response.json()["providers"]}
     assert statuses["apple_health"] == {
         "provider_key": "apple_health",
@@ -1076,6 +1098,7 @@ def test_activity_provider_priority_snapshots_preserve_history_and_same_day_upda
     assert [(row.priority, row.provider_key, row.source_type) for row in first_snapshot_rows] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
+        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
     second = client.put(
@@ -1109,6 +1132,7 @@ def test_activity_provider_priority_snapshots_preserve_history_and_same_day_upda
     assert [(row.priority, row.provider_key, row.source_type) for row in second_snapshot_rows] == [
         (1, "apple_health", "apple_health_xml"),
         (2, "yazio", "yazio_export_v1"),
+        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
 
@@ -1197,6 +1221,7 @@ def test_current_day_target_put_preserves_complete_activity_policy_chain(
     assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
+        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
 
@@ -1343,4 +1368,5 @@ def test_new_target_captures_complete_activity_provider_priority_chain(
     assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
+        (3, "health_auto_export", "health_auto_export_v2"),
     ]
