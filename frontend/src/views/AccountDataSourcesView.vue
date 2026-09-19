@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { getActivePinia } from 'pinia'
 import { PhArrowDown, PhArrowUp } from '@phosphor-icons/vue'
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { ApiError, api, localizeApiError } from '../api'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
+const activePinia = getActivePinia()
+const auth = activePinia ? useAuthStore(activePinia) : null
 
 type DataArea = 'nutrition' | 'weight' | 'activity_energy'
 type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
@@ -111,8 +113,7 @@ function isSaving(area: DataArea): boolean {
 }
 
 function currentSessionKey(): string {
-  const pinia = getActivePinia()
-  const userId = pinia ? useAuthStore(pinia).user?.id ?? 'anonymous' : 'anonymous'
+  const userId = auth?.user?.id ?? 'anonymous'
   const sessionToken = typeof sessionStorage === 'undefined'
     ? 'server'
     : sessionStorage.getItem('calograph_csrf') ?? 'anonymous'
@@ -128,6 +129,17 @@ function bindAreaSaveSession(area: DataArea, sessionKey: string): AreaSaveState 
   }
   return state
 }
+const stopAuthSessionWatch = auth
+  ? watch(() => auth.user?.id ?? null, () => {
+      const sessionKey = currentSessionKey()
+      for (const area of areas) {
+        bindAreaSaveSession(area.key, sessionKey)
+        saveGenerations[area.key] += 1
+        clearSaveTimer(area.key)
+        setSaveStatus(area.key, 'idle')
+      }
+    })
+  : undefined
 
 async function drainAreaSaves(area: DataArea, state: AreaSaveState): Promise<void> {
   while (state.pending) {
@@ -258,6 +270,7 @@ onMounted(() => {
 onUnmounted(() => {
   viewMounted = false
   for (const area of areas) clearSaveTimer(area.key)
+  stopAuthSessionWatch?.()
 })
 </script>
 

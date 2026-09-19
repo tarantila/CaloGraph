@@ -13,6 +13,8 @@ vi.mock('../src/api', () => ({
 
 import AccountDataSourcesView from '../src/views/AccountDataSourcesView.vue'
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
+import type { User } from '../src/types'
+import { useAuthStore } from '../src/stores/auth'
 
 type DataArea = 'nutrition' | 'weight' | 'activity_energy'
 type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
@@ -285,6 +287,29 @@ describe('AccountDataSourcesView', () => {
       'google_health',
     ])
   })
+  it('drops queued reorder requests when the auth session changes while mounted', async () => {
+    sessionStorage.setItem('calograph_csrf', 'synthetic-old-session')
+    const auth = useAuthStore()
+    auth.user = { id: 'old-user' } as unknown as User
+    const active = deferred<unknown>()
+    const putBodies: ProviderKey[][] = []
+    putHandler = (_area, providerKeys) => {
+      putBodies.push(providerKeys)
+      return active.promise
+    }
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    await wrapper.get('[data-area="nutrition"] [data-provider-key="apple_health"] button[aria-label*="nach unten"]').trigger('click')
+    expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
+
+    auth.clearSession()
+    await flushPromises()
+    active.resolve({})
+    await flushPromises()
+    expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
+  })
+
 
   it('uses the concise priority hint in both supported locales', async () => {
     const wrapper = mountView()
