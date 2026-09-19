@@ -47,10 +47,10 @@ interface AreaSaveState {
   pending: PendingSave | null
   sessionKey: string | null
 }
-const areas: Array<{ key: DataArea; title: string; description: string }> = [
-  { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle', description: 'providerPreferencesUi.nutritionDescription' },
-  { key: 'weight', title: 'providerPreferencesUi.weightTitle', description: 'providerPreferencesUi.weightDescription' },
-  { key: 'activity_energy', title: 'providerPreferencesUi.activityTitle', description: 'providerPreferencesUi.activityDescription' },
+const areas: Array<{ key: DataArea; title: string }> = [
+  { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle' },
+  { key: 'weight', title: 'providerPreferencesUi.weightTitle' },
+  { key: 'activity_energy', title: 'providerPreferencesUi.activityTitle' },
 ]
 
 const saveStateRegistry = api as typeof api & {
@@ -301,9 +301,7 @@ onUnmounted(() => {
       <header class="provider-priority-card-header">
         <div>
           <h2>{{ t(area.title) }}</h2>
-          <p class="table-secondary">{{ t(area.description) }}</p>
         </div>
-        <span class="provider-priority-fallback">{{ t('providerPreferencesUi.fallbackHint') }}</span>
       </header>
       <div class="provider-priority-form">
         <ol
@@ -321,10 +319,10 @@ onUnmounted(() => {
               <div class="provider-priority-label">
                 <strong>{{ providerLabel(providerKey) }}</strong>
                 <span
-                  class="status-badge provider-status-badge"
-                  :class="availability(area.key, providerKey)?.available === true ? 'success' : 'inactive'"
+                  v-if="availability(area.key, providerKey)?.available === true"
+                  class="status-badge provider-status-badge success"
                 >
-                  {{ statusLabel(availability(area.key, providerKey)?.status ?? 'no_data') }}
+                  {{ statusLabel('available') }}
                 </span>
               </div>
             </div>

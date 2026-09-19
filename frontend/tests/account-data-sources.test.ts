@@ -110,7 +110,7 @@ describe('AccountDataSourcesView', () => {
     configureApi()
   })
 
-  it('renders every supported provider in effective order, including unavailable rows, with only reorder controls', async () => {
+  it('renders every supported provider in effective order, hides negative availability badges, and keeps only reorder controls', async () => {
     const wrapper = mountView()
     await flushPromises()
 
@@ -132,7 +132,15 @@ describe('AccountDataSourcesView', () => {
 
     const unavailableRow = wrapper.get('[data-area="nutrition"] [data-provider-key="apple_health"]')
     expect(unavailableRow.text()).toContain('Apple Health')
-    expect(unavailableRow.text()).toContain('noch keine Daten')
+    expect(unavailableRow.text()).not.toContain('noch keine Daten')
+    expect(unavailableRow.find('.provider-status-badge').exists()).toBe(false)
+    expect(wrapper.get('[data-area="nutrition"] [data-provider-key="google_health"]').text()).toContain('Google Health')
+    expect(wrapper.findAll('.provider-status-badge')).toHaveLength(6)
+    expect(wrapper.findAll('.provider-status-badge.success')).toHaveLength(6)
+    expect(wrapper.text()).not.toContain('1 = höchste Priorität')
+    expect(wrapper.text()).not.toContain('Quellen für Ernährungsdaten in der gewünschten Reihenfolge.')
+    expect(wrapper.text()).not.toContain('Quellen für Gewichtsverläufe in der gewünschten Reihenfolge.')
+    expect(wrapper.text()).not.toContain('Quellen für Aktivitätsenergie in der gewünschten Reihenfolge.')
     expect(wrapper.findAll('select')).toHaveLength(0)
     expect(wrapper.findAll('[aria-label*="entfernen"]')).toHaveLength(0)
     expect(wrapper.findAll('.provider-priority-save')).toHaveLength(0)
@@ -313,13 +321,13 @@ describe('AccountDataSourcesView', () => {
   })
 
 
-  it('uses the concise priority hint in both supported locales', async () => {
+  it('omits the priority hint in both supported locales', async () => {
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('1 = höchste Priorität')
+    expect(wrapper.text()).not.toContain('1 = höchste Priorität')
 
     setLocale('en')
     await flushPromises()
-    expect(wrapper.text()).toContain('1 = highest priority')
+    expect(wrapper.text()).not.toContain('1 = highest priority')
   })
 })
