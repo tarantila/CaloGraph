@@ -28,18 +28,16 @@ const availabilityByArea = {
   weight: [
     { provider_key: 'yazio', available: true, status: 'available' },
     { provider_key: 'apple_health', available: true, status: 'available' },
-    { provider_key: 'health_auto_export', available: false, status: 'no_data' },
   ],
   activity_energy: [
     { provider_key: 'yazio', available: true, status: 'available' },
     { provider_key: 'apple_health', available: false, status: 'no_data' },
-    { provider_key: 'health_auto_export', available: true, status: 'available' },
   ],
 } as const
 
 const initialPreferences: Record<DataArea, ProviderKey[]> = {
   nutrition: ['apple_health', 'yazio'],
-  weight: ['health_auto_export'],
+  weight: ['apple_health'],
   activity_energy: [],
 }
 
@@ -120,23 +118,18 @@ describe('AccountDataSourcesView', () => {
       'google_health',
     ])
     expect(wrapper.findAll('[data-area="weight"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
-      'health_auto_export',
-      'yazio',
       'apple_health',
+      'yazio',
     ])
     expect(wrapper.findAll('[data-area="activity_energy"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
       'yazio',
       'apple_health',
-      'health_auto_export',
     ])
-
     const unavailableRow = wrapper.get('[data-area="nutrition"] [data-provider-key="apple_health"]')
     expect(unavailableRow.text()).toContain('Apple Health')
-    expect(unavailableRow.text()).not.toContain('noch keine Daten')
-    expect(unavailableRow.find('.provider-status-badge').exists()).toBe(false)
+    expect(wrapper.findAll('.provider-status-badge')).toHaveLength(5)
+    expect(wrapper.findAll('.provider-status-badge.success')).toHaveLength(5)
     expect(wrapper.get('[data-area="nutrition"] [data-provider-key="google_health"]').text()).toContain('Google Health')
-    expect(wrapper.findAll('.provider-status-badge')).toHaveLength(6)
-    expect(wrapper.findAll('.provider-status-badge.success')).toHaveLength(6)
     expect(wrapper.text()).not.toContain('1 = höchste Priorität')
     expect(wrapper.text()).not.toContain('Quellen für Ernährungsdaten in der gewünschten Reihenfolge.')
     expect(wrapper.text()).not.toContain('Quellen für Gewichtsverläufe in der gewünschten Reihenfolge.')
