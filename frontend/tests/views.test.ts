@@ -202,6 +202,7 @@ describe('main views', () => {
         return Promise.resolve({
           available: true,
           configured: true,
+          scheduler_enabled: true,
           sync_enabled: true,
           sync_interval_minutes: 360,
           sync_days: 7,
@@ -238,6 +239,118 @@ describe('main views', () => {
     expect(apiMock).toHaveBeenCalledWith('/yazio/sync', { method: 'POST' })
     expect(wrapper.text()).toContain('1 neu · 2 aktualisiert · 4 unverändert')
   })
+
+  it('hides the automatic interval while the global YAZIO scheduler is paused', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/dashboard/summary') {
+        return Promise.resolve({
+          today: { date: '2026-07-23', calories_kcal: 1900, target_kcal: 2200, protein_g: 130, tracking_status: 'complete', tracking_reasons: [] },
+          week: { consumed_kcal: 7000, budget_kcal: 15400, deviation_kcal: -8400, remaining_kcal: 8400 },
+          protein_7d_average_g: 125,
+          last_import_at: '2026-07-23T11:22:23Z',
+          data_start_date: '2026-05-25',
+          data_end_date: '2026-07-23',
+          data_day_count: 60,
+        })
+      }
+      if (path === '/settings/targets') {
+        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, target_weight_min_kg: null, target_weight_max_kg: null }])
+      }
+      if (path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') {
+        return Promise.resolve({
+          available: true,
+          configured: true,
+          scheduler_enabled: false,
+          sync_enabled: true,
+          sync_interval_minutes: 360,
+          sync_days: 7,
+          last_attempt_at: '2026-07-23T11:22:22Z',
+          last_success_at: '2026-07-23T11:22:23Z',
+          next_sync_at: '2026-07-23T17:22:23Z',
+          last_error: null,
+        })
+      }
+      return Promise.resolve({ points: [] })
+    })
+
+    const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('.yazio-sync-panel').text()).toContain('Automatik pausiert')
+    expect(wrapper.get('.yazio-sync-panel').text()).not.toContain('Automatisch alle 6 Std.')
+  })
+
+  it('renders the YAZIO source and a friendly SDK provenance label in import history', async () => {
+    const batch = { id: 'yazio-batch', source_type: 'yazio_export_v1', client_identifier: 'yazio-sdk', status: 'completed', started_at: '2026-07-19T10:00:00Z', finished_at: '2026-07-19T10:01:00Z', received: 5, inserted: 3, updated: 0, skipped: 1, failed: 0, unknown_types: [], error_message: null }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/imports') return Promise.resolve([batch])
+      if (path === '/yazio/status') {
+        return Promise.resolve({
+          available: true,
+          configured: true,
+          scheduler_enabled: true,
+          sync_enabled: true,
+          sync_interval_minutes: 360,
+          sync_days: 7,
+          last_attempt_at: null,
+          last_success_at: null,
+          next_sync_at: null,
+          last_error: null,
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(ImportsView)
+    await flushPromises()
+
+    const sourceCell = wrapper.get('tbody tr:first-child td:nth-child(2)')
+    expect(sourceCell.text()).toContain('YAZIO')
+    expect(sourceCell.text()).toContain('SDK v22')
+    expect(sourceCell.text()).not.toContain('yazio-sdk')
+  })
+
+  it('keeps the existing automatic interval when the scheduler is enabled', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/dashboard/summary') {
+        return Promise.resolve({
+          today: { date: '2026-07-23', calories_kcal: 1900, target_kcal: 2200, protein_g: 130, tracking_status: 'complete', tracking_reasons: [] },
+          week: { consumed_kcal: 7000, budget_kcal: 15400, deviation_kcal: -8400, remaining_kcal: 8400 },
+          protein_7d_average_g: 125,
+          last_import_at: '2026-07-23T11:22:23Z',
+          data_start_date: '2026-05-25',
+          data_end_date: '2026-07-23',
+          data_day_count: 60,
+        })
+      }
+      if (path === '/settings/targets') {
+        return Promise.resolve([{ id: 'target', valid_from: '2026-01-01', valid_to: null, calories_kcal: 2200, protein_g: 140, carbs_g: null, fat_g: null, fiber_g: null, water_ml: null, target_weight_min_kg: null, target_weight_max_kg: null }])
+      }
+      if (path === '/imports') return Promise.resolve([])
+      if (path === '/yazio/status') {
+        return Promise.resolve({
+          available: true,
+          configured: true,
+          scheduler_enabled: true,
+          sync_enabled: true,
+          sync_interval_minutes: 360,
+          sync_days: 7,
+          last_attempt_at: null,
+          last_success_at: null,
+          next_sync_at: null,
+          last_error: null,
+        })
+      }
+      return Promise.resolve({ points: [] })
+    })
+
+    const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('.yazio-sync-panel').text()).toContain('Automatisch alle 6 Std. · letzte 7 Tage')
+  })
+
 
   it('draws the calorie budget from each day’s historical target', async () => {
     const points = [
