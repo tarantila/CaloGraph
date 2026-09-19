@@ -355,22 +355,30 @@ def _date_value(value: object) -> date:
     return parsed
 
 
-def _token_from_response(response: object) -> str:
+def _token_from_response(
+    response: object,
+    *,
+    context: YazioProviderErrorContext,
+) -> str:
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is None or parsed is _MISSING:
-        raise YazioProviderInvalidResponseError
+        raise YazioProviderInvalidResponseError(context=context)
     token = _field(parsed, "access_token")
     if token is _MISSING or not isinstance(token, str) or not token:
-        raise YazioProviderInvalidResponseError
+        raise YazioProviderInvalidResponseError(context=context)
     if len(token.encode("utf-8")) > MAX_TOKEN_BYTES or "\x00" in token:
-        raise YazioProviderInvalidResponseError
+        raise YazioProviderInvalidResponseError(context=context)
     return token
 
 
-def _daily_items(response: object) -> list[object]:
+def _daily_items(
+    response: object,
+    *,
+    context: YazioProviderErrorContext,
+) -> list[object]:
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is _MISSING or not isinstance(parsed, list):
-        raise YazioProviderInvalidResponseError
+        raise YazioProviderInvalidResponseError(context=context)
     return parsed
 
 
@@ -914,7 +922,10 @@ class YazioSdkProvider:
                 ),
                 authentication=True,
             )
-            _token_from_response(response)
+            _token_from_response(
+                response,
+                context=_context("oauth_token", "oauth_token", "OAuthTokenResponse"),
+            )
         finally:
             _close_client(client)
 
@@ -941,7 +952,10 @@ class YazioSdkProvider:
                 ),
                 authentication=True,
             )
-            token = _token_from_response(token_response)
+            token = _token_from_response(
+                token_response,
+                context=_context("oauth_token", "oauth_token", "OAuthTokenResponse"),
+            )
         finally:
             _close_client(client)
 
@@ -995,7 +1009,10 @@ class YazioSdkProvider:
                 start=start_day.isoformat(),
                 end=end_day.isoformat(),
             )
-            daily_items = _daily_items(daily_response)
+            daily_items = _daily_items(
+                daily_response,
+                context=_context("daily_nutrients", "daily_nutrients", "DailyNutrients"),
+            )
             daily_summaries_by_date: dict[date, YazioDailyNutrientSummary] = {}
             for item in daily_items:
                 summary = _map_daily_summary(item)
@@ -1083,7 +1100,10 @@ class YazioSdkProvider:
                 ),
                 authentication=True,
             )
-            token = _token_from_response(token_response)
+            token = _token_from_response(
+                token_response,
+                context=_context("oauth_token", "oauth_token", "OAuthTokenResponse"),
+            )
         finally:
             _close_client(client)
 
@@ -1103,7 +1123,10 @@ class YazioSdkProvider:
                 for offset in range((end_day - start_day).days + 1)
             }
             seen: set[date] = set()
-            for item in _daily_items(daily_response):
+            for item in _daily_items(
+                daily_response,
+                context=_context("daily_nutrients", "daily_nutrients", "DailyNutrients"),
+            ):
                 item_day = _date_value(_field(item, "date"))
                 if item_day < start_day or item_day > end_day or item_day in seen:
                     raise YazioProviderInvalidResponseError
