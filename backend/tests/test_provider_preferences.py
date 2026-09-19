@@ -22,6 +22,7 @@ from app.provider_preferences import (
     NUTRITION_DATA_AREA,
     SUPPORTED_PROVIDER_KEYS,
     WEIGHT_DATA_AREA,
+    effective_provider_order,
     normalize_provider_key,
     validate_provider_preference,
 )
@@ -151,6 +152,15 @@ def test_provider_preference_domain_accepts_canonical_nutrition_provider() -> No
     assert NUTRITION_DATA_AREA == "nutrition"
     assert "google_health" in SUPPORTED_PROVIDER_KEYS[NUTRITION_DATA_AREA]
     assert normalize_provider_key(" Google_Health ") == "google_health"
+
+def test_legacy_health_auto_export_preference_canonicalizes_to_apple_health() -> None:
+    assert effective_provider_order(WEIGHT_DATA_AREA, ("health_auto_export",)) == (
+        "apple_health",
+        "yazio",
+    )
+    assert validate_provider_preference(
+        ACTIVITY_ENERGY_DATA_AREA, "health_auto_export"
+    ) == (ACTIVITY_ENERGY_DATA_AREA, "apple_health")
     validate_provider_preference(NUTRITION_DATA_AREA, "apple_health")
 
 
@@ -606,6 +616,35 @@ def test_weight_selection_uses_health_auto_export_as_apple_provenance(
     assert response.status_code == 200
     assert response.json()["selected_provider"] == {"provider_key": "apple_health"}
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 72.5}]
+
+def test_persisted_health_auto_export_weight_preference_uses_apple_family(
+    client: TestClient, user, db
+) -> None:
+    day = date(2026, 9, 15)
+    _add_weight_sample(
+        db,
+        user,
+        source_type="health_auto_export_v2",
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="health-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "health_auto_export", 1),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "apple_health"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 72.5}]
+    assert client.get(PATH).json()["preferences"] == [
+        {"data_area": WEIGHT_DATA_AREA, "provider_key": "apple_health"}
+    ]
 
 
 def test_weight_selection_fails_closed_for_ambiguous_apple_transports(

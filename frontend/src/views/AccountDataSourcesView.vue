@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { getActivePinia } from 'pinia'
-import { PhArrowDown, PhArrowUp } from '@phosphor-icons/vue'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { PhArrowDown, PhArrowUp, PhFire, PhForkKnife, PhScales } from '@phosphor-icons/vue'
+import { onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 
 import { ApiError, api, localizeApiError } from '../api'
 import { i18n } from '../i18n'
@@ -47,11 +47,11 @@ interface AreaSaveState {
   pending: PendingSave | null
   sessionKey: string | null
 }
-const areas: Array<{ key: DataArea; title: string }> = [
-  { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle' },
-  { key: 'weight', title: 'providerPreferencesUi.weightTitle' },
-  { key: 'activity_energy', title: 'providerPreferencesUi.activityTitle' },
-]
+const areas = [
+  { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle', icon: PhForkKnife },
+  { key: 'activity_energy', title: 'providerPreferencesUi.activityTitle', icon: PhFire },
+  { key: 'weight', title: 'providerPreferencesUi.weightTitle', icon: PhScales },
+] as const satisfies ReadonlyArray<{ key: DataArea; title: string; icon: Component }>
 
 const saveStateRegistry = api as typeof api & {
   __calographProviderPrioritySaveStates?: Record<DataArea, AreaSaveState>
@@ -299,7 +299,8 @@ onUnmounted(() => {
       :aria-busy="isSaving(area.key)"
     >
       <header class="provider-priority-card-header">
-        <div>
+        <div class="provider-priority-card-title">
+          <component :is="area.icon" class="provider-priority-section-icon" :size="20" weight="duotone" aria-hidden="true" />
           <h2>{{ t(area.title) }}</h2>
         </div>
       </header>
@@ -318,13 +319,13 @@ onUnmounted(() => {
               <span class="provider-priority-rank" aria-hidden="true">{{ index + 1 }}</span>
               <div class="provider-priority-label">
                 <strong>{{ providerLabel(providerKey) }}</strong>
-                <span
-                  v-if="availability(area.key, providerKey)?.available === true"
-                  class="status-badge provider-status-badge success"
-                >
-                  {{ statusLabel('available') }}
-                </span>
               </div>
+              <span
+                v-if="availability(area.key, providerKey)?.available === true"
+                class="status-badge provider-status-badge success"
+              >
+                {{ statusLabel('available') }}
+              </span>
             </div>
             <div class="provider-priority-actions">
               <button

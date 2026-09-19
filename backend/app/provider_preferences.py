@@ -15,6 +15,12 @@ SUPPORTED_PROVIDER_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ACTIVITY_ENERGY_DATA_AREA: ("yazio", "apple_health"),
     }
 )
+LEGACY_PROVIDER_KEY_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType(
+    {
+        WEIGHT_DATA_AREA: MappingProxyType({"health_auto_export": "apple_health"}),
+        ACTIVITY_ENERGY_DATA_AREA: MappingProxyType({"health_auto_export": "apple_health"}),
+    }
+)
 
 def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tuple[str, ...]:
     """Return saved providers followed by missing providers in registry order."""
@@ -25,7 +31,7 @@ def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tu
     effective: list[str] = []
     seen: set[str] = set()
     for provider_key in provider_keys:
-        normalized_provider = normalize_provider_key(provider_key)
+        normalized_provider = canonicalize_provider_key(normalized_area, provider_key)
         if normalized_provider not in supported:
             raise ValueError("provider is not supported for data area")
         if normalized_provider in seen:
@@ -60,10 +66,17 @@ def normalize_provider_key(provider_key: str) -> str:
         raise ValueError("provider must be a non-empty token")
     return normalized
 
+def canonicalize_provider_key(data_area: str, provider_key: str) -> str:
+    normalized_area = normalize_data_area(data_area)
+    normalized_provider = normalize_provider_key(provider_key)
+    return LEGACY_PROVIDER_KEY_ALIASES.get(normalized_area, {}).get(
+        normalized_provider, normalized_provider
+    )
+
 
 def validate_provider_preference(data_area: str, provider_key: str) -> tuple[str, str]:
     normalized_area = normalize_data_area(data_area)
-    normalized_provider = normalize_provider_key(provider_key)
+    normalized_provider = canonicalize_provider_key(normalized_area, provider_key)
     supported = SUPPORTED_PROVIDER_KEYS.get(normalized_area)
     if supported is None:
         raise ValueError("unknown data area")
@@ -78,6 +91,7 @@ __all__ = [
     "SUPPORTED_PROVIDER_KEYS",
     "WEIGHT_DATA_AREA",
     "ProviderAvailability",
+    "canonicalize_provider_key",
     "effective_provider_order",
     "normalize_data_area",
     "normalize_provider_key",

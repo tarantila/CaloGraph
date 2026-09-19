@@ -9,12 +9,33 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.models import User, UserProviderPreference, UserProviderPriority
+from app.provider_preferences import canonicalize_provider_key
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderPreferenceSnapshot:
     data_area: str
     provider_key: str
+def _canonicalize_preferences(
+    rows: Sequence[ProviderPreferenceSnapshot],
+) -> list[ProviderPreferenceSnapshot]:
+    result: list[ProviderPreferenceSnapshot] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        provider_key = canonicalize_provider_key(row.data_area, row.provider_key)
+        identity = (row.data_area, provider_key)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(
+            ProviderPreferenceSnapshot(
+                data_area=row.data_area,
+                provider_key=provider_key,
+            )
+        )
+    return result
+
+
 
 
 def _table_available(db: Session, table_name: str) -> bool:
@@ -35,10 +56,12 @@ def _generic_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceS
             UserProviderPriority.provider_key,
         )
     )
-    return [
-        ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
-        for row in rows
-    ]
+    return _canonicalize_preferences(
+        [
+            ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
+            for row in rows
+        ]
+    )
 
 
 def _legacy_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:
@@ -49,10 +72,12 @@ def _legacy_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSn
         .where(UserProviderPreference.user_id == user_id)
         .order_by(UserProviderPreference.data_area)
     )
-    return [
-        ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
-        for row in rows
-    ]
+    return _canonicalize_preferences(
+        [
+            ProviderPreferenceSnapshot(data_area=row.data_area, provider_key=row.provider_key)
+            for row in rows
+        ]
+    )
 
 
 def list_provider_preferences(db: Session, user_id: UUID) -> list[ProviderPreferenceSnapshot]:

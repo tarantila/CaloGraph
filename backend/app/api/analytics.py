@@ -126,6 +126,8 @@ def _legacy_daily_points(
     source: str | None = None,
 ) -> list[DailyPoint]:
     try:
+        if source is None:
+            return daily_points(db, user, start, end)
         return daily_points(db, user, start, end, source)
     except AmbiguousAppleTransportError as exc:
         raise ProblemHTTPException(

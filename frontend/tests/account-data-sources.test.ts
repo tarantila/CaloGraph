@@ -108,6 +108,17 @@ describe('AccountDataSourcesView', () => {
     configureApi()
   })
 
+
+  it('renders data areas in nutrition, activity, weight order', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('section.provider-priority-card').map((section) => section.attributes('data-area'))).toEqual([
+      'nutrition',
+      'activity_energy',
+      'weight',
+    ])
+  })
   it('renders every supported provider in effective order, hides negative availability badges, and keeps only reorder controls', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -142,6 +153,19 @@ describe('AccountDataSourcesView', () => {
     expect(nutritionRows[0].find('button[aria-label*="nach oben"]').attributes('disabled')).toBeDefined()
     expect(nutritionRows.at(-1)!.find('button[aria-label*="nach unten"]').attributes('disabled')).toBeDefined()
     expect(unavailableRow.find('button[aria-label*="nach unten"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('keeps available badges in the provider row and renders one icon per data area', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const activityRow = wrapper.get('[data-area="activity_energy"] [data-provider-key="yazio"]')
+    expect(activityRow.find('.provider-priority-main > .provider-priority-label').exists()).toBe(true)
+    expect(activityRow.find('.provider-priority-main > .provider-status-badge').exists()).toBe(true)
+    expect(wrapper.findAll('.provider-priority-section-icon')).toHaveLength(3)
+    expect(wrapper.findAll('.provider-priority-section-icon[aria-hidden="true"]')).toHaveLength(3)
+    expect(wrapper.text()).not.toContain('Withings')
+    expect(wrapper.find('[data-provider-key="withings"]').exists()).toBe(false)
   })
 
   it('auto-saves a complete reordered area and exposes local saving and saved states', async () => {
