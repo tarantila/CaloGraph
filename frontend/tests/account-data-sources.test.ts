@@ -304,7 +304,7 @@ describe('AccountDataSourcesView', () => {
     expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
 
     first.unmount()
-    const remounted = mountView()
+    mountView()
     auth.clearSession()
     await flushPromises()
     active.resolve({})
