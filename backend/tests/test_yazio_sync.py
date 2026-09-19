@@ -15,7 +15,7 @@ from app.config import settings
 from app.models import HealthSample, ImportBatch, User, YazioConnection
 from app.schemas import ImportSummary
 from app.security_events import security_reference
-from app.services import yazio_sync
+from app.services import yazio_sync, yazio_transport
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     decrypt_credential,
@@ -1003,7 +1003,7 @@ def test_history_range_api_requires_csrf_and_rejects_overlapping_jobs(
     assert "Retry-After" in response.headers
 
 
-def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
+def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
     db: Session,
     user: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -1014,32 +1014,50 @@ def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
     monkeypatch.setattr(settings, "yazio_provider", "sdk")
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
 
-    def fake_sdk_fetch(*_args, **_kwargs):
+    def sdk_fetch(*_args, provider_mode: str | None = None, **_kwargs):
+        assert provider_mode == "sdk"
         return {
-            "2026-07-23": {
-                "daily_summary": {
-                    "meals": {
-                        "dinner": {
-                            "nutrients": {
-                                "energy.energy": 1800,
-                                "nutrient.protein": 120,
-                                "nutrient.carb": 190,
-                                "nutrient.fat": 60,
-                            }
-                        }
-                    }
+            "days": {
+                "2026-07-23": {
+                    "energy": 1800,
+                    "protein": 120,
+                    "carb": 190,
+                    "fat": 60,
+                    "activity_energy": 300,
                 }
-            }
+            },
+            "weight": {"2026-07-23": {"value": 72.5, "unit": "kg"}},
         }
+    def forbidden_legacy_transport(*_args, **_kwargs):
+        raise AssertionError("SDK manual sync invoked legacy/exporter transport")
 
-    monkeypatch.setattr(yazio_sync, "_fetch_yazio_payload_unlocked", fake_sdk_fetch)
+    monkeypatch.setattr(
+        yazio_transport,
+        "fetch_yazio_payload_transport",
+        forbidden_legacy_transport,
+    )
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", sdk_fetch)
     summary = run_manual_yazio_sync(
         user.id,
         sync_days=1,
         now=datetime(2026, 7, 23, 8, tzinfo=UTC),
     )
 
-    assert summary.inserted == 4
+    assert summary.inserted == 6
+    samples = db.scalars(
+        select(HealthSample)
+        .where(HealthSample.user_id == user.id)
+        .order_by(HealthSample.metric_type)
+    ).all()
+    assert {sample.metric_type: sample.value for sample in samples} == {
+        "active_energy_kcal": 300,
+        "carbohydrates_g": 190,
+        "dietary_energy_kcal": 1800,
+        "fat_g": 60,
+        "protein_g": 120,
+        "weight_kg": 72.5,
+    }
     batch = db.scalar(
         select(ImportBatch)
         .where(ImportBatch.user_id == user.id)
@@ -1049,7 +1067,7 @@ def test_sdk_sync_records_connector_variant_without_changing_yazio_metadata(
     assert batch is not None
     assert batch.connector_variant == "sdk-v22"
     assert batch.source_type == "yazio_export_v1"
-    assert batch.client_identifier == "yazio-exporter"
+    assert batch.client_identifier == "yazio-sdk"
 
 
 def test_legacy_credential_validation_uses_configured_provider_without_sdk_secret(

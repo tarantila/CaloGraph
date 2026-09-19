@@ -669,6 +669,7 @@ def import_yazio_payload(
     payload: dict[str, Any],
     source_identifier: str,
     *,
+    client_identifier: str,
     connector_variant: str | None = None,
 ) -> ImportSummary:
     with SessionLocal() as db:
@@ -682,7 +683,7 @@ def import_yazio_payload(
             result,
             None,
             "application/x-yazio-sync",
-            "yazio-exporter",
+            client_identifier,
             connector_variant=connector_variant,
         )
 
@@ -759,15 +760,14 @@ def _sync_yazio_user_unlocked(
             include_micronutrients,
         )
     identifier = source_identifier or yazio_source_identifier(user.id)
-    connector_variant = (
-        "sdk-v22"
-        if provider_mode == "sdk" or settings.yazio_provider == "sdk"
-        else "legacy-v15"
-    )
+    sdk_mode = provider_mode == "sdk" or settings.yazio_provider == "sdk"
+    connector_variant = "sdk-v22" if sdk_mode else "legacy-v15"
+    client_identifier = "yazio-sdk" if sdk_mode else "yazio-exporter"
     summary = import_yazio_payload(
         user,
         payload,
         identifier,
+        client_identifier=client_identifier,
         connector_variant=connector_variant,
     )
     if (
