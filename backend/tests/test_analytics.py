@@ -438,6 +438,56 @@ def test_activity_energy_is_credited_only_from_the_selected_source(
     assert point.effective_budget_kcal == Decimal("2500")
     assert point.effective_deviation_kcal == Decimal("-400")
     assert point.activity_data_status == "credited"
+def test_activity_apple_transport_conflict_fails_closed(
+    db: Session, user: User
+) -> None:
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    db.add_all(
+        [
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=1,
+                provider_key="apple_health",
+                source_type="apple_health_xml",
+            ),
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=2,
+                provider_key="health_auto_export",
+                source_type="health_auto_export_v2",
+            ),
+        ]
+    )
+    samples = [
+        metric(1, "dietary_energy_kcal", "2100"),
+        metric(1, "active_energy_kcal", "500", "apple_health_xml"),
+        metric(1, "active_energy_kcal", "200", "health_auto_export_v2"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-test-activity-apple-conflict",
+        "test",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        daily(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 1),
+            user=user,
+            db=db,
+        )
+
+    assert raised.value.status_code == 503
+    assert raised.value.problem_type == "urn:calograph:problem:provider-selection-not-ready"
+
+
 
 
 def test_activity_credit_remains_zero_when_selected_source_has_no_day(

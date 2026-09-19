@@ -123,21 +123,7 @@ def resolve_provider_source_type(
         configured=source_types,
     )
     if len(evidence) > 1:
-        stable_ids = [
-            set(
-                db.scalars(
-                    select(HealthSample.external_sample_id)
-                    .where(
-                        HealthSample.user_id == user_id,
-                        HealthSample.source_type == source_type,
-                        HealthSample.external_sample_id.is_not(None),
-                    )
-                )
-            )
-            for source_type in evidence
-        ]
-        if not stable_ids or not set.intersection(*stable_ids):
-            raise ValueError("provider transports are ambiguous")
+        raise ValueError("provider transports are ambiguous")
     return evidence[0] if evidence else (fallback or source_types[0])
 
 

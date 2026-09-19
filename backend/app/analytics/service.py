@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.activity import ACTIVE_ENERGY_METRIC
+from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.models import (
     HealthSample,
     NutritionTarget,
@@ -33,6 +33,10 @@ PRIMARY_NUTRITION_METRICS = {
     "carbohydrates_g",
     "fat_g",
 }
+
+
+class AmbiguousAppleTransportError(RuntimeError):
+    """Apple activity evidence has multiple raw transports for one day."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +90,15 @@ def _activity_value_for_day(
     day: date,
     active_energy_by_source: dict[tuple[date, str], Decimal],
 ) -> tuple[str | None, Decimal | None]:
-    for source_type in _activity_sources_for_target(target):
+    source_types = _activity_sources_for_target(target)
+    apple_source_types = ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["apple_health"]
+    if all((day, source_type) in active_energy_by_source for source_type in apple_source_types) and all(
+        source_type in source_types for source_type in apple_source_types
+    ):
+        raise AmbiguousAppleTransportError(
+            f"ambiguous Apple activity transports for {day.isoformat()}"
+        )
+    for source_type in source_types:
         key = (day, source_type)
         if key in active_energy_by_source:
             return source_type, active_energy_by_source[key]

@@ -42,6 +42,7 @@ from app.analytics.scalar_selection import (
 )
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
+    AmbiguousAppleTransportError,
     budget_balance,
     budget_balance_for_user,
     budget_classification,
@@ -117,8 +118,32 @@ def _complete_budget(days: list[DailyPoint], field: str) -> Decimal | None:
         return None
     return sum((budget for budget in budgets if budget is not None), Decimal())
 
+def _legacy_daily_points(
+    db: Session,
+    user: User,
+    start: date,
+    end: date,
+    source: str | None = None,
+) -> list[DailyPoint]:
+    try:
+        return daily_points(db, user, start, end, source)
+    except AmbiguousAppleTransportError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsdaten der Apple-Transporte sind nicht eindeutig lesbar.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
 def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
-    return budget_balance_for_user(db, user)
+    try:
+        return budget_balance_for_user(db, user)
+    except AmbiguousAppleTransportError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsdaten der Apple-Transporte sind nicht eindeutig lesbar.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
 
 
 
@@ -222,7 +247,7 @@ def daily(
 
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end, source)
+        points = _legacy_daily_points(db, user, start, end, source)
         # D4B owns canonical comparison for eligible requests.  Ineligible D4B
         # requests retain the existing D4A observation path when configured.
         if settings.analytics_daily_canonical_read_enabled:
@@ -555,7 +580,7 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     week_end = week_start + timedelta(days=6)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+        points = _legacy_daily_points(db, user, week_start - timedelta(days=7), week_end)
     else:
         points = _read_preferred_daily_points(
             db,
@@ -635,7 +660,7 @@ def weekly(
     start, end = _range(start, end, user.timezone, 90)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         requested_days = (end - start).days + 1
         if (
             settings.analytics_weekly_canonical_read_enabled
@@ -736,7 +761,7 @@ def weekdays(
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         if (
             settings.analytics_weekdays_canonical_read_enabled
             and period != "all"
@@ -817,7 +842,7 @@ def trends(
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         requested_days = (end - start).days + 1
         if (
             settings.analytics_trends_canonical_read_enabled
@@ -895,7 +920,7 @@ def calendar(
     start, end = _range(start, end, user.timezone, 31)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         if settings.analytics_calendar_canonical_read_enabled:
             with suppress(Exception):
                 canonical_outcome = run_calendar_canonical_read(
@@ -939,7 +964,7 @@ def data_quality(
     )
     if requested_start is None and first_data_date is not None and first_data_date > start:
         start = first_data_date
-    points = daily_points(db, user, start, end)
+    points = _legacy_daily_points(db, user, start, end)
     imports = list(
         db.scalars(
             select(ImportBatch)

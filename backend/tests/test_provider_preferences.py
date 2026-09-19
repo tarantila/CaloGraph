@@ -635,6 +635,18 @@ def test_weight_selection_fails_closed_for_ambiguous_apple_transports(
         user,
         PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 1),
     )
+    samples = list(
+        db.scalars(
+            select(HealthSample).where(
+                HealthSample.user_id == user.id,
+                HealthSample.metric_type == "weight_kg",
+            )
+        )
+    )
+    assert len(samples) == 2
+    samples[0].external_sample_id = "shared-transport-id"
+    samples[1].external_sample_id = "shared-transport-id"
+    db.commit()
     _login(client)
 
     response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
