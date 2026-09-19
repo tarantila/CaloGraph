@@ -75,6 +75,29 @@ def _patch_clients(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(yazio_sdk_provider.create_token, "sync_detailed", token)
 
 
+def test_sdk_uses_effective_client_credential_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def token(**kwargs: Any) -> _Response:
+        captured.update(kwargs)
+        return _Response(parsed={"access_token": "offline-token"})
+
+    monkeypatch.setattr(yazio_sdk_provider, "_new_client", lambda: _Client())
+    monkeypatch.setattr(yazio_sdk_provider.create_token, "sync_detailed", token)
+    monkeypatch.setattr(settings, "yazio_sdk_client_id", "synthetic-client-id")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-client-secret")
+
+    yazio_sdk_provider.YazioSdkProvider().validate_credentials(
+        "owner@example.com",
+        "synthetic-yazio-password",
+    )
+
+    body = captured["body"]
+    assert body.client_id == "synthetic-client-id"
+    assert body.client_secret == "synthetic-client-secret"
+
 def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_clients(monkeypatch)
     daily_calls: list[dict[str, Any]] = []

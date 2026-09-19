@@ -225,6 +225,8 @@ def _sync_yazio_user_with_domain(
     source_identifier: str | None,
 ) -> ImportSummary:
     _require_yazio_enabled()
+    if settings.yazio_provider != "sdk":
+        raise YazioSyncError("YAZIO-Domänenschreiben erfordert den SDK-Provider.")
     _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
     identifier = source_identifier or yazio_source_identifier(user.id)

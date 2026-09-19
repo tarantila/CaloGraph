@@ -50,17 +50,16 @@ polling/jitter are advanced operational tuning:
 `YAZIO_CIRCUIT_FAILURE_LIMIT`, `YAZIO_CIRCUIT_WINDOW_SECONDS`,
 `YAZIO_SCHEDULER_POLL_SECONDS`, and `YAZIO_SCHEDULER_JITTER_MINUTES`.
 
-`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, and `YAZIO_SDK_CLIENT_ID` are
-internal provider details. CaloGraph supplies tested, versioned defaults for
-these non-secret values. The API origin remains fixed to
-`https://yzapi.yazio.com`. Maintainers may override these settings through the
-application environment when validating a compatible provider revision, but
-they are not personal credentials and are not generated per installation.
+`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
+`YAZIO_SDK_CLIENT_SECRET` are internal provider details. CaloGraph supplies
+tested, versioned defaults for the shared YAZIO mobile client credential. The
+API origin remains fixed to `https://yzapi.yazio.com`. Maintainers may override
+these settings through the application environment when validating a compatible
+provider revision, but they are not personal credentials and are not generated
+per installation.
 
-`YAZIO_SDK_CLIENT_SECRET` is not shipped with CaloGraph and has no built-in
-default. SDK mode requires an explicit, non-empty installation-side value. A
-disabled YAZIO installation and the deprecated `legacy-v15` provider do not
-require this SDK secret. Never commit the value or put it in logs.
+Normal operators do not configure either SDK client credential. Never expose
+the effective values in logs, API responses, or the UI.
 
 The normal user configures only a personal YAZIO email address and password
 through CaloGraph. Those credentials remain in the existing per-user
@@ -125,9 +124,10 @@ For a temporary rollback or compatibility window, use:
 YAZIO_PROVIDER=legacy
 ```
 
-Normal operators do not need to configure API URLs, User-Agent strings, the
-SDK client ID, or timeout, worker, and circuit-breaker settings. SDK mode
-requires `YAZIO_SDK_CLIENT_SECRET` as described above.
+Normal operators do not need to configure API URLs, User-Agent strings, SDK
+client credentials, or timeout, worker, and circuit-breaker settings. SDK mode
+uses CaloGraph's versioned provider defaults unless a maintainer supplies an
+optional environment override.
 
 ## Automatic synchronization
 

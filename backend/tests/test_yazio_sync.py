@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import security_events
 from app.api import yazio as yazio_api
-from app.config import settings
+from app.config import YAZIO_SDK_CLIENT_SECRET_DEFAULT, settings
 from app.models import HealthSample, ImportBatch, User, YazioConnection
 from app.schemas import ImportSummary
 from app.security_events import security_reference
@@ -1119,7 +1119,38 @@ def test_manual_sync_forces_sdk_v22_provider_mode(
     assert captured["provider_mode"] == "sdk"
 
 
-def test_manual_sync_requires_sdk_configuration(
+def test_manual_sync_uses_versioned_sdk_default_without_env_override(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", YAZIO_SDK_CLIENT_SECRET_DEFAULT)
+
+    def fake_sync(*_args, **_kwargs):
+        return ImportSummary(
+            status="completed",
+            received=0,
+            inserted=0,
+            updated=0,
+            skipped=0,
+        )
+
+    monkeypatch.setattr(yazio_sync, "_sync_yazio_user_unlocked", fake_sync)
+
+    summary = run_manual_yazio_sync(
+        user.id,
+        sync_days=1,
+        now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+    )
+
+    assert summary.status == "completed"
+
+
+def test_manual_sync_rejects_missing_effective_sdk_configuration(
     db: Session,
     user: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -1139,7 +1170,6 @@ def test_manual_sync_requires_sdk_configuration(
             sync_days=1,
             now=datetime(2026, 7, 23, 8, tzinfo=UTC),
         )
-
 
 def test_scheduler_gate_is_separate_from_manual_sync(
     db: Session,

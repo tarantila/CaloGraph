@@ -5,6 +5,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### YAZIO synchronization
+
+- Restored the versioned YAZIO SDK mobile-client credential defaults. Normal
+  SDK operation requires only `YAZIO_ENABLED=true` and
+  `YAZIO_PROVIDER=sdk`; `YAZIO_SDK_CLIENT_ID` and
+  `YAZIO_SDK_CLIENT_SECRET` remain optional maintainer/emergency overrides.
+
+
 ## [0.6.5] - 2026-09-07
 
 ### YAZIO synchronization
