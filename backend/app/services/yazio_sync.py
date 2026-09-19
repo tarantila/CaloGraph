@@ -223,9 +223,11 @@ def _sync_yazio_user_with_domain(
     start_day: date,
     end_day: date,
     source_identifier: str | None,
+    *,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> ImportSummary:
     _require_yazio_enabled()
-    if settings.yazio_provider != "sdk":
+    if settings.yazio_provider != "sdk" and provider_mode != "sdk":
         raise YazioSyncError("YAZIO-Domänenschreiben erfordert den SDK-Provider.")
     _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
@@ -735,7 +737,7 @@ def _sync_yazio_user_unlocked(
     include_micronutrients: bool,
     provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> ImportSummary:
-    if settings.yazio_nutrition_domain_write_enabled:
+    if settings.yazio_nutrition_domain_write_enabled or provider_mode == "sdk":
         return _sync_yazio_user_with_domain(
             user,
             email,
@@ -743,6 +745,7 @@ def _sync_yazio_user_unlocked(
             start_day,
             end_day,
             source_identifier,
+            provider_mode=provider_mode,
         )
     if fetcher is None:
         payload = _fetch_yazio_payload_unlocked(
@@ -762,7 +765,7 @@ def _sync_yazio_user_unlocked(
             include_micronutrients,
         )
     identifier = source_identifier or yazio_source_identifier(user.id)
-    sdk_mode = provider_mode == "sdk" or settings.yazio_provider == "sdk"
+    sdk_mode = settings.yazio_provider == "sdk"
     connector_variant = "sdk-v22" if sdk_mode else "legacy-v15"
     client_identifier = "yazio-sdk" if sdk_mode else "yazio-exporter"
     summary = import_yazio_payload(

@@ -22,6 +22,7 @@ from app.services.credential_crypto import (
     encrypt_credential,
 )
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
+from app.services.yazio_provider import YazioFoodDiary
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioConnectionDisabled,
@@ -1026,8 +1027,16 @@ def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
                     "activity_energy": 300,
                 }
             },
-            "weight": {"2026-07-23": {"value": 72.5, "unit": "kg"}},
+            "weight": {
+                "provider-record-1": {
+                    "id": "provider-record-1",
+                    "date": "2026-07-23",
+                    "value": 72.5,
+                    "unit": "kg",
+                }
+            },
         }
+
     def forbidden_legacy_transport(*_args, **_kwargs):
         raise AssertionError("SDK manual sync invoked legacy/exporter transport")
 
@@ -1036,8 +1045,21 @@ def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
         "fetch_yazio_payload_transport",
         forbidden_legacy_transport,
     )
-
-    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", sdk_fetch)
+    monkeypatch.setattr(
+        yazio_sync,
+        "fetch_yazio_domain_transport",
+        lambda *_args, **_kwargs: (
+            sdk_fetch(provider_mode="sdk"),
+            YazioFoodDiary(
+                requested_start_day=date(2026, 7, 23),
+                requested_end_day=date(2026, 7, 23),
+                consumed_products=(),
+                consumed_simple_products=(),
+                product_profiles=(),
+                daily_summaries=(),
+            ),
+        ),
+    )
     summary = run_manual_yazio_sync(
         user.id,
         sync_days=1,

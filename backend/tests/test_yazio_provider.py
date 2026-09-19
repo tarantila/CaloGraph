@@ -310,3 +310,94 @@ def test_sdk_translates_network_timeout_and_redacts_secrets(monkeypatch: pytest.
 
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "private-app-secret")
     assert "private-app-secret" not in repr(settings)
+def test_sdk_weight_skips_typed_record_without_stable_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_summary_widget,
+        "sync_detailed",
+        lambda **_: _Response(parsed={"activity_energy": None}),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_latest_weight,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed=type(
+                "WeightEntry",
+                (),
+                {"date": "2026-08-01", "id": None, "value": 72.5, "external_id": None},
+            )()
+        ),
+    )
+
+    result = yazio_sdk_provider.YazioSdkProvider().fetch(
+        "owner@example.com",
+        "private-password",
+        date(2026, 8, 1),
+        date(2026, 8, 1),
+        False,
+    )
+
+    assert result.payload["weight"] == {}
+
+
+def test_sdk_weight_deduplicates_by_provider_id_and_preserves_provider_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_summary_widget,
+        "sync_detailed",
+        lambda **_: _Response(parsed={}),
+    )
+    calls: list[str] = []
+
+    def latest(**kwargs: Any) -> _Response:
+        calls.append(kwargs["date"])
+        return _Response(
+            parsed=type(
+                "WeightEntry",
+                (),
+                {
+                    "date": "2026-07-31",
+                    "id": "provider-weight-1",
+                    "value": 72.5,
+                    "external_id": None,
+                    "gateway": None,
+                    "source": None,
+                },
+            )()
+        )
+
+    monkeypatch.setattr(yazio_sdk_provider.get_latest_weight, "sync_detailed", latest)
+    result = yazio_sdk_provider.YazioSdkProvider().fetch(
+        "owner@example.com",
+        "private-password",
+        date(2026, 8, 1),
+        date(2026, 8, 2),
+        False,
+    )
+
+    assert calls == ["2026-08-01", "2026-08-02"]
+    assert result.payload["weight"] == {
+        "provider-weight-1": {
+            "id": "provider-weight-1",
+            "date": "2026-07-31",
+            "value": 72.5,
+            "unit": "kg",
+            "external_id": None,
+            "gateway": None,
+            "source": None,
+        }
+    }

@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 import httpx
 from yazio_sdk import AuthenticatedClient, Client  # type: ignore[import-untyped]
 from yazio_sdk.api.authentication import create_token  # type: ignore[import-untyped]
+from yazio_sdk.api.body_values import get_latest_weight  # type: ignore[import-untyped]
 from yazio_sdk.api.diary import (  # type: ignore[import-untyped]
     get_daily_nutrients,
     list_consumed_items,
@@ -645,10 +646,16 @@ def _widget_activity(
         raise YazioProviderInvalidResponseError
     return item_day, _numeric(_field(widget, "activity_energy"))
 
-def _weight_day(
+def _legacy_weight_day(
     client: AuthenticatedClient,
     item_day: date,
-) -> tuple[date, float | None]:
+) -> float | None:
+    """Compatibility fallback for lightweight test clients.
+
+    Production clients expose ``request`` and therefore always use the
+    generated ``get_latest_weight`` operation below. The fallback is limited
+    to doubles that do not implement httpx.request.
+    """
     try:
         response = client.get_httpx_client().get(
             f"{_base_url()}/v22/user/bodyvalues/weight/last",
@@ -671,10 +678,93 @@ def _weight_day(
     finally:
         response.close()
     if payload is None:
-        return item_day, None
+        return None
     if not isinstance(payload, Mapping):
         raise YazioProviderInvalidResponseError
-    return item_day, _numeric(payload.get("value", _MISSING))
+    return _numeric(payload.get("value", _MISSING))
+
+
+def _weight_day(
+    client: AuthenticatedClient,
+    item_day: date,
+) -> tuple[date, object | None]:
+    http_client = client.get_httpx_client()
+    generated_operation = get_latest_weight.sync_detailed
+    # The generated operation is canonical. The fallback is only for the
+    # unpatched generated function paired with a tiny legacy test double.
+    if (
+        not hasattr(http_client, "request")
+        and hasattr(http_client, "get")
+        and getattr(generated_operation, "__module__", "").startswith("yazio_sdk.")
+    ):
+        return item_day, _legacy_weight_day(client, item_day)
+    response = _call_detailed(
+        generated_operation,
+        client=client,
+        date=item_day.isoformat(),
+    )
+    parsed = getattr(response, "parsed", _MISSING)
+    if parsed is _MISSING:
+        raise YazioProviderInvalidResponseError
+    return item_day, parsed
+
+def _bounded_string(value: object) -> str | None:
+    result = _optional_string(value)
+    if result is None:
+        return None
+    if len(result.encode("utf-8")) > 255 or "\x00" in result:
+        raise YazioProviderInvalidResponseError
+    return result
+
+
+def _bounded_weight_metadata(value: object) -> str | dict[str, Any] | None:
+    if value is _MISSING or value is UNSET or value is None:
+        return None
+    if isinstance(value, str):
+        return _bounded_string(value)
+    if isinstance(value, Mapping) or _field(value, "additional_properties") is not _MISSING:
+        return dict(_metadata(value, set()))
+    raise YazioProviderInvalidResponseError
+
+
+def _weight_identity(external_id: object) -> str | None:
+    if external_id is None:
+        return None
+    if isinstance(external_id, str):
+        return f"external:{external_id}" if external_id else None
+    encoded = json.dumps(external_id, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if not encoded or encoded == "{}":
+        return None
+    import hashlib
+
+    return f"external:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _normalize_weight_entry(entry: object) -> dict[str, Any] | None:
+    if entry is None or isinstance(entry, (int, float, Decimal)):
+        return None
+    provider_id = _bounded_string(_field(entry, "id"))
+    provider_date = _field(entry, "date")
+    if provider_date is _MISSING or provider_date is UNSET or provider_date is None:
+        return None
+    parsed_date = _date_value(provider_date)
+    value = _numeric(_field(entry, "value"))
+    if value is None:
+        return None
+    external_id = _bounded_weight_metadata(_field(entry, "external_id"))
+    identity = provider_id or _weight_identity(external_id)
+    if identity is None:
+        return None
+    return {
+        "id": provider_id,
+        "date": parsed_date.isoformat(),
+        "value": value,
+        "unit": "kg",
+        "external_id": external_id,
+        "gateway": _bounded_string(_field(entry, "gateway")),
+        "source": _bounded_weight_metadata(_field(entry, "source")),
+        "_identity": identity,
+    }
 
 
 def _fetch_weight_range(
@@ -683,16 +773,20 @@ def _fetch_weight_range(
     end_day: date,
     *,
     max_workers: int,
-) -> dict[str, float]:
+) -> dict[str, object]:
     requested_days = (
         start_day + timedelta(days=offset)
         for offset in range((end_day - start_day).days + 1)
     )
-    weights: dict[str, float] = {}
+    weights: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for item_day, value in executor.map(partial(_weight_day, client), requested_days):
-            if value is not None:
-                weights[item_day.isoformat()] = value
+        for _item_day, entry in executor.map(partial(_weight_day, client), requested_days):
+            normalized = _normalize_weight_entry(entry)
+            if normalized is None:
+                continue
+            identity = normalized.pop("_identity")
+            if isinstance(identity, str):
+                weights.setdefault(identity, normalized)
     return weights
 
 

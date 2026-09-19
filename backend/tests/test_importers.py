@@ -1,6 +1,6 @@
 import io
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 from xml.etree.ElementTree import Element
@@ -581,6 +581,28 @@ def test_yazio_weight_is_normalized_and_identified_by_local_day() -> None:
         "2026-07-20:weight_kg",
         "2026-07-21:weight_kg",
     ]
+
+
+def test_yazio_sdk_weight_uses_provider_date_and_identity() -> None:
+    result = parse_yazio_export(
+        {
+            "weight": {
+                "provider-record-1": {
+                    "id": "provider-record-1",
+                    "date": "2026-07-20",
+                    "value": 70,
+                    "unit": "kg",
+                }
+            }
+        },
+        "Europe/Berlin",
+    )
+
+    assert result.received == 1
+    sample = result.samples[0]
+    assert sample.metric_type == "weight_kg"
+    assert sample.external_sample_id == "provider-record-1"
+    assert sample.start_at.date() == date(2026, 7, 20)
 
 
 def test_yazio_days_export_is_aggregated_without_meal_details() -> None:

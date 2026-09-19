@@ -190,42 +190,60 @@ def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatc
     assert calls == [("owner@example.com", True)]
 
 
-def test_sdk_weight_range_uses_v22_endpoint_and_parses_bounded_payload() -> None:
-    class _Response:
-        status_code = 200
-        headers: ClassVar[dict[str, str]] = {}
-        content = b'{"value":72.5}'
-
-        @staticmethod
-        def json() -> dict[str, float]:
-            return {"value": 72.5}
-
-        @staticmethod
-        def close() -> None:
-            return None
-
-    class _HTTPClient:
-        urls: ClassVar[list[str]] = []
-
-        @classmethod
-        def get(cls, url, **kwargs) -> _Response:
-            cls.urls.append(url)
-            assert kwargs["params"] == {"date": "2026-08-01"}
-            return _Response()
+def test_sdk_weight_range_uses_generated_v22_operation_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
 
     class _Authenticated:
-        @staticmethod
-        def get_httpx_client() -> _HTTPClient:
-            return _HTTPClient()
+        def get_httpx_client(self) -> object:
+            return type("HTTPClient", (), {"request": object()})()
 
+    def latest(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return type(
+            "Response",
+            (),
+            {
+                "status_code": 200,
+                "headers": {},
+                "content": b"{}",
+                "parsed": type(
+                    "WeightEntry",
+                    (),
+                    {
+                        "date": "2026-08-01",
+                        "id": "provider-weight-1",
+                        "value": 72.5,
+                        "external_id": None,
+                        "gateway": None,
+                        "source": None,
+                    },
+                )(),
+            },
+        )()
+
+    monkeypatch.setattr(yazio_sdk_provider.get_latest_weight, "sync_detailed", latest)
     result = yazio_sdk_provider._fetch_weight_range(
         _Authenticated(),
         date(2026, 8, 1),
         date(2026, 8, 1),
         max_workers=1,
     )
-    assert result == {"2026-08-01": 72.5}
-    assert _HTTPClient.urls == ["https://yzapi.yazio.com/v22/user/bodyvalues/weight/last"]
+
+    assert result == {
+        "provider-weight-1": {
+            "id": "provider-weight-1",
+            "date": "2026-08-01",
+            "value": 72.5,
+            "unit": "kg",
+            "external_id": None,
+            "gateway": None,
+            "source": None,
+        }
+    }
+    assert calls[0]["date"] == "2026-08-01"
+
 def test_sdk_weight_classifies_status_transport_and_numeric_failures() -> None:
     class _Response:
         status_code = 429

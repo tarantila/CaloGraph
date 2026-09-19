@@ -13,6 +13,7 @@ from app.models import GoogleHealthConnection, HealthSample, ImportBatch, YazioC
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionDailyProjection,
+    NutritionFieldObservation,
     NutritionIngestionRun,
     NutritionSourceObservation,
 )
@@ -26,6 +27,7 @@ from app.schemas import ImportSummary
 from app.services import yazio_sync, yazio_transport
 from app.services.credential_crypto import encrypt_credential
 from app.services.yazio_provider import (
+    YazioConsumedSimpleProduct,
     YazioDailyNutrientSummary,
     YazioFoodDiary,
     YazioNutrientValues,
@@ -132,16 +134,62 @@ def test_enabled_sdk_reads_everything_before_shared_transaction(
     assert events.index("shared-transaction") == 4
 
 
-def test_enabled_rollout_is_sdk_only_and_fails_without_domain_writes(
+def test_manual_sync_uses_sdk_domain_when_provider_setting_is_legacy(
     db, user, monkeypatch
 ) -> None:
     _connection(db, user)
     monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
     monkeypatch.setattr(settings, "yazio_provider", "legacy")
-    with pytest.raises(YazioSyncError, match="SDK"):
-        run_manual_yazio_sync(user.id, now=datetime(2026, 9, 1, 12, tzinfo=UTC))
-    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 0
-    assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 0
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
+
+    diary = YazioFoodDiary(
+        requested_start_day=DAY,
+        requested_end_day=DAY,
+        consumed_products=(),
+        consumed_simple_products=(
+            YazioConsumedSimpleProduct(
+                consumed_item_id="manual-sdk-food-1",
+                amount=Decimal("1"),
+                provider_civil_datetime=datetime(2026, 9, 1, 12),
+                local_date=DAY,
+                daytime="dinner",
+                nutrients=YazioNutrientValues(energy=Decimal("180")),
+                serving="portion",
+                serving_quantity=Decimal("1"),
+                name="Synthetic food",
+            ),
+        ),
+        product_profiles=(),
+        daily_summaries=(
+            YazioDailyNutrientSummary(
+                local_date=DAY,
+                nutrients=YazioNutrientValues(energy=Decimal("1800")),
+                energy_goal=None,
+            ),
+        ),
+    )
+
+    def fetch_domain(*_args, **_kwargs):
+        return _aggregate(), diary
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fetch_domain)
+    now = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    summary = run_manual_yazio_sync(user.id, now=now)
+
+    assert summary.status == "completed"
+    assert db.scalar(select(func.count()).select_from(ImportBatch)) == 1
+    assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 1
+    first_event_count = db.scalar(select(func.count()).select_from(NutritionConsumptionEvent))
+    assert first_event_count > 0
+    assert (
+        db.scalar(select(func.count()).select_from(NutritionFieldObservation)) > 0
+    )
+
+    run_manual_yazio_sync(user.id, now=now)
+    assert (
+        db.scalar(select(func.count()).select_from(NutritionConsumptionEvent))
+        == first_event_count
+    )
 
 
 def test_enabled_sync_commits_legacy_and_domain_rows_together(
@@ -504,3 +552,30 @@ def test_legacy_v15_never_calls_domain_bootstrap(db, user, monkeypatch) -> None:
         now=datetime(2026, 9, 1, 12, tzinfo=UTC),
     )
     assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 0
+
+
+def test_manual_sdk_domain_path_runs_when_rollout_flag_is_disabled(db, user, monkeypatch) -> None:
+    _connection(db, user)
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
+    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", False)
+    called = False
+
+    def fetch_domain(email, password, start_day, end_day):
+        nonlocal called
+        called = True
+        del email, password, start_day, end_day
+        return _aggregate(), _diary()
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fetch_domain)
+    summary = run_manual_yazio_sync(
+        user.id,
+        now=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+
+    assert called is True
+    assert summary.inserted == 2
+    assert db.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 1
+    assert db.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
+    assert db.scalar(select(func.count()).select_from(NutritionFieldObservation)) >= 1
