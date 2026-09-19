@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { getActivePinia } from 'pinia'
 import { PhArrowDown, PhArrowUp } from '@phosphor-icons/vue'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 import { ApiError, api, localizeApiError } from '../api'
 import { i18n } from '../i18n'
+import { useAuthStore } from '../stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
 
@@ -34,14 +36,15 @@ interface SaveResult {
 
 interface PendingSave {
   providerKeys: ProviderKey[]
+  sessionKey: string
   resolve: (result: SaveResult) => void
 }
 
 interface AreaSaveState {
   active: Promise<void> | null
   pending: PendingSave | null
+  sessionKey: string | null
 }
-
 const areas: Array<{ key: DataArea; title: string; description: string }> = [
   { key: 'nutrition', title: 'providerPreferencesUi.nutritionTitle', description: 'providerPreferencesUi.nutritionDescription' },
   { key: 'weight', title: 'providerPreferencesUi.weightTitle', description: 'providerPreferencesUi.weightDescription' },
@@ -52,9 +55,9 @@ const saveStateRegistry = api as typeof api & {
   __calographProviderPrioritySaveStates?: Record<DataArea, AreaSaveState>
 }
 const saveStates = saveStateRegistry.__calographProviderPrioritySaveStates ??= {
-  nutrition: { active: null, pending: null },
-  weight: { active: null, pending: null },
-  activity_energy: { active: null, pending: null },
+  nutrition: { active: null, pending: null, sessionKey: null },
+  weight: { active: null, pending: null, sessionKey: null },
+  activity_energy: { active: null, pending: null, sessionKey: null },
 }
 const priorities = ref<Record<DataArea, ProviderKey[]>>({
   nutrition: [],
@@ -107,10 +110,33 @@ function isSaving(area: DataArea): boolean {
   return saveStatus.value[area] === 'saving'
 }
 
+function currentSessionKey(): string {
+  const pinia = getActivePinia()
+  const userId = pinia ? useAuthStore(pinia).user?.id ?? 'anonymous' : 'anonymous'
+  const sessionToken = typeof sessionStorage === 'undefined'
+    ? 'server'
+    : sessionStorage.getItem('calograph_csrf') ?? 'anonymous'
+  return `${userId}:${sessionToken}`
+}
+
+function bindAreaSaveSession(area: DataArea, sessionKey: string): AreaSaveState {
+  const state = saveStates[area]
+  if (state.sessionKey !== sessionKey) {
+    if (state.pending) state.pending.resolve({ status: 'superseded' })
+    state.pending = null
+    state.sessionKey = sessionKey
+  }
+  return state
+}
+
 async function drainAreaSaves(area: DataArea, state: AreaSaveState): Promise<void> {
   while (state.pending) {
     const pending = state.pending
     state.pending = null
+    if (pending.sessionKey !== state.sessionKey) {
+      pending.resolve({ status: 'superseded' })
+      continue
+    }
     try {
       await api<PreferenceResponse>(`/settings/provider-preferences/${area}`, {
         method: 'PUT',
@@ -125,17 +151,19 @@ async function drainAreaSaves(area: DataArea, state: AreaSaveState): Promise<voi
 }
 
 function queueAreaSave(area: DataArea, providerKeys: ProviderKey[]): Promise<SaveResult> {
-  const state = saveStates[area]
+  const state = bindAreaSaveSession(area, currentSessionKey())
+  const sessionKey = state.sessionKey!
   const result = new Promise<SaveResult>((resolve) => {
     if (state.pending) state.pending.resolve({ status: 'superseded' })
-    state.pending = { providerKeys: [...providerKeys], resolve }
+    state.pending = { providerKeys: [...providerKeys], sessionKey, resolve }
   })
   if (!state.active) state.active = drainAreaSaves(area, state)
   return result
 }
 
 function waitForAreaSave(area: DataArea): Promise<void> {
-  return saveStates[area].active ?? Promise.resolve()
+  const state = bindAreaSaveSession(area, currentSessionKey())
+  return state.active ?? Promise.resolve()
 }
 
 function clearSaveTimer(area: DataArea): void {
