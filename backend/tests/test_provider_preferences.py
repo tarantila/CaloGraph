@@ -490,7 +490,7 @@ def test_provider_availability_keeps_stable_status_values(client: TestClient, us
 
     assert response.status_code == 200
     statuses = {item["provider_key"]: item["status"] for item in response.json()["providers"]}
-    assert statuses["yazio"] == "available"
+    assert statuses["yazio"] == "no_data"
     assert set(statuses.values()) <= {
         "available",
         "disabled",
@@ -539,8 +539,8 @@ def test_provider_availability_reports_owned_yazio_without_exposing_source_insta
             },
             {
                 "provider_key": "yazio",
-                "available": True,
-                "status": "available",
+                "available": False,
+                "status": "no_data",
             },
             {
                 "provider_key": "apple_health",

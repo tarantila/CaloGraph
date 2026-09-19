@@ -142,10 +142,14 @@ def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailab
         provider.provider_key
         for provider in discover_nutrition_providers(db, user_id=user_id).providers
     }
+    if not settings.yazio_enabled:
+        yazio_status = "disabled"
+    else:
+        yazio_status = "available" if "yazio" in evidenced_providers else "no_data"
     statuses = {
         "apple_health": "available" if "apple_health" in evidenced_providers else "no_data",
         "google_health": google_status,
-        "yazio": _yazio_status(db, user_id),
+        "yazio": yazio_status,
     }
     return _availability(NUTRITION_DATA_AREA, statuses)
 

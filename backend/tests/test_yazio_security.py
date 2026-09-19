@@ -9,6 +9,7 @@ import pytest
 
 from app.config import settings
 from app.schemas import ImportSummary
+from app.security_events import log_security_event
 from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_provider import (
@@ -17,12 +18,18 @@ from app.services.yazio_provider import (
     YazioProviderNetworkTimeoutError,
     YazioProviderRateLimitedError,
     YazioProviderResult,
+    YazioProviderUnavailableError,
 )
-from app.services.yazio_sync import YazioCircuitOpen, YazioSyncError
+from app.services.yazio_sync import (
+    YazioCircuitOpen,
+    YazioInvalidResponseError,
+    YazioSyncError,
+)
 from app.services.yazio_transport import (
     YazioTransportAuthenticationError,
     YazioTransportDeadlineError,
     YazioTransportError,
+    YazioTransportInvalidResponseError,
     _BoundedYazioClient,
     _execute_worker,
     _login,
@@ -57,7 +64,31 @@ class _FakeProcess:
     def kill(self) -> None:
         self.killed = True
 
+class _SdkResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        parsed: object = None,
+        content: bytes = b"{}",
+    ) -> None:
+        self.status_code = status_code
+        self.parsed = parsed
+        self.content = content
+        self.headers: dict[str, str] = {}
 
+
+def _patch_sdk_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    def new_client() -> object:
+        return type("Client", (), {"get_httpx_client": lambda self: self, "close": lambda self: None})()
+
+    monkeypatch.setattr(yazio_sdk_provider, "_new_client", new_client)
+    monkeypatch.setattr(yazio_sdk_provider, "_new_authenticated_client", lambda _token: new_client())
+    monkeypatch.setattr(
+        yazio_sdk_provider.create_token,
+        "sync_detailed",
+        lambda **_: type("Response", (), {"status_code": 200, "parsed": {"access_token": "token"}})(),
+    )
 def test_login_uses_explicit_timeout_without_redirects_or_retries(monkeypatch) -> None:
     client = _BoundedYazioClient(
         _TransportOptions(
@@ -408,3 +439,166 @@ def test_provider_failures_open_the_shared_circuit(db, monkeypatch) -> None:
             operation_key="user-id",
         )
     assert calls == 2
+
+
+def test_consumed_items_validation_exposes_bounded_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sdk_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _SdkResponse(parsed={"products": "invalid"}),
+    )
+
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+        )
+
+    context = caught.value.context
+    assert context is not None
+    assert context.operation == "consumed_items"
+    assert context.endpoint_key == "consumed_items"
+    assert context.response_model == "ConsumedItems"
+    assert context.validation_location == "products"
+    assert "private-password" not in repr(context)
+
+
+def test_product_lookup_validation_exposes_bounded_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sdk_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _SdkResponse(
+            parsed={"products": [{"id": "event-1", "product_id": "product-1"}]}
+        ),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _SdkResponse(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_product,
+        "sync_detailed",
+        lambda *_args, **_kwargs: _SdkResponse(parsed=None),
+    )
+
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+        )
+
+    context = caught.value.context
+    assert context is not None
+    assert context.operation == "product_lookup"
+    assert context.endpoint_key == "product"
+    assert context.response_model == "Product"
+    assert context.validation_location == "response"
+
+
+def test_simple_product_normalization_exposes_bounded_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sdk_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _SdkResponse(parsed={"simple_products": ["invalid"]}),
+    )
+
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+        )
+
+    context = caught.value.context
+    assert context is not None
+    assert context.operation == "simple_product_normalization"
+    assert context.endpoint_key == "consumed_items"
+    assert context.validation_location == "simple_products[]"
+
+
+def test_http_error_context_contains_status_without_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_sdk_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _SdkResponse(status_code=503, content=b"private-health-response"),
+    )
+
+    with pytest.raises(YazioProviderUnavailableError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            False,
+        )
+
+    context = caught.value.context
+    assert context is not None
+    assert context.operation == "daily_nutrients"
+    assert context.endpoint_key == "daily_nutrients"
+    assert context.upstream_status_code == 503
+    assert "private-health-response" not in repr(caught.value)
+
+
+def test_worker_preserves_bounded_provider_context_without_raw_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = {
+        "operation": "consumed_items",
+        "endpoint_key": "consumed_items",
+        "upstream_status_code": 200,
+        "response_model": "ConsumedItems",
+        "error_category": "validation",
+        "validation_location": "products[].product_id",
+        "retryable": False,
+    }
+    process = _FakeProcess(
+        json.dumps({"ok": False, "kind": "invalid_response", "context": context}).encode()
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(YazioTransportInvalidResponseError) as caught:
+        _run_worker({"operation": "fetch_domain"}, deadline_seconds=5)
+
+    assert caught.value.context == context
+    assert "private-password" not in repr(caught.value)
+    assert "raw" not in repr(caught.value).lower()
+
+
+def test_provider_context_details_match_security_event_contract() -> None:
+    error = YazioInvalidResponseError("generic")
+    error.provider_context = {
+        "operation": "consumed_items",
+        "endpoint_key": "consumed_items",
+        "upstream_status_code": 422,
+        "response_model": "ConsumedItems",
+        "error_category": "validation",
+        "validation_location": "products[].product_id",
+        "retryable": False,
+    }
+
+    details = yazio_sync._provider_context_details(error)
+    assert details["provider_validation_location"] == "products.product_id"
+    log_security_event(
+        "integration.yazio.sync_failed",
+        reason="invalid_response",
+        details={"mode": "manual", **details},
+    )

@@ -1,7 +1,7 @@
 import logging
 import secrets
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -76,7 +76,16 @@ logger = logging.getLogger(__name__)
 
 
 class YazioSyncError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        provider_context: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message or "YAZIO synchronization failed")
+        self.provider_context = (
+            dict(provider_context) if provider_context is not None else None
+        )
 
 
 class YazioConnectionNotConfigured(YazioSyncError):
@@ -176,23 +185,71 @@ def yazio_failure_reason(error: Exception) -> str:
     return "unexpected_error"
 
 
+def _with_provider_context(
+    mapped: YazioSyncError,
+    error: YazioProviderError,
+) -> YazioSyncError:
+    mapped.provider_context = (
+        error.context.to_dict() if error.context is not None else None
+    )
+    return mapped
+
+
 def _map_yazio_provider_error(error: YazioProviderError) -> YazioSyncError:
     if isinstance(error, YazioProviderAuthenticationError):
-        return YazioAuthenticationError("YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen.")
+        return _with_provider_context(
+            YazioAuthenticationError("YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."),
+            error,
+        )
     if error.kind == "version_blocked":
-        return YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE)
+        return _with_provider_context(YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE), error)
     if isinstance(error, YazioProviderRateLimitedError):
-        return YazioRateLimitedError(error.retry_after)
+        return _with_provider_context(YazioRateLimitedError(error.retry_after), error)
     if isinstance(error, YazioProviderNetworkTimeoutError):
-        return YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet.")
+        return _with_provider_context(
+            YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet."), error
+        )
     if isinstance(error, YazioProviderDeadlineError):
-        return YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet.")
+        return _with_provider_context(
+            YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet."), error
+        )
     if isinstance(error, YazioProviderInvalidResponseError):
-        return YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert.")
+        return _with_provider_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."), error
+        )
     if isinstance(error, YazioProviderUnavailableError):
-        return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
-    return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
+        return _with_provider_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."), error
+        )
+    return _with_provider_context(
+        YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."), error
+    )
 
+
+def _provider_context_details(error: Exception) -> dict[str, object]:
+    context = getattr(error, "provider_context", None)
+    if not isinstance(context, Mapping):
+        return {}
+    details: dict[str, object] = {}
+    for source_key, detail_key in (
+        ("operation", "provider_operation"),
+        ("endpoint_key", "provider_endpoint"),
+        ("response_model", "provider_model"),
+        ("error_category", "provider_error_category"),
+    ):
+        value = context.get(source_key)
+        if isinstance(value, str) and value:
+            details[detail_key] = value[:64]
+    location = context.get("validation_location")
+    if isinstance(location, str) and location:
+        details["provider_validation_location"] = location.replace("[", "").replace("]", "")[:64]
+    status = context.get("upstream_status_code")
+    if isinstance(status, int) and not isinstance(status, bool) and status >= 0:
+        details["provider_status"] = status
+    retryable = context.get("retryable")
+    if isinstance(retryable, bool):
+        details["provider_retryable"] = retryable
+    return details
 
 def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
     max_jitter = settings.yazio_scheduler_jitter_minutes
@@ -1184,7 +1241,10 @@ def _run_yazio_connection_sync_locked(
             actor_ref=security_reference("user", user_id),
             target_ref=security_reference("yazio_connection", connection_id),
             reason=yazio_failure_reason(exc),
-            details={"mode": mode},
+            details={
+                "mode": mode,
+                **_provider_context_details(exc),
+            },
         )
         if raise_errors:
             if isinstance(exc, YazioSyncError):
