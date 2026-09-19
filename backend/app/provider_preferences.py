@@ -5,9 +5,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
-from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPES
-from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
-
 NUTRITION_DATA_AREA: Final = "nutrition"
 WEIGHT_DATA_AREA: Final = "weight"
 ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"

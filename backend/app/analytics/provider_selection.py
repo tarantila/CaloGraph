@@ -9,11 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import GoogleHealthConnection, YazioConnection
 from app.nutrition.models import NutritionSourceObservation
-from app.provider_preferences import (
-    NUTRITION_DATA_AREA,
-    effective_provider_order,
-    validate_provider_preference,
-)
+from app.provider_preferences import NUTRITION_DATA_AREA, effective_provider_order
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 from app.source_priority.compatibility import list_provider_preferences
 

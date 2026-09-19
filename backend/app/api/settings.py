@@ -906,7 +906,7 @@ def _activity_priority_chain(
         if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
     )
     if not activity_preferences:
-        provider_keys = (
+        provider_keys = tuple(
             provider_key
             for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
             if ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] != projection_source_type
