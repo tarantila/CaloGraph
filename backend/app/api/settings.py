@@ -12,6 +12,7 @@ from starlette.types import Receive, Scope, Send
 
 from app.activity import (
     ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
     ACTIVITY_PROVIDER_SOURCE_TYPES,
     ACTIVITY_SOURCE_TYPES,
 )
@@ -44,6 +45,7 @@ from app.problem_types import (
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
+    PROVIDER_SELECTION_NOT_READY,
     TARGET_VERSION_NOT_FOUND,
     VALIDATION_ERROR,
     ProblemHTTPException,
@@ -117,6 +119,7 @@ from app.services.provider_preferences import (
     apply_activity_provider_to_current_target,
     provider_availability,
     replace_activity_target_sources,
+    resolve_provider_source_type,
 )
 from app.services.rate_limit import (
     check_rate_limit,
@@ -619,15 +622,15 @@ def update_provider_preference(
         provider_keys=normalized_providers,
     )
     if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
-        activity_provider_keys = effective_provider_order(
-            normalized_area, normalized_providers
-        )
+        activity_provider_keys = effective_provider_order(normalized_area, normalized_providers)
         apply_activity_provider_to_current_target(
             db,
             user=user,
-            source_types=tuple(
-                ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key]
-                for provider_key in activity_provider_keys
+            source_types=_activity_priority_chain(
+                db,
+                user.id,
+                ACTIVITY_PROVIDER_SOURCE_TYPES[activity_provider_keys[0]],
+                provider_keys=activity_provider_keys,
             ),
         )
     db.commit()
@@ -895,31 +898,94 @@ def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
     )
 
 
+def _activity_provider_source_type(
+    db: Session,
+    user_id: UUID,
+    provider_key: str,
+    *,
+    fallback: str,
+) -> str:
+    try:
+        return resolve_provider_source_type(
+            db,
+            user_id=user_id,
+            data_area=ACTIVITY_ENERGY_DATA_AREA,
+            provider_key=provider_key,
+            configured=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS[provider_key],
+            fallback=fallback,
+        )
+    except ValueError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsprovider ist nicht eindeutig lesbar konfiguriert",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
 def _activity_priority_chain(
     db: Session,
     user_id: UUID,
     projection_source_type: str,
+    *,
+    provider_keys: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
-    activity_preferences = tuple(
-        preference
-        for preference in list_provider_preferences(db, user_id)
-        if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
+    activity_preferences = (
+        tuple(
+            preference
+            for preference in list_provider_preferences(db, user_id)
+            if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
+        )
+        if provider_keys is None
+        else ()
     )
-    if not activity_preferences:
-        provider_keys = tuple(
+    if provider_keys is None and not activity_preferences:
+        projection_provider = next(
+            (
+                provider_key
+                for provider_key, source_types in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS.items()
+                if projection_source_type in source_types
+            ),
+            None,
+        )
+        fallback_provider_keys = tuple(
             provider_key
             for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
-            if ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] != projection_source_type
+            if provider_key != projection_provider
         )
+        if projection_provider is not None:
+            _activity_provider_source_type(
+                db,
+                user_id,
+                projection_provider,
+                fallback=projection_source_type,
+            )
         return (
             projection_source_type,
-            *(ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] for provider_key in provider_keys),
+            *(
+                _activity_provider_source_type(
+                    db,
+                    user_id,
+                    fallback_provider_key,
+                    fallback=ACTIVITY_PROVIDER_SOURCE_TYPES[fallback_provider_key],
+                )
+                for fallback_provider_key in fallback_provider_keys
+            ),
         )
-    provider_keys = effective_provider_order(
+    effective_provider_keys = effective_provider_order(
         ACTIVITY_ENERGY_DATA_AREA,
-        tuple(preference.provider_key for preference in activity_preferences),
+        provider_keys
+        if provider_keys is not None
+        else tuple(preference.provider_key for preference in activity_preferences),
     )
-    return tuple(ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key] for provider_key in provider_keys)
+    return tuple(
+        _activity_provider_source_type(
+            db,
+            user_id,
+            provider_key,
+            fallback=ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key],
+        )
+        for provider_key in effective_provider_keys
+    )
 
 
 def _validate_activity_source(

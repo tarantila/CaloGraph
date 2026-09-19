@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPES
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+)
 from app.config import settings
 from app.models import (
     GoogleHealthConnection,
@@ -28,7 +31,7 @@ from app.provider_preferences import (
     normalize_data_area,
     normalize_provider_key,
 )
-from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPES
+from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 
 def _availability(
@@ -50,6 +53,92 @@ def _yazio_status(db: Session, user_id: UUID) -> str:
     if not settings.yazio_enabled:
         return "disabled"
     return "available" if connection is not None else "not_configured"
+
+
+def _normalize_source_types(configured: str | Sequence[str]) -> tuple[str, ...]:
+    return (configured,) if isinstance(configured, str) else tuple(configured)
+
+
+def _source_types(
+    data_area: str,
+    provider_key: str,
+    configured: str | Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    if configured is not None:
+        return _normalize_source_types(configured)
+    groups = {
+        WEIGHT_DATA_AREA: WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
+        ACTIVITY_ENERGY_DATA_AREA: ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+    }.get(data_area, {})
+    source_types = groups.get(provider_key)
+    if source_types is None:
+        raise ValueError("provider source types are not configured")
+    return tuple(source_types)
+
+
+def _transport_evidence(
+    db: Session,
+    *,
+    user_id: UUID,
+    data_area: str,
+    provider_key: str,
+    configured: str | Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    metric_type = {
+        WEIGHT_DATA_AREA: WEIGHT_METRIC,
+        ACTIVITY_ENERGY_DATA_AREA: ACTIVE_ENERGY_METRIC,
+    }.get(data_area)
+    if metric_type is None:
+        return ()
+    source_types = _source_types(data_area, provider_key, configured)
+    evidenced = set(
+        db.scalars(
+            select(HealthSample.source_type)
+            .where(
+                HealthSample.user_id == user_id,
+                HealthSample.metric_type == metric_type,
+                HealthSample.source_type.in_(source_types),
+            )
+            .distinct()
+        )
+    )
+    return tuple(source_type for source_type in source_types if source_type in evidenced)
+
+
+def resolve_provider_source_type(
+    db: Session,
+    *,
+    user_id: UUID,
+    data_area: str,
+    provider_key: str,
+    configured: str | Sequence[str] | None = None,
+    fallback: str | None = None,
+) -> str:
+    source_types = _source_types(data_area, provider_key, configured)
+    evidence = _transport_evidence(
+        db,
+        user_id=user_id,
+        data_area=data_area,
+        provider_key=provider_key,
+        configured=source_types,
+    )
+    if len(evidence) > 1:
+        stable_ids = [
+            set(
+                db.scalars(
+                    select(HealthSample.external_sample_id)
+                    .where(
+                        HealthSample.user_id == user_id,
+                        HealthSample.source_type == source_type,
+                        HealthSample.external_sample_id.is_not(None),
+                    )
+                )
+            )
+            for source_type in evidence
+        ]
+        if not stable_ids or not set.intersection(*stable_ids):
+            raise ValueError("provider transports are ambiguous")
+    return evidence[0] if evidence else (fallback or source_types[0])
 
 
 def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
@@ -80,25 +169,39 @@ def _sample_provider_statuses(
     *,
     user_id: UUID,
     metric_type: str,
-    source_types: dict[str, str],
+    source_types: Mapping[str, str | Sequence[str]],
     include_zero: bool = False,
 ) -> dict[str, str]:
     value_filter = HealthSample.value >= 0 if include_zero else HealthSample.value > 0
+    raw_source_types = tuple(
+        dict.fromkeys(
+            raw_type
+            for configured in source_types.values()
+            for raw_type in _normalize_source_types(configured)
+        )
+    )
     evidenced = set(
         db.scalars(
             select(HealthSample.source_type)
             .where(
                 HealthSample.user_id == user_id,
                 HealthSample.metric_type == metric_type,
-                HealthSample.source_type.in_(source_types.values()),
+                HealthSample.source_type.in_(raw_source_types),
                 value_filter,
             )
             .distinct()
         )
     )
     return {
-        provider_key: ("available" if source_type in evidenced else "no_data")
-        for provider_key, source_type in source_types.items()
+        provider_key: (
+            "available"
+            if any(
+                raw_type in evidenced
+                for raw_type in _normalize_source_types(configured)
+            )
+            else "no_data"
+        )
+        for provider_key, configured in source_types.items()
     }
 
 
@@ -107,7 +210,7 @@ def _weight_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabili
         db,
         user_id=user_id,
         metric_type=WEIGHT_METRIC,
-        source_types=WEIGHT_PROVIDER_SOURCE_TYPES,
+        source_types=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
     )
     statuses["yazio"] = _yazio_status(db, user_id)
     return _availability(WEIGHT_DATA_AREA, statuses)
@@ -118,7 +221,7 @@ def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabi
         db,
         user_id=user_id,
         metric_type=ACTIVE_ENERGY_METRIC,
-        source_types=ACTIVITY_PROVIDER_SOURCE_TYPES,
+        source_types=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
         include_zero=True,
     )
     return _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)
@@ -146,8 +249,9 @@ def replace_activity_target_sources(
     source_types: Sequence[str],
 ) -> None:
     provider_by_source_type = {
-        source_type: provider_key
-        for provider_key, source_type in ACTIVITY_PROVIDER_SOURCE_TYPES.items()
+        raw_source_type: provider_key
+        for provider_key, raw_source_types in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS.items()
+        for raw_source_type in raw_source_types
     }
     unique_source_types = tuple(dict.fromkeys(source_types))
     for snapshot in tuple(target.activity_sources):
@@ -259,4 +363,5 @@ __all__ = [
     "provider_availability",
     "provider_is_available",
     "replace_activity_target_sources",
+    "resolve_provider_source_type",
 ]

@@ -554,8 +554,93 @@ def test_provider_availability_uses_registry_order_for_weight(
     assert [item["provider_key"] for item in response.json()["providers"]] == [
         "yazio",
         "apple_health",
-        "health_auto_export",
     ]
+
+
+def test_weight_availability_consolidates_health_auto_export_under_apple(
+    client: TestClient, user, db
+) -> None:
+    day = date(2026, 9, 15)
+    _add_weight_sample(
+        db,
+        user,
+        source_type="health_auto_export_v2",
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="health-device",
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/provider-availability/weight")
+
+    assert response.status_code == 200
+    assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "yazio",
+        "apple_health",
+    ]
+    statuses = {item["provider_key"]: item for item in response.json()["providers"]}
+    assert statuses["apple_health"]["available"] is True
+    assert statuses["apple_health"]["status"] == "available"
+
+
+def test_weight_selection_uses_health_auto_export_as_apple_provenance(
+    client: TestClient, user, db
+) -> None:
+    day = date(2026, 9, 15)
+    _add_weight_sample(
+        db,
+        user,
+        source_type="health_auto_export_v2",
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="health-device",
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "apple_health"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 72.5}]
+
+
+def test_weight_selection_fails_closed_for_ambiguous_apple_transports(
+    client: TestClient, user, db
+) -> None:
+    day = date(2026, 9, 15)
+    _add_weight_sample(
+        db,
+        user,
+        source_type="apple_health_xml",
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier="apple-device",
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type="health_auto_export_v2",
+        value=Decimal("71.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 9, tzinfo=UTC),
+        source_identifier="health-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 1),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 503
+    assert response.json()["type"] == "urn:calograph:problem:provider-selection-not-ready"
 
 
 
@@ -890,7 +975,6 @@ def test_weight_priority_falls_back_to_health_auto_export_without_forward_fill(
         user,
         PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 1),
         PriorityRuleSpec(WEIGHT_DATA_AREA, None, "apple_health", 2),
-        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "health_auto_export", 3),
     )
     _login(client)
 
@@ -992,7 +1076,6 @@ def test_activity_availability_accepts_explicit_zero_samples(client: TestClient,
     assert [item["provider_key"] for item in response.json()["providers"]] == [
         "yazio",
         "apple_health",
-        "health_auto_export",
     ]
     statuses = {item["provider_key"]: item for item in response.json()["providers"]}
     assert statuses["apple_health"] == {
@@ -1000,6 +1083,83 @@ def test_activity_availability_accepts_explicit_zero_samples(client: TestClient,
         "available": True,
         "status": "available",
     }
+
+def test_activity_health_auto_export_uses_apple_family_in_target_chain(
+    client: TestClient, user, db
+) -> None:
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    _add_sample(
+        db,
+        user,
+        metric_type="active_energy_kcal",
+        source_type="health_auto_export_v2",
+        value=Decimal("300"),
+        local_date=date(2026, 9, 15),
+    )
+    db.commit()
+    csrf = _login(client)
+
+    response = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["apple_health"]},
+    )
+
+    assert response.status_code == 200
+    db.expire_all()
+    current = db.scalar(
+        select(NutritionTarget)
+        .where(NutritionTarget.user_id == user.id, NutritionTarget.valid_to.is_(None))
+    )
+    assert current is not None
+    assert current.activity_source_type == "health_auto_export_v2"
+    snapshots = list(
+        db.scalars(
+            select(NutritionTargetActivitySource)
+            .where(NutritionTargetActivitySource.target_id == current.id)
+            .order_by(NutritionTargetActivitySource.priority)
+        )
+    )
+    assert [(row.provider_key, row.source_type) for row in snapshots] == [
+        ("apple_health", "health_auto_export_v2"),
+        ("yazio", "yazio_export_v1"),
+    ]
+
+
+def test_activity_ambiguous_apple_transports_fail_closed(
+    client: TestClient, user, db
+) -> None:
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.activity_mode = "full"
+    target.activity_source_type = "apple_health_xml"
+    for source_type, value in (
+        ("apple_health_xml", Decimal("300")),
+        ("health_auto_export_v2", Decimal("301")),
+    ):
+        _add_sample(
+            db,
+            user,
+            metric_type="active_energy_kcal",
+            source_type=source_type,
+            value=value,
+            local_date=date(2026, 9, 15),
+        )
+    db.commit()
+    csrf = _login(client)
+
+    response = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["apple_health"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["type"] == "urn:calograph:problem:provider-selection-not-ready"
+
 
 def test_activity_provider_change_creates_effective_target_version(
     client: TestClient,
@@ -1098,7 +1258,6 @@ def test_activity_provider_priority_snapshots_preserve_history_and_same_day_upda
     assert [(row.priority, row.provider_key, row.source_type) for row in first_snapshot_rows] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
-        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
     second = client.put(
@@ -1132,7 +1291,6 @@ def test_activity_provider_priority_snapshots_preserve_history_and_same_day_upda
     assert [(row.priority, row.provider_key, row.source_type) for row in second_snapshot_rows] == [
         (1, "apple_health", "apple_health_xml"),
         (2, "yazio", "yazio_export_v1"),
-        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
 
@@ -1221,7 +1379,6 @@ def test_current_day_target_put_preserves_complete_activity_policy_chain(
     assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
-        (3, "health_auto_export", "health_auto_export_v2"),
     ]
 
 
@@ -1368,5 +1525,4 @@ def test_new_target_captures_complete_activity_provider_priority_chain(
     assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
-        (3, "health_auto_export", "health_auto_export_v2"),
     ]

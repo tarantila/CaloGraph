@@ -11,11 +11,10 @@ ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"
 SUPPORTED_PROVIDER_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         NUTRITION_DATA_AREA: ("google_health", "yazio", "apple_health"),
-        WEIGHT_DATA_AREA: ("yazio", "apple_health", "health_auto_export"),
-        ACTIVITY_ENERGY_DATA_AREA: ("yazio", "apple_health", "health_auto_export"),
+        WEIGHT_DATA_AREA: ("yazio", "apple_health"),
+        ACTIVITY_ENERGY_DATA_AREA: ("yazio", "apple_health"),
     }
 )
-
 
 def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tuple[str, ...]:
     """Return saved providers followed by missing providers in registry order."""

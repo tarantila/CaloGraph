@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -66,7 +67,7 @@ from app.problem_types import (
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import DailyPoint, MicronutrientResponse, WeightResponse
 from app.services.achievements import unlock_achievement_keys
-from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPES
+from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 router = APIRouter(tags=["Analytics"])
 _DEFAULT_RESOLVE_NUTRITION_PROVIDER = resolve_nutrition_provider
@@ -152,7 +153,7 @@ def _preferred_scalar_provider(
     *,
     user_id: UUID,
     data_area: str,
-    source_types: dict[str, str],
+    source_types: Mapping[str, str | Sequence[str]],
 ) -> ScalarProviderSelection | None:
     try:
         return resolve_scalar_provider(
@@ -304,7 +305,7 @@ def weight(
         db,
         user_id=user.id,
         data_area=WEIGHT_DATA_AREA,
-        source_types=WEIGHT_PROVIDER_SOURCE_TYPES,
+        source_types=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
     )
     if selection is None:
         return {
