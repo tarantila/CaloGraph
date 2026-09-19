@@ -12,100 +12,245 @@ vi.mock('../src/api', () => ({
 import AccountDataSourcesView from '../src/views/AccountDataSourcesView.vue'
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 
+type DataArea = 'nutrition' | 'weight' | 'activity_energy'
+type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
+
 const availabilityByArea = {
   nutrition: [
-    { provider_key: 'apple_health', available: false, status: 'no_data' },
     { provider_key: 'google_health', available: true, status: 'available' },
     { provider_key: 'yazio', available: true, status: 'available' },
+    { provider_key: 'apple_health', available: false, status: 'no_data' },
   ],
   weight: [
+    { provider_key: 'yazio', available: true, status: 'available' },
     { provider_key: 'apple_health', available: true, status: 'available' },
     { provider_key: 'health_auto_export', available: false, status: 'no_data' },
-    { provider_key: 'yazio', available: true, status: 'available' },
   ],
   activity_energy: [
+    { provider_key: 'yazio', available: true, status: 'available' },
     { provider_key: 'apple_health', available: false, status: 'no_data' },
     { provider_key: 'health_auto_export', available: true, status: 'available' },
-    { provider_key: 'yazio', available: true, status: 'available' },
   ],
 } as const
+
+const initialPreferences: Record<DataArea, ProviderKey[]> = {
+  nutrition: ['apple_health', 'yazio'],
+  weight: ['health_auto_export'],
+  activity_energy: [],
+}
+
+type Deferred<T> = {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason?: unknown) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+let serverPreferences: Record<DataArea, ProviderKey[]>
+let putHandler: ((area: DataArea, providerKeys: ProviderKey[]) => Promise<unknown>) | undefined
+let preferenceGetCount = 0
+
+function configureApi(): void {
+  serverPreferences = structuredClone(initialPreferences)
+  putHandler = undefined
+  preferenceGetCount = 0
+  apiMock.mockImplementation((path: string, options?: RequestInit) => {
+    if (path === '/settings/provider-preferences' && !options?.method) {
+      preferenceGetCount += 1
+      return Promise.resolve({
+        preferences: (Object.entries(serverPreferences) as Array<[DataArea, ProviderKey[]]>).flatMap(([dataArea, providerKeys]) => (
+          providerKeys.map((provider_key) => ({ data_area: dataArea, provider_key }))
+        )),
+      })
+    }
+    if (path.startsWith('/settings/provider-preferences/') && options?.method === 'PUT') {
+      const area = path.split('/').at(-1) as DataArea
+      const providerKeys = JSON.parse(String(options.body)).provider_keys as ProviderKey[]
+      const result = putHandler?.(area, providerKeys) ?? Promise.resolve({})
+      return result.then((response) => {
+        serverPreferences[area] = [...providerKeys]
+        return response
+      })
+    }
+    if (path.startsWith('/settings/provider-preferences/') && options?.method === 'DELETE') {
+      const area = path.split('/').at(-1) as DataArea
+      serverPreferences[area] = []
+      return Promise.resolve(undefined)
+    }
+    const area = path.split('/').at(-1) as keyof typeof availabilityByArea
+    return Promise.resolve({ data_area: area, providers: availabilityByArea[area] })
+  })
+}
 
 describe('AccountDataSourcesView', () => {
   beforeEach(() => {
     apiMock.mockReset()
     setLocale(DEFAULT_LOCALE)
-    apiMock.mockImplementation((path: string, options?: RequestInit) => {
-      if (path.startsWith('/settings/provider-preferences/') && options?.method === 'PUT') {
-        return Promise.resolve({ data_area: path.split('/').at(-1), provider_key: 'yazio' })
-      }
-      if (path.startsWith('/settings/provider-preferences/') && options?.method === 'DELETE') {
-        return Promise.resolve(undefined)
-      }
-      if (path === '/settings/provider-preferences') {
-        return Promise.resolve({
-          preferences: [
-            { data_area: 'nutrition', provider_key: 'apple_health' },
-            { data_area: 'nutrition', provider_key: 'yazio' },
-            { data_area: 'weight', provider_key: 'yazio' },
-          ],
-        })
-      }
-      const area = path.split('/').at(-1) as keyof typeof availabilityByArea
-      return Promise.resolve({ data_area: area, providers: availabilityByArea[area] })
-    })
+    configureApi()
   })
 
-  it('renders persisted provider order and keeps unavailable entries visible with status badges', async () => {
+  it('renders every supported provider in effective order, including unavailable rows, with only reorder controls', async () => {
     const wrapper = mount(AccountDataSourcesView)
     await flushPromises()
 
+    expect(wrapper.findAll('[data-area="nutrition"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'apple_health',
+      'yazio',
+      'google_health',
+    ])
+    expect(wrapper.findAll('[data-area="weight"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'health_auto_export',
+      'yazio',
+      'apple_health',
+    ])
+    expect(wrapper.findAll('[data-area="activity_energy"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'yazio',
+      'apple_health',
+      'health_auto_export',
+    ])
+
+    const unavailableRow = wrapper.get('[data-area="nutrition"] [data-provider-key="apple_health"]')
+    expect(unavailableRow.text()).toContain('Apple Health')
+    expect(unavailableRow.text()).toContain('noch keine Daten')
+    expect(wrapper.findAll('select')).toHaveLength(0)
+    expect(wrapper.findAll('[aria-label*="entfernen"]')).toHaveLength(0)
+    expect(wrapper.findAll('.provider-priority-save')).toHaveLength(0)
+
     const nutritionRows = wrapper.findAll('[data-area="nutrition"] .provider-priority-row')
-    expect(nutritionRows).toHaveLength(2)
-    expect(nutritionRows[0].attributes('data-provider-key')).toBe('apple_health')
-    expect(nutritionRows[1].attributes('data-provider-key')).toBe('yazio')
-    expect(nutritionRows[0].text()).toContain('Apple Health')
-    expect(nutritionRows[0].text()).toContain('noch keine Daten')
-    expect(nutritionRows[0].find('button[aria-label*="entfernen"]').exists()).toBe(true)
+    expect(nutritionRows[0].find('button[aria-label*="nach oben"]').attributes('disabled')).toBeDefined()
+    expect(nutritionRows.at(-1)!.find('button[aria-label*="nach unten"]').attributes('disabled')).toBeDefined()
+    expect(unavailableRow.find('button[aria-label*="nach unten"]').attributes('disabled')).toBeUndefined()
   })
 
-  it('supports keyboard-accessible reorder, add, remove, and complete-list save per area', async () => {
+  it('auto-saves a complete reordered area and exposes local saving and saved states', async () => {
+    const pending = deferred<unknown>()
+    putHandler = () => pending.promise
     const wrapper = mount(AccountDataSourcesView)
     await flushPromises()
 
     const nutrition = wrapper.get('[data-area="nutrition"]')
-    await nutrition.find('.provider-priority-row:nth-child(2) button[aria-label*="nach oben"]').trigger('click')
-    await nutrition.get('select[name="nutrition-add-provider"]').setValue('google_health')
-    await nutrition.get('button[aria-label="Provider hinzufügen"]').trigger('click')
-    await nutrition.find('.provider-priority-row[data-provider-key="apple_health"] button[aria-label*="entfernen"]').trigger('click')
-    await nutrition.get('form').trigger('submit')
-    await flushPromises()
-
+    await nutrition.get('[data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
     expect(apiMock).toHaveBeenLastCalledWith('/settings/provider-preferences/nutrition', {
       method: 'PUT',
-      body: JSON.stringify({ provider_keys: ['yazio', 'google_health'] }),
+      body: JSON.stringify({ provider_keys: ['yazio', 'apple_health', 'google_health'] }),
     })
-    expect(wrapper.text()).toContain('Prioritäten gespeichert.')
+    expect(nutrition.get('.provider-priority-save-status').text()).toContain('Speichert …')
+    expect(wrapper.find('.setup-notice').exists()).toBe(false)
 
-    await wrapper.get('[data-area="activity_energy"] form').trigger('submit')
+    pending.resolve({})
     await flushPromises()
-    expect(apiMock).toHaveBeenLastCalledWith('/settings/provider-preferences/activity_energy', {
-      method: 'DELETE',
-    })
+    expect(nutrition.get('.provider-priority-save-status').text()).toContain('✓ Gespeichert')
+    expect(nutrition.get('.provider-priority-save-status').classes()).toContain('saved')
   })
 
-  it('saves an empty area independently with DELETE', async () => {
-    apiMock.mockImplementation((path: string, options?: RequestInit) => {
-      if (path === '/settings/provider-preferences') return Promise.resolve({ preferences: [] })
-      if (path.startsWith('/settings/provider-preferences/') && options?.method === 'DELETE') return Promise.resolve(undefined)
-      const area = path.split('/').at(-1) as keyof typeof availabilityByArea
-      return Promise.resolve({ data_area: area, providers: availabilityByArea[area] })
-    })
-
+  it('shows a local error when an automatic area save fails', async () => {
+    putHandler = () => Promise.reject(new Error('save failed'))
     const wrapper = mount(AccountDataSourcesView)
     await flushPromises()
-    await wrapper.get('[data-area="nutrition"] form').trigger('submit')
+
+    await wrapper.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
     await flushPromises()
 
-    expect(apiMock).toHaveBeenLastCalledWith('/settings/provider-preferences/nutrition', { method: 'DELETE' })
+    const status = wrapper.get('[data-area="nutrition"] .provider-priority-save-status')
+    expect(status.text()).toContain('Speichern fehlgeschlagen')
+    expect(status.classes()).toContain('error')
+  })
+
+  it('coalesces rapid reorder requests and sends the latest desired order after the active request', async () => {
+    const first = deferred<unknown>()
+    const second = deferred<unknown>()
+    const putBodies: ProviderKey[][] = []
+    putHandler = (_area, providerKeys) => {
+      putBodies.push(providerKeys)
+      return putBodies.length === 1 ? first.promise : second.promise
+    }
+    const wrapper = mount(AccountDataSourcesView)
+    await flushPromises()
+    const nutrition = wrapper.get('[data-area="nutrition"]')
+
+    await nutrition.get('[data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    await nutrition.get('[data-provider-key="apple_health"] button[aria-label*="nach unten"]').trigger('click')
+    expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
+
+    first.resolve({})
+    await flushPromises()
+    expect(putBodies).toEqual([
+      ['yazio', 'apple_health', 'google_health'],
+      ['yazio', 'google_health', 'apple_health'],
+    ])
+    second.resolve({})
+    await flushPromises()
+    expect(nutrition.findAll('.provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'yazio',
+      'google_health',
+      'apple_health',
+    ])
+  })
+
+  it('saves different areas independently', async () => {
+    const pending: Record<DataArea, Deferred<unknown>> = {
+      nutrition: deferred<unknown>(),
+      weight: deferred<unknown>(),
+      activity_energy: deferred<unknown>(),
+    }
+    putHandler = (area) => pending[area].promise
+    const wrapper = mount(AccountDataSourcesView)
+    await flushPromises()
+
+    await wrapper.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    await wrapper.get('[data-area="weight"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    expect(apiMock).toHaveBeenCalledWith('/settings/provider-preferences/nutrition', expect.objectContaining({ method: 'PUT' }))
+    expect(apiMock).toHaveBeenCalledWith('/settings/provider-preferences/weight', expect.objectContaining({ method: 'PUT' }))
+    expect(wrapper.get('[data-area="nutrition"] .provider-priority-save-status').text()).toContain('Speichert …')
+    expect(wrapper.get('[data-area="weight"] .provider-priority-save-status').text()).toContain('Speichert …')
+
+    pending.nutrition.resolve({})
+    await flushPromises()
+    expect(wrapper.get('[data-area="nutrition"] .provider-priority-save-status').text()).toContain('✓ Gespeichert')
+    expect(wrapper.get('[data-area="weight"] .provider-priority-save-status').text()).toContain('Speichert …')
+    pending.weight.resolve({})
+    await flushPromises()
+  })
+
+  it('waits for an in-flight save before a remounted view reloads preferences', async () => {
+    const pending = deferred<unknown>()
+    putHandler = () => pending.promise
+    const first = mount(AccountDataSourcesView)
+    await flushPromises()
+    await first.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    expect(apiMock).toHaveBeenCalledWith('/settings/provider-preferences/nutrition', expect.objectContaining({ method: 'PUT' }))
+    first.unmount()
+
+    const remounted = mount(AccountDataSourcesView)
+    await flushPromises()
+    expect(preferenceGetCount).toBe(1)
+
+    pending.resolve({})
+    await flushPromises()
+    expect(preferenceGetCount).toBe(2)
+    expect(remounted.findAll('[data-area="nutrition"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'yazio',
+      'apple_health',
+      'google_health',
+    ])
+  })
+
+  it('uses the concise priority hint in both supported locales', async () => {
+    const wrapper = mount(AccountDataSourcesView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('1 = höchste Priorität')
+
+    setLocale('en')
+    await flushPromises()
+    expect(wrapper.text()).toContain('1 = highest priority')
   })
 })

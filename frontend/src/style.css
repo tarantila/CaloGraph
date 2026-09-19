@@ -354,7 +354,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .provider-priority-label { display: grid; gap: .28rem; min-width: 0; }
 .provider-priority-label strong { overflow-wrap: anywhere; font-size: .82rem; }
-.provider-priority-label .status-badge { width: fit-content; max-width: 100%; }
+.provider-priority-label .status-badge {
+  width: fit-content;
+  max-width: min(100%, 16rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .provider-status-badge { font-size: .64rem; }
 .provider-priority-actions { display: flex; flex: 0 0 auto; gap: .15rem; }
 .provider-priority-actions .priority-action {
@@ -365,36 +371,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--accent-soft);
   color: var(--accent-hover);
 }
-.provider-priority-actions .priority-action.remove { color: var(--danger); }
-.provider-priority-actions .priority-action.remove:hover:not(:disabled) {
-  border-color: #a64458;
-  background: rgba(131, 47, 67, .28);
-  color: #ff9aaa;
-}
-.provider-priority-empty {
+.provider-priority-save-status {
   margin: 0;
-  padding: .8rem;
-  border: 1px dashed var(--border-strong);
-  border-radius: .65rem;
-  color: var(--muted);
-  font-size: .78rem;
-}
-.provider-priority-add {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: .75rem;
-  min-width: 0;
-}
-.provider-priority-add .field { min-width: 0; }
-.provider-priority-add select { max-width: 100%; }
-.provider-priority-add .button { white-space: nowrap; }
-.provider-priority-warning {
-  margin: 0;
-  color: var(--warning) !important;
   font-size: .74rem !important;
+  font-weight: 600;
 }
-.provider-priority-save { justify-self: start; }
+.provider-priority-save-status.saving { color: var(--muted-strong); }
+.provider-priority-save-status.saved { color: var(--success); }
+.provider-priority-save-status.error { color: var(--danger); }
 .metric-card {
   min-height: 174px;
   padding: 1.22rem 1.25rem;
@@ -2489,8 +2473,6 @@ td strong { color: #f0f4f9; font-weight: 600; }
 @media (max-width: 620px) {
   .provider-priority-card-header { flex-direction: column; }
   .provider-priority-fallback { max-width: none; text-align: left; }
-  .provider-priority-add { grid-template-columns: 1fr; }
-  .provider-priority-add .button { width: 100%; }
   .integration-details { grid-template-columns: 1fr; }
   .dashboard-stats, .dashboard-bottom-grid, .stats-grid, .form-grid, .insight-strip, .budget-balance-grid, .macro-target-grid, .height-imperial-grid, .metric-grid, .provider-preference-grid { grid-template-columns: 1fr; }
 
