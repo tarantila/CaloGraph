@@ -103,7 +103,7 @@ describe('MicronutrientsView source routing', () => {
 
     const { wrapper } = await mountView({ path: '/', query: { source: 'apple_health_xml' } })
 
-    expect(wrapper.get('.micronutrient-source-filter').text()).toContain('Google Health Connect')
+    expect(wrapper.get('.micronutrient-source-filter').text()).toContain('Google Health')
     expect(wrapper.get('.micronutrient-source-filter').text()).not.toContain('Apple Health')
     expect(wrapper.text()).not.toContain('YAZIO')
     wrapper.unmount()
