@@ -297,12 +297,14 @@ describe('AccountDataSourcesView', () => {
       putBodies.push(providerKeys)
       return active.promise
     }
-    const wrapper = mountView()
+    const first = mountView()
     await flushPromises()
-    await wrapper.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
-    await wrapper.get('[data-area="nutrition"] [data-provider-key="apple_health"] button[aria-label*="nach unten"]').trigger('click')
+    await first.get('[data-area="nutrition"] [data-provider-key="yazio"] button[aria-label*="nach oben"]').trigger('click')
+    await first.get('[data-area="nutrition"] [data-provider-key="apple_health"] button[aria-label*="nach unten"]').trigger('click')
     expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
 
+    first.unmount()
+    const remounted = mountView()
     auth.clearSession()
     await flushPromises()
     active.resolve({})

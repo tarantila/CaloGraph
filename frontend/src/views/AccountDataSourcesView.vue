@@ -8,8 +8,8 @@ import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 
 const t = i18n.global.t.bind(i18n.global)
-const activePinia = getActivePinia()
-const auth = activePinia ? useAuthStore(activePinia) : null
+let auth: ReturnType<typeof useAuthStore> | null = null
+let stopAuthSessionWatch: (() => void) | undefined
 
 type DataArea = 'nutrition' | 'weight' | 'activity_energy'
 type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
@@ -129,17 +129,6 @@ function bindAreaSaveSession(area: DataArea, sessionKey: string): AreaSaveState 
   }
   return state
 }
-const stopAuthSessionWatch = auth
-  ? watch(() => auth.user?.id ?? null, () => {
-      const sessionKey = currentSessionKey()
-      for (const area of areas) {
-        bindAreaSaveSession(area.key, sessionKey)
-        saveGenerations[area.key] += 1
-        clearSaveTimer(area.key)
-        setSaveStatus(area.key, 'idle')
-      }
-    })
-  : undefined
 
 async function drainAreaSaves(area: DataArea, state: AreaSaveState): Promise<void> {
   while (state.pending) {
@@ -263,6 +252,19 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => {
+  const pinia = getActivePinia()
+  auth = pinia ? useAuthStore(pinia) : null
+  stopAuthSessionWatch = auth
+    ? watch(() => auth!.user?.id ?? null, () => {
+        const sessionKey = currentSessionKey()
+        for (const area of areas) {
+          bindAreaSaveSession(area.key, sessionKey)
+          saveGenerations[area.key] += 1
+          clearSaveTimer(area.key)
+          setSaveStatus(area.key, 'idle')
+        }
+      })
+    : undefined
   viewMounted = true
   void load()
 })
@@ -271,6 +273,8 @@ onUnmounted(() => {
   viewMounted = false
   for (const area of areas) clearSaveTimer(area.key)
   stopAuthSessionWatch?.()
+  stopAuthSessionWatch = undefined
+  auth = null
 })
 </script>
 
