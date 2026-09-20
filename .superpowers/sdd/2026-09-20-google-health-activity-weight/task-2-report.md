@@ -64,3 +64,22 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm \
 Ergebnis: `AttributeError`, weil der Pre-Task-2-Client die Datapoint-Seitenmethode nicht besitzt.
 
 Nach den Review-Fixes wurden der fokussierte Client-Test und die angrenzenden Nutrition-Client-Tests erneut im Docker-Harness ausgeführt; alle Tests waren erfolgreich.
+
+## Finaler Pagination-Regressionstest
+
+Die abschließenden Review-Hinweise wurden testgetrieben behoben:
+
+- Der Page-Budget-Test liefert jetzt fortlaufend unterschiedliche Tokens und prüft explizit `pagination limit exceeded`, getrennt vom Repeated-Token-Fall.
+- `iter_data_points_pages(...)` validiert den initialen Token vor der Konstruktion des Hash-Sets. Unhashable Werte wie Listen lösen damit sicher den vorgesehenen `ValueError("page_token is invalid")` statt eines `TypeError` aus.
+
+RED: Der neue unhashable-token-Test schlug vor der Korrektur mit `TypeError: cannot use 'list' as a set element` fehl.
+
+GREEN:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  pytest tests/test_google_health_client.py tests/test_google_health_no_persistence.py \
+  tests/test_google_health_nutrition_log.py -q
+```
+
+Ergebnis: alle fokussierten und angrenzenden Tests erfolgreich.

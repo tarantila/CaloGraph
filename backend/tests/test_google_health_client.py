@@ -366,13 +366,33 @@ def test_client_iterates_finite_pages_and_rejects_repeated_tokens() -> None:
 
 def test_client_iterates_with_a_bounded_page_budget() -> None:
     class EndlessTransport:
-        def get_data_points(self, **kwargs: object) -> FakeResponse:
-            return FakeResponse(payload={"dataPoints": [], "nextPageToken": "next"})
+        def __init__(self) -> None:
+            self.calls = 0
 
-    with pytest.raises(GoogleHealthInvalidResponseError):
+        def get_data_points(self, **kwargs: object) -> FakeResponse:
+            del kwargs
+            self.calls += 1
+            return FakeResponse(
+                payload={"dataPoints": [], "nextPageToken": f"next-{self.calls}"}
+            )
+
+    transport = EndlessTransport()
+    with pytest.raises(
+        GoogleHealthInvalidResponseError, match="pagination limit exceeded"
+    ):
         list(
-            GoogleHealthClient(EndlessTransport(), FakeCredentials()).iter_data_points_pages(
+            GoogleHealthClient(transport, FakeCredentials()).iter_data_points_pages(
                 "weight", page_size=1, max_pages=2
+            )
+        )
+    assert transport.calls == 2
+
+
+def test_client_rejects_unhashable_initial_page_token() -> None:
+    with pytest.raises(ValueError, match="page_token"):
+        list(
+            GoogleHealthClient(FakeDataTransport(), FakeCredentials()).iter_data_points_pages(
+                "weight", page_token=[], page_size=1, max_pages=1  # type: ignore[arg-type]
             )
         )
 
