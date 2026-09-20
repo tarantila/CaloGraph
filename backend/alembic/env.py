@@ -13,6 +13,7 @@ if config.config_file_name:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata
 
+
 def include_object(
     obj: object,
     name: str,
@@ -20,11 +21,9 @@ def include_object(
     reflected: bool,
     compare_to: object | None,
 ) -> bool:
-    if type_ == "table" and not reflected and getattr(obj, "info", {}).get("skip_autogenerate"):
-        return False
-    return True
-
-
+    return not (
+        type_ == "table" and not reflected and getattr(obj, "info", {}).get("skip_autogenerate")
+    )
 
 
 def run_migrations_offline() -> None:
