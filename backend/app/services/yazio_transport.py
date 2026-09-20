@@ -24,6 +24,7 @@ from yazio_exporter.utils import serialize_day_data  # type: ignore[import-untyp
 from app.config import settings
 from app.micronutrients import YAZIO_MICRONUTRIENT_IDS
 from app.services.yazio_provider import (
+    ProviderErrorCategory,
     YazioConsumedProduct,
     YazioConsumedSimpleProduct,
     YazioDailyNutrientSummary,
@@ -174,8 +175,45 @@ def fetch_yazio_payload_transport(
     return result
 
 
-def _raise_domain_provider_error(error: YazioTransportError) -> NoReturn:
+def _domain_provider_context(
+    error: YazioTransportError,
+) -> YazioProviderErrorContext:
     context = YazioProviderErrorContext.from_mapping(error.context)
+    if context is not None:
+        return context
+    category: ProviderErrorCategory
+    if isinstance(error, YazioTransportInvalidResponseError):
+        category = "response_validation"
+        location = "transport"
+        retryable = False
+    elif isinstance(error, YazioTransportAuthenticationError):
+        category = "authentication"
+        location = None
+        retryable = False
+    elif isinstance(error, YazioTransportRateLimitedError):
+        category = "rate_limit"
+        location = None
+        retryable = True
+    elif isinstance(error, (YazioTransportNetworkTimeoutError, YazioTransportDeadlineError)):
+        category = "timeout"
+        location = None
+        retryable = True
+    else:
+        category = "unavailable"
+        location = None
+        retryable = True
+    return YazioProviderErrorContext(
+        operation="domain_worker",
+        endpoint_key="domain_worker",
+        response_model="YazioFoodDiary",
+        error_category=category,
+        validation_location=location,
+        retryable=retryable,
+    )
+
+
+def _raise_domain_provider_error(error: YazioTransportError) -> NoReturn:
+    context = _domain_provider_context(error)
     if isinstance(error, YazioTransportAuthenticationError):
         raise YazioProviderAuthenticationError(context=context) from error
     if isinstance(error, YazioTransportVersionBlockedError):
@@ -556,6 +594,25 @@ def _run_worker(payload: dict[str, object], deadline_seconds: int) -> object:
             context=context,
         )
     if kind == "invalid_response":
+        if context is None:
+            operation = payload.get("operation")
+            response_model = None
+            if isinstance(operation, str):
+                response_model = {
+                    "validate": "OAuthTokenResponse",
+                    "fetch": "YazioProviderResult",
+                    "fetch_domain": "YazioFoodDiary",
+                }.get(operation)
+            if response_model is None:
+                response_model = "YazioWorkerResponse"
+            context = YazioProviderErrorContext(
+                operation="domain_worker",
+                endpoint_key="domain_worker",
+                response_model=response_model,
+                error_category="response_validation",
+                validation_location="worker",
+                retryable=False,
+            ).to_dict()
         raise YazioTransportInvalidResponseError(
             "YAZIO provider returned an invalid response",
             context=context,
@@ -640,9 +697,7 @@ def _execute_worker(payload: dict[str, object]) -> object:
             start_day = date.fromisoformat(str(payload["start_day"]))
             end_day = date.fromisoformat(str(payload["end_day"]))
         except (KeyError, TypeError, ValueError) as exc:
-            from app.services.yazio_provider import YazioProviderInvalidResponseError
-
-            raise YazioProviderInvalidResponseError from exc
+            raise ValueError("Invalid YAZIO date range payload") from exc
         if start_day > end_day or (end_day - start_day).days >= 366:
             raise ValueError("Invalid YAZIO date range")
         aggregate = provider.fetch(

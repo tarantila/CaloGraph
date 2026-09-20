@@ -13,6 +13,7 @@ import math
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import partial
@@ -167,25 +168,40 @@ def _close_client(client: Client | AuthenticatedClient) -> None:
     with suppress(Exception):
         client.get_httpx_client().close()
 
+def _invalid_response(
+    context: YazioProviderErrorContext, *, location: str | None = None
+) -> YazioProviderInvalidResponseError:
+    if location is None:
+        return YazioProviderInvalidResponseError(context=context)
+    return YazioProviderInvalidResponseError(
+        context=replace(
+            context,
+            error_category="response_validation",
+            validation_location=location,
+        )
+    )
 
-def _status(response: object) -> int:
+
+def _status(response: object, *, context: YazioProviderErrorContext) -> int:
     value = getattr(response, "status_code", _MISSING)
     if isinstance(value, bool) or not isinstance(value, int):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="status_code")
     return value
 
 
-def _headers(response: object) -> Mapping[str, str]:
+def _headers(
+    response: object, *, context: YazioProviderErrorContext
+) -> Mapping[str, str]:
     headers = getattr(response, "headers", {})
     if not isinstance(headers, Mapping):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="headers")
     return headers
 
 
-def _retry_after(response: object) -> int | None:
-    raw = _headers(response).get("retry-after")
+def _retry_after(response: object, *, context: YazioProviderErrorContext) -> int | None:
+    raw = _headers(response, context=context).get("retry-after")
     if raw is None:
-        raw = _headers(response).get("Retry-After")
+        raw = _headers(response, context=context).get("Retry-After")
     if not isinstance(raw, str):
         return None
     try:
@@ -195,18 +211,22 @@ def _retry_after(response: object) -> int | None:
     return max(0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
-def _response_content_is_bounded(response: object) -> None:
+def _response_content_is_bounded(
+    response: object, *, context: YazioProviderErrorContext
+) -> None:
     content = getattr(response, "content", b"")
     if not isinstance(content, (bytes, bytearray)):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="content")
     if len(content) > MAX_PROVIDER_RESPONSE_BYTES:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="content")
 
 
-def _response_error_code(response: object) -> str | None:
+def _response_error_code(
+    response: object, *, context: YazioProviderErrorContext
+) -> str | None:
     content = getattr(response, "content", b"")
     if not isinstance(content, (bytes, bytearray)) or len(content) > MAX_PROVIDER_RESPONSE_BYTES:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="content")
     if not content:
         return None
     try:
@@ -241,57 +261,52 @@ def _context(
 def _raise_for_status(
     response: object,
     *,
+    context: YazioProviderErrorContext,
     authentication: bool = False,
-    operation: ProviderOperation = "domain_worker",
-    endpoint_key: str = "domain_worker",
-    response_model: str = "unknown",
 ) -> None:
-    _response_content_is_bounded(response)
-    status = _status(response)
-    base: dict[str, Any] = dict(
-        operation=operation,
-        endpoint_key=endpoint_key,
-        response_model=response_model,
-        status=status,
-    )
+    _response_content_is_bounded(response, context=context)
+    status = _status(response, context=context)
+    base = replace(context, upstream_status_code=status)
     if status == 200:
         return
     if status == 429:
         raise YazioProviderRateLimitedError(
-            _retry_after(response),
-            context=_context(**base, category="rate_limit", retryable=True),
+            _retry_after(response, context=context),
+            context=replace(base, error_category="rate_limit", retryable=True),
         )
     if authentication and status in {400, 401, 403}:
         raise YazioProviderAuthenticationError(
-            context=_context(**base, category="authentication")
+            context=replace(base, error_category="authentication")
         )
     if not authentication and status == 401:
         raise YazioProviderAuthenticationError(
-            context=_context(**base, category="authentication")
+            context=replace(base, error_category="authentication")
         )
     if not authentication and status == 403:
-        context = _context(**base, category="authentication")
-        if _response_error_code(response) == "version_blocked":
-            raise YazioProviderVersionBlockedError(context=context)
-        raise YazioProviderAuthenticationError(context=context)
+        if _response_error_code(response, context=context) == "version_blocked":
+            raise YazioProviderVersionBlockedError(
+                context=replace(base, error_category="authentication")
+            )
+        raise YazioProviderAuthenticationError(
+            context=replace(base, error_category="authentication")
+        )
     if status >= 500:
         raise YazioProviderUnavailableError(
-            context=_context(**base, category="unavailable", retryable=True)
+            context=replace(base, error_category="unavailable", retryable=True)
         )
     if 300 <= status < 400:
         raise YazioProviderUnavailableError(
-            context=_context(**base, category="unavailable", retryable=True)
+            context=replace(base, error_category="unavailable", retryable=True)
         )
-    raise YazioProviderInvalidResponseError(context=_context(**base, category="http"))
-
+    raise _invalid_response(replace(base, error_category="http"))
 
 def _call_detailed[T](
     call: Callable[..., T],
     *,
     authentication: bool = False,
-    operation: ProviderOperation = "domain_worker",
-    endpoint_key: str = "domain_worker",
-    response_model: str = "unknown",
+    operation: ProviderOperation,
+    endpoint_key: str,
+    response_model: str,
     **kwargs: Any,
 ) -> T:
     context = _context(operation, endpoint_key, response_model)
@@ -301,25 +316,19 @@ def _call_detailed[T](
         raise
     except _ResponseTooLargeError as exc:
         raise YazioProviderInvalidResponseError(
-            context=_context(operation, endpoint_key, response_model, category="validation")
+            context=replace(context, error_category="validation")
         ) from exc
     except httpx.TimeoutException as exc:
         raise YazioProviderNetworkTimeoutError(
-            context=_context(operation, endpoint_key, response_model, category="timeout", retryable=True)
+            context=replace(context, error_category="timeout", retryable=True)
         ) from exc
     except httpx.RequestError as exc:
         raise YazioProviderUnavailableError(
-            context=_context(operation, endpoint_key, response_model, category="transport", retryable=True)
+            context=replace(context, error_category="transport", retryable=True)
         ) from exc
     except (TypeError, ValueError, AttributeError, KeyError) as exc:
         raise YazioProviderInvalidResponseError(context=context) from exc
-    _raise_for_status(
-        response,
-        authentication=authentication,
-        operation=operation,
-        endpoint_key=endpoint_key,
-        response_model=response_model,
-    )
+    _raise_for_status(response, context=context, authentication=authentication)
     return response
 
 
@@ -329,29 +338,29 @@ def _field(value: object, name: str) -> object:
     return getattr(value, name, _MISSING)
 
 
-def _numeric(value: object) -> float | None:
+def _numeric(value: object, *, context: YazioProviderErrorContext) -> float | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     try:
         converted = float(value)
     except (OverflowError, ValueError) as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     if not math.isfinite(converted) or converted < 0:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return converted
 
 
-def _date_value(value: object) -> date:
+def _date_value(value: object, *, context: YazioProviderErrorContext) -> date:
     if not isinstance(value, str):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     try:
         parsed = date.fromisoformat(value)
     except ValueError as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     if parsed.isoformat() != value:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return parsed
 
 
@@ -362,12 +371,12 @@ def _token_from_response(
 ) -> str:
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is None or parsed is _MISSING:
-        raise YazioProviderInvalidResponseError(context=context)
+        raise _invalid_response(context, location="parsed")
     token = _field(parsed, "access_token")
     if token is _MISSING or not isinstance(token, str) or not token:
-        raise YazioProviderInvalidResponseError(context=context)
+        raise _invalid_response(context, location="access_token")
     if len(token.encode("utf-8")) > MAX_TOKEN_BYTES or "\x00" in token:
-        raise YazioProviderInvalidResponseError(context=context)
+        raise _invalid_response(context, location="access_token")
     return token
 
 
@@ -378,7 +387,7 @@ def _daily_items(
 ) -> list[object]:
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is _MISSING or not isinstance(parsed, list):
-        raise YazioProviderInvalidResponseError(context=context)
+        raise _invalid_response(context, location="parsed")
     return parsed
 
 
@@ -410,64 +419,51 @@ _NUTRIENT_ALIASES = {
     "nutrient.salt": "salt",
 }
 _SENSITIVE_METADATA_TERMS = (
-    "access_key",
-    "access_token",
-    "api_key",
-    "apikey",
-    "authorization",
-    "auth",
-    "bearer",
-    "cookie",
-    "credential",
-    "header",
-    "key",
-    "password",
-    "raw",
-    "refresh",
-    "response",
-    "secret",
-    "session",
-    "token",
+    "access_key", "access_token", "api_key", "apikey", "authorization", "auth",
+    "bearer", "cookie", "credential", "header", "key", "password", "raw",
+    "refresh", "response", "secret", "session", "token",
 )
 _MAX_METADATA_ITEMS = 32
 _MAX_METADATA_KEY_BYTES = 128
 _MAX_METADATA_STRING_BYTES = 512
 
 
-def _decimal(value: object) -> Decimal | None:
+def _decimal(value: object, *, context: YazioProviderErrorContext) -> Decimal | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     try:
         converted = Decimal(str(value))
     except (InvalidOperation, ValueError, OverflowError) as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     if not converted.is_finite() or converted < 0:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return converted
 
 
-def _optional_string(value: object) -> str | None:
+def _optional_string(
+    value: object, *, context: YazioProviderErrorContext
+) -> str | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if not isinstance(value, str):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return value
 
 
-def _required_string(value: object) -> str:
-    result = _optional_string(value)
+def _required_string(value: object, *, context: YazioProviderErrorContext) -> str:
+    result = _optional_string(value, context=context)
     if result is None:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return result
 
 
-def _optional_bool(value: object) -> bool | None:
+def _optional_bool(value: object, *, context: YazioProviderErrorContext) -> bool | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if not isinstance(value, bool):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return value
 
 
@@ -499,12 +495,15 @@ def _metadata(value: object, known: set[str]) -> dict[str, str | int | float | b
 
 
 def _civil_time(
-    value: object, fallback_day: date
+    value: object,
+    fallback_day: date,
+    *,
+    context: YazioProviderErrorContext,
 ) -> tuple[datetime | None, date, str | None]:
     if value is _MISSING or value is UNSET or value is None:
         return None, fallback_day, None
     if not isinstance(value, str):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     try:
         if "T" in value or " " in value:
             parsed = datetime.fromisoformat(value)
@@ -513,25 +512,29 @@ def _civil_time(
             return parsed.replace(tzinfo=None), local_date, timezone
         local_date = date.fromisoformat(value)
     except ValueError as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     if local_date.isoformat() != value:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return None, local_date, None
 
 
-def _updated_time(value: object) -> datetime | None:
+def _updated_time(
+    value: object, *, context: YazioProviderErrorContext
+) -> datetime | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if not isinstance(value, str):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     return parsed.replace(tzinfo=None)
 
 
-def _nutrient_source(value: object) -> Mapping[str, object]:
+def _nutrient_source(
+    value: object, *, context: YazioProviderErrorContext
+) -> Mapping[str, object]:
     if isinstance(value, Mapping):
         return value
     props = _field(value, "additional_properties")
@@ -539,7 +542,7 @@ def _nutrient_source(value: object) -> Mapping[str, object]:
         return props
     if value is _MISSING or value is UNSET or value is None:
         return {}
-    raise YazioProviderInvalidResponseError
+    raise _invalid_response(context)
 
 
 _STRUCTURAL_NUTRIENT_KEYS = {
@@ -557,9 +560,12 @@ _STRUCTURAL_NUTRIENT_KEYS = {
 
 
 def _nutrients(
-    value: object, *, excluded: set[str] = _STRUCTURAL_NUTRIENT_KEYS
+    value: object,
+    *,
+    context: YazioProviderErrorContext,
+    excluded: set[str] = _STRUCTURAL_NUTRIENT_KEYS,
 ) -> YazioNutrientValues:
-    source = dict(_nutrient_source(value))
+    source = dict(_nutrient_source(value, context=context))
     if not isinstance(value, Mapping):
         for key in _NUTRIENT_ALIASES:
             if key not in source:
@@ -570,19 +576,19 @@ def _nutrients(
     additional: dict[str, Decimal] = {}
     for key, raw in source.items():
         if not isinstance(key, str):
-            raise YazioProviderInvalidResponseError
+            raise _invalid_response(context)
         if key in excluded:
             continue
         target = _NUTRIENT_ALIASES.get(key)
         if target is None:
             try:
-                converted = _decimal(raw)
+                converted = _decimal(raw, context=context)
             except YazioProviderInvalidResponseError:
                 continue
             if converted is not None:
                 additional[key] = converted
             continue
-        mapped[target] = _decimal(raw)
+        mapped[target] = _decimal(raw, context=context)
     return YazioNutrientValues(additional=additional, **mapped)
 
 
@@ -593,43 +599,46 @@ def _consumed_items(
 ) -> tuple[list[object], list[object]]:
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is _MISSING or parsed is None:
-        raise YazioProviderInvalidResponseError(context=context)
+        raise _invalid_response(context, location="parsed")
     products = _field(parsed, "products")
+    recipe_portions = _field(parsed, "recipe_portions")
     simple_products = _field(parsed, "simple_products")
     if products is _MISSING or products is UNSET:
         products = []
+    if recipe_portions is _MISSING or recipe_portions is UNSET:
+        recipe_portions = []
     if simple_products is _MISSING or simple_products is UNSET:
         simple_products = []
-    if not isinstance(products, list) or not isinstance(simple_products, list):
-        location = "products" if not isinstance(products, list) else "simple_products"
-        raise YazioProviderInvalidResponseError(
-            context=YazioProviderErrorContext(
-                operation=context.operation,
-                endpoint_key=context.endpoint_key,
-                upstream_status_code=context.upstream_status_code,
-                response_model=context.response_model,
-                error_category="validation",
-                validation_location=location,
-                retryable=False,
-            )
-        )
+    if not isinstance(products, list):
+        raise _invalid_response(context, location="products")
+    if not isinstance(recipe_portions, list):
+        raise _invalid_response(context, location="recipe_portions")
+    if not isinstance(simple_products, list):
+        raise _invalid_response(context, location="simple_products")
     return products, simple_products
 
 
-def _map_product_event(item: object, fallback_day: date) -> YazioConsumedProduct:
+def _map_product_event(
+    item: object,
+    fallback_day: date,
+    *,
+    context: YazioProviderErrorContext,
+) -> YazioConsumedProduct:
     known = {
         "id", "product_id", "amount", "date", "daytime", "serving", "serving_quantity", "type"
     }
-    civil, local_date, timezone = _civil_time(_field(item, "date"), fallback_day)
+    civil, local_date, timezone = _civil_time(
+        _field(item, "date"), fallback_day, context=context
+    )
     return YazioConsumedProduct(
-        consumed_item_id=_required_string(_field(item, "id")),
-        product_id=_required_string(_field(item, "product_id")),
-        amount=_decimal(_field(item, "amount")),
+        consumed_item_id=_required_string(_field(item, "id"), context=context),
+        product_id=_required_string(_field(item, "product_id"), context=context),
+        amount=_decimal(_field(item, "amount"), context=context),
         provider_civil_datetime=civil,
         local_date=local_date,
-        daytime=_optional_string(_field(item, "daytime")),
-        serving=_optional_string(_field(item, "serving")),
-        serving_quantity=_decimal(_field(item, "serving_quantity")),
+        daytime=_optional_string(_field(item, "daytime"), context=context),
+        serving=_optional_string(_field(item, "serving"), context=context),
+        serving_quantity=_decimal(_field(item, "serving_quantity"), context=context),
         provider_timezone=timezone,
         metadata=_metadata(item, known),
     )
@@ -642,39 +651,36 @@ def _map_simple_product(
     context: YazioProviderErrorContext,
 ) -> YazioConsumedSimpleProduct:
     if not isinstance(item, Mapping):
-        raise YazioProviderInvalidResponseError(
-            context=YazioProviderErrorContext(
-                operation="simple_product_normalization",
-                endpoint_key="consumed_items",
-                upstream_status_code=context.upstream_status_code,
-                response_model="ConsumedItems",
-                error_category="validation",
-                validation_location="simple_products[]",
-                retryable=False,
-            )
-        )
+        raise _invalid_response(context, location="simple_products[]")
     known = {
         "id", "amount", "date", "daytime", "serving", "serving_quantity", "type", "name",
         "nutrients", *_NUTRIENT_ALIASES,
     }
-    civil, local_date, timezone = _civil_time(item.get("date", _MISSING), fallback_day)
+    civil, local_date, timezone = _civil_time(
+        item.get("date", _MISSING), fallback_day, context=context
+    )
     nutrient_value = item.get("nutrients", item)
     return YazioConsumedSimpleProduct(
-        consumed_item_id=_required_string(item.get("id", _MISSING)),
-        amount=_decimal(item.get("amount", _MISSING)),
+        consumed_item_id=_required_string(item.get("id", _MISSING), context=context),
+        amount=_decimal(item.get("amount", _MISSING), context=context),
         provider_civil_datetime=civil,
         local_date=local_date,
-        daytime=_optional_string(item.get("daytime", _MISSING)),
-        nutrients=_nutrients(nutrient_value),
-        serving=_optional_string(item.get("serving", _MISSING)),
-        serving_quantity=_decimal(item.get("serving_quantity", _MISSING)),
+        daytime=_optional_string(item.get("daytime", _MISSING), context=context),
+        nutrients=_nutrients(nutrient_value, context=context),
+        serving=_optional_string(item.get("serving", _MISSING), context=context),
+        serving_quantity=_decimal(item.get("serving_quantity", _MISSING), context=context),
         provider_timezone=timezone,
-        name=_optional_string(item.get("name", _MISSING)),
+        name=_optional_string(item.get("name", _MISSING), context=context),
         metadata=_metadata(item, known),
     )
 
 
-def _map_profile(product_id: str, product: object) -> YazioProductProfile:
+def _map_profile(
+    product_id: str,
+    product: object,
+    *,
+    context: YazioProviderErrorContext,
+) -> YazioProductProfile:
     known = {
         "name", "producer", "category", "base_unit", "is_verified", "is_private", "is_deleted",
         "has_ean", "nutrients", "servings", "eans", "language", "countries", "updated_at",
@@ -683,14 +689,14 @@ def _map_profile(product_id: str, product: object) -> YazioProductProfile:
     if raw_servings is _MISSING or raw_servings is UNSET:
         raw_servings = []
     if not isinstance(raw_servings, list):
-        raise YazioProviderInvalidResponseError
-    base_unit = _optional_string(_field(product, "base_unit"))
+        raise _invalid_response(context, location="servings")
+    base_unit = _optional_string(_field(product, "base_unit"), context=context)
     servings: list[YazioServing] = []
     for item in raw_servings:
         servings.append(
             YazioServing(
-                label=_optional_string(_field(item, "serving")),
-                amount=_decimal(_field(item, "amount")),
+                label=_optional_string(_field(item, "serving"), context=context),
+                amount=_decimal(_field(item, "amount"), context=context),
                 unit=base_unit,
                 metadata=_metadata(item, {"serving", "amount"}),
             )
@@ -699,38 +705,42 @@ def _map_profile(product_id: str, product: object) -> YazioProductProfile:
     if raw_eans is _MISSING or raw_eans is UNSET:
         raw_eans = []
     if not isinstance(raw_eans, list) or any(not isinstance(ean, str) for ean in raw_eans):
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="eans")
     raw_countries = _field(product, "countries")
     if raw_countries is _MISSING or raw_countries is UNSET:
         raw_countries = []
-    if not isinstance(raw_countries, list) or any(not isinstance(country, str) for country in raw_countries):
-        raise YazioProviderInvalidResponseError
+    if not isinstance(raw_countries, list) or any(
+        not isinstance(country, str) for country in raw_countries
+    ):
+        raise _invalid_response(context, location="countries")
     return YazioProductProfile(
         product_id=product_id,
-        name=_optional_string(_field(product, "name")),
-        producer=_optional_string(_field(product, "producer")),
-        category=_optional_string(_field(product, "category")),
+        name=_optional_string(_field(product, "name"), context=context),
+        producer=_optional_string(_field(product, "producer"), context=context),
+        category=_optional_string(_field(product, "category"), context=context),
         base_unit=base_unit,
-        nutrients=_nutrients(_field(product, "nutrients")),
+        nutrients=_nutrients(_field(product, "nutrients"), context=context),
         servings=tuple(servings),
         eans=tuple(raw_eans),
-        language=_optional_string(_field(product, "language")),
+        language=_optional_string(_field(product, "language"), context=context),
         countries=tuple(raw_countries),
-        updated_at=_updated_time(_field(product, "updated_at")),
-        is_verified=_optional_bool(_field(product, "is_verified")),
-        is_private=_optional_bool(_field(product, "is_private")),
-        is_deleted=_optional_bool(_field(product, "is_deleted")),
+        updated_at=_updated_time(_field(product, "updated_at"), context=context),
+        is_verified=_optional_bool(_field(product, "is_verified"), context=context),
+        is_private=_optional_bool(_field(product, "is_private"), context=context),
+        is_deleted=_optional_bool(_field(product, "is_deleted"), context=context),
         metadata=_metadata(product, known),
     )
 
 
-def _map_daily_summary(item: object) -> YazioDailyNutrientSummary:
-    local_date = _date_value(_field(item, "date"))
+def _map_daily_summary(
+    item: object, *, context: YazioProviderErrorContext
+) -> YazioDailyNutrientSummary:
+    local_date = _date_value(_field(item, "date"), context=context)
     known = {"date", "energy", "protein", "carb", "fat", "energy_goal"}
     return YazioDailyNutrientSummary(
         local_date=local_date,
-        nutrients=_nutrients(item),
-        energy_goal=_decimal(_field(item, "energy_goal")),
+        nutrients=_nutrients(item, context=context),
+        energy_goal=_decimal(_field(item, "energy_goal"), context=context),
         metadata=_metadata(item, known),
     )
 
@@ -738,65 +748,65 @@ def _map_daily_summary(item: object) -> YazioDailyNutrientSummary:
 def _widget_activity(
     client: AuthenticatedClient, item_day: date
 ) -> tuple[date, float | None]:
+    context = _context("daily_summary", "daily_summary", "DailySummaryWidget")
     response = _call_detailed(
         get_daily_summary_widget.sync_detailed,
-        operation="daily_summary",
-        endpoint_key="daily_summary",
-        response_model="DailySummaryWidget",
+        operation=context.operation,
+        endpoint_key=context.endpoint_key,
+        response_model=context.response_model or "DailySummaryWidget",
         client=client,
         date=item_day.isoformat(),
     )
     widget = getattr(response, "parsed", _MISSING)
     if widget is None or widget is _MISSING:
-        raise YazioProviderInvalidResponseError
-    return item_day, _numeric(_field(widget, "activity_energy"))
+        raise _invalid_response(context, location="parsed")
+    return item_day, _numeric(_field(widget, "activity_energy"), context=context)
+
 
 def _legacy_weight_day(
     client: AuthenticatedClient,
     item_day: date,
 ) -> float | None:
-    """Compatibility fallback for lightweight test clients.
-
-    Production clients expose ``request`` and therefore always use the
-    generated ``get_latest_weight`` operation below. The fallback is limited
-    to doubles that do not implement httpx.request.
-    """
+    """Compatibility fallback for lightweight test clients."""
+    context = _context("latest_weight", "latest_weight", "WeightEntry")
     try:
         response = client.get_httpx_client().get(
             f"{_base_url()}/v22/user/bodyvalues/weight/last",
             params={"date": item_day.isoformat()},
         )
     except _ResponseTooLargeError as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     except httpx.TimeoutException as exc:
-        raise YazioProviderNetworkTimeoutError from exc
+        raise YazioProviderNetworkTimeoutError(
+            context=replace(context, error_category="timeout", retryable=True)
+        ) from exc
     except httpx.RequestError as exc:
-        raise YazioProviderUnavailableError from exc
+        raise YazioProviderUnavailableError(
+            context=replace(context, error_category="transport", retryable=True)
+        ) from exc
     except (TypeError, ValueError, AttributeError, KeyError) as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     try:
-        _raise_for_status(response)
-        _response_content_is_bounded(response)
+        _raise_for_status(response, context=context)
         payload = response.json()
     except (TypeError, ValueError, AttributeError, KeyError) as exc:
-        raise YazioProviderInvalidResponseError from exc
+        raise _invalid_response(context) from exc
     finally:
         response.close()
     if payload is None:
         return None
     if not isinstance(payload, Mapping):
-        raise YazioProviderInvalidResponseError
-    return _numeric(payload.get("value", _MISSING))
+        raise _invalid_response(context)
+    return _numeric(payload.get("value", _MISSING), context=context)
 
 
 def _weight_day(
     client: AuthenticatedClient,
     item_day: date,
 ) -> tuple[date, object | None]:
+    context = _context("latest_weight", "latest_weight", "WeightEntry")
     http_client = client.get_httpx_client()
     generated_operation = get_latest_weight.sync_detailed
-    # The generated operation is canonical. The fallback is only for the
-    # unpatched generated function paired with a tiny legacy test double.
     if (
         not hasattr(http_client, "request")
         and hasattr(http_client, "get")
@@ -805,34 +815,39 @@ def _weight_day(
         return item_day, _legacy_weight_day(client, item_day)
     response = _call_detailed(
         generated_operation,
-        operation="latest_weight",
-        endpoint_key="latest_weight",
-        response_model="WeightEntry",
+        operation=context.operation,
+        endpoint_key=context.endpoint_key,
+        response_model=context.response_model or "WeightEntry",
         client=client,
         date=item_day.isoformat(),
     )
     parsed = getattr(response, "parsed", _MISSING)
     if parsed is _MISSING:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context, location="parsed")
     return item_day, parsed
 
-def _bounded_string(value: object) -> str | None:
-    result = _optional_string(value)
+
+def _bounded_string(
+    value: object, *, context: YazioProviderErrorContext
+) -> str | None:
+    result = _optional_string(value, context=context)
     if result is None:
         return None
     if len(result.encode("utf-8")) > 255 or "\x00" in result:
-        raise YazioProviderInvalidResponseError
+        raise _invalid_response(context)
     return result
 
 
-def _bounded_weight_metadata(value: object) -> str | dict[str, Any] | None:
+def _bounded_weight_metadata(
+    value: object, *, context: YazioProviderErrorContext
+) -> str | dict[str, Any] | None:
     if value is _MISSING or value is UNSET or value is None:
         return None
     if isinstance(value, str):
-        return _bounded_string(value)
+        return _bounded_string(value, context=context)
     if isinstance(value, Mapping) or _field(value, "additional_properties") is not _MISSING:
         return dict(_metadata(value, set()))
-    raise YazioProviderInvalidResponseError
+    raise _invalid_response(context)
 
 
 def _weight_identity(external_id: object) -> str | None:
@@ -848,18 +863,20 @@ def _weight_identity(external_id: object) -> str | None:
     return f"external:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
-def _normalize_weight_entry(entry: object) -> dict[str, Any] | None:
+def _normalize_weight_entry(
+    entry: object, *, context: YazioProviderErrorContext
+) -> dict[str, Any] | None:
     if entry is None or isinstance(entry, (int, float, Decimal)):
         return None
-    provider_id = _bounded_string(_field(entry, "id"))
+    provider_id = _bounded_string(_field(entry, "id"), context=context)
     provider_date = _field(entry, "date")
     if provider_date is _MISSING or provider_date is UNSET or provider_date is None:
         return None
-    parsed_date = _date_value(provider_date)
-    value = _numeric(_field(entry, "value"))
+    parsed_date = _date_value(provider_date, context=context)
+    value = _numeric(_field(entry, "value"), context=context)
     if value is None:
         return None
-    external_id = _bounded_weight_metadata(_field(entry, "external_id"))
+    external_id = _bounded_weight_metadata(_field(entry, "external_id"), context=context)
     identity = provider_id or _weight_identity(external_id)
     if identity is None:
         return None
@@ -869,8 +886,8 @@ def _normalize_weight_entry(entry: object) -> dict[str, Any] | None:
         "value": value,
         "unit": "kg",
         "external_id": external_id,
-        "gateway": _bounded_string(_field(entry, "gateway")),
-        "source": _bounded_weight_metadata(_field(entry, "source")),
+        "gateway": _bounded_string(_field(entry, "gateway"), context=context),
+        "source": _bounded_weight_metadata(_field(entry, "source"), context=context),
         "_identity": identity,
     }
 
@@ -882,6 +899,7 @@ def _fetch_weight_range(
     *,
     max_workers: int,
 ) -> dict[str, object]:
+    context = _context("latest_weight", "latest_weight", "WeightEntry")
     requested_days = (
         start_day + timedelta(days=offset)
         for offset in range((end_day - start_day).days + 1)
@@ -889,7 +907,7 @@ def _fetch_weight_range(
     weights: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for _item_day, entry in executor.map(partial(_weight_day, client), requested_days):
-            normalized = _normalize_weight_entry(entry)
+            normalized = _normalize_weight_entry(entry, context=context)
             if normalized is None:
                 continue
             identity = normalized.pop("_identity")
@@ -932,16 +950,20 @@ class YazioSdkProvider:
     def fetch_food_diary(
         self, email: str, password: str, start_day: date, end_day: date
     ) -> YazioFoodDiary:
+        consumed_context = _context(
+            "consumed_items", "consumed_items", "Response[ConsumedItems]"
+        )
         if start_day > end_day or (end_day - start_day).days >= 366:
-            raise YazioProviderInvalidResponseError
+            raise _invalid_response(consumed_context, location="date_range")
 
         client = _new_client()
         try:
+            token_context = _context("oauth_token", "oauth_token", "OAuthTokenResponse")
             token_response = _call_detailed(
                 create_token.sync_detailed,
-                operation="oauth_token",
-                endpoint_key="oauth_token",
-                response_model="OAuthTokenResponse",
+                operation=token_context.operation,
+                endpoint_key=token_context.endpoint_key,
+                response_model=token_context.response_model or "OAuthTokenResponse",
                 client=client,
                 body=OAuthTokenRequest(
                     username=email,
@@ -952,10 +974,7 @@ class YazioSdkProvider:
                 ),
                 authentication=True,
             )
-            token = _token_from_response(
-                token_response,
-                context=_context("oauth_token", "oauth_token", "OAuthTokenResponse"),
-            )
+            token = _token_from_response(token_response, context=token_context)
         finally:
             _close_client(client)
 
@@ -972,56 +991,60 @@ class YazioSdkProvider:
             for requested_day in requested_days:
                 response = _call_detailed(
                     list_consumed_items.sync_detailed,
-                    operation="consumed_items",
-                    endpoint_key="consumed_items",
-                    response_model="ConsumedItems",
+                    operation=consumed_context.operation,
+                    endpoint_key=consumed_context.endpoint_key,
+                    response_model=consumed_context.response_model or "Response[ConsumedItems]",
                     client=authenticated,
                     date=requested_day.isoformat(),
                 )
                 products, simple_products = _consumed_items(
-                    response,
-                    context=_context("consumed_items", "consumed_items", "ConsumedItems"),
+                    response, context=consumed_context
                 )
                 for item in products:
-                    product_event = _map_product_event(item, requested_day)
+                    product_event = _map_product_event(
+                        item, requested_day, context=consumed_context
+                    )
                     if not start_day <= product_event.local_date <= end_day:
-                        raise YazioProviderInvalidResponseError
+                        raise _invalid_response(consumed_context, location="products[].date")
                     consumed_products.append(product_event)
                     if product_event.product_id not in seen_product_ids:
                         seen_product_ids.add(product_event.product_id)
                         product_ids.append(product_event.product_id)
+                simple_context = replace(
+                    consumed_context,
+                    operation="simple_product_normalization",
+                    validation_location="simple_products[]",
+                )
                 for item in simple_products:
                     simple_event = _map_simple_product(
-                        item,
-                        requested_day,
-                        context=_context("consumed_items", "consumed_items", "ConsumedItems"),
+                        item, requested_day, context=simple_context
                     )
                     if not start_day <= simple_event.local_date <= end_day:
-                        raise YazioProviderInvalidResponseError
+                        raise _invalid_response(simple_context, location="date")
                     consumed_simple_products.append(simple_event)
 
+            nutrient_context = _context(
+                "daily_nutrients", "daily_nutrients", "Response[DailyNutrients]"
+            )
             daily_response = _call_detailed(
                 get_daily_nutrients.sync_detailed,
-                operation="daily_nutrients",
-                endpoint_key="daily_nutrients",
-                response_model="DailyNutrients",
+                operation=nutrient_context.operation,
+                endpoint_key=nutrient_context.endpoint_key,
+                response_model=nutrient_context.response_model or "Response[DailyNutrients]",
                 client=authenticated,
                 start=start_day.isoformat(),
                 end=end_day.isoformat(),
             )
-            daily_items = _daily_items(
-                daily_response,
-                context=_context("daily_nutrients", "daily_nutrients", "DailyNutrients"),
-            )
+            daily_items = _daily_items(daily_response, context=nutrient_context)
             daily_summaries_by_date: dict[date, YazioDailyNutrientSummary] = {}
             for item in daily_items:
-                summary = _map_daily_summary(item)
+                summary = _map_daily_summary(item, context=nutrient_context)
                 if (
                     summary.local_date < start_day
                     or summary.local_date > end_day
                     or summary.local_date in daily_summaries_by_date
                 ):
-                    raise YazioProviderInvalidResponseError
+                    raise _invalid_response(nutrient_context, location="date")
                 daily_summaries_by_date[summary.local_date] = summary
             daily_summaries = tuple(
                 daily_summaries_by_date.get(day)
@@ -1039,24 +1062,18 @@ class YazioSdkProvider:
 
             profiles: list[YazioProductProfile] = []
             for product_id in product_ids:
+                product_context = _context("product_lookup", "product", "Response[Product]")
                 response = _call_detailed(
                     partial(get_product.sync_detailed, product_id),
-                    operation="product_lookup",
-                    endpoint_key="product",
-                    response_model="Product",
+                    operation=product_context.operation,
+                    endpoint_key=product_context.endpoint_key,
+                    response_model=product_context.response_model or "Response[Product]",
                     client=authenticated,
                 )
                 parsed = getattr(response, "parsed", _MISSING)
                 if parsed is _MISSING or parsed is None:
-                    raise YazioProviderInvalidResponseError(
-                        context=_context(
-                            "product_lookup",
-                            "product",
-                            "Product",
-                            location="response",
-                        )
-                    )
-                profiles.append(_map_profile(product_id, parsed))
+                    raise _invalid_response(product_context, location="response")
+                profiles.append(_map_profile(product_id, parsed, context=product_context))
 
             return YazioFoodDiary(
                 requested_start_day=start_day,
@@ -1078,18 +1095,20 @@ class YazioSdkProvider:
         include_micronutrients: bool,
     ) -> YazioProviderResult:
         del include_micronutrients
-        if start_day > end_day:
-            raise YazioProviderInvalidResponseError
-        if (end_day - start_day).days >= 366:
-            raise YazioProviderInvalidResponseError
+        nutrient_context = _context(
+            "daily_nutrients", "daily_nutrients", "Response[DailyNutrients]"
+        )
+        if start_day > end_day or (end_day - start_day).days >= 366:
+            raise _invalid_response(nutrient_context, location="date_range")
 
         client = _new_client()
         try:
+            token_context = _context("oauth_token", "oauth_token", "OAuthTokenResponse")
             token_response = _call_detailed(
                 create_token.sync_detailed,
-                operation="oauth_token",
-                endpoint_key="oauth_token",
-                response_model="OAuthTokenResponse",
+                operation=token_context.operation,
+                endpoint_key=token_context.endpoint_key,
+                response_model=token_context.response_model or "OAuthTokenResponse",
                 client=client,
                 body=OAuthTokenRequest(
                     username=email,
@@ -1100,10 +1119,7 @@ class YazioSdkProvider:
                 ),
                 authentication=True,
             )
-            token = _token_from_response(
-                token_response,
-                context=_context("oauth_token", "oauth_token", "OAuthTokenResponse"),
-            )
+            token = _token_from_response(token_response, context=token_context)
         finally:
             _close_client(client)
 
@@ -1111,9 +1127,9 @@ class YazioSdkProvider:
         try:
             daily_response = _call_detailed(
                 get_daily_nutrients.sync_detailed,
-                operation="daily_nutrients",
-                endpoint_key="daily_nutrients",
-                response_model="DailyNutrients",
+                operation=nutrient_context.operation,
+                endpoint_key=nutrient_context.endpoint_key,
+                response_model=nutrient_context.response_model or "Response[DailyNutrients]",
                 client=authenticated,
                 start=start_day.isoformat(),
                 end=end_day.isoformat(),
@@ -1123,13 +1139,10 @@ class YazioSdkProvider:
                 for offset in range((end_day - start_day).days + 1)
             }
             seen: set[date] = set()
-            for item in _daily_items(
-                daily_response,
-                context=_context("daily_nutrients", "daily_nutrients", "DailyNutrients"),
-            ):
-                item_day = _date_value(_field(item, "date"))
+            for item in _daily_items(daily_response, context=nutrient_context):
+                item_day = _date_value(_field(item, "date"), context=nutrient_context)
                 if item_day < start_day or item_day > end_day or item_day in seen:
-                    raise YazioProviderInvalidResponseError
+                    raise _invalid_response(nutrient_context, location="date")
                 seen.add(item_day)
                 mapped: dict[str, float] = {}
                 for source_name, target_name in (
@@ -1138,13 +1151,11 @@ class YazioSdkProvider:
                     ("carb", "carb"),
                     ("fat", "fat"),
                 ):
-                    value = _numeric(_field(item, source_name))
+                    value = _numeric(_field(item, source_name), context=nutrient_context)
                     if value is not None:
                         mapped[target_name] = value
                 days[item_day.isoformat()] = mapped
 
-            # The aggregate endpoint has no activity-energy field.  Keep the
-            # widget requests bounded by the shared worker cap.
             requested_days = (
                 start_day + timedelta(days=offset)
                 for offset in range((end_day - start_day).days + 1)

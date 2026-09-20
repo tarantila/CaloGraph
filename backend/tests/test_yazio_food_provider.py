@@ -345,8 +345,13 @@ def test_food_mapping_rejects_malformed_numbers_and_simple_product_shape(
         "sync_detailed",
         lambda **_: _Response(parsed=[]),
     )
-    with pytest.raises(YazioProviderInvalidResponseError):
-        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary("e", "p", date(2026, 8, 1), date(2026, 8, 1))
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "e", "p", date(2026, 8, 1), date(2026, 8, 1)
+        )
+    assert caught.value.context is not None
+    assert caught.value.context.operation == "simple_product_normalization"
+    assert caught.value.context.response_model == "Response[ConsumedItems]"
 
     monkeypatch.setattr(
         yazio_sdk_provider.list_consumed_items,
@@ -355,6 +360,60 @@ def test_food_mapping_rejects_malformed_numbers_and_simple_product_shape(
     )
     with pytest.raises(YazioProviderInvalidResponseError):
         yazio_sdk_provider.YazioSdkProvider().fetch_food_diary("e", "p", date(2026, 8, 1), date(2026, 8, 1))
+
+
+def test_food_recipe_portion_shape_has_consumed_items_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _Response(parsed={"recipe_portions": "invalid"}),
+    )
+
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "e", "p", date(2026, 8, 1), date(2026, 8, 1)
+        )
+
+    assert caught.value.context is not None
+    assert caught.value.context.operation == "consumed_items"
+    assert caught.value.context.response_model == "Response[ConsumedItems]"
+    assert caught.value.context.validation_location == "recipe_portions"
+
+
+def test_food_product_normalization_has_product_lookup_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.list_consumed_items,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed={"products": [{"id": "event-1", "product_id": "product-1"}]}
+        ),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_product,
+        "sync_detailed",
+        lambda *_args, **_kwargs: _Response(parsed={"eans": "invalid"}),
+    )
+
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_sdk_provider.YazioSdkProvider().fetch_food_diary(
+            "e", "p", date(2026, 8, 1), date(2026, 8, 1)
+        )
+
+    assert caught.value.context is not None
+    assert caught.value.context.operation == "product_lookup"
+    assert caught.value.context.response_model == "Response[Product]"
+    assert caught.value.context.validation_location == "eans"
 
 
 def test_food_optional_servings_flags_and_civil_time() -> None:

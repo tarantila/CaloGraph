@@ -1,7 +1,9 @@
+import ast
 import io
 import json
 import subprocess
 from datetime import date
+from pathlib import Path
 from typing import ClassVar
 
 import httpx
@@ -465,7 +467,7 @@ def test_consumed_items_validation_exposes_bounded_context(
     assert context is not None
     assert context.operation == "consumed_items"
     assert context.endpoint_key == "consumed_items"
-    assert context.response_model == "ConsumedItems"
+    assert context.response_model == "Response[ConsumedItems]"
     assert context.validation_location == "products"
     assert "private-password" not in repr(context)
 
@@ -504,7 +506,7 @@ def test_product_lookup_validation_exposes_bounded_context(
     assert context is not None
     assert context.operation == "product_lookup"
     assert context.endpoint_key == "product"
-    assert context.response_model == "Product"
+    assert context.response_model == "Response[Product]"
     assert context.validation_location == "response"
 
 
@@ -584,6 +586,28 @@ def test_worker_preserves_bounded_provider_context_without_raw_data(
     assert "private-password" not in repr(caught.value)
     assert "raw" not in repr(caught.value).lower()
 
+
+def test_invalid_response_requires_bounded_context() -> None:
+    with pytest.raises(TypeError):
+        YazioProviderInvalidResponseError()
+
+
+def test_production_invalid_response_raises_are_contextualized() -> None:
+    source_root = Path(__file__).parents[1] / "app"
+    violations: list[str] = []
+    for source_path in source_root.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+                continue
+            callee = node.exc.func
+            name = callee.id if isinstance(callee, ast.Name) else None
+            if name != "YazioProviderInvalidResponseError":
+                continue
+            if not any(keyword.arg == "context" for keyword in node.exc.keywords):
+                violations.append(f"{source_path}:{node.lineno}")
+    assert violations == []
+
 def test_worker_entrypoint_parent_and_sync_preserve_context(monkeypatch) -> None:
     context = YazioProviderErrorContext(
         operation="consumed_items",
@@ -608,6 +632,8 @@ def test_worker_entrypoint_parent_and_sync_preserve_context(monkeypatch) -> None
 
     assert yazio_transport._worker_main() == 0
     worker_envelope = json.loads(stdout.getvalue())
+
+
     assert worker_envelope == {
         "ok": False,
         "kind": "invalid_response",
@@ -633,6 +659,18 @@ def test_worker_entrypoint_parent_and_sync_preserve_context(monkeypatch) -> None
         "provider_validation_location": "products.some_field",
         "provider_retryable": False,
     }
+
+
+def test_transport_invalid_response_rewrap_gets_bounded_domain_context() -> None:
+    with pytest.raises(YazioProviderInvalidResponseError) as caught:
+        yazio_transport._raise_domain_provider_error(YazioTransportInvalidResponseError())
+
+    context = caught.value.context
+    assert context is not None
+    assert context.operation == "domain_worker"
+    assert context.endpoint_key == "domain_worker"
+    assert context.response_model == "YazioFoodDiary"
+    assert context.validation_location == "transport"
 
 
 def test_worker_parent_preserves_product_lookup_context(monkeypatch) -> None:
@@ -662,6 +700,24 @@ def test_worker_parent_preserves_product_lookup_context(monkeypatch) -> None:
     assert caught.value.context == context
     assert "test-food-name-secret-marker" not in repr(caught.value)
     assert "test-token-secret-marker" not in repr(caught.value)
+
+
+def test_worker_invalid_response_without_context_gets_bounded_context(monkeypatch) -> None:
+    process = _FakeProcess(b'{"ok":false,"kind":"invalid_response"}')
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(YazioTransportInvalidResponseError) as caught:
+        _run_worker({"operation": "fetch_domain"}, deadline_seconds=5)
+
+    assert caught.value.context == {
+        "operation": "domain_worker",
+        "endpoint_key": "domain_worker",
+        "upstream_status_code": None,
+        "response_model": "YazioFoodDiary",
+        "error_category": "response_validation",
+        "validation_location": "worker",
+        "retryable": False,
+    }
 
 
 def test_worker_parent_preserves_http_status_without_response_body(monkeypatch) -> None:

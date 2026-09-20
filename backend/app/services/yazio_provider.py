@@ -310,7 +310,7 @@ class YazioProviderDeadlineError(YazioProviderError):
 class YazioProviderInvalidResponseError(YazioProviderError):
     kind = "invalid_response"
 
-    def __init__(self, *, context: YazioProviderErrorContext | None = None) -> None:
+    def __init__(self, *, context: YazioProviderErrorContext) -> None:
         super().__init__("YAZIO provider returned an invalid response", context=context)
 
 @dataclass(frozen=True, slots=True)
