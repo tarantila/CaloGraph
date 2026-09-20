@@ -1802,9 +1802,14 @@ def test_google_activity_availability_requires_full_scope_and_canonical_evidence
 
 
 def test_activity_sources_response_accepts_google_canonical_source(
-    client: TestClient, user, db
+    client: TestClient, user, db, monkeypatch
 ) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    db.flush()
     _add_sample(
         db,
         user,
@@ -1852,11 +1857,15 @@ def test_google_weight_availability_requires_full_scope_and_canonical_evidence(
     google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
     assert google == {"provider_key": "google_health", "available": True, "status": "available"}
 
-
 def test_activity_sources_hide_google_evidence_from_wrong_connection(
-    client: TestClient, user, db
+    client: TestClient, user, db, monkeypatch
 ) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    db.flush()
     _add_sample(
         db,
         user,

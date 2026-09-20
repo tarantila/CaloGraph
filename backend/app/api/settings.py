@@ -16,6 +16,7 @@ from app.activity import (
     ACTIVITY_SOURCE_TYPES,
     GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -889,26 +890,32 @@ def _lock_target_owner(db: Session, user_id: UUID) -> None:
     db.scalar(select(User).where(User.id == user_id).with_for_update())
 
 def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
-    active_connection_id = db.scalar(
-        select(GoogleHealthConnection.id).where(
-            GoogleHealthConnection.user_id == user_id,
-            GoogleHealthConnection.state == "active",
-        )
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
+    )
+    google_selectable = bool(
+        settings.google_health_enabled
+        and settings.google_health_client_id
+        and settings.google_health_client_secret
+        and connection is not None
+        and connection.state == "active"
+        and GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     )
     statement = select(HealthSample.source_type).where(
         HealthSample.user_id == user_id,
         HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
         HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
     )
-    if active_connection_id is None:
+    if not google_selectable:
         statement = statement.where(
             HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
         )
     else:
+        assert connection is not None
         statement = statement.where(
             or_(
                 HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
-                HealthSample.source_identifier == str(active_connection_id),
+                HealthSample.source_identifier == str(connection.id),
             )
         )
     return list(db.scalars(statement.distinct().order_by(HealthSample.source_type)))
