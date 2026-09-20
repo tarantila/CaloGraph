@@ -3,8 +3,9 @@
 ## Automatic transfer
 
 1. Install Health Auto Export on the iPhone and grant HealthKit access to the
-   required nutrition categories. If activity credit is to be used, additionally
-   grant **Active Energy Burned**.
+   required nutrition categories. If weight history is needed, additionally
+   grant **Body Mass**. If activity credit is to be used, additionally grant
+   **Active Energy Burned**.
 2. Create a device-specific import token in CaloGraph.
 3. Create a REST API automation using JSON, Export Version 2, and the import
    endpoint.
@@ -23,5 +24,9 @@ Open Apple Health, select the profile picture, and choose **Export All Health
 Data**. Upload the ZIP unchanged through the CaloGraph import view. Never send
 an export file to third parties.
 
+
+Body-mass records are normalized to the canonical `weight_kg` sample metric.
+Select `Apple Health` or `Health Auto Export` separately in Account → Data
+sources; the two source types are not merged automatically.
 Apple Health includes measurements and sources, but does not reliably include
 food, recipe, or meal names.

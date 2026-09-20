@@ -256,6 +256,10 @@ function sourceLabel(source: string) {
   return keys[source] ? t(keys[source]) : source
 }
 
+function clientLabel(identifier: string | null) {
+  return identifier === 'yazio-sdk' ? 'SDK v22' : identifier
+}
+
 function fileSize(value: number) {
   if (value < 1024 * 1024) return `${integer.format(value / 1024)} KB`
   return `${createNumberFormatter({ maximumFractionDigits: 1 }).format(value / 1024 / 1024)} MB`
@@ -374,7 +378,7 @@ const importsWithIssues = computed(() =>
             <template v-for="batch in imports" :key="batch.id">
               <tr>
                 <td>{{ formatGermanDateTime(batch.started_at) }}</td>
-                <td><strong>{{ sourceLabel(batch.source_type) }}</strong><small v-if="batch.client_identifier" class="table-secondary">{{ batch.client_identifier }}</small></td>
+                <td><strong>{{ sourceLabel(batch.source_type) }}</strong><small v-if="clientLabel(batch.client_identifier)" class="table-secondary">{{ clientLabel(batch.client_identifier) }}</small></td>
                 <td><StatusBadge :status="batch.status" /></td>
                 <td class="number">{{ integer.format(batch.received) }}</td>
                 <td class="number">{{ integer.format(batch.inserted) }}</td>

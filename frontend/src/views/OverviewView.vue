@@ -325,7 +325,7 @@ const sourceDescription = computed(() =>
 const syncScheduleLabel = computed(() => {
   if (yazioStatus.value?.available === false) return t('overviewUi.serverDisabled')
   if (!yazioStatus.value?.configured) return t('overviewUi.noConnection')
-  if (!yazioStatus.value.sync_enabled) return t('overviewUi.paused')
+  if (yazioStatus.value.scheduler_enabled === false || !yazioStatus.value.sync_enabled) return t('overviewUi.paused')
   if (['pending', 'running', 'failed'].includes(yazioStatus.value.historical_sync?.state ?? '')) {
     return t('overviewUi.historicalRunning')
   }

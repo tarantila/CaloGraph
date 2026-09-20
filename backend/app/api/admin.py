@@ -82,7 +82,7 @@ def system_status(_: User = Depends(require_admin), db: Session = Depends(get_db
     except PackageNotFoundError:
         application_version = "unknown"
     scheduler_available = False
-    if settings.yazio_enabled:
+    if settings.yazio_enabled and settings.yazio_scheduler_enabled:
         try:
             scheduler_available = bool(due_yazio_connection_ids())
         except Exception:
@@ -97,7 +97,7 @@ def system_status(_: User = Depends(require_admin), db: Session = Depends(get_db
         "security_audit_enabled": True,
         "security_audit_events_24h": audit_metrics.audit_events,
         "failed_logins_24h": audit_metrics.failed_logins,
-        "yazio_scheduler_enabled": settings.yazio_enabled,
+        "yazio_scheduler_enabled": settings.yazio_enabled and settings.yazio_scheduler_enabled,
         "yazio_scheduler_available": scheduler_available,
     }
 

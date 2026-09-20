@@ -11,6 +11,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -67,9 +69,6 @@ class User(Base):
     google_health_oauth_flows: Mapped[list[GoogleHealthOAuthFlow]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    provider_preferences: Mapped[list[UserProviderPreference]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
@@ -80,6 +79,7 @@ class UserProviderPreference(Base):
     __table_args__ = (
         CheckConstraint("length(data_area) > 0", name="ck_provider_preferences_data_area"),
         CheckConstraint("length(provider_key) > 0", name="ck_provider_preferences_provider_key"),
+        {"info": {"skip_autogenerate": True}},
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -92,8 +92,41 @@ class UserProviderPreference(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    user: Mapped[User] = relationship(back_populates="provider_preferences")
 
+
+class UserProviderPriority(Base):
+    __tablename__ = "user_provider_priorities"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "data_area",
+            "provider_key",
+            name="uq_user_provider_priorities_provider",
+        ),
+        CheckConstraint("length(data_area) > 0", name="ck_user_provider_priorities_data_area"),
+        CheckConstraint(
+            "length(provider_key) > 0",
+            name="ck_user_provider_priorities_provider_key",
+        ),
+        CheckConstraint("priority >= 1", name="ck_user_provider_priorities_priority"),
+        Index(
+            "ix_user_provider_priorities_user_area_priority",
+            "user_id",
+            "data_area",
+            "priority",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    data_area: Mapped[str] = mapped_column(String(64), primary_key=True)
+    priority: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 class InstanceBootstrap(Base):
     __tablename__ = "instance_bootstrap"
@@ -429,6 +462,7 @@ class ApiToken(Base):
 class NutritionTarget(Base):
     __tablename__ = "nutrition_targets"
     __table_args__ = (
+        Index("uq_nutrition_targets_id_user", "id", "user_id", unique=True),
         UniqueConstraint("user_id", "valid_from", name="uq_target_user_valid_from"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="ck_target_date_range"),
         CheckConstraint(
@@ -483,6 +517,52 @@ class NutritionTarget(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="targets")
+    activity_sources: Mapped[list[NutritionTargetActivitySource]] = relationship(
+        back_populates="target",
+        cascade="all, delete-orphan",
+        order_by="NutritionTargetActivitySource.priority",
+    )
+
+
+class NutritionTargetActivitySource(Base):
+    __tablename__ = "nutrition_target_activity_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_id", "user_id"],
+            ["nutrition_targets.id", "nutrition_targets.user_id"],
+            name="fk_nutrition_target_activity_sources_target_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "priority >= 1",
+            name="ck_nutrition_target_activity_sources_priority",
+        ),
+        CheckConstraint(
+            "provider_key IS NULL OR length(provider_key) > 0",
+            name="ck_nutrition_target_activity_sources_provider_key",
+        ),
+        CheckConstraint(
+            "length(source_type) > 0",
+            name="ck_nutrition_target_activity_sources_source_type",
+        ),
+        Index(
+            "uq_nutrition_target_activity_sources_target_provider",
+            "target_id",
+            "provider_key",
+            unique=True,
+            postgresql_where=text("provider_key IS NOT NULL"),
+            sqlite_where=text("provider_key IS NOT NULL"),
+        ),
+        Index("ix_nutrition_target_activity_sources_user_id", "user_id"),
+    )
+
+    target_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_key: Mapped[str | None] = mapped_column(String(64))
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    target: Mapped[NutritionTarget] = relationship(back_populates="activity_sources")
 
 
 class TrackingQualitySettings(Base):

@@ -10,7 +10,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_SOURCE_TYPES
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+    ACTIVITY_PROVIDER_SOURCE_TYPES,
+    ACTIVITY_SOURCE_TYPES,
+)
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -31,7 +36,6 @@ from app.models import (
     User,
     UserOnboarding,
     UserProfile,
-    UserProviderPreference,
     UserSession,
     UserTotpCredential,
 )
@@ -41,12 +45,17 @@ from app.problem_types import (
     INVALID_MFA,
     INVALID_TIMEZONE,
     LAST_TARGET_REQUIRED,
-    PROVIDER_NOT_AVAILABLE,
+    PROVIDER_SELECTION_NOT_READY,
     TARGET_VERSION_NOT_FOUND,
     VALIDATION_ERROR,
     ProblemHTTPException,
 )
-from app.provider_preferences import normalize_data_area, validate_provider_preference
+from app.provider_preferences import (
+    ACTIVITY_ENERGY_DATA_AREA,
+    effective_provider_order,
+    normalize_data_area,
+    validate_provider_preference,
+)
 from app.schemas import (
     ActivitySourceResponse,
     MfaCodeRequest,
@@ -62,6 +71,7 @@ from app.schemas import (
     PersonalProfileResponse,
     ProfileUpdate,
     ProviderAvailabilityListResponse,
+    ProviderPreferenceEntry,
     ProviderPreferenceListResponse,
     ProviderPreferenceResponse,
     ProviderPreferenceUpdate,
@@ -105,11 +115,24 @@ from app.services.passkeys import (
     delete_passkey,
     list_passkeys,
 )
-from app.services.provider_preferences import provider_availability, provider_is_available
+from app.services.provider_preferences import (
+    apply_activity_provider_to_current_target,
+    provider_availability,
+    replace_activity_target_sources,
+    resolve_provider_source_type,
+)
 from app.services.rate_limit import (
     check_rate_limit,
     clear_rate_limit,
     ensure_rate_limit_available,
+)
+from app.source_priority.compatibility import (
+    ProviderPreferenceSnapshot,
+    list_provider_preferences,
+    replace_provider_preferences,
+)
+from app.source_priority.compatibility import (
+    delete_provider_preference as delete_source_priority_preference,
 )
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
@@ -488,6 +511,46 @@ def update_profile(
     return user
 
 
+def _normalized_provider_preference_list(
+    data_area: str,
+    payload: ProviderPreferenceUpdate,
+) -> tuple[str, tuple[str, ...]]:
+    normalized_area = normalize_data_area(data_area)
+    raw_provider_keys: tuple[str, ...]
+    if payload.provider_key is not None:
+        raw_provider_keys = (payload.provider_key,)
+    elif payload.providers is not None:
+        provider_entries = tuple(payload.providers)
+        if provider_entries and all(
+            isinstance(item, ProviderPreferenceEntry) and item.priority_rank is not None
+            for item in provider_entries
+        ):
+            provider_entries = tuple(
+                sorted(
+                    provider_entries,
+                    key=lambda item: (
+                        item.priority_rank or 0
+                        if isinstance(item, ProviderPreferenceEntry)
+                        else 0
+                    )
+                )
+            )
+        raw_provider_keys = tuple(
+            item.provider_key if isinstance(item, ProviderPreferenceEntry) else item
+            for item in provider_entries
+        )
+    else:
+        raw_provider_keys = tuple(payload.provider_keys or ())
+
+    normalized_provider_keys = tuple(
+        validate_provider_preference(normalized_area, provider_key)[1]
+        for provider_key in raw_provider_keys
+    )
+    if len(normalized_provider_keys) != len(set(normalized_provider_keys)):
+        raise ValueError("provider list must not contain duplicates")
+    return normalized_area, normalized_provider_keys
+
+
 @router.get(
     "/provider-preferences",
     response_model=ProviderPreferenceListResponse,
@@ -496,13 +559,7 @@ def provider_preferences(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> ProviderPreferenceListResponse:
-    preferences = list(
-        db.scalars(
-            select(UserProviderPreference)
-            .where(UserProviderPreference.user_id == user.id)
-            .order_by(UserProviderPreference.data_area)
-        )
-    )
+    preferences = list_provider_preferences(db, user.id)
     return ProviderPreferenceListResponse(
         preferences=[ProviderPreferenceResponse.model_validate(item) for item in preferences]
     )
@@ -547,10 +604,10 @@ def update_provider_preference(
     payload: ProviderPreferenceUpdate,
     user: User = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> UserProviderPreference:
+) -> ProviderPreferenceSnapshot:
     try:
-        normalized_area, normalized_provider = validate_provider_preference(
-            data_area, payload.provider_key
+        normalized_area, normalized_providers = _normalized_provider_preference_list(
+            data_area, payload
         )
     except ValueError as exc:
         raise ProblemHTTPException(
@@ -558,30 +615,30 @@ def update_provider_preference(
             detail="Provider ist für diesen fachlichen Datenbereich nicht zulässig",
             problem_type=VALIDATION_ERROR,
         ) from exc
-    if not provider_is_available(
+    preferences = replace_provider_preferences(
         db,
         user_id=user.id,
         data_area=normalized_area,
-        provider_key=normalized_provider,
-    ):
-        raise ProblemHTTPException(
-            status_code=409,
-            detail="Provider ist für dieses Konto nicht verfügbar",
-            problem_type=PROVIDER_NOT_AVAILABLE,
+        provider_keys=normalized_providers,
+    )
+    if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
+        activity_provider_keys = effective_provider_order(
+            normalized_area,
+            normalized_providers,
+            include_missing=False,
         )
-    preference = db.get(UserProviderPreference, (user.id, normalized_area))
-    if preference is None:
-        preference = UserProviderPreference(
-            user_id=user.id,
-            data_area=normalized_area,
-            provider_key=normalized_provider,
+        apply_activity_provider_to_current_target(
+            db,
+            user=user,
+            source_types=_activity_priority_chain(
+                db,
+                user.id,
+                ACTIVITY_PROVIDER_SOURCE_TYPES[activity_provider_keys[0]],
+                provider_keys=activity_provider_keys,
+            ),
         )
-        db.add(preference)
-    else:
-        preference.provider_key = normalized_provider
     db.commit()
-    db.refresh(preference)
-    return preference
+    return preferences[0]
 
 
 @router.delete("/provider-preferences/{data_area}", status_code=204)
@@ -598,10 +655,8 @@ def delete_provider_preference(
             detail="Unbekannter fachlicher Datenbereich",
             problem_type=VALIDATION_ERROR,
         ) from exc
-    preference = db.get(UserProviderPreference, (user.id, normalized_area))
-    if preference is not None:
-        db.delete(preference)
-        db.commit()
+    delete_source_priority_preference(db, user_id=user.id, data_area=normalized_area)
+    db.commit()
 
 
 @router.get("/mfa", response_model=MfaStatusResponse)
@@ -847,6 +902,97 @@ def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
     )
 
 
+def _activity_provider_source_type(
+    db: Session,
+    user_id: UUID,
+    provider_key: str,
+    *,
+    fallback: str,
+) -> str:
+    try:
+        return resolve_provider_source_type(
+            db,
+            user_id=user_id,
+            data_area=ACTIVITY_ENERGY_DATA_AREA,
+            provider_key=provider_key,
+            configured=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS[provider_key],
+            fallback=fallback,
+        )
+    except ValueError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsprovider ist nicht eindeutig lesbar konfiguriert",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+def _activity_priority_chain(
+    db: Session,
+    user_id: UUID,
+    projection_source_type: str,
+    *,
+    provider_keys: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    activity_preferences = (
+        tuple(
+            preference
+            for preference in list_provider_preferences(db, user_id)
+            if preference.data_area == ACTIVITY_ENERGY_DATA_AREA
+        )
+        if provider_keys is None
+        else ()
+    )
+    if provider_keys is None and not activity_preferences:
+        projection_provider = next(
+            (
+                provider_key
+                for provider_key, source_types in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS.items()
+                if projection_source_type in source_types
+            ),
+            None,
+        )
+        fallback_provider_keys = tuple(
+            provider_key
+            for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
+            if provider_key != projection_provider
+        )
+        if projection_provider is not None:
+            _activity_provider_source_type(
+                db,
+                user_id,
+                projection_provider,
+                fallback=projection_source_type,
+            )
+        return (
+            projection_source_type,
+            *(
+                _activity_provider_source_type(
+                    db,
+                    user_id,
+                    fallback_provider_key,
+                    fallback=ACTIVITY_PROVIDER_SOURCE_TYPES[fallback_provider_key],
+                )
+                for fallback_provider_key in fallback_provider_keys
+            ),
+        )
+    effective_provider_keys = effective_provider_order(
+        ACTIVITY_ENERGY_DATA_AREA,
+        provider_keys
+        if provider_keys is not None
+        else tuple(preference.provider_key for preference in activity_preferences),
+        include_missing=False,
+    )
+    return tuple(
+        _activity_provider_source_type(
+            db,
+            user_id,
+            provider_key,
+            fallback=ACTIVITY_PROVIDER_SOURCE_TYPES[provider_key],
+        )
+        for provider_key in effective_provider_keys
+    )
+
+
 def _validate_activity_source(
     db: Session,
     user: User,
@@ -902,12 +1048,24 @@ def create_target(
     )
     if previous:
         previous.valid_to = payload.valid_from
+    target_values = payload.model_dump()
+    activity_sources: tuple[str, ...] = ()
+    if payload.activity_mode == "full" and payload.activity_source_type is not None:
+        activity_sources = _activity_priority_chain(
+            db,
+            user.id,
+            payload.activity_source_type,
+        )
+        target_values["activity_source_type"] = activity_sources[0]
     target = NutritionTarget(
         user_id=user.id,
         valid_to=later.valid_from if later else None,
-        **payload.model_dump(),
+        **target_values,
     )
     db.add(target)
+    db.flush()
+    if activity_sources:
+        replace_activity_target_sources(db, target, activity_sources)
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)
@@ -940,8 +1098,74 @@ def update_target(
         payload,
         existing_source=target.activity_source_type,
     )
-    for field, value in payload.model_dump(exclude={"valid_from"}).items():
+    today = datetime.now(ZoneInfo(user.timezone)).date()
+    target_fields = (
+        "calories_kcal",
+        "maintenance_kcal",
+        "target_weight_min_kg",
+        "target_weight_max_kg",
+        "activity_mode",
+        "activity_source_type",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "fiber_g",
+        "water_ml",
+    )
+    changes = payload.model_dump(exclude={"valid_from"}, exclude_unset=True)
+    activity_changed = (
+        changes.get("activity_mode", target.activity_mode) != target.activity_mode
+        or changes.get("activity_source_type", target.activity_source_type)
+        != target.activity_source_type
+    )
+    if activity_changed and target.valid_from < today:
+        if target.valid_to is not None and today >= target.valid_to:
+            raise ProblemHTTPException(
+                status_code=409,
+                detail="Historische Budgetversionen dürfen nicht nachträglich geändert werden",
+                problem_type=VALIDATION_ERROR,
+            )
+        later = db.scalar(
+            select(NutritionTarget.valid_from)
+            .where(
+                NutritionTarget.user_id == user.id,
+                NutritionTarget.valid_from > today,
+            )
+            .order_by(NutritionTarget.valid_from)
+        )
+        values = {field: getattr(target, field) for field in target_fields}
+        values.update(changes)
+        version_activity_sources: tuple[str, ...] = ()
+        if values["activity_mode"] == "full" and values["activity_source_type"] is not None:
+            version_activity_sources = _activity_priority_chain(
+                db,
+                user.id,
+                values["activity_source_type"],
+            )
+            values["activity_source_type"] = version_activity_sources[0]
+        target.valid_to = today
+        version = NutritionTarget(
+            user_id=user.id,
+            valid_from=today,
+            valid_to=later,
+            **values,
+        )
+        db.add(version)
+        db.flush()
+        replace_activity_target_sources(db, version, version_activity_sources)
+        db.commit()
+        db.refresh(version)
+        _log_activity_target_change(version, user)
+        return version
+    for field, value in changes.items():
         setattr(target, field, value)
+    if activity_changed:
+        activity_sources = (
+            _activity_priority_chain(db, user.id, target.activity_source_type)
+            if target.activity_mode == "full" and target.activity_source_type is not None
+            else ()
+        )
+        replace_activity_target_sources(db, target, activity_sources)
     db.commit()
     db.refresh(target)
     _log_activity_target_change(target, user)

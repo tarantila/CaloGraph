@@ -5,8 +5,9 @@
   `deactivated_at=NULL`; an inactive account requires a UTC deactivation
   timestamp.
 - `user_provider_preferences`: at most one provider key per user and
-  functional data area. The composite primary key is `(user_id, data_area)`;
-  the table stores provider identity only, never source-instance identifiers.
+  functional data area (`nutrition`, `weight`, or `activity_energy`). The
+  composite primary key is `(user_id, data_area)`; the table stores provider
+  identity only, never source-instance identifiers.
 - `user_profiles`: optional one-to-one personal information for a user:
   display name, gender, birth date, height, diet, voluntary health notes, and
   intolerances. All content fields are nullable; the user foreign key is the
@@ -37,7 +38,9 @@
 - `tracking_quality_settings`: legacy settings from the former completeness
   heuristic; no longer used for new analysis.
 - `health_samples`: canonical and original values, UTC timestamps, local date,
-  source, fingerprint, and import batch.
+  source, fingerprint, and import batch. Weight is stored as the canonical
+  scalar metric `weight_kg` in kg; it uses the same user-scoped sample table
+  without a schema migration.
 - `import_batches`, `import_errors`, `raw_import_payloads`: import reporting,
   safe error context, and optional compressed raw data.
 - `tracking_overrides`: optional manual data-status override per local day.

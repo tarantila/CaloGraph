@@ -107,17 +107,21 @@ workers. Non-ZIP failures after a checkpoint are retained as `partial_failed`
 so a retry can continue idempotently; ZIP integrity, XML, and limit failures
 roll back their import completely.
 
-## User-selected nutrition provider
+## User-selected provider priority
 
-Nutrition provider selection is a user-scoped setting, not URL state. The
-`user_provider_preferences` table stores one provider key for the `nutrition`
-data area; it does not store or expose a source-instance ID. The authenticated
-settings API exposes the preference and a separate provider-availability view.
-The analytics endpoint uses the stored preference when the `source` query
+Provider priority is a user-scoped, versioned policy in
+`source_priority_policies` and `source_priority_rules`. The authenticated
+settings API exposes the ordered preference and a separate availability view;
+the historical `user_provider_preferences` table is only a migration input.
+The analytics endpoint uses the stored priority when the `source` query
 parameter is omitted. An explicit `source` remains a Legacy compatibility
 path.
 
-If a configured provider is unavailable or cannot be resolved to exactly one
-owned source instance, analytics returns a safe problem response instead of
-silently falling back or switching providers. Missing preferences retain the
+Nutrition and weight resolve providers in priority order independently for each
+local day and use the first provider with complete evidence for that day.
+Activity uses the target-version snapshot chain for historical days and the
+current priority chain for new target versions. Providers are never summed or
+silently replaced by an unconfigured Legacy aggregate. If no configured
+provider can safely resolve a requested day, the endpoint returns a safe
+not-ready or unavailable problem response. Missing preferences retain the
 temporary Legacy YAZIO behavior during migration.

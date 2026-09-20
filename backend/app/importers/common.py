@@ -10,6 +10,7 @@ from pydantic.dataclasses import dataclass
 
 from app.importers.errors import ImportFieldError
 from app.micronutrients import MICRONUTRIENTS
+from app.weight import WEIGHT_METRIC, WEIGHT_UNIT
 
 ORIGINAL_VALUE_LIMIT = Decimal("1000000000000")
 CANONICAL_VALUE_LIMIT = Decimal("100000000000000")
@@ -117,6 +118,10 @@ METRIC_MAP = {
     "active_energy": ("active_energy_kcal", "kcal"),
     "active_energy_burned": ("active_energy_kcal", "kcal"),
     "HKQuantityTypeIdentifierActiveEnergyBurned": ("active_energy_kcal", "kcal"),
+    "weight_&_body_mass": (WEIGHT_METRIC, WEIGHT_UNIT),
+    "body_mass": (WEIGHT_METRIC, WEIGHT_UNIT),
+    "weight": (WEIGHT_METRIC, WEIGHT_UNIT),
+    "HKQuantityTypeIdentifierBodyMass": (WEIGHT_METRIC, WEIGHT_UNIT),
     "dietary_protein": ("protein_g", "g"),
     "HKQuantityTypeIdentifierDietaryProtein": ("protein_g", "g"),
     "dietary_carbohydrates": ("carbohydrates_g", "g"),
@@ -143,10 +148,6 @@ IGNORED_METRIC_TYPES = {
     "HKQuantityTypeIdentifierStepCount",
     "apple_exercise_time",
     "HKQuantityTypeIdentifierAppleExerciseTime",
-    "weight_&_body_mass",
-    "body_mass",
-    "weight",
-    "HKQuantityTypeIdentifierBodyMass",
     "body_fat_percentage",
     "HKQuantityTypeIdentifierBodyFatPercentage",
 }
@@ -207,6 +208,10 @@ def normalize_value(value: Decimal, incoming_unit: str, canonical_unit: str) -> 
             ("ug", "mg"): Decimal("0.001"),
             ("mg", "ug"): Decimal("1000"),
             ("g", "ug"): Decimal("1000000"),
+            ("kg", "kg"): Decimal("1"),
+            ("lb", "kg"): Decimal("0.45359237"),
+            ("lbs", "kg"): Decimal("0.45359237"),
+            ("g", "kg"): Decimal("0.001"),
             ("l", "ml"): Decimal("1000"),
             ("fl_oz_us", "ml"): Decimal("29.5735295625"),
             ("min", "min"): Decimal("1"),

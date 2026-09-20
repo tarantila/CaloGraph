@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import DataError, IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
-from app.activity import ACTIVITY_MODES, ACTIVITY_SOURCE_TYPES
+from app.activity import ACTIVITY_MODES, ACTIVITY_PROVIDER_SOURCE_TYPES, ACTIVITY_SOURCE_TYPES
 from app.config import settings
 from app.importers.common import METRIC_MAP, CanonicalSample
 from app.models import (
@@ -44,6 +44,7 @@ from app.services.data_export import (
     ExportTargetV3,
     ExportTrackingOverride,
 )
+from app.services.provider_preferences import replace_activity_target_sources
 
 EXPECTED_FILES = frozenset(
     {
@@ -70,6 +71,47 @@ class PortableImportError(ValueError):
 
 def _utc_datetime(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _activity_source_types_for_import(target: ExportTarget) -> tuple[str, ...]:
+    snapshots = target.activity_sources
+    if not snapshots:
+        return (
+            (target.activity_source_type,)
+            if target.activity_mode == "full" and target.activity_source_type is not None
+            else ()
+        )
+    if target.activity_mode != "full" or target.activity_source_type is None:
+        raise PortableImportError("Aktivitäts-Snapshotkette ist für dieses Ziel ungültig")
+    if len(snapshots) > len(ACTIVITY_SOURCE_TYPES):
+        raise PortableImportError("Aktivitäts-Snapshotkette ist zu lang")
+    expected_priorities = set(range(1, len(snapshots) + 1))
+    if {snapshot.priority for snapshot in snapshots} != expected_priorities:
+        raise PortableImportError("Aktivitätsprioritäten müssen lückenlos sein")
+    provider_by_source_type = {
+        source_type: provider_key
+        for provider_key, source_type in ACTIVITY_PROVIDER_SOURCE_TYPES.items()
+    }
+    seen_source_types: set[str] = set()
+    seen_provider_keys: set[str] = set()
+    ordered_snapshots = sorted(snapshots, key=lambda snapshot: snapshot.priority)
+    for snapshot in ordered_snapshots:
+        if snapshot.source_type not in ACTIVITY_SOURCE_TYPES:
+            raise PortableImportError("Aktivitäts-Snapshotquelle ist ungültig")
+        if snapshot.source_type in seen_source_types:
+            raise PortableImportError("Aktivitäts-Snapshotquellen sind doppelt")
+        seen_source_types.add(snapshot.source_type)
+        expected_provider_key = provider_by_source_type[snapshot.source_type]
+        if snapshot.provider_key is not None and snapshot.provider_key != expected_provider_key:
+            raise PortableImportError("Aktivitäts-Snapshotprovider ist ungültig")
+        if snapshot.provider_key is not None:
+            if snapshot.provider_key in seen_provider_keys:
+                raise PortableImportError("Aktivitäts-Snapshotprovider sind doppelt")
+            seen_provider_keys.add(snapshot.provider_key)
+    source_types = tuple(snapshot.source_type for snapshot in ordered_snapshots)
+    if target.activity_source_type != source_types[0]:
+        raise PortableImportError("Aktivitätsprojektion entspricht nicht Priorität 1")
+    return source_types
 
 def _archive_payload_hash(file: BinaryIO) -> str:
     digest = hashlib.sha256()
@@ -218,6 +260,7 @@ def _validated_records(
                 )
             ):
                 raise PortableImportError("Aktivitätskonfiguration in Sicherung ist ungültig")
+            _activity_source_types_for_import(target)
             targets.append(target)
         overrides = [ExportTrackingOverride.model_validate(value) for value in overrides_raw]
         for override in overrides:
@@ -416,17 +459,23 @@ def apply_portable_import(file: BinaryIO, user: User, db: Session) -> dict[str, 
                 "water_ml": target.water_ml,
             }
             if existing_target is None:
-                db.add(
-                    NutritionTarget(
-                        user_id=user.id,
-                        valid_from=target.valid_from,
-                        created_at=target.created_at,
-                        **values,
-                    )
+                restored_target = NutritionTarget(
+                    user_id=user.id,
+                    valid_from=target.valid_from,
+                    created_at=target.created_at,
+                    **values,
                 )
+                db.add(restored_target)
+                db.flush()
             else:
+                restored_target = existing_target
                 for key, value in values.items():
-                    setattr(existing_target, key, value)
+                    setattr(restored_target, key, value)
+            replace_activity_target_sources(
+                db,
+                restored_target,
+                _activity_source_types_for_import(target),
+            )
         all_targets = list(
             db.scalars(
                 select(NutritionTarget)

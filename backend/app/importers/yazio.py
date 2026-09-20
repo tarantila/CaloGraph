@@ -20,6 +20,7 @@ from app.importers.input_models import (
 )
 from app.importers.json_adapter import AdapterResult
 from app.micronutrients import MICRONUTRIENT_BY_YAZIO_ID
+from app.weight import WEIGHT_METRIC, WEIGHT_UNIT
 
 SOURCE_TYPE = "yazio_export_v1"
 
@@ -82,6 +83,9 @@ def parse_yazio_export(
         if isinstance(validated_root.get("days"), dict)
         else validated_root
     )
+    weight_root = validated_root.get("weight")
+    if weight_root is not None and not isinstance(weight_root, (dict, list)):
+        raise ImportFormatError("YAZIO-Feld 'weight' muss ein Objekt oder eine Liste sein")
     micronutrient_root = validated_root.get("nutrients")
     if micronutrient_root is not None and not isinstance(micronutrient_root, dict):
         raise ImportFormatError("YAZIO-Feld 'nutrients' muss ein Objekt sein")
@@ -173,7 +177,44 @@ def parse_yazio_export(
                         safe_sample_error(exc),
                     )
                 )
-                continue
+    for day, value, incoming_unit, provider_identity in _weight_items(weight_root):
+        found_entry = True
+        item_index = next_item_index
+        next_item_index += 1
+        result.add_received()
+        try:
+            raw_value = _yazio_decimal_value(value)
+            normalized = normalize_value(raw_value, incoming_unit, WEIGHT_UNIT)
+            at = datetime.combine(day, time(hour=12), tzinfo=zone)
+            result.add_sample(
+                CanonicalSample(
+                    metric_type=WEIGHT_METRIC,
+                    value=normalized,
+                    unit=WEIGHT_UNIT,
+                    original_value=raw_value,
+                    original_unit=incoming_unit,
+                    start_at=at,
+                    end_at=at,
+                    timezone=timezone,
+                    source_type=SOURCE_TYPE,
+                    source_name="YAZIO",
+                    source_identifier=source_identifier,
+                    external_sample_id=provider_identity
+                    or f"{day.isoformat()}:{WEIGHT_METRIC}",
+                )
+            )
+        except ImportLimitError:
+            raise
+        except (TypeError, ValueError) as exc:
+            result.add_error(
+                (
+                    item_index,
+                    WEIGHT_METRIC,
+                    "invalid_sample",
+                    safe_sample_error(exc),
+                )
+            )
+
 
 
     for day, nutrient_id, value in _micronutrient_items(micronutrient_root):
@@ -253,6 +294,76 @@ def _dated_items(root: object) -> Iterator[tuple[date, object]]:
         except ValueError:
             continue
         yield parsed, value
+def _weight_items(
+    root: object,
+) -> Iterator[tuple[date, object, str, str | None]]:
+    if isinstance(root, list):
+        for raw_value in root:
+            if not isinstance(raw_value, dict):
+                continue
+            identity = _weight_provider_identity(raw_value)
+            if identity is None:
+                continue
+            day_value = raw_value.get("date")
+            try:
+                day = date.fromisoformat(str(day_value))
+            except ValueError:
+                continue
+            value = raw_value.get("value")
+            if value is not None:
+                yield day, value, str(raw_value.get("unit") or "kg"), identity
+        return
+    if not isinstance(root, dict):
+        return
+    for day_value, raw_value in root.items():
+        # SDK-v22 emits bounded records keyed by provider identity. Legacy
+        # exports remain date-keyed and continue through the branch below.
+        if isinstance(raw_value, dict) and (
+            "date" in raw_value or "id" in raw_value or "external_id" in raw_value
+        ):
+            identity = _weight_provider_identity(raw_value)
+            if identity is None:
+                continue
+            try:
+                day = date.fromisoformat(str(raw_value.get("date")))
+            except ValueError:
+                continue
+            value = raw_value.get("value")
+            if value is not None:
+                yield day, value, str(raw_value.get("unit") or "kg"), identity
+            continue
+        try:
+            day = date.fromisoformat(str(day_value))
+        except ValueError:
+            continue
+        unit = "kg"
+        value = raw_value
+        if isinstance(raw_value, dict):
+            value = raw_value.get("value")
+            unit_value = raw_value.get("unit")
+            if isinstance(unit_value, str) and unit_value.strip():
+                unit = unit_value
+        if value is not None:
+            yield day, value, unit, None
+
+
+def _weight_provider_identity(record: dict[str, object]) -> str | None:
+    provider_id = record.get("id")
+    if isinstance(provider_id, str) and provider_id:
+        return provider_id
+    external_id = record.get("external_id")
+    if isinstance(external_id, str) and external_id:
+        return f"external:{external_id}"
+    if isinstance(external_id, dict) and external_id:
+        import hashlib
+        import json
+
+        encoded = json.dumps(
+            external_id, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return f"external:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    return None
+
 
 
 def _micronutrient_items(root: object) -> Iterator[tuple[date, str, object]]:

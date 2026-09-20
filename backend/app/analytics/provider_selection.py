@@ -7,10 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import GoogleHealthConnection, UserProviderPreference, YazioConnection
+from app.models import GoogleHealthConnection, YazioConnection
 from app.nutrition.models import NutritionSourceObservation
-from app.provider_preferences import NUTRITION_DATA_AREA, validate_provider_preference
+from app.provider_preferences import NUTRITION_DATA_AREA, effective_provider_order
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
+from app.source_priority.compatibility import list_provider_preferences
 
 
 class NutritionProviderSelectionError(RuntimeError):
@@ -29,7 +30,7 @@ class NutritionProviderNotReady(NutritionProviderSelectionError):
 class NutritionProviderSelection:
     provider_key: str
     source_instance_id: UUID
-
+    provider_sources: tuple[tuple[str, UUID], ...] = ()
 
 def _available_owned_source_instance_ids(
     db: Session,
@@ -76,25 +77,39 @@ def resolve_nutrition_provider(
     *,
     user_id: UUID,
 ) -> NutritionProviderSelection | None:
-    preference = db.get(UserProviderPreference, (user_id, NUTRITION_DATA_AREA))
-    if preference is None:
-        return None
+    saved_preferences = [
+        item
+        for item in list_provider_preferences(db, user_id)
+        if item.data_area == NUTRITION_DATA_AREA
+    ]
     try:
-        _, provider_key = validate_provider_preference(
-            NUTRITION_DATA_AREA, preference.provider_key
+        provider_keys = effective_provider_order(
+            NUTRITION_DATA_AREA,
+            tuple(item.provider_key for item in saved_preferences),
+            include_missing=not saved_preferences,
         )
     except ValueError as exc:
         raise NutritionProviderNotReady("configured provider is invalid") from exc
-    source_instance_ids = _available_owned_source_instance_ids(
-        db,
-        user_id=user_id,
-        provider_key=provider_key,
-    )
-    if not source_instance_ids:
-        raise NutritionProviderUnavailable("configured provider is unavailable")
-    if len(source_instance_ids) != 1:
-        raise NutritionProviderNotReady("provider source instance is not unambiguous")
-    return NutritionProviderSelection(provider_key, source_instance_ids[0])
+
+    provider_sources: list[tuple[str, UUID]] = []
+    for provider_key in provider_keys:
+        source_instance_ids = _available_owned_source_instance_ids(
+            db,
+            user_id=user_id,
+            provider_key=provider_key,
+        )
+        if not source_instance_ids:
+            continue
+        if len(source_instance_ids) != 1:
+            raise NutritionProviderNotReady("provider source instance is not unambiguous")
+        provider_sources.append((provider_key, source_instance_ids[0]))
+
+    if not provider_sources:
+        if not saved_preferences:
+            return None
+        raise NutritionProviderUnavailable("configured providers are unavailable")
+    provider_key, source_instance_id = provider_sources[0]
+    return NutritionProviderSelection(provider_key, source_instance_id, tuple(provider_sources))
 
 
 __all__ = [

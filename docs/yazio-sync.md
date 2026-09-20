@@ -50,17 +50,16 @@ polling/jitter are advanced operational tuning:
 `YAZIO_CIRCUIT_FAILURE_LIMIT`, `YAZIO_CIRCUIT_WINDOW_SECONDS`,
 `YAZIO_SCHEDULER_POLL_SECONDS`, and `YAZIO_SCHEDULER_JITTER_MINUTES`.
 
-`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, and `YAZIO_SDK_CLIENT_ID` are
-internal provider details. CaloGraph supplies tested, versioned defaults for
-these non-secret values. The API origin remains fixed to
-`https://yzapi.yazio.com`. Maintainers may override these settings through the
-application environment when validating a compatible provider revision, but
-they are not personal credentials and are not generated per installation.
+`YAZIO_API_BASE_URL`, `YAZIO_SDK_USER_AGENT`, `YAZIO_SDK_CLIENT_ID`, and
+`YAZIO_SDK_CLIENT_SECRET` are internal provider details. CaloGraph supplies
+tested, versioned defaults for the shared YAZIO mobile client credential. The
+API origin remains fixed to `https://yzapi.yazio.com`. Maintainers may override
+these settings through the application environment when validating a compatible
+provider revision, but they are not personal credentials and are not generated
+per installation.
 
-`YAZIO_SDK_CLIENT_SECRET` is not shipped with CaloGraph and has no built-in
-default. SDK mode requires an explicit, non-empty installation-side value. A
-disabled YAZIO installation and the deprecated `legacy-v15` provider do not
-require this SDK secret. Never commit the value or put it in logs.
+Normal operators do not configure either SDK client credential. Never expose
+the effective values in logs, API responses, or the UI.
 
 The normal user configures only a personal YAZIO email address and password
 through CaloGraph. Those credentials remain in the existing per-user
@@ -125,9 +124,10 @@ For a temporary rollback or compatibility window, use:
 YAZIO_PROVIDER=legacy
 ```
 
-Normal operators do not need to configure API URLs, User-Agent strings, the
-SDK client ID, or timeout, worker, and circuit-breaker settings. SDK mode
-requires `YAZIO_SDK_CLIENT_SECRET` as described above.
+Normal operators do not need to configure API URLs, User-Agent strings, SDK
+client credentials, or timeout, worker, and circuit-breaker settings. SDK mode
+uses CaloGraph's versioned provider defaults unless a maintainer supplies an
+optional environment override.
 
 ## Automatic synchronization
 
@@ -162,6 +162,11 @@ or environment configuration is required.
    create `days.json` and, optionally, `nutrients.json`.
 2. Open **Importe** in CaloGraph.
 3. Select and import the files one after another.
+
+When a YAZIO connection is configured, JSON and file uploads use that
+connection's stable source identifier as well. Therefore imported `weight_kg`
+samples remain visible when YAZIO is selected as the weight provider; an
+explicit `X-Client-Identifier` remains a separate source instance.
 
 The adapter supports the exporter's original date object, a wrapper shaped as
 `{ "days": { ... } }`, and the original `nutrients.json`. It also accepts
@@ -278,6 +283,7 @@ CaloGraph account through `user_id`.
 |---|---|---|
 | Sum of `energy.energy` across all meals | `dietary_energy_kcal` | kcal |
 | Daily `activity_energy`, when supplied | `active_energy_kcal` | kcal |
+| Daily body weight from SDK `/v22/user/bodyvalues/weight/last` (direct mode) or exporter `/v15/user/bodyvalues/weight/last` (legacy compatibility) | `weight_kg` | kg |
 | Sum of `nutrient.protein` | `protein_g` | g |
 | Sum of `nutrient.fat` | `fat_g` | g |
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
@@ -303,6 +309,15 @@ persisted. Even when general raw-payload retention is enabled, the YAZIO adapter
 does not store the complete export file. Re-fetching the same day updates stable
 daily values idempotently.
 
+The direct SDK Weight transport uses
+`https://yzapi.yazio.com/v22/user/bodyvalues/weight/last` through CaloGraph's
+bounded authenticated SDK HTTP client and parses the response in CaloGraph.
+It is independent of `yazio-exporter`; values are normalized to kg and use
+`<local-date>:weight_kg` as their stable external ID, so a corrected value
+updates that sample. A day omitted by YAZIO is not treated as a deletion.
+Only explicit `YAZIO_PROVIDER=legacy` uses the pinned exporter/v15-compatible
+transport for legacy Weight and micronutrient compatibility. The exporter is
+not used by SDK Weight synchronization.
 Micronutrients come from the 26 separate daily endpoints provided by
 `yazio-exporter==0.2.0`. Missing product details can therefore look like low
 intake. The analysis reports data coverage separately and treats values as a

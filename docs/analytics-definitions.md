@@ -22,6 +22,23 @@ separately and does not change nutrition-data completeness. The selected source
 and mode are part of each historical target version, so later configuration
 changes do not revalue past days.
 
+The Account data-source preference for `activity_energy` is a current
+configuration, not a retroactive rewrite. If credited activity is enabled and
+the selected provider changes, CaloGraph closes the currently effective target
+at the change date and creates a new target version with the new source. Past
+days retain their original source and target values. A same-day target may be
+updated in place because it has no earlier effective day.
+
+## Weight history
+
+Weight is read as a scalar daily history from the ordered providers selected
+for the `weight` data area. CaloGraph never sums providers: each local day
+uses the first configured provider with an actual sample. An unavailable
+provider is skipped only within that persisted priority chain; if no configured
+provider can resolve a day, that day remains without a value and a completely
+unavailable selection fails closed. Multiple samples on one local day resolve
+to the latest sample by timestamp.
+
 ## Activity presentation
 
 The effective budget and credited activity are shown together where they

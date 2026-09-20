@@ -21,7 +21,7 @@ from app.database import get_db
 from app.importers.errors import ImportFormatError, ImportLimitError
 from app.importers.json_adapter import AdapterResult, parse_json_payload
 from app.importers.yazio import parse_yazio_export
-from app.models import ApiToken, ImportBatch, ImportError, User
+from app.models import ApiToken, ImportBatch, ImportError, User, YazioConnection
 from app.schemas import (
     ImportBatchDetailResponse,
     ImportBatchResponse,
@@ -40,6 +40,10 @@ from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.user_operation_lock import shared_user_operation
 
 router = APIRouter(tags=["Import"])
+
+def _configured_yazio_source_identifier(db: Session, user_id: UUID) -> str:
+    connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user_id))
+    return connection.source_identifier if connection is not None else "yazio-account"
 
 _MAX_ZIP_COMPRESSION_RATIO = 200
 _SUPPORTED_ZIP_COMPRESSION_METHODS = frozenset(
@@ -255,7 +259,7 @@ async def import_yazio_json(
     validated_client_identifier = _validated_client_identifier(client_identifier)
     with _user_import_slot(user):
         _, payload = await _json_body(request)
-        source_identifier = validated_client_identifier or "yazio-account"
+        source_identifier = validated_client_identifier or _configured_yazio_source_identifier(db, user.id)
         try:
             result = await run_in_threadpool(
                 parse_yazio_export,
@@ -291,6 +295,7 @@ async def validate_yazio_json(
                 parse_yazio_export,
                 payload,
                 user.timezone,
+                _configured_yazio_source_identifier(db, user.id),
             )
         except ValueError as exc:
             _raise_invalid_import(exc)
@@ -361,7 +366,11 @@ def import_yazio_file(
         raise HTTPException(status_code=422, detail="JSON-Wurzel muss ein Objekt sein")
     with _user_import_slot(user):
         try:
-            result = parse_yazio_export(payload, user.timezone)
+            result = parse_yazio_export(
+                payload,
+                user.timezone,
+                _configured_yazio_source_identifier(db, user.id),
+            )
         except ValueError as exc:
             _raise_invalid_import(exc)
         return persist_import(

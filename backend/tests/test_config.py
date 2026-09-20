@@ -10,6 +10,7 @@ from app.config import (
     YAZIO_API_BASE_URL_DEFAULT,
     YAZIO_LEGACY_DEPRECATION_MESSAGE,
     YAZIO_SDK_CLIENT_ID_DEFAULT,
+    YAZIO_SDK_CLIENT_SECRET_DEFAULT,
     YAZIO_SDK_USER_AGENT_DEFAULT,
     ProductionConfigurationError,
     Settings,
@@ -148,17 +149,17 @@ def test_enabled_yazio_accepts_supported_provider(provider: str) -> None:
     assert configured.yazio_provider == provider
 
 
-def test_yazio_disabled_allows_missing_sdk_client_secret() -> None:
+def test_yazio_disabled_allows_default_sdk_client_secret() -> None:
     configured = Settings(
         _env_file=None,
         environment="development",
         yazio_enabled=False,
     )
 
-    assert configured.yazio_sdk_client_secret == ""
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
-def test_yazio_legacy_allows_missing_sdk_client_secret() -> None:
+def test_yazio_legacy_allows_default_sdk_client_secret() -> None:
     configured = Settings(
         _env_file=None,
         environment="development",
@@ -166,31 +167,59 @@ def test_yazio_legacy_allows_missing_sdk_client_secret() -> None:
         yazio_provider="legacy",
     )
 
-    assert configured.yazio_sdk_client_secret == ""
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
-def test_yazio_sdk_requires_explicit_client_secret() -> None:
-    with pytest.raises(ValidationError) as captured:
-        Settings(
-            _env_file=None,
-            environment="development",
-            yazio_enabled=True,
-            yazio_provider="sdk",
-        )
 
-    message = str(captured.value)
-    assert "YAZIO_SDK_CLIENT_SECRET" in message
-    assert "test-only-yazio-sdk-secret" not in message
 
-def test_yazio_sdk_rejects_whitespace_only_client_secret() -> None:
-    with pytest.raises(ValidationError, match="YAZIO_SDK_CLIENT_SECRET"):
-        Settings(
-            _env_file=None,
-            environment="development",
-            yazio_enabled=True,
-            yazio_provider="sdk",
-            yazio_sdk_client_secret="   ",
-        )
+def test_enabled_yazio_sdk_uses_versioned_credential_defaults() -> None:
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+        yazio_provider="sdk",
+    )
+
+    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
+    assert configured.yazio_sdk_client_secret.strip()
+
+def test_yazio_sdk_environment_overrides_win(monkeypatch: pytest.MonkeyPatch) -> None:
+    client_id_override = "synthetic-yazio-client-id-override"
+    client_secret_override = "synthetic-yazio-client-secret-override"
+    monkeypatch.setenv("YAZIO_SDK_CLIENT_ID", client_id_override)
+    monkeypatch.setenv("YAZIO_SDK_CLIENT_SECRET", client_secret_override)
+
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+        yazio_provider="sdk",
+    )
+
+    assert configured.yazio_sdk_client_id == client_id_override
+    assert configured.yazio_sdk_client_secret == client_secret_override
+    assert client_secret_override not in repr(configured)
+    assert client_secret_override not in str(configured.model_dump())
+
+
+def test_blank_sdk_environment_overrides_use_versioned_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("YAZIO_SDK_CLIENT_ID", "")
+    monkeypatch.setenv("YAZIO_SDK_CLIENT_SECRET", "   ")
+
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+        yazio_provider="sdk",
+    )
+
+    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
+
+
 
 
 def test_yazio_sdk_accepts_explicit_client_secret_without_exposing_it() -> None:
@@ -216,7 +245,7 @@ def test_yazio_sdk_non_secret_defaults_are_internal_and_stable() -> None:
     assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
     assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
     assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
-    assert configured.yazio_sdk_client_secret == ""
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
 def test_yazio_provider_rejects_unknown_value() -> None:
@@ -243,7 +272,7 @@ def test_legacy_yazio_provider_warning_is_operator_facing(
     assert caplog.messages == [YAZIO_LEGACY_DEPRECATION_MESSAGE]
 
 
-def test_yazio_templates_and_compose_require_explicit_provider() -> None:
+def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
     repository_roots = (
         Path(__file__).resolve().parents[2],
         Path("/workspace"),
@@ -258,20 +287,19 @@ def test_yazio_templates_and_compose_require_explicit_provider() -> None:
 
     assert "YAZIO_ENABLED=true" in development
     assert "YAZIO_PROVIDER=sdk" in development
-    assert [
-        line for line in development.splitlines() if line.startswith("YAZIO_SDK_CLIENT_SECRET=")
-    ] == ["YAZIO_SDK_CLIENT_SECRET="]
     assert "YAZIO_ENABLED=false" in production
     assert "YAZIO_PROVIDER=sdk" in production
-    assert [
-        line for line in production.splitlines() if line.startswith("YAZIO_SDK_CLIENT_SECRET=")
-    ] == ["YAZIO_SDK_CLIENT_SECRET="]
+    for content in (development, production):
+        assert "YAZIO_SDK_CLIENT_SECRET=" not in content
+        assert "YAZIO_SDK_CLIENT_ID=" not in content
     for content in (development, production):
         assert "YAZIO_API_BASE_URL" not in content
         assert "YAZIO_SDK_USER_AGENT" not in content
         assert "YAZIO_SDK_CLIENT_ID" not in content
     assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
+    assert compose.count("YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}") == 2
     assert compose.count("YAZIO_PROVIDER: ${YAZIO_PROVIDER-}") == 2
+    assert compose.count("YAZIO_SDK_CLIENT_ID: ${YAZIO_SDK_CLIENT_ID-}") == 2
     assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
     assert "${YAZIO_PROVIDER:-legacy}" not in compose
     assert "YAZIO_PROVIDER: \"sdk\"" in development_compose

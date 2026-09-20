@@ -78,6 +78,7 @@ describe('AccountLayout navigation', () => {
     expect(links.filter((link) => link.classes('active'))).toHaveLength(1)
     expect(wrapper.get('a[href="/konto/integrationen"]').classes()).toContain('active')
     expect(wrapper.get('a[href="/konto/integrationen"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('a[href="/konto/datenquellen"]').text()).toContain('Quellenpriorität')
 
     const groups = wrapper.findAll('select[name="account-section"] optgroup')
     expect(groups).toHaveLength(3)

@@ -14,6 +14,7 @@ from app.models import (
     HealthSample,
     ImportBatch,
     NutritionTarget,
+    NutritionTargetActivitySource,
     SecurityAuditEvent,
     TrackingOverride,
     User,
@@ -375,6 +376,76 @@ def test_portable_v3_target_weight_round_trip(
     restored = db.query(NutritionTarget).filter_by(user_id=user.id).one()
     assert restored.target_weight_min_kg == minimum
     assert restored.target_weight_max_kg == maximum
+
+
+def test_portable_activity_snapshot_chain_round_trip(client, user, db) -> None:
+    target = db.query(NutritionTarget).filter_by(user_id=user.id).one()
+    target.activity_mode = "full"
+    target.activity_source_type = "yazio_export_v1"
+    db.flush()
+    db.add_all(
+        [
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=1,
+                provider_key="yazio",
+                source_type="yazio_export_v1",
+            ),
+            NutritionTargetActivitySource(
+                target_id=target.id,
+                user_id=user.id,
+                priority=2,
+                provider_key="apple_health",
+                source_type="apple_health_xml",
+            ),
+        ]
+    )
+    db.commit()
+    csrf = _login(client, "admin")
+    export = client.get("/api/v1/settings/export")
+    assert export.status_code == 200
+    with ZipFile(io.BytesIO(export.content)) as archive:
+        exported_targets = json.loads(archive.read("targets.json"))
+    assert "target_id" not in exported_targets[0]
+    assert exported_targets[0]["activity_sources"] == [
+        {
+            "priority": 1,
+            "provider_key": "yazio",
+            "source_type": "yazio_export_v1",
+        },
+        {
+            "priority": 2,
+            "provider_key": "apple_health",
+            "source_type": "apple_health_xml",
+        },
+    ]
+    assert all("target_id" not in source for source in exported_targets[0]["activity_sources"])
+
+    db.query(NutritionTargetActivitySource).filter(
+        NutritionTargetActivitySource.target_id == target.id
+    ).delete()
+    db.commit()
+    apply = client.post(
+        "/api/v1/import/calo/apply",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("activity-chain.zip", export.content, "application/zip")},
+    )
+
+    assert apply.status_code == 200
+    assert apply.json()["status"] == "completed"
+    db.expire_all()
+    restored = db.query(NutritionTarget).filter_by(user_id=user.id).one()
+    snapshots = (
+        db.query(NutritionTargetActivitySource)
+        .filter(NutritionTargetActivitySource.target_id == restored.id)
+        .order_by(NutritionTargetActivitySource.priority)
+        .all()
+    )
+    assert [(row.priority, row.provider_key, row.source_type) for row in snapshots] == [
+        (1, "yazio", "yazio_export_v1"),
+        (2, "apple_health", "apple_health_xml"),
+    ]
 
 
 def test_portable_v3_rejects_missing_target_weight_keys(client, user, db) -> None:

@@ -51,6 +51,18 @@ export interface DailyPoint {
   average_28d?: number | null
   classification?: string
 }
+export interface WeightPoint {
+  date: string
+  weight_kg: number
+}
+
+export interface WeightResponse {
+  start_date: string
+  end_date: string
+  selected_provider: { provider_key: string } | null
+  points: WeightPoint[]
+}
+
 
 export interface ImportBatch {
   id: string
@@ -91,6 +103,7 @@ export interface YazioHistoricalSync {
 export interface YazioStatus {
   available: boolean
   configured: boolean
+  scheduler_enabled: boolean
   sync_enabled: boolean
   sync_interval_minutes: number | null
   sync_days: number | null
@@ -100,6 +113,19 @@ export interface YazioStatus {
   last_attempt_at: string | null
   last_success_at: string | null
   next_sync_at: string | null
+  last_error: string | null
+}
+
+export type GoogleHealthState = 'disabled' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+
+export interface GoogleHealthStatus {
+  available: boolean
+  configured: boolean
+  state: GoogleHealthState
+  granted_scopes: string[]
+  refresh_token_expires_at: string | null
+  last_attempt_at: string | null
+  last_success_at: string | null
   last_error: string | null
 }
 

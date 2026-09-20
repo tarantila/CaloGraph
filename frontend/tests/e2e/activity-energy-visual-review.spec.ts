@@ -72,6 +72,9 @@ test('target settings expose a source-specific activity credit', async ({ page }
         ],
       })
     }
+    if (path.endsWith('/settings/provider-preferences')) {
+      return route.fulfill({ json: { preferences: [] } })
+    }
     if (path.endsWith('/auth/csrf')) {
       return route.fulfill({ json: { csrf_token: 'review-csrf' } })
     }

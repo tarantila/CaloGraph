@@ -180,6 +180,7 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   expect(primaryNavigation).toEqual([
     'Übersicht',
     'Tagesverlauf',
+    'Gewicht',
     'Wochenbudget',
     'Wochentage',
     'Kalender',
@@ -191,7 +192,7 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
     label.trim(),
   )
   expect(utilityNavigation).toEqual(['Konto'])
-  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(9)
+  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(10)
   expect(page.locator('.sidebar nav a.active')).toHaveCount(1)
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()

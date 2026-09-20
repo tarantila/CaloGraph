@@ -48,6 +48,9 @@ class _Client:
 
     def get_httpx_client(self) -> _Client:
         return self
+    def get(self, _url: str, **_kwargs: Any) -> httpx.Response:
+        return httpx.Response(200, json={"value": None})
+
 
     def close(self) -> None:
         self.closed = True
@@ -71,6 +74,29 @@ def _patch_clients(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(yazio_sdk_provider.create_token, "sync_detailed", token)
 
+
+def test_sdk_uses_effective_client_credential_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def token(**kwargs: Any) -> _Response:
+        captured.update(kwargs)
+        return _Response(parsed={"access_token": "offline-token"})
+
+    monkeypatch.setattr(yazio_sdk_provider, "_new_client", lambda: _Client())
+    monkeypatch.setattr(yazio_sdk_provider.create_token, "sync_detailed", token)
+    monkeypatch.setattr(settings, "yazio_sdk_client_id", "synthetic-client-id")
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-client-secret")
+
+    yazio_sdk_provider.YazioSdkProvider().validate_credentials(
+        "owner@example.com",
+        "synthetic-yazio-password",
+    )
+
+    body = captured["body"]
+    assert body.client_id == "synthetic-client-id"
+    assert body.client_secret == "synthetic-client-secret"
 
 def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_clients(monkeypatch)
@@ -124,7 +150,8 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
                 "carb": 240.0,
                 "fat": 70.0,
             },
-        }
+        },
+        "weight": {},
     }
     assert result.metadata.micronutrient_complete is False
     assert daily_calls[0]["start"] == "2026-08-01"
@@ -163,7 +190,10 @@ def test_sdk_omits_missing_and_null_values_and_supports_empty_range(
         "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2), False
     )
 
-    assert result.payload == {"days": {"2026-08-01": {}, "2026-08-02": {}}}
+    assert result.payload == {
+        "days": {"2026-08-01": {}, "2026-08-02": {}},
+        "weight": {},
+    }
 
 
 def test_sdk_rejects_out_of_range_dates_and_invalid_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -280,3 +310,134 @@ def test_sdk_translates_network_timeout_and_redacts_secrets(monkeypatch: pytest.
 
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "private-app-secret")
     assert "private-app-secret" not in repr(settings)
+
+@pytest.mark.parametrize(
+    "provider_date",
+    ["2026-01-02T03:04:05Z", "2026-01-02T03:04:05+05:30"],
+)
+def test_sdk_normalizes_v22_weight_timestamp_shape_without_changing_identity(
+    provider_date: str,
+) -> None:
+    entry = type(
+        "WeightEntry",
+        (),
+        {
+            "date": provider_date,
+            "id": "synthetic-provider-id",
+            "value": 1.0,
+            "external_id": "synthetic-external-id",
+            "gateway": "synthetic-gateway",
+            "source": "synthetic-source",
+        },
+    )()
+
+    normalized = yazio_sdk_provider._normalize_weight_entry(
+        entry,
+        context=yazio_sdk_provider._context(
+            "latest_weight", "latest_weight", "WeightEntry"
+        ),
+    )
+
+    assert normalized == {
+        "id": "synthetic-provider-id",
+        "date": "2026-01-02",
+        "value": 1.0,
+        "unit": "kg",
+        "external_id": "synthetic-external-id",
+        "gateway": "synthetic-gateway",
+        "source": "synthetic-source",
+        "_identity": "synthetic-provider-id",
+    }
+
+
+def test_sdk_weight_skips_typed_record_without_stable_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_summary_widget,
+        "sync_detailed",
+        lambda **_: _Response(parsed={"activity_energy": None}),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_latest_weight,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed=type(
+                "WeightEntry",
+                (),
+                {"date": "2026-08-01", "id": None, "value": 72.5, "external_id": None},
+            )()
+        ),
+    )
+
+    result = yazio_sdk_provider.YazioSdkProvider().fetch(
+        "owner@example.com",
+        "private-password",
+        date(2026, 8, 1),
+        date(2026, 8, 1),
+        False,
+    )
+
+    assert result.payload["weight"] == {}
+
+
+def test_sdk_weight_deduplicates_by_provider_id_and_preserves_provider_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_summary_widget,
+        "sync_detailed",
+        lambda **_: _Response(parsed={}),
+    )
+    calls: list[str] = []
+
+    def latest(**kwargs: Any) -> _Response:
+        calls.append(kwargs["date"])
+        return _Response(
+            parsed=type(
+                "WeightEntry",
+                (),
+                {
+                    "date": "2026-07-31",
+                    "id": "provider-weight-1",
+                    "value": 72.5,
+                    "external_id": None,
+                    "gateway": None,
+                    "source": None,
+                },
+            )()
+        )
+
+    monkeypatch.setattr(yazio_sdk_provider.get_latest_weight, "sync_detailed", latest)
+    result = yazio_sdk_provider.YazioSdkProvider().fetch(
+        "owner@example.com",
+        "private-password",
+        date(2026, 8, 1),
+        date(2026, 8, 2),
+        False,
+    )
+
+    assert calls == ["2026-08-01", "2026-08-02"]
+    assert result.payload["weight"] == {
+        "provider-weight-1": {
+            "id": "provider-weight-1",
+            "date": "2026-07-31",
+            "value": 72.5,
+            "unit": "kg",
+            "external_id": None,
+            "gateway": None,
+            "source": None,
+        }
+    }

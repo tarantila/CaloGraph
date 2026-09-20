@@ -25,6 +25,7 @@ YAZIO_SDK_USER_AGENT_DEFAULT = (
     "YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor"
 )
 YAZIO_SDK_CLIENT_ID_DEFAULT = "3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw"
+YAZIO_SDK_CLIENT_SECRET_DEFAULT = '25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k'
 YAZIO_LEGACY_DEPRECATION_MESSAGE = (
     "The legacy YAZIO provider is deprecated. "
     "Migrate to YAZIO_PROVIDER=sdk. "
@@ -254,6 +255,7 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_enabled: bool = False
+    yazio_scheduler_enabled: bool = True
     yazio_nutrition_domain_write_enabled: bool = False
     yazio_provider: Literal["legacy", "sdk"] | None = None
     yazio_api_base_url: str = Field(
@@ -274,8 +276,8 @@ class Settings(BaseSettings):
         repr=False,
     )
     yazio_sdk_client_secret: str = Field(
-        default="",
-        min_length=0,
+        default=YAZIO_SDK_CLIENT_SECRET_DEFAULT,
+        min_length=1,
         max_length=512,
         exclude=True,
         repr=False,
@@ -405,6 +407,20 @@ class Settings(BaseSettings):
             return normalized or None
         return value
 
+    @field_validator("yazio_sdk_client_id", mode="before")
+    @classmethod
+    def default_blank_yazio_sdk_client_id(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return YAZIO_SDK_CLIENT_ID_DEFAULT
+        return value
+
+    @field_validator("yazio_sdk_client_secret", mode="before")
+    @classmethod
+    def default_blank_yazio_sdk_client_secret(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return YAZIO_SDK_CLIENT_SECRET_DEFAULT
+        return value
+
     @model_validator(mode="after")
     def require_yazio_provider_when_enabled(self) -> Settings:
         if self.yazio_enabled and self.yazio_provider is None:
@@ -417,18 +433,6 @@ class Settings(BaseSettings):
             )
         return self
 
-    @model_validator(mode="after")
-    def require_yazio_sdk_client_secret_when_sdk_enabled(self) -> Settings:
-        if (
-            self.yazio_enabled
-            and self.yazio_provider == "sdk"
-            and not self.yazio_sdk_client_secret.strip()
-        ):
-            raise ValueError(
-                "YAZIO_SDK_CLIENT_SECRET is required when "
-                "YAZIO_ENABLED is true and YAZIO_PROVIDER=sdk."
-            )
-        return self
 
     @field_validator("raw_payload_retention_days")
     @classmethod

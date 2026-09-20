@@ -16,7 +16,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.models import (
@@ -123,6 +123,12 @@ class ExportSettings(BaseModel):
     tracking_quality: ExportTrackingQuality | None
 
 
+class ExportActivitySource(BaseModel):
+    priority: int = Field(ge=1)
+    provider_key: str | None = None
+    source_type: str
+
+
 class _ExportTargetBase(BaseModel):
     valid_from: date
     valid_to: date | None
@@ -130,6 +136,7 @@ class _ExportTargetBase(BaseModel):
     maintenance_kcal: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=3)
     activity_mode: Literal["off", "full"]
     activity_source_type: str | None
+    activity_sources: list[ExportActivitySource] = Field(default_factory=list)
     protein_g: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     carbs_g: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=3)
     fat_g: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=3)
@@ -509,6 +516,7 @@ def _import_batches(db: Session, user_id: UUID) -> Iterator[ExportImportBatch]:
 def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
     statement = (
         select(NutritionTarget)
+        .options(selectinload(NutritionTarget.activity_sources))
         .where(NutritionTarget.user_id == user_id)
         .order_by(NutritionTarget.valid_from, NutritionTarget.id)
         .execution_options(stream_results=True)
@@ -523,6 +531,14 @@ def _targets(db: Session, user_id: UUID) -> Iterator[ExportTarget]:
             target_weight_max_kg=target.target_weight_max_kg,
             activity_mode=target.activity_mode,
             activity_source_type=target.activity_source_type,
+            activity_sources=[
+                ExportActivitySource(
+                    priority=snapshot.priority,
+                    provider_key=snapshot.provider_key,
+                    source_type=snapshot.source_type,
+                )
+                for snapshot in target.activity_sources
+            ],
             protein_g=target.protein_g,
             carbs_g=target.carbs_g,
             fat_g=target.fat_g,

@@ -1,7 +1,7 @@
 import logging
 import secrets
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -76,10 +76,23 @@ logger = logging.getLogger(__name__)
 
 
 class YazioSyncError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        provider_context: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message or "YAZIO synchronization failed")
+        self.provider_context = (
+            dict(provider_context) if provider_context is not None else None
+        )
 
 
 class YazioConnectionNotConfigured(YazioSyncError):
+    pass
+
+
+class YazioSdkNotConfigured(YazioSyncError):
     pass
 
 
@@ -172,23 +185,80 @@ def yazio_failure_reason(error: Exception) -> str:
     return "unexpected_error"
 
 
+def _with_provider_context(
+    mapped: YazioSyncError,
+    error: YazioProviderError,
+) -> YazioSyncError:
+    mapped.provider_context = (
+        error.context.to_dict() if error.context is not None else None
+    )
+    return mapped
+
+def _with_transport_context(
+    mapped: YazioSyncError,
+    error: YazioTransportError,
+) -> YazioSyncError:
+    mapped.provider_context = error.context
+    return mapped
+
+
 def _map_yazio_provider_error(error: YazioProviderError) -> YazioSyncError:
     if isinstance(error, YazioProviderAuthenticationError):
-        return YazioAuthenticationError("YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen.")
+        return _with_provider_context(
+            YazioAuthenticationError("YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."),
+            error,
+        )
     if error.kind == "version_blocked":
-        return YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE)
+        return _with_provider_context(YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE), error)
     if isinstance(error, YazioProviderRateLimitedError):
-        return YazioRateLimitedError(error.retry_after)
+        return _with_provider_context(YazioRateLimitedError(error.retry_after), error)
     if isinstance(error, YazioProviderNetworkTimeoutError):
-        return YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet.")
+        return _with_provider_context(
+            YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet."), error
+        )
     if isinstance(error, YazioProviderDeadlineError):
-        return YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet.")
+        return _with_provider_context(
+            YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet."), error
+        )
     if isinstance(error, YazioProviderInvalidResponseError):
-        return YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert.")
+        return _with_provider_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."), error
+        )
     if isinstance(error, YazioProviderUnavailableError):
-        return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
-    return YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar.")
+        return _with_provider_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."), error
+        )
+    return _with_provider_context(
+        YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."), error
+    )
 
+
+def _provider_context_details(error: Exception) -> dict[str, object]:
+    context = getattr(error, "provider_context", None)
+    if not isinstance(context, Mapping):
+        return {}
+    details: dict[str, object] = {}
+    for source_key, detail_key in (
+        ("operation", "provider_operation"),
+        ("endpoint_key", "provider_endpoint"),
+        ("response_model", "provider_model"),
+        ("error_category", "provider_error_category"),
+    ):
+        value = context.get(source_key)
+        if isinstance(value, str) and value:
+            if source_key == "response_model":
+                value = value.replace("[", "").replace("]", "")
+            details[detail_key] = value[:64]
+    location = context.get("validation_location")
+    if isinstance(location, str) and location:
+        details["provider_validation_location"] = location.replace("[", "").replace("]", "")[:64]
+    status = context.get("upstream_status_code")
+    if isinstance(status, int) and not isinstance(status, bool) and status >= 0:
+        details["provider_status"] = status
+    retryable = context.get("retryable")
+    if isinstance(retryable, bool):
+        details["provider_retryable"] = retryable
+    return details
 
 def _next_sync_at(reference: datetime, interval_minutes: int) -> datetime:
     max_jitter = settings.yazio_scheduler_jitter_minutes
@@ -219,12 +289,13 @@ def _sync_yazio_user_with_domain(
     start_day: date,
     end_day: date,
     source_identifier: str | None,
+    *,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> ImportSummary:
-    if settings.yazio_provider != "sdk":
-        raise YazioSyncError(
-            "Die YAZIO-Nährwertdomäne ist ausschließlich für den SDK-Anbieter aktiviert."
-        )
     _require_yazio_enabled()
+    if settings.yazio_provider != "sdk" and provider_mode != "sdk":
+        raise YazioSyncError("YAZIO-Domänenschreiben erfordert den SDK-Provider.")
+    _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
     identifier = source_identifier or yazio_source_identifier(user.id)
     try:
@@ -404,6 +475,11 @@ def _require_yazio_enabled() -> None:
     if not settings.yazio_enabled:
         raise YazioDisabled("Die YAZIO-Funktion ist auf diesem Server deaktiviert.")
 
+
+def _require_yazio_sdk_configured() -> None:
+    if not settings.yazio_sdk_client_secret.strip():
+        raise YazioSdkNotConfigured("Der YAZIO-SDK ist nicht konfiguriert.")
+
 def _utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
@@ -416,7 +492,7 @@ def queue_daily_yazio_sync_if_due(
     *,
     now: datetime | None = None,
 ) -> bool:
-    if not settings.yazio_enabled or not user.is_active:
+    if not settings.yazio_enabled or not settings.yazio_scheduler_enabled or not user.is_active:
         return False
 
     connection = db.scalar(
@@ -515,50 +591,74 @@ def validate_yazio_credentials(
     password: str,
     *,
     operation_key: object | None = None,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> None:
     _require_yazio_enabled()
+    selected_provider = provider_mode or settings.yazio_provider
+    if selected_provider not in {"legacy", "sdk"}:
+        raise YazioSyncError("Der YAZIO-Provider ist nicht konfiguriert.")
+    if selected_provider == "sdk":
+        _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
     try:
         with yazio_operation_slot(operation_key or _yazio_operation_key(email)):
-            validate_yazio_credentials_transport(email, password)
+            validate_yazio_credentials_transport(
+                email,
+                password,
+                provider_mode=selected_provider,
+            )
     except YazioOperationBusy as exc:
         raise YazioOperationCapacityExceeded(
             "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
         ) from exc
     except YazioTransportAuthenticationError as exc:
-        raise YazioAuthenticationError(
-            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
+        raise _with_transport_context(
+            YazioAuthenticationError(
+                "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
+            ),
+            exc,
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
+        raise _with_transport_context(
+            YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE),
+            exc,
+        ) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
-        raise YazioRateLimitedError(exc.retry_after) from exc
+        raise _with_transport_context(
+            YazioRateLimitedError(exc.retry_after),
+            exc,
+        ) from exc
     except YazioTransportNetworkTimeoutError as exc:
         _record_yazio_provider_failure()
-        raise YazioNetworkTimeoutError(
-            "YAZIO hat nicht rechtzeitig geantwortet."
+        raise _with_transport_context(
+            YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet."),
+            exc,
         ) from exc
     except YazioTransportInvalidResponseError as exc:
         _record_yazio_provider_failure()
-        raise YazioInvalidResponseError(
-            "YAZIO hat eine ungültige Antwort geliefert."
+        raise _with_transport_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."),
+            exc,
         ) from exc
     except YazioTransportUnavailableError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
-        raise YazioOperationDeadlineExceeded(
-            "YAZIO hat nicht rechtzeitig geantwortet."
+        raise _with_transport_context(
+            YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet."),
+            exc,
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     _clear_yazio_provider_failures()
 
@@ -593,8 +693,12 @@ def _fetch_yazio_payload_unlocked(
     start_day: date,
     end_day: date,
     include_micronutrients: bool,
+    *,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> dict[str, Any]:
     _require_yazio_enabled()
+    if provider_mode == "sdk":
+        _require_yazio_sdk_configured()
     _ensure_yazio_circuit_closed()
     try:
         result = fetch_yazio_payload_transport(
@@ -603,41 +707,56 @@ def _fetch_yazio_payload_unlocked(
             start_day,
             end_day,
             include_micronutrients,
+            provider_mode=provider_mode,
         )
     except YazioTransportAuthenticationError as exc:
-        raise YazioAuthenticationError(
-            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+        raise _with_transport_context(
+            YazioAuthenticationError(
+                "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+            ),
+            exc,
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
+        raise _with_transport_context(
+            YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE),
+            exc,
+        ) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
-        raise YazioRateLimitedError(exc.retry_after) from exc
+        raise _with_transport_context(
+            YazioRateLimitedError(exc.retry_after),
+            exc,
+        ) from exc
     except YazioTransportNetworkTimeoutError as exc:
         _record_yazio_provider_failure()
-        raise YazioNetworkTimeoutError(
-            "YAZIO-Abruf hat die maximale Wartezeit überschritten."
+        raise _with_transport_context(
+            YazioNetworkTimeoutError("YAZIO-Abruf hat die maximale Wartezeit überschritten."),
+            exc,
         ) from exc
     except YazioTransportInvalidResponseError as exc:
         _record_yazio_provider_failure()
-        raise YazioInvalidResponseError(
-            "YAZIO hat eine ungültige Antwort geliefert."
+        raise _with_transport_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."),
+            exc,
         ) from exc
     except YazioTransportUnavailableError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
-        raise YazioOperationDeadlineExceeded(
-            "YAZIO-Abruf hat die maximale Laufzeit überschritten."
+        raise _with_transport_context(
+            YazioOperationDeadlineExceeded("YAZIO-Abruf hat die maximale Laufzeit überschritten."),
+            exc,
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     _clear_yazio_provider_failures()
     return result
@@ -648,6 +767,7 @@ def import_yazio_payload(
     payload: dict[str, Any],
     source_identifier: str,
     *,
+    client_identifier: str,
     connector_variant: str | None = None,
 ) -> ImportSummary:
     with SessionLocal() as db:
@@ -661,7 +781,7 @@ def import_yazio_payload(
             result,
             None,
             "application/x-yazio-sync",
-            "yazio-exporter",
+            client_identifier,
             connector_variant=connector_variant,
         )
 
@@ -709,8 +829,9 @@ def _sync_yazio_user_unlocked(
     fetcher: YazioFetcher | None,
     *,
     include_micronutrients: bool,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> ImportSummary:
-    if settings.yazio_nutrition_domain_write_enabled:
+    if settings.yazio_nutrition_domain_write_enabled or provider_mode == "sdk":
         return _sync_yazio_user_with_domain(
             user,
             email,
@@ -718,6 +839,7 @@ def _sync_yazio_user_unlocked(
             start_day,
             end_day,
             source_identifier,
+            provider_mode=provider_mode,
         )
     if fetcher is None:
         payload = _fetch_yazio_payload_unlocked(
@@ -726,6 +848,7 @@ def _sync_yazio_user_unlocked(
             start_day,
             end_day,
             include_micronutrients,
+            provider_mode=provider_mode,
         )
     else:
         payload = fetcher(
@@ -736,11 +859,14 @@ def _sync_yazio_user_unlocked(
             include_micronutrients,
         )
     identifier = source_identifier or yazio_source_identifier(user.id)
-    connector_variant = "sdk-v22" if settings.yazio_provider == "sdk" else "legacy-v15"
+    sdk_mode = settings.yazio_provider == "sdk"
+    connector_variant = "sdk-v22" if sdk_mode else "legacy-v15"
+    client_identifier = "yazio-sdk" if sdk_mode else "yazio-exporter"
     summary = import_yazio_payload(
         user,
         payload,
         identifier,
+        client_identifier=client_identifier,
         connector_variant=connector_variant,
     )
     if (
@@ -858,7 +984,7 @@ def run_scheduled_yazio_sync(
     fetcher: YazioFetcher | None = None,
     now: datetime | None = None,
 ) -> ImportSummary | None:
-    if not settings.yazio_enabled:
+    if not settings.yazio_enabled or not settings.yazio_scheduler_enabled:
         return None
     return _run_yazio_connection_sync(
         connection_id,
@@ -935,6 +1061,7 @@ def _run_yazio_connection_sync(
                 sync_days_override=sync_days_override,
                 raise_errors=raise_errors,
                 mode=mode,
+                provider_mode="sdk" if mode == "manual" and fetcher is None else None,
             )
     except (YazioOperationBusy, YazioOperationCapacityExceeded) as exc:
         log_security_event(
@@ -958,6 +1085,7 @@ def _run_historical_yazio_sync_locked(
     *,
     fetcher: YazioFetcher | None,
     attempted_at: datetime,
+    provider_mode: Literal["legacy", "sdk"] | None = None,
 ) -> ImportSummary | None:
     with SessionLocal() as db:
         connection = db.get(YazioConnection, connection_id)
@@ -1008,6 +1136,7 @@ def _run_historical_yazio_sync_locked(
                 source_identifier,
                 fetcher,
                 include_micronutrients=True,
+                provider_mode=provider_mode,
             )
     except Exception as exc:
         _record_failure(connection_id, attempted_at, exc, historical=True)
@@ -1016,7 +1145,7 @@ def _run_historical_yazio_sync_locked(
             actor_ref=security_reference("user", user_id),
             target_ref=security_reference("yazio_connection", connection_id),
             reason=yazio_failure_reason(exc),
-            details={"mode": "range"},
+            details={"mode": "range", **_provider_context_details(exc)},
         )
         return None
     completed_at = datetime.now(UTC)
@@ -1064,6 +1193,7 @@ def _run_yazio_connection_sync_locked(
     sync_days_override: int | None,
     raise_errors: bool,
     mode: Literal["manual", "scheduled"],
+    provider_mode: Literal["legacy", "sdk"] | None,
 ) -> ImportSummary | None:
     with SessionLocal() as db:
         connection = db.get(YazioConnection, connection_id)
@@ -1095,6 +1225,7 @@ def _run_yazio_connection_sync_locked(
             connection_id,
             fetcher=fetcher,
             attempted_at=attempted_at,
+            provider_mode=provider_mode,
         )
     try:
         email = decrypt_credential(encrypted_email)
@@ -1127,6 +1258,8 @@ def _run_yazio_connection_sync_locked(
     end_day = attempted_at.astimezone(ZoneInfo(timezone)).date()
     start_day = end_day - timedelta(days=sync_days - 1)
     try:
+        if provider_mode == "sdk":
+            _require_yazio_sdk_configured()
         summary = _sync_yazio_user_unlocked(
             user,
             email,
@@ -1136,6 +1269,7 @@ def _run_yazio_connection_sync_locked(
             source_identifier,
             fetcher,
             include_micronutrients=include_micronutrients,
+            provider_mode=provider_mode,
         )
     except Exception as exc:
         _record_failure(connection_id, attempted_at, exc)
@@ -1144,7 +1278,10 @@ def _run_yazio_connection_sync_locked(
             actor_ref=security_reference("user", user_id),
             target_ref=security_reference("yazio_connection", connection_id),
             reason=yazio_failure_reason(exc),
-            details={"mode": mode},
+            details={
+                "mode": mode,
+                **_provider_context_details(exc),
+            },
         )
         if raise_errors:
             if isinstance(exc, YazioSyncError):
@@ -1191,7 +1328,7 @@ def run_due_yazio_syncs(
     after_connection: Callable[[], None] | None = None,
     between_connections: Callable[[], None] | None = None,
 ) -> tuple[int, int]:
-    if not settings.yazio_enabled:
+    if not settings.yazio_enabled or not settings.yazio_scheduler_enabled:
         return 0, 0
     connection_ids = due_yazio_connection_ids(now)
     succeeded = 0

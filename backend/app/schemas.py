@@ -60,11 +60,50 @@ class UserResponse(BaseModel):
 
 
 
-class ProviderPreferenceUpdate(BaseModel):
+class ProviderPreferenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider_key: str = Field(min_length=1, max_length=64)
+    priority_rank: int | None = Field(default=None, ge=1)
 
+
+class ProviderPreferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: str | None = Field(default=None, min_length=1, max_length=64)
+    providers: list[ProviderPreferenceEntry | str] | None = None
+    provider_keys: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_preference_list(self) -> ProviderPreferenceUpdate:
+        forms = sum(
+            value is not None
+            for value in (self.provider_key, self.providers, self.provider_keys)
+        )
+        if forms != 1:
+            raise ValueError("exactly one provider preference representation is required")
+        if self.providers is not None:
+            if not self.providers:
+                raise ValueError("providers must not be empty")
+            entries = [
+                item if isinstance(item, ProviderPreferenceEntry) else ProviderPreferenceEntry(provider_key=item)
+                for item in self.providers
+            ]
+            keys = [item.provider_key for item in entries]
+            ranks = [item.priority_rank for item in entries]
+            if len(keys) != len(set(keys)):
+                raise ValueError("provider list must not contain duplicates")
+            if any(rank is not None for rank in ranks):
+                if any(rank is None for rank in ranks):
+                    raise ValueError("all providers must include priority_rank")
+                if set(ranks) != set(range(1, len(ranks) + 1)):
+                    raise ValueError("priority_rank values must be contiguous")
+        elif self.provider_keys is not None:
+            if not self.provider_keys:
+                raise ValueError("provider_keys must not be empty")
+            if len(self.provider_keys) != len(set(self.provider_keys)):
+                raise ValueError("provider list must not contain duplicates")
+        return self
 
 class ProviderPreferenceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -340,6 +379,7 @@ class YazioHistoricalSyncResponse(BaseModel):
 class YazioStatusResponse(BaseModel):
     available: bool = True
     configured: bool
+    scheduler_enabled: bool
     sync_enabled: bool
     sync_interval_minutes: int | None = None
     sync_days: int | None = None
@@ -569,6 +609,20 @@ class DailyPoint(BaseModel):
     tracking_status: TrackingStatus
     tracking_score: int
     tracking_reasons: list[str]
+class WeightPoint(BaseModel):
+    date: date
+    weight_kg: float
+
+
+class WeightSelectedProviderResponse(BaseModel):
+    provider_key: str
+
+
+class WeightResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: WeightSelectedProviderResponse | None
+    points: list[WeightPoint]
 
 
 class MicronutrientSelectedProviderResponse(BaseModel):

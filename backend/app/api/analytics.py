@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -8,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.calendar_canonical import run_calendar_canonical_read
@@ -33,8 +34,15 @@ from app.analytics.provider_selection import (
     NutritionProviderUnavailable,
     resolve_nutrition_provider,
 )
+from app.analytics.scalar_selection import (
+    ScalarProviderNotReady,
+    ScalarProviderSelection,
+    ScalarProviderUnavailable,
+    resolve_scalar_provider,
+)
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
+    AmbiguousAppleTransportError,
     budget_balance,
     budget_balance_for_user,
     budget_classification,
@@ -49,7 +57,7 @@ from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
-from app.models import HealthSample, ImportBatch, User
+from app.models import HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -57,8 +65,10 @@ from app.problem_types import (
     PROVIDER_SELECTION_UNAVAILABLE,
     ProblemHTTPException,
 )
-from app.schemas import DailyPoint, MicronutrientResponse
+from app.provider_preferences import WEIGHT_DATA_AREA
+from app.schemas import DailyPoint, MicronutrientResponse, WeightResponse
 from app.services.achievements import unlock_achievement_keys
+from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 router = APIRouter(tags=["Analytics"])
 _DEFAULT_RESOLVE_NUTRITION_PROVIDER = resolve_nutrition_provider
@@ -108,8 +118,35 @@ def _complete_budget(days: list[DailyPoint], field: str) -> Decimal | None:
         return None
     return sum((budget for budget in budgets if budget is not None), Decimal())
 
+def _legacy_daily_points(
+    db: Session,
+    user: User,
+    start: date,
+    end: date,
+    source: str | None = None,
+) -> list[DailyPoint]:
+    try:
+        if source is None:
+            return daily_points(db, user, start, end)
+        return daily_points(db, user, start, end, source)
+    except AmbiguousAppleTransportError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsdaten der Apple-Transporte sind nicht eindeutig lesbar.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
 def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
-    return budget_balance_for_user(db, user)
+    try:
+        return budget_balance_for_user(db, user)
+    except AmbiguousAppleTransportError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Aktivitätsdaten der Apple-Transporte sind nicht eindeutig lesbar.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
 
 
 def _preferred_nutrition_provider(
@@ -138,6 +175,33 @@ def _preferred_nutrition_provider(
             detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
+def _preferred_scalar_provider(
+    db: Session,
+    *,
+    user_id: UUID,
+    data_area: str,
+    source_types: Mapping[str, str | Sequence[str]],
+) -> ScalarProviderSelection | None:
+    try:
+        return resolve_scalar_provider(
+            db,
+            user_id=user_id,
+            data_area=data_area,
+            source_types=source_types,
+        )
+    except ScalarProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except ScalarProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
 
 
 def _read_preferred_daily_points(
@@ -154,6 +218,10 @@ def _read_preferred_daily_points(
             user_id=user_id,
             provider_key=selection.provider_key,
             source_instance_id=selection.source_instance_id,
+            provider_sources=(
+                selection.provider_sources
+                or ((selection.provider_key, selection.source_instance_id),)
+            ),
             start=start,
             end=end,
         )
@@ -181,7 +249,7 @@ def daily(
 
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end, source)
+        points = _legacy_daily_points(db, user, start, end, source)
         # D4B owns canonical comparison for eligible requests.  Ineligible D4B
         # requests retain the existing D4A observation path when configured.
         if settings.analytics_daily_canonical_read_enabled:
@@ -224,6 +292,7 @@ def daily(
                     )
         else:
             # The shadow read is strictly observational and must never affect the Legacy request.
+
             with suppress(Exception):
                 run_daily_shadow(
                     user.id,
@@ -251,6 +320,87 @@ def daily(
     if weekday is not None:
         points = [point for point in points if point.date.weekday() == weekday]
     return points
+@router.get("/analytics/weight", response_model=WeightResponse)
+def weight(
+    start: date | None = None,
+    end: date | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    start, end = _range(start, end, user.timezone, 3661)
+    selection = _preferred_scalar_provider(
+        db,
+        user_id=user.id,
+        data_area=WEIGHT_DATA_AREA,
+        source_types=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
+    )
+    if selection is None:
+        return {
+            "start_date": start,
+            "end_date": end,
+            "selected_provider": None,
+            "points": [],
+        }
+    provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
+    source_identifier: str | None = None
+    if any(provider_key == "yazio" for provider_key, _ in provider_sources):
+        connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
+        if connection is None:
+            raise ProblemHTTPException(
+                status_code=503,
+                detail="Der konfigurierte YAZIO-Provider ist nicht mehr verfügbar.",
+                problem_type=PROVIDER_SELECTION_NOT_READY,
+            )
+        source_identifier = connection.source_identifier
+
+    provider_by_source_type = {
+        source_type: provider_key for provider_key, source_type in provider_sources
+    }
+    provider_filters = []
+    for provider_key, source_type in provider_sources:
+        source_filter = [
+            HealthSample.source_type == source_type,
+        ]
+        if provider_key == "yazio":
+            source_filter.append(HealthSample.source_identifier == source_identifier)
+        provider_filters.append(and_(*source_filter))
+    samples = list(
+        db.scalars(
+            select(HealthSample)
+            .where(
+                HealthSample.user_id == user.id,
+                HealthSample.metric_type == WEIGHT_METRIC,
+                HealthSample.local_date >= start,
+                HealthSample.local_date <= end,
+                or_(*provider_filters),
+            )
+            .order_by(HealthSample.local_date, HealthSample.start_at, HealthSample.id)
+        )
+    )
+    latest_by_provider_day: dict[tuple[str, date], HealthSample] = {}
+    for sample in samples:
+        sample_provider_key = provider_by_source_type.get(sample.source_type)
+        if sample_provider_key is None:
+            continue
+        key = (sample_provider_key, sample.local_date)
+        previous = latest_by_provider_day.get(key)
+        if previous is None or (sample.start_at, sample.id) > (previous.start_at, previous.id):
+            latest_by_provider_day[key] = sample
+
+    latest_by_day: dict[date, HealthSample] = {}
+    for provider_key, _ in provider_sources:
+        for (sample_provider, sample_day), sample in latest_by_provider_day.items():
+            if sample_provider == provider_key and sample_day not in latest_by_day:
+                latest_by_day[sample_day] = sample
+    return {
+        "start_date": start,
+        "end_date": end,
+        "selected_provider": {"provider_key": selection.provider_key},
+        "points": [
+            {"date": day, "weight_kg": float(sample.value)}
+            for day, sample in sorted(latest_by_day.items())
+        ],
+    }
 
 @router.get(
     "/analytics/micronutrients",
@@ -293,7 +443,7 @@ def micronutrients(
     legacy = None
     canonical_read_context: NutritionEvidenceIndex | None = None
     if selection is None:
-        # Migration compatibility: explicit source requests and no preference stay Legacy.
+        # Explicit source requests and empty unavailable registries retain Legacy compatibility.
         _unlock_big_picture_if_requested(db, user, period)
         legacy = read_legacy_micronutrient_period(
             db,
@@ -304,18 +454,25 @@ def micronutrients(
         )
         response = legacy.to_public(start=start, end=end, source=source)
     else:
-        canonical_read_context = NutritionEvidenceIndex(
-            user_id=user.id,
-            provider_key=selection.provider_key,
-            source_instance_id=selection.source_instance_id,
-            start=start,
-            end=end,
+        provider_sources = (
+            selection.provider_sources
+            if selection.provider_sources is not None
+            else ((selection.provider_key, selection.source_instance_id),)
         )
+        if len(provider_sources) == 1:
+            canonical_read_context = NutritionEvidenceIndex(
+                user_id=user.id,
+                provider_key=selection.provider_key,
+                source_instance_id=selection.source_instance_id,
+                start=start,
+                end=end,
+            )
         canonical = read_canonical_micronutrient_period(
             db,
             user_id=user.id,
             provider_key=selection.provider_key,
             source_instance_id=selection.source_instance_id,
+            provider_sources=provider_sources,
             start=start,
             end=end,
             read_context=canonical_read_context,
@@ -425,7 +582,7 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     week_end = week_start + timedelta(days=6)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, week_start - timedelta(days=7), week_end)
+        points = _legacy_daily_points(db, user, week_start - timedelta(days=7), week_end)
     else:
         points = _read_preferred_daily_points(
             db,
@@ -505,7 +662,7 @@ def weekly(
     start, end = _range(start, end, user.timezone, 90)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         requested_days = (end - start).days + 1
         if (
             settings.analytics_weekly_canonical_read_enabled
@@ -606,7 +763,7 @@ def weekdays(
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         if (
             settings.analytics_weekdays_canonical_read_enabled
             and period != "all"
@@ -687,7 +844,7 @@ def trends(
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         requested_days = (end - start).days + 1
         if (
             settings.analytics_trends_canonical_read_enabled
@@ -765,7 +922,7 @@ def calendar(
     start, end = _range(start, end, user.timezone, 31)
     selection = _preferred_nutrition_provider(db, user.id)
     if selection is None:
-        points = daily_points(db, user, start, end)
+        points = _legacy_daily_points(db, user, start, end)
         if settings.analytics_calendar_canonical_read_enabled:
             with suppress(Exception):
                 canonical_outcome = run_calendar_canonical_read(
@@ -809,7 +966,7 @@ def data_quality(
     )
     if requested_start is None and first_data_date is not None and first_data_date > start:
         start = first_data_date
-    points = daily_points(db, user, start, end)
+    points = _legacy_daily_points(db, user, start, end)
     imports = list(
         db.scalars(
             select(ImportBatch)

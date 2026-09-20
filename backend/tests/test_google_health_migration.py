@@ -103,7 +103,7 @@ def test_revision_is_linked_to_0028_and_is_current_head() -> None:
     assert revision.depends_on is None
 
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260911_0030"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260918_0031"]
 
 
 def test_upgrade_and_downgrade_only_change_google_health_tables(tmp_path) -> None:

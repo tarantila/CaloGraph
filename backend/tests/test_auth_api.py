@@ -13,7 +13,15 @@ from app.api import analytics
 from app.auth import security
 from app.config import settings
 from app.main import app
-from app.models import NutritionTarget, TrackingQualitySettings, User, UserOnboarding, UserSession
+from app.models import (
+    HealthSample,
+    NutritionTarget,
+    TrackingQualitySettings,
+    User,
+    UserOnboarding,
+    UserSession,
+    YazioConnection,
+)
 from app.nutrition.models import (
     NutritionDailyProjection,
     NutritionDailyProjectionFact,
@@ -836,20 +844,30 @@ def test_browser_file_import_has_size_and_rate_limits(
         headers={"X-CSRF-Token": csrf},
         files={"file": ("export.xml", xml, "application/xml")},
     )
-
     assert too_large.status_code == 413
     assert accepted.status_code == 200
     assert limited.status_code == 429
 
 
-def test_authenticated_yazio_json_upload(client: TestClient, user: User) -> None:
-    del user
+def test_authenticated_yazio_json_upload(client: TestClient, user: User, db) -> None:
+    db.add(
+        YazioConnection(
+            user_id=user.id,
+            encrypted_email=b"encrypted-email",
+            encrypted_password=b"encrypted-password",
+            source_identifier=f"yazio:{user.id}",
+        )
+    )
+    db.commit()
     login = client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "correct-horse-battery-staple"},
     )
     csrf = login.json()["csrf_token"]
     payload = b"""{
+      "weight": {
+        "2026-07-20": {"value": 72.5, "unit": "kg"}
+      },
       "2026-07-20": {
         "daily_summary": {
           "activity_energy": 300,
@@ -875,7 +893,15 @@ def test_authenticated_yazio_json_upload(client: TestClient, user: User) -> None
         files={"file": ("days.json", payload, "application/json")},
     )
     assert response.status_code == 200
-    assert response.json()["inserted"] == 5
+    assert response.json()["inserted"] == 6
+    sample = db.scalar(
+        select(HealthSample).where(
+            HealthSample.user_id == user.id,
+            HealthSample.metric_type == "weight_kg",
+        )
+    )
+    assert sample is not None
+    assert sample.source_identifier == f"yazio:{user.id}"
     summary = client.get("/api/v1/dashboard/summary")
     assert summary.status_code == 200
     assert summary.json()["data_start_date"] == "2026-07-20"

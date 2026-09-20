@@ -229,24 +229,26 @@ Because direct YAZIO retrieval uses an undocumented interface, Apple Health
 remains an independently configured provider option; CaloGraph does not switch
 to it automatically.
 
-## Nutrition provider preference
+## Nutrition provider priority
 
-Under **Konto → Datenquellen**, each user can select the provider for the
-`nutrition` data area. The preference is stored on the account and is never
-encoded in the analytics URL. `GET /api/v1/settings/provider-preferences`
-returns saved preferences; `GET
-/api/v1/settings/provider-availability/nutrition` reports current,
-user-specific availability. `PUT
-/api/v1/settings/provider-preferences/nutrition` stores a provider key and
-`DELETE` removes the preference.
+Under **Konto → Datenquellen**, each user can order the providers for the
+`nutrition` data area. The priority is stored as a versioned account policy and
+is never encoded in the analytics URL. `GET /api/v1/settings/provider-preferences`
+returns the saved order; `GET /api/v1/settings/provider-availability/nutrition`
+reports current, user-specific availability. `PUT /api/v1/settings/provider-preferences/nutrition`
+replaces the complete order and `DELETE` removes the preference.
 
 Supported provider keys are `yazio`, `google_health`, and `apple_health`.
-Unavailable providers cannot be selected. An existing preference is retained
-when a provider later becomes unavailable; analytics reports that state and
-does not silently switch providers. If no preference exists, the migration
-keeps the Legacy YAZIO analytics behavior. An explicit Legacy `source` query
-parameter remains supported for compatibility, but the frontend does not
-create provider-selection URL state.
+Providers are attempted in the persisted order independently for each local
+day; the first provider with complete evidence wins. An unavailable provider
+may be skipped only in favor of the next provider already present in that
+priority list. An existing preference is retained when a provider later
+becomes unavailable. If all configured providers fail, analytics reports a
+safe unavailable/not-ready state and never falls back to an unconfigured
+Legacy aggregate. If no preference exists, the migration keeps the temporary
+Legacy YAZIO analytics behavior. An explicit Legacy `source` query parameter
+remains supported for compatibility, but the frontend does not create
+provider-selection URL state.
 
 ## Personal profile
 

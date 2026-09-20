@@ -5,9 +5,9 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.activity import ACTIVE_ENERGY_METRIC
+from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.models import (
     HealthSample,
     NutritionTarget,
@@ -33,6 +33,10 @@ PRIMARY_NUTRITION_METRICS = {
     "carbohydrates_g",
     "fat_g",
 }
+
+
+class AmbiguousAppleTransportError(RuntimeError):
+    """Apple activity evidence has multiple raw transports for one day."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,40 @@ def _target_for(targets: list[NutritionTarget], day: date) -> NutritionTarget | 
     )
 
 
+def _activity_sources_for_target(target: NutritionTarget) -> tuple[str, ...]:
+    snapshots = tuple(
+        snapshot.source_type
+        for snapshot in getattr(target, "activity_sources", ())
+        if snapshot.source_type
+    )
+    if snapshots:
+        return snapshots
+    if target.activity_source_type is not None:
+        return (target.activity_source_type,)
+    return ()
+
+
+def _activity_value_for_day(
+    *,
+    target: NutritionTarget,
+    day: date,
+    active_energy_by_source: dict[tuple[date, str], Decimal],
+) -> tuple[str | None, Decimal | None]:
+    source_types = _activity_sources_for_target(target)
+    apple_source_types = ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["apple_health"]
+    if all((day, source_type) in active_energy_by_source for source_type in apple_source_types) and all(
+        source_type in source_types for source_type in apple_source_types
+    ):
+        raise AmbiguousAppleTransportError(
+            f"ambiguous Apple activity transports for {day.isoformat()}"
+        )
+    for source_type in source_types:
+        key = (day, source_type)
+        if key in active_energy_by_source:
+            return source_type, active_energy_by_source[key]
+    return None, None
+
+
 def _build_daily_point(
     *,
     day: date,
@@ -85,8 +123,12 @@ def _build_daily_point(
     activity_source_type = target.activity_source_type if target else None
     active_energy_kcal: Decimal | None = None
     activity_credit_kcal = Decimal()
-    if activity_mode == "full" and activity_source_type is not None:
-        active_energy_kcal = active_energy_by_source.get((day, activity_source_type))
+    if activity_mode == "full" and target is not None:
+        _, active_energy_kcal = _activity_value_for_day(
+            target=target,
+            day=day,
+            active_energy_by_source=active_energy_by_source,
+        )
         if active_energy_kcal is None:
             activity_data_status = "missing"
         else:
@@ -156,6 +198,7 @@ def daily_points(
     targets = list(
         db.scalars(
             select(NutritionTarget)
+            .options(selectinload(NutritionTarget.activity_sources))
             .where(NutritionTarget.user_id == user.id)
             .order_by(NutritionTarget.valid_from)
         )
@@ -288,6 +331,7 @@ def budget_balance_for_user(
     targets = list(
         db.scalars(
             select(NutritionTarget)
+            .options(selectinload(NutritionTarget.activity_sources))
             .where(NutritionTarget.user_id == user.id)
             .order_by(NutritionTarget.valid_from)
         )

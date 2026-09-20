@@ -56,6 +56,7 @@ from app.models import (
     NutritionTarget,
     TrackingOverride,
     User,
+    UserProviderPriority,
     YazioConnection,
 )
 from app.nutrition.enums import (
@@ -1871,7 +1872,7 @@ def test_daily_point_result_is_user_scoped_and_immutable(db: Session, user: User
     _assert_identifier_free_daily_point_result(result)
 
 
-def test_daily_canonical_endpoint_serves_strict_match_from_separate_session(
+def test_daily_endpoint_fails_closed_for_unavailable_provider_with_ready_projection(
     db: Session,
     user: User,
     client: TestClient,
@@ -1886,6 +1887,15 @@ def test_daily_canonical_endpoint_serves_strict_match_from_separate_session(
         suffix="d4b-endpoint",
     )
     _d3b_projection(db, user, values)
+    db.add(
+        UserProviderPriority(
+            user_id=user.id,
+            data_area="nutrition",
+            priority=1,
+            provider_key="yazio",
+        )
+    )
+    db.commit()
 
     parity = compare_daily_point_range(
         db,
@@ -1910,12 +1920,11 @@ def test_daily_canonical_endpoint_serves_strict_match_from_separate_session(
     legacy_response = client.get(
         f"/api/v1/analytics/daily?start={LOCAL_DATE.isoformat()}&end={LOCAL_DATE.isoformat()}"
     )
-    assert legacy_response.status_code == 200
+    assert legacy_response.status_code == 503
 
     monkeypatch.setattr(settings, "analytics_daily_canonical_read_enabled", True)
     canonical_response = client.get(
         f"/api/v1/analytics/daily?start={LOCAL_DATE.isoformat()}&end={LOCAL_DATE.isoformat()}"
     )
 
-    assert canonical_response.status_code == legacy_response.status_code == 200
-    assert canonical_response.json() == legacy_response.json()
+    assert canonical_response.status_code == 503
