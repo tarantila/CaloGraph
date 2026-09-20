@@ -520,7 +520,7 @@ class GoogleHealthClient:
     ) -> Iterator[GoogleHealthDataPointPage]:
         _validate_page_budget(max_pages)
         token = page_token
-        seen_tokens: set[str] = set()
+        seen_tokens: set[str] = {page_token} if page_token is not None else set()
         for _ in range(max_pages):
             page = self.get_data_points_page(
                 data_type,
