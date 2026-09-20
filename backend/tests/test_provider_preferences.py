@@ -8,7 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+    ACTIVITY_PROVIDER_SOURCE_TYPES,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+)
 from app.config import settings
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -35,13 +42,6 @@ from app.nutrition.models import (
     NutritionSourceObservation,
 )
 from app.nutrition.resolution.metrics import canonical_unit
-from app.activity import (
-    ACTIVE_ENERGY_METRIC,
-    ACTIVITY_PROVIDER_SOURCE_TYPES,
-    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
-    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
-)
-from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.provider_preferences import (
     ACTIVITY_ENERGY_DATA_AREA,
     NUTRITION_DATA_AREA,
@@ -55,9 +55,11 @@ from app.source_priority import compatibility as source_priority_compatibility
 from app.source_priority.contracts import PriorityRuleSpec
 from app.weight import (
     GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
-    WEIGHT_PROVIDER_SOURCE_TYPES,
+    WEIGHT_METRIC,
     WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
+    WEIGHT_PROVIDER_SOURCE_TYPES,
 )
+
 PATH = "/api/v1/settings/provider-preferences"
 WEIGHT_PATH = "/api/v1/analytics/weight"
 AVAILABILITY_PATH = "/api/v1/settings/provider-availability/nutrition"
@@ -1801,6 +1803,58 @@ def test_google_activity_availability_requires_full_scope_and_canonical_evidence
     assert google == {"provider_key": "google_health", "available": True, "status": "available"}
 
 
+@pytest.mark.parametrize(
+    ("case", "expected_status"),
+    [
+        ("disabled", "disabled"),
+        ("not_configured", "not_configured"),
+        ("reauth", "reauth_required"),
+        ("incomplete_scopes", "reauth_required"),
+        ("wrong_connection", "no_data"),
+        ("wrong_metric", "no_data"),
+        ("wrong_source", "no_data"),
+        ("matching", "available"),
+    ],
+)
+def test_google_activity_availability_matrix(
+    client: TestClient, user, db, monkeypatch, case: str, expected_status: str
+) -> None:
+    if case != "disabled":
+        monkeypatch.setattr(settings, "google_health_enabled", True)
+        monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+        monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = None
+    if case in {"reauth", "incomplete_scopes", "wrong_connection", "wrong_metric", "wrong_source", "matching"}:
+        connection = _add_google(db, user, state="reauth_required" if case == "reauth" else "active")
+        connection.granted_scopes = (
+            ["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"]
+            if case == "incomplete_scopes"
+            else sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+        )
+        db.flush()
+    if case in {"wrong_connection", "wrong_metric", "wrong_source", "matching"}:
+        _add_sample(
+            db,
+            user,
+            metric_type=WEIGHT_METRIC if case == "wrong_metric" else ACTIVE_ENERGY_METRIC,
+            source_type="wrong-source" if case == "wrong_source" else GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+            source_identifier=(
+                str(connection.id) if case == "matching" else f"wrong-{connection.id}"
+            ),
+            value=Decimal("250"),
+            local_date=date(2026, 9, 20),
+        )
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/provider-availability/activity_energy")
+
+    assert response.status_code == 200
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google["status"] == expected_status
+    assert google["available"] is (expected_status == "available")
+
+
 def test_activity_sources_response_accepts_google_canonical_source(
     client: TestClient, user, db, monkeypatch
 ) -> None:
@@ -1914,6 +1968,15 @@ def test_google_weight_priority_uses_latest_sample_and_daily_fallback(
     _add_weight_sample(
         db,
         user,
+        source_type=GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+        source_identifier="wrong-connection",
+        value=Decimal("99.9"),
+        local_date=day_one,
+        start_at=datetime(2026, 9, 15, 23, tzinfo=UTC),
+    )
+    _add_weight_sample(
+        db,
+        user,
         source_type="yazio_export_v1",
         source_identifier="yazio-account",
         value=Decimal("71.8"),
@@ -1989,6 +2052,8 @@ def test_google_activity_target_is_serialized_and_snapshots_provider_chain(
         item["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
         for item in targets.json()
     )
+
+
     target = db.scalar(
         select(NutritionTarget).where(
             NutritionTarget.user_id == user.id,
@@ -2004,3 +2069,50 @@ def test_google_activity_target_is_serialized_and_snapshots_provider_chain(
         ("yazio", "yazio_export_v1"),
         ("apple_health", "apple_health_xml"),
     ]
+
+
+def test_google_activity_target_update_serializes_source(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("300"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    csrf = _login(client)
+
+    updated = client.put(
+        "/api/v1/settings/targets/2024-01-01",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2024-01-01",
+            "calories_kcal": "2000",
+            "maintenance_kcal": None,
+            "target_weight_min_kg": None,
+            "target_weight_max_kg": None,
+            "activity_mode": "full",
+            "activity_source_type": GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+            "protein_g": "120",
+            "carbs_g": None,
+            "fat_g": None,
+            "fiber_g": None,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    targets = client.get("/api/v1/settings/targets")
+    assert any(
+        item["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+        for item in targets.json()
+    )

@@ -57,7 +57,7 @@ from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
-from app.models import HealthSample, ImportBatch, User, YazioConnection
+from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -343,16 +343,24 @@ def weight(
         }
     provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
     source_identifier: str | None = None
+    yazio_connection = None
+    google_connection = None
     if any(provider_key == "yazio" for provider_key, _ in provider_sources):
-        connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
-        if connection is None:
+        yazio_connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
+        if yazio_connection is None:
             raise ProblemHTTPException(
                 status_code=503,
                 detail="Der konfigurierte YAZIO-Provider ist nicht mehr verfügbar.",
                 problem_type=PROVIDER_SELECTION_NOT_READY,
             )
-        source_identifier = connection.source_identifier
-
+        source_identifier = yazio_connection.source_identifier
+    if any(provider_key == "google_health" for provider_key, _ in provider_sources):
+        google_connection = db.scalar(
+            select(GoogleHealthConnection).where(
+                GoogleHealthConnection.user_id == user.id,
+                GoogleHealthConnection.state == "active",
+            )
+        )
     provider_by_source_type = {
         source_type: provider_key for provider_key, source_type in provider_sources
     }
@@ -363,6 +371,11 @@ def weight(
         ]
         if provider_key == "yazio":
             source_filter.append(HealthSample.source_identifier == source_identifier)
+        elif provider_key == "google_health":
+            source_filter.append(
+                HealthSample.source_identifier
+                == (str(google_connection.id) if google_connection is not None else "")
+            )
         provider_filters.append(and_(*source_filter))
     samples = list(
         db.scalars(

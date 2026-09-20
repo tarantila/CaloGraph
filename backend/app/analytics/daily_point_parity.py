@@ -35,6 +35,7 @@ from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     TrackingInputs,
     _build_daily_point,
+    _google_activity_source_filter,
     _legacy_tracking_inputs,
     daily_points,
 )
@@ -231,6 +232,7 @@ def _build_canonical_daily_point(
                 HealthSample.user_id == user_id,
                 HealthSample.local_date == local_date,
                 HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+                _google_activity_source_filter(db, user_id),
             )
         )
     )
@@ -847,6 +849,7 @@ def _read_daily_point_range_inputs(
             HealthSample.user_id == user_id,
             HealthSample.local_date >= start,
             HealthSample.local_date <= end,
+            _google_activity_source_filter(db, user_id),
         )
     ).all()
 
