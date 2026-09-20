@@ -31,6 +31,7 @@ GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/dataTypes/nutrition-log/dataPoints
 GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH = _GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH
 GOOGLE_HEALTH_WEIGHT_PATH = _GOOGLE_HEALTH_WEIGHT_PATH
 GOOGLE_HEALTH_MAX_PAGE_SIZE = 100
+GOOGLE_HEALTH_MAX_PAGES = 100
 GOOGLE_HEALTH_MAX_PAGE_TOKEN_LENGTH = 512
 GOOGLE_HEALTH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
@@ -38,6 +39,10 @@ _DATA_TYPE_PATHS = {
     "nutrition-log": GOOGLE_HEALTH_NUTRITION_LOG_PATH,
     "active-energy-burned": GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH,
     "weight": GOOGLE_HEALTH_WEIGHT_PATH,
+}
+_DATA_TYPE_FILTER_FIELDS = {
+    "active-energy-burned": "active_energy_burned.interval.start_time",
+    "weight": "weight.sample_time.physical_time",
 }
 
 
@@ -353,11 +358,14 @@ class GoogleHealthHTTPTransport:
         params: dict[str, str] = {"pageSize": str(page_size)}
         if page_token is not None:
             params["pageToken"] = page_token
+        filter_field = _DATA_TYPE_FILTER_FIELDS.get(data_type)
+        if (start_time is not None or end_time is not None) and filter_field is None:
+            raise ValueError("physical time bounds are unsupported for this data type")
         filters: list[str] = []
-        if start_time is not None:
-            filters.append(f'start_time >= "{_physical_time_text(start_time)}"')
-        if end_time is not None:
-            filters.append(f'end_time < "{_physical_time_text(end_time)}"')
+        if start_time is not None and filter_field is not None:
+            filters.append(f'{filter_field} >= "{_physical_time_text(start_time)}"')
+        if end_time is not None and filter_field is not None:
+            filters.append(f'{filter_field} < "{_physical_time_text(end_time)}"')
         if filters:
             params["filter"] = " AND ".join(filters)
         url = f"{GOOGLE_HEALTH_API_BASE_URL}{path}"
@@ -500,6 +508,57 @@ class GoogleHealthClient:
             start_time=start_time,
             end_time=end_time,
         )
+
+    def iter_data_points_pages(
+        self,
+        data_type: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
+        page_token: str | None = None,
+        max_pages: int = GOOGLE_HEALTH_MAX_PAGES,
+    ) -> Iterator[GoogleHealthDataPointPage]:
+        _validate_page_budget(max_pages)
+        token = page_token
+        seen_tokens: set[str] = set()
+        for _ in range(max_pages):
+            page = self.get_data_points_page(
+                data_type,
+                start_time=start_time,
+                end_time=end_time,
+                page_token=token,
+                page_size=page_size,
+            )
+            yield page
+            next_token = page.next_page_token
+            if next_token is None:
+                return
+            if next_token in seen_tokens:
+                raise GoogleHealthInvalidResponseError(
+                    "Google Health pagination token repeated"
+                ) from None
+            seen_tokens.add(next_token)
+            token = next_token
+        raise GoogleHealthInvalidResponseError("Google Health pagination limit exceeded") from None
+
+    def iter_data_points(
+        self,
+        data_type: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
+        page_token: str | None = None,
+        max_pages: int = GOOGLE_HEALTH_MAX_PAGES,
+    ) -> Iterator[GoogleHealthDataPoint | NutritionLogDataPoint]:
+        for page in self.iter_data_points_pages(
+            data_type,
+            start_time=start_time,
+            end_time=end_time,
+            page_size=page_size,
+            page_token=page_token,
+            max_pages=max_pages,
+        ):
+            yield from page.data_points
 
     def close(self) -> None:
         close = getattr(self._transport, "close", None)
@@ -811,25 +870,45 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
     name = value.get("name")
     if not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name):
         raise ValueError
-    start = _parse_timestamp(value.get("startTime"))
-    end = _parse_timestamp(value.get("endTime"))
-    start_time = start.value
-    end_time = end.value
-    if data_type == "active-energy-burned" and _physical_key(start) >= _physical_key(end):
-        raise ValueError
-    if data_type == "weight" and _physical_key(start) > _physical_key(end):
-        raise ValueError
-    start_offset = _parse_optional_duration(value.get("startUtcOffset"))
-    end_offset = _parse_optional_duration(value.get("endUtcOffset"))
-    field_name, scalar_key, unit, dto_type = (
-        ("activeEnergyBurned", "kcal", "kcal", ActiveEnergyBurnedDataPoint)
-        if data_type == "active-energy-burned"
-        else ("weight", "kilograms", "kilograms", WeightDataPoint)
-    )
-    raw_value = value.get(field_name)
-    if not isinstance(raw_value, dict) or scalar_key not in raw_value:
+    if data_type == "active-energy-burned":
+        raw_value = value.get("activeEnergyBurned")
+        if not isinstance(raw_value, dict):
+            raise ValueError
+        interval = raw_value.get("interval")
+        if not isinstance(interval, dict):
+            raise ValueError
+        start = _parse_timestamp(interval.get("startTime"))
+        end = _parse_timestamp(interval.get("endTime"))
+        if _physical_key(start) >= _physical_key(end):
+            raise ValueError
+        start_time = start.value
+        end_time = end.value
+        start_offset = _parse_optional_duration(interval.get("startUtcOffset"))
+        end_offset = _parse_optional_duration(interval.get("endUtcOffset"))
+        scalar_key = "kcal"
+        unit = "kcal"
+        dto_type = ActiveEnergyBurnedDataPoint
+    else:
+        raw_value = value.get("weight")
+        if not isinstance(raw_value, dict):
+            raise ValueError
+        sample_time = raw_value.get("sampleTime")
+        if not isinstance(sample_time, dict):
+            raise ValueError
+        physical_time = _parse_timestamp(sample_time.get("physicalTime"))
+        start_time = physical_time.value
+        end_time = physical_time.value
+        offset = _parse_optional_duration(sample_time.get("utcOffset"))
+        start_offset = offset
+        end_offset = offset
+        scalar_key = "weightGrams"
+        unit = "kilograms"
+        dto_type = WeightDataPoint
+    if scalar_key not in raw_value:
         raise ValueError
     number = _parse_nonnegative_number(raw_value[scalar_key])
+    if data_type == "weight":
+        number /= Decimal("1000")
     source_value = value.get("dataSource")
     source = _parse_data_source(source_value) if source_value is not None else None
     return dto_type(
@@ -1184,6 +1263,13 @@ def _validate_page_size_limit(maximum: int) -> None:
         raise ValueError("max_page_size is outside the allowed range")
 
 
+def _validate_page_budget(max_pages: int) -> None:
+    if isinstance(max_pages, bool) or not isinstance(max_pages, int):
+        raise ValueError("max_pages must be an integer")
+    if not 1 <= max_pages <= GOOGLE_HEALTH_MAX_PAGES:
+        raise ValueError("max_pages is outside the allowed range")
+
+
 def _validate_page_token(page_token: str | None) -> None:
     if page_token is None:
         return
@@ -1244,6 +1330,7 @@ __all__ = [
     "GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH",
     "GOOGLE_HEALTH_API_BASE_URL",
     "GOOGLE_HEALTH_MAX_PAGE_SIZE",
+    "GOOGLE_HEALTH_MAX_PAGES",
     "GOOGLE_HEALTH_NUTRITION_LOG_PATH",
     "GOOGLE_HEALTH_WEIGHT_PATH",
     "ActiveEnergyBurnedDataPoint",

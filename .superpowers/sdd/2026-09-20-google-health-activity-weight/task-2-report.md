@@ -43,3 +43,24 @@ Ergebnis: `75 passed`.
 ## Sicherheit/Begrenzungen
 
 Es gibt keine Write-API, keine Health-Connect-/Android-Bridge-/Google-Fit-Pfade, keine Rohpayloads in Fehlern oder Logs und keine unbounded Pagination. Datapoint-Identitäten und Provider-Metadaten sind vor der DTO-Erzeugung begrenzt.
+
+## Review-Fixes
+
+Nach der unabhängigen Prüfung wurden die Google-v4-spezifischen Details nachgeschärft:
+
+- Zeitfilter verwenden ausschließlich die offiziellen Felder `active_energy_burned.interval.start_time` beziehungsweise `weight.sample_time.physical_time`; für beide Grenzen gelten `>=` und `<`.
+- Activity-DTOs werden aus `activeEnergyBurned.interval` und dessen Provider-Zeit-/Offset-Feldern sowie dem Geschwisterwert `kcal` gelesen.
+- Weight-DTOs werden aus `weight.sampleTime.physicalTime` und `weight.sampleTime.utcOffset` gelesen. `weightGrams` wird vor Übergabe als kanonischer Wert in Kilogramm konvertiert.
+- `iter_data_points_pages(...)` und `iter_data_points(...)` ergänzen die Single-Page-Primitive um eine maximale Seitenanzahl und die Ablehnung wiederholter `nextPageToken`-Werte.
+
+Der zusätzliche behavioral RED-Nachweis gegen den unveränderten Client:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm \
+  -v /tmp/calog-pre-task2-client.py:/app/app/google_health/client.py:ro \
+  backend-ci python -c 'from app.google_health.client import GoogleHealthClient; c=GoogleHealthClient(None, object()); c.get_data_points_page("weight", None, None, None, 1)'
+```
+
+Ergebnis: `AttributeError`, weil der Pre-Task-2-Client die Datapoint-Seitenmethode nicht besitzt.
+
+Nach den Review-Fixes wurden der fokussierte Client-Test und die angrenzenden Nutrition-Client-Tests erneut im Docker-Harness ausgeführt; alle Tests waren erfolgreich.
