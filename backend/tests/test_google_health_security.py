@@ -6,7 +6,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from app.config import settings
-from app.google_health.constants import GOOGLE_HEALTH_SCOPE
+from app.google_health.constants import GOOGLE_HEALTH_SCOPES
 from app.google_health.errors import GoogleHealthOAuthError
 from app.google_health.service import complete_google_health_oauth, start_google_health_oauth
 from app.models import GoogleHealthOAuthFlow, User
@@ -14,7 +14,7 @@ from app.models import GoogleHealthOAuthFlow, User
 
 class _Adapter:
     def exchange(self, **kwargs):
-        return {"refresh_token": "refresh", "scope": GOOGLE_HEALTH_SCOPE}
+        return {"refresh_token": "refresh", "scope": " ".join(GOOGLE_HEALTH_SCOPES)}
 
 
 def test_start_rate_limits_by_user_and_ip(db, user: User, monkeypatch):

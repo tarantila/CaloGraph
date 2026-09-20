@@ -8,7 +8,8 @@ from app.config import settings
 from app.google_health.constants import (
     GOOGLE_HEALTH_AUTH_URI,
     GOOGLE_HEALTH_CALLBACK_PATH,
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
 )
 from app.google_health.oauth import (
     build_authorization_url,
@@ -57,7 +58,7 @@ def test_granted_scopes_are_split_deduplicated_and_sorted() -> None:
     assert normalize_granted_scopes(None) == ()
 
 
-def test_authorization_url_contains_exact_read_scope_and_pkce_parameters(
+def test_authorization_url_contains_exact_read_scope_union_and_pkce_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
@@ -76,7 +77,15 @@ def test_authorization_url_contains_exact_read_scope_and_pkce_parameters(
     assert query["redirect_uri"] == [redirect_uri]
     assert query["response_type"] == ["code"]
     assert query["access_type"] == ["offline"]
-    assert query["scope"] == [GOOGLE_HEALTH_SCOPE]
+    requested_scopes = tuple(query["scope"][0].split())
+    assert requested_scopes == GOOGLE_HEALTH_SCOPES
+    assert set(requested_scopes) == GOOGLE_HEALTH_REQUIRED_SCOPES
+    assert "https://www.googleapis.com/auth/googlehealth.nutrition.readonly" in requested_scopes
+    assert "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly" in requested_scopes
+    assert (
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly"
+        in requested_scopes
+    )
     assert query["state"] == [state]
     assert query["code_challenge_method"] == ["S256"]
     assert query["code_challenge"] == [pkce_challenge(verifier)]

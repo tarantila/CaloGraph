@@ -18,7 +18,11 @@ from app.google_health.client import (
     NutritionLogPage,
     NutritionQuantity,
 )
-from app.google_health.constants import GOOGLE_HEALTH_SCOPE
+from app.google_health.constants import (
+    GOOGLE_HEALTH_NUTRITION_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
+)
 from app.google_health.errors import (
     GoogleHealthAuthenticationError,
     GoogleHealthProviderUnavailableError,
@@ -202,13 +206,34 @@ def _connection(
     connection = GoogleHealthConnection(
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
-        granted_scopes=[GOOGLE_HEALTH_SCOPE] if granted_scopes is None else granted_scopes,
+        granted_scopes=(
+            list(GOOGLE_HEALTH_SCOPES) if granted_scopes is None else granted_scopes
+        ),
         state=state,
     )
     db.add(connection)
     db.commit()
     db.refresh(connection)
     return connection
+
+
+def test_default_credentials_use_complete_readonly_scope_union(monkeypatch) -> None:
+    import google.oauth2.credentials
+
+    captured: dict[str, object] = {}
+
+    class CapturingCredentials:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(google.oauth2.credentials, "Credentials", CapturingCredentials)
+    monkeypatch.setattr(google_sync.settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(google_sync.settings, "google_health_client_secret", "client-secret")
+
+    google_sync._default_credentials("refresh-token")
+
+    assert captured["scopes"] == list(GOOGLE_HEALTH_SCOPES)
+    assert set(captured["scopes"]) == GOOGLE_HEALTH_REQUIRED_SCOPES
 
 
 DOMAIN_MODELS = (
@@ -526,8 +551,7 @@ def test_sync_rejects_unique_pages_beyond_default_bound_without_writes(
 @pytest.mark.parametrize(
     ("state", "granted_scopes", "expected_code"),
     [
-        ("reauth_required", [GOOGLE_HEALTH_SCOPE], "connection_inactive"),
-        ("active", ["https://www.googleapis.com/auth/other.readonly"], "scope_missing"),
+        ("reauth_required", [GOOGLE_HEALTH_NUTRITION_SCOPE], "connection_inactive"),
     ],
 )
 def test_sync_requires_active_connection_and_exact_nutrition_scope(

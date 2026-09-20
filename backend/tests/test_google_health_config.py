@@ -8,7 +8,8 @@ from app.google_health.constants import (
     GOOGLE_HEALTH_API_BASE_URL,
     GOOGLE_HEALTH_AUTH_URI,
     GOOGLE_HEALTH_CALLBACK_PATH,
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
 from app.google_health.oauth import google_health_redirect_uri
@@ -18,7 +19,12 @@ def test_google_health_constants_are_fixed_official_endpoints() -> None:
     assert GOOGLE_HEALTH_API_BASE_URL == "https://health.googleapis.com/v4"
     assert GOOGLE_HEALTH_AUTH_URI == "https://accounts.google.com/o/oauth2/v2/auth"
     assert GOOGLE_HEALTH_TOKEN_URI == "https://oauth2.googleapis.com/token"
-    assert GOOGLE_HEALTH_SCOPE == "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
+    assert GOOGLE_HEALTH_SCOPES == (
+        "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+    )
+    assert GOOGLE_HEALTH_REQUIRED_SCOPES == frozenset(GOOGLE_HEALTH_SCOPES)
     assert GOOGLE_HEALTH_CALLBACK_PATH == "/api/v1/google-health/oauth/callback"
 
 

@@ -31,11 +31,6 @@ YAZIO_LEGACY_DEPRECATION_MESSAGE = (
     "Migrate to YAZIO_PROVIDER=sdk. "
     "It will be removed no later than CaloGraph 1.0."
 )
-GOOGLE_HEALTH_API_BASE_URL = "https://health.googleapis.com/v4"
-GOOGLE_HEALTH_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_HEALTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
-GOOGLE_HEALTH_SCOPE = "https://www.googleapis.com/auth/googlehealth.nutrition.readonly"
-GOOGLE_HEALTH_CALLBACK_PATH = "/api/v1/google-health/oauth/callback"
 
 KNOWN_INSECURE_SECRETS = frozenset(
     {

@@ -24,7 +24,8 @@ from app.google_health.client import (
     NutritionLogPage,
 )
 from app.google_health.constants import (
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
 from app.google_health.errors import GoogleHealthClientError
@@ -86,7 +87,7 @@ Adapter = Callable[..., Any]
 _ERROR_MESSAGES = {
     "connection_not_configured": "Google Health connection is not configured.",
     "connection_inactive": "Google Health connection is inactive.",
-    "scope_missing": "Google Health nutrition permission is unavailable.",
+    "scope_missing": "Google Health readonly permissions are unavailable.",
     "credential_decryption_error": "Google Health credentials are unavailable.",
     "credentials_unavailable": "Google Health credentials are unavailable.",
     "pagination_error": "Google Health returned invalid pagination.",
@@ -167,7 +168,7 @@ def _default_credentials(refresh_token: str) -> object:
         token_uri=GOOGLE_HEALTH_TOKEN_URI,
         client_id=settings.google_health_client_id,
         client_secret=settings.google_health_client_secret,
-        scopes=[GOOGLE_HEALTH_SCOPE],
+        scopes=list(GOOGLE_HEALTH_SCOPES),
     )
 
 
@@ -235,7 +236,7 @@ class GoogleHealthNutritionSyncService:
                 connection.last_error = "connection_inactive"
                 read_db.commit()
                 raise _safe_error("connection_inactive")
-            if GOOGLE_HEALTH_SCOPE not in (connection.granted_scopes or ()):
+            if not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ())):
                 connection.last_attempt_at = attempted_at
                 connection.last_error = "scope_missing"
                 connection.state = "reauth_required"
