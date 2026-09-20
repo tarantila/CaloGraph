@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PhAppleLogo, PhGoogleLogo } from '@phosphor-icons/vue'
 import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api, ApiError, localizeApiError } from '../api'
@@ -7,6 +8,16 @@ import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { GoogleHealthStatus, ImportSummary, YazioStatus } from '../types'
+
+interface GoogleHealthSyncResult {
+  status: string
+  fetched_count: number
+  persisted_count: number
+  requested_start: string | null
+  requested_end: string | null
+  covered_start: string | null
+  covered_end: string | null
+}
 
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
@@ -19,6 +30,9 @@ const yazioHistoryTo = ref('')
 const savingYazio = ref(false)
 const syncingYazio = ref(false)
 const googleActionBusy = ref(false)
+const googleSyncResult = ref<GoogleHealthSyncResult | null>(null)
+const googleSyncError = ref('')
+const googleSyncWarning = ref('')
 const yazioMessage = ref('')
 const yazioError = ref('')
 const yazioLoadError = ref('')
@@ -74,9 +88,31 @@ const googleStatusLabel = computed(() => {
     default: return t('accountIntegrations.notAvailable')
   }
 })
+const googleCanSync = computed(() => (
+  google.value?.available === true
+  && google.value.configured === true
+  && google.value.state === 'active'
+))
 
 function timestampLabel(value: string | null | undefined): string {
   return value ? formatGermanDateTime(value) : t('accountIntegrations.notAvailable')
+}
+
+function googleDateLabel(value: string | null): string {
+  if (!value) return t('accountIntegrations.notAvailable')
+  return formatGermanDateTime(`${value}T12:00:00Z`).split(',')[0] ?? t('accountIntegrations.notAvailable')
+}
+
+function googleDateRangeLabel(start: string | null, end: string | null): string {
+  const first = googleDateLabel(start)
+  const last = googleDateLabel(end)
+  return first === last ? first : `${first} – ${last}`
+}
+
+function googleSyncStatusLabel(status: string): string {
+  if (status === 'completed') return t('accountIntegrations.googleSyncCompleted')
+  if (status === 'partial') return t('accountIntegrations.googleSyncPartial')
+  return t('accountIntegrations.notAvailable')
 }
 async function load(): Promise<void> {
   const generation = ++loadGeneration
@@ -87,6 +123,9 @@ async function load(): Promise<void> {
   yazioLoadError.value = ''
   googleError.value = ''
   googleMessage.value = ''
+  googleSyncResult.value = null
+  googleSyncError.value = ''
+  googleSyncWarning.value = ''
   initialSetupSaved.value = false
   yazio.value = null
   google.value = null
@@ -235,6 +274,29 @@ async function syncYazio(): Promise<void> {
   }
 }
 
+async function syncGoogle(): Promise<void> {
+  if (googleActionBusy.value || !googleCanSync.value) return
+  googleActionBusy.value = true
+  googleSyncResult.value = null
+  googleSyncError.value = ''
+  googleSyncWarning.value = ''
+  try {
+    const result = await api<GoogleHealthSyncResult>('/google-health/sync', { method: 'POST' })
+    googleSyncResult.value = result
+    try {
+      google.value = await api<GoogleHealthStatus>('/google-health/status')
+    } catch {
+      googleSyncWarning.value = t('accountIntegrations.googleSyncRefreshFailed')
+    }
+  } catch (cause) {
+    googleSyncError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.googleSyncFailed', { preserveDetail: false })
+      : t('accountIntegrations.googleSyncFailed')
+  } finally {
+    googleActionBusy.value = false
+  }
+}
+
 async function connectGoogle(): Promise<void> {
   if (googleActionBusy.value || !googleCanConnect.value) return
   googleActionBusy.value = true
@@ -279,8 +341,8 @@ void load()
 
     <template v-if="loaded">
       <section class="card form-card integration-card yazio-connection-card" :aria-busy="savingYazio || syncingYazio" aria-labelledby="yazio-integration-title">
-        <div class="yazio-card-title">
-          <span class="yazio-icon" aria-hidden="true"></span>
+        <div class="integration-card-header yazio-card-title">
+          <span class="integration-card-icon yazio-icon" aria-hidden="true"></span>
           <h2 id="yazio-integration-title">{{ t('settingsUi.yazioTitle') }}</h2>
         </div>
         <p>{{ t('settingsUi.yazioDescription') }}</p>
@@ -348,7 +410,7 @@ void load()
             <div><dt>{{ t('accountIntegrations.scheduler') }}</dt><dd>{{ yazio?.scheduler_enabled !== false && yazio?.sync_enabled ? t('accountIntegrations.schedulerActive') : t('accountIntegrations.schedulerPaused') }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastAttempt') }}</dt><dd>{{ timestampLabel(yazio?.last_attempt_at) }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastSuccess') }}</dt><dd>{{ timestampLabel(yazio?.last_success_at) }}</dd></div>
-            <div><dt>{{ t('accountIntegrations.nextSync') }}</dt><dd>{{ timestampLabel(yazio?.next_sync_at) }}</dd></div>
+            <div v-if="yazio?.scheduler_enabled !== false && yazio?.sync_enabled" class="yazio-next-sync-row"><dt>{{ t('accountIntegrations.nextSync') }}</dt><dd>{{ timestampLabel(yazio?.next_sync_at) }}</dd></div>
           </dl>
           <p v-if="yazio?.last_error" class="import-message error" role="alert">
             <strong>{{ t('accountIntegrations.lastError') }}:</strong> {{ yazio.last_error }}
@@ -383,7 +445,10 @@ void load()
       </section>
 
       <section class="card form-card integration-card google-health-card" :aria-busy="googleActionBusy" aria-labelledby="google-health-title">
-        <h2 id="google-health-title">{{ t('accountIntegrations.googleTitle') }}</h2>
+        <div class="integration-card-header">
+          <PhGoogleLogo class="integration-card-icon" :size="20" weight="duotone" aria-hidden="true" />
+          <h2 id="google-health-title">{{ t('accountIntegrations.googleTitle') }}</h2>
+        </div>
         <p>{{ t('accountIntegrations.googleDescription') }}</p>
         <p><strong>{{ t('accountIntegrations.googleStatus') }}:</strong> {{ googleStatusLabel }}</p>
         <p v-if="google?.last_success_at" class="table-secondary">
@@ -404,10 +469,36 @@ void load()
         >
           {{ googleActionBusy ? t('accountIntegrations.googleConnecting') : google?.state === 'not_connected' ? t('accountIntegrations.googleConnect') : t('accountIntegrations.googleReconnect') }}
         </button>
+        <div v-if="googleCanSync" class="google-sync-panel">
+          <h3>{{ t('accountIntegrations.googleSyncTitle') }}</h3>
+          <p>{{ t('accountIntegrations.googleSyncDescription') }}</p>
+          <button
+            class="button secondary compact-action google-health-sync-button"
+            type="button"
+            :disabled="googleActionBusy"
+            @click="syncGoogle"
+          >
+            {{ googleActionBusy ? t('accountIntegrations.googleSyncRunning') : t('accountIntegrations.googleSyncAction') }}
+          </button>
+          <p v-if="googleSyncResult" class="setup-notice google-health-sync-result" role="status">
+            {{ t('accountIntegrations.googleSyncResult', {
+              status: googleSyncStatusLabel(googleSyncResult.status),
+              fetched: googleSyncResult.fetched_count,
+              persisted: googleSyncResult.persisted_count,
+              requested: googleDateRangeLabel(googleSyncResult.requested_start, googleSyncResult.requested_end),
+              covered: googleDateRangeLabel(googleSyncResult.covered_start, googleSyncResult.covered_end),
+            }) }}
+          </p>
+          <p v-if="googleSyncWarning" class="import-message warning" role="status">{{ googleSyncWarning }}</p>
+          <p v-if="googleSyncError" class="import-message error google-health-sync-error" role="alert">{{ googleSyncError }}</p>
+        </div>
       </section>
 
       <section class="card form-card integration-card apple-health-card" aria-labelledby="apple-health-title">
-        <h2 id="apple-health-title">{{ t('accountIntegrations.appleTitle') }}</h2>
+        <div class="integration-card-header">
+          <PhAppleLogo class="integration-card-icon" :size="20" weight="duotone" aria-hidden="true" />
+          <h2 id="apple-health-title">{{ t('accountIntegrations.appleTitle') }}</h2>
+        </div>
         <p>{{ t('accountIntegrations.appleDescription') }}</p>
         <p class="table-secondary">{{ t('accountIntegrations.appleExport') }}</p>
         <RouterLink class="button secondary compact-action" :to="{ name: 'account-imports' }">

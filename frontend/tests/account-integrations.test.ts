@@ -56,6 +56,18 @@ function configureApi(overrides: Record<string, unknown> = {}): void {
     if (path === '/yazio/sync' && options?.method === 'POST') {
       return Promise.resolve({ inserted: 1, updated: 2, skipped: 3, failed: 0, unknown_types: [] })
     }
+    if (path === '/google-health/sync' && options?.method === 'POST') {
+      if (overrides.googleSyncError) return Promise.reject(new Error('raw provider detail'))
+      return Promise.resolve({
+        status: 'completed',
+        fetched_count: 4,
+        persisted_count: 2,
+        requested_start: '2026-09-18',
+        requested_end: '2026-09-18',
+        covered_start: '2026-09-18',
+        covered_end: '2026-09-18',
+      })
+    }
     if (path === '/google-health/oauth/start' && options?.method === 'POST') {
       return Promise.resolve({ authorization_url: 'https://accounts.google.example/authorize?state=test' })
     }
@@ -155,6 +167,67 @@ describe('AccountIntegrationsView', () => {
     await flushPromises()
 
     expect(wrapper.get('.google-health-card').text()).toContain('Google Health wurde verbunden')
+  })
+
+  it('uses Google Health terminology and renders three decorative provider icons', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Google Health Connect')
+    expect(wrapper.get('.google-health-card').text()).toMatch(/Ernährungsdaten|nutrition/i)
+    expect(wrapper.get('.google-health-card').text()).not.toMatch(/activity|weight/i)
+
+    const icons = wrapper.findAll('.integration-card-icon')
+    expect(icons).toHaveLength(3)
+    expect(icons.every((icon) => icon.attributes('aria-hidden') === 'true')).toBe(true)
+    expect(wrapper.get('.google-health-card .integration-card-icon').element.tagName).toBe('svg')
+    expect(wrapper.get('.apple-health-card .integration-card-icon').element.tagName).toBe('svg')
+  })
+
+  it('runs Google nutrition synchronization and renders only the safe aggregate result', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    const button = wrapper.get('.google-health-sync-button')
+    expect(button.attributes('disabled')).toBeUndefined()
+    await button.trigger('click')
+    expect(apiMock.mock.calls.filter(([path]) => path === '/google-health/status')).toHaveLength(2)
+
+    expect(apiMock).toHaveBeenCalledWith('/google-health/sync', { method: 'POST' })
+    expect(wrapper.get('.google-health-sync-result').text()).toContain('4')
+    expect(wrapper.get('.google-health-sync-result').text()).toContain('2')
+    expect(wrapper.get('.google-health-sync-result').text()).toContain('18.09.2026')
+    expect(wrapper.text()).not.toContain('raw provider detail')
+  })
+
+  it('shows a safe Google synchronization error and no provider detail', async () => {
+    configureApi({ googleSyncError: true })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.google-health-sync-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.google-health-sync-error').text()).toContain('Google-Health-Synchronisierung ist fehlgeschlagen')
+    expect(wrapper.text()).not.toContain('raw provider detail')
+  })
+
+  it('only renders the YAZIO next-run row while scheduler and synchronization are enabled', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    expect(wrapper.find('.yazio-next-sync-row').exists()).toBe(true)
+    wrapper.unmount()
+
+    configureApi({ yazioStatus: { ...yazioStatus, scheduler_enabled: false } })
+    const pausedWrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    expect(pausedWrapper.find('.yazio-next-sync-row').exists()).toBe(false)
+    pausedWrapper.unmount()
+
+    configureApi({ yazioStatus: { ...yazioStatus, sync_enabled: false } })
+    const disabledWrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    expect(disabledWrapper.find('.yazio-next-sync-row').exists()).toBe(false)
   })
 
   it('describes Apple Health as an import integration without pretending to offer OAuth', async () => {
