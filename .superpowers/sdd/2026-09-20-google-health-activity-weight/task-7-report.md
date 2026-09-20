@@ -8,6 +8,7 @@ Expanded the German Google Health integrations UI and source-priority behavior w
 - Reauthorization and missing-scope states expose a German message and accessible reauthorization action.
 - Google synchronization consumes the backend nested per-domain response and displays only aggregate status/counts and safe status labels.
 - Activity Energy and Weight source rows remain availability-driven; Google appears only when the backend availability response advertises it.
+- Google activity target source `google_health_activity_v4` is typed, mapped from the backend provider preference, and localized in German and English.
 - English locale keys remain in parity with the German locale.
 
 ## RED before implementation
@@ -19,13 +20,12 @@ Result: **RED**, including the new reauthorization persistence assertion: the re
 The brief's `npm test` command is not defined in `frontend/package.json`; `npm run test:unit` is the current equivalent.
 
 ## GREEN and typecheck
-
-- `npm run test:unit -- --run tests/account-integrations.test.ts tests/account-data-sources.test.ts`
-  - **PASS: 2 files, 27 tests**
+- `npm run test:unit -- --run tests/account-integrations.test.ts tests/account-data-sources.test.ts tests/views.test.ts`
+  - **PASS: 3 files, 84 tests**
 - `npm run typecheck`
   - **PASS: vue-tsc --noEmit**
-- Google sync fixtures and rendering use backend vocabulary exactly: aggregate `success`, `partial_failure`, `no_data`, `reauth_required`, `failed`; domain `success`, `truncated`, `no_data`, `failed`, `reauth_required`.
-- English and German loading/status locale keys remain in parity.
+- `npm run lint`
+  - **PASS: eslint . --max-warnings=0**
 - Forbidden terminology check over the changed Google UI/locales (`Health Connect`, `Android Bridge`, `Google Fit`)
   - **PASS: no matches**
 

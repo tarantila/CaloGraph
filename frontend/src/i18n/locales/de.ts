@@ -21,6 +21,7 @@ const de = {
       yazio_export_v1: 'YAZIO',
       apple_health_xml: 'Apple Health',
       health_auto_export_v2: 'Health Auto Export',
+      google_health_activity_v4: 'Google Health',
     },
     baseBudget: 'Basisbudget',
     activityCredit: 'Aktivitätsgutschrift',

@@ -91,7 +91,10 @@ def _activity_sources_for_target(target: NutritionTarget) -> tuple[str, ...]:
 
 
 def _google_activity_source_filter(db: Session, user_id: Any) -> ColumnElement[bool]:
-    connection_id = db.scalar(
+    scalar = getattr(db, "scalar", None)
+    if not callable(scalar):
+        return HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    connection_id = scalar(
         select(GoogleHealthConnection.id).where(
             GoogleHealthConnection.user_id == user_id,
             GoogleHealthConnection.state == "active",

@@ -2046,6 +2046,41 @@ describe('main views', () => {
     expect(wrapper.get('.activity-status-badge').text()).toBe('Aktiv')
     expect(wrapper.find('select[name="activity-source"]').exists()).toBe(true)
   })
+  it('renders and manages Google activity source targets from backend availability', async () => {
+    const target = {
+      id: 'google-target',
+      valid_from: '2026-08-11',
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      target_weight_min_kg: null,
+      target_weight_max_kg: null,
+      activity_mode: 'full',
+      activity_source_type: 'google_health_activity_v4',
+    }
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') return Promise.resolve([{ source_type: 'google_health_activity_v4' }])
+      if (path === '/settings/provider-preferences') {
+        return Promise.resolve({
+          preferences: [{ data_area: 'activity_energy', provider_key: 'google_health' }],
+        })
+      }
+      if (path === '/settings/profile') return Promise.resolve({ id: 'test-user', language: 'de', preferred_weight_unit: 'kg' })
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('An · Google Health')
+    expect(wrapper.text()).not.toContain('google_health_activity_v4')
+    expect(wrapper.find('select[name="activity-source"]').exists()).toBe(false)
+  })
   it('places macro targets, activity, and target weight before saving', async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === '/settings/targets') return Promise.resolve([])

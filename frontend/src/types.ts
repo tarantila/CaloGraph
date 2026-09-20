@@ -25,7 +25,7 @@ export type ActivitySourceType =
   | 'yazio_export_v1'
   | 'apple_health_xml'
   | 'health_auto_export_v2'
-
+  | 'google_health_activity_v4'
 export interface DailyPoint {
   date: string
   calories_kcal: number | null
