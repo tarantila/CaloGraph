@@ -682,7 +682,12 @@ class TargetSettingsResponse(BaseModel):
 
 
 class ActivitySourceResponse(BaseModel):
-    source_type: Literal["yazio_export_v1", "apple_health_xml", "health_auto_export_v2"]
+    source_type: Literal[
+        "google_health_activity_v4",
+        "yazio_export_v1",
+        "apple_health_xml",
+        "health_auto_export_v2",
+    ]
 class AchievementResponse(BaseModel):
     key: str | None = None
     category: str

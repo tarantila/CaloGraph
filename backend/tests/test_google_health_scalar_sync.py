@@ -208,9 +208,9 @@ def test_source_type_constants_are_stable() -> None:
     assert GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE == "google_health_weight_v4"
 
 
-def test_google_source_types_are_internal_until_registry_task() -> None:
-    assert "google_health" not in ACTIVITY_PROVIDER_SOURCE_TYPES
-    assert "google_health" not in WEIGHT_PROVIDER_SOURCE_TYPES
+def test_google_source_types_are_registered_after_scalar_sync() -> None:
+    assert ACTIVITY_PROVIDER_SOURCE_TYPES["google_health"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    assert WEIGHT_PROVIDER_SOURCE_TYPES["google_health"] == GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE
     assert GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE == "google_health_activity_v4"
     assert GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE == "google_health_weight_v4"
 

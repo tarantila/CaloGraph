@@ -13,6 +13,7 @@ from app.activity import (
     ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
 )
 from app.config import settings
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -194,12 +195,58 @@ def _sample_provider_statuses(
     }
 
 
+def _google_scalar_status(
+    db: Session,
+    *,
+    user_id: UUID,
+    metric_type: str,
+    source_type: str,
+    include_zero: bool,
+) -> str:
+    if (
+        not settings.google_health_enabled
+        or not settings.google_health_client_id
+        or not settings.google_health_client_secret
+    ):
+        return "disabled"
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
+    )
+    if connection is None:
+        return "not_configured"
+    if (
+        connection.state != "active"
+        or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
+    ):
+        return "reauth_required"
+    value_filter = HealthSample.value >= 0 if include_zero else HealthSample.value > 0
+    evidence = db.scalar(
+        select(HealthSample.id)
+        .where(
+            HealthSample.user_id == user_id,
+            HealthSample.source_type == source_type,
+            HealthSample.source_identifier == str(connection.id),
+            HealthSample.metric_type == metric_type,
+            value_filter,
+        )
+        .limit(1)
+    )
+    return "available" if evidence is not None else "no_data"
+
+
 def _weight_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
     statuses = _sample_provider_statuses(
         db,
         user_id=user_id,
         metric_type=WEIGHT_METRIC,
         source_types=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
+    )
+    statuses["google_health"] = _google_scalar_status(
+        db,
+        user_id=user_id,
+        metric_type=WEIGHT_METRIC,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS["google_health"][0],
+        include_zero=False,
     )
     statuses["yazio"] = _yazio_status(db, user_id)
     return _availability(WEIGHT_DATA_AREA, statuses)
@@ -213,7 +260,16 @@ def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabi
         source_types=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
         include_zero=True,
     )
+    statuses["google_health"] = _google_scalar_status(
+        db,
+        user_id=user_id,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["google_health"][0],
+        include_zero=True,
+    )
     return _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)
+
+
 
 
 def provider_availability(

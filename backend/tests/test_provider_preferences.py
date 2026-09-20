@@ -35,6 +35,13 @@ from app.nutrition.models import (
     NutritionSourceObservation,
 )
 from app.nutrition.resolution.metrics import canonical_unit
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPES,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+)
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.provider_preferences import (
     ACTIVITY_ENERGY_DATA_AREA,
     NUTRITION_DATA_AREA,
@@ -46,8 +53,11 @@ from app.provider_preferences import (
 )
 from app.source_priority import compatibility as source_priority_compatibility
 from app.source_priority.contracts import PriorityRuleSpec
-from app.weight import WEIGHT_PROVIDER_SOURCE_TYPES
-
+from app.weight import (
+    GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+    WEIGHT_PROVIDER_SOURCE_TYPES,
+    WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
+)
 PATH = "/api/v1/settings/provider-preferences"
 WEIGHT_PATH = "/api/v1/analytics/weight"
 AVAILABILITY_PATH = "/api/v1/settings/provider-availability/nutrition"
@@ -255,6 +265,7 @@ def test_provider_preference_domain_accepts_canonical_nutrition_provider() -> No
 def test_legacy_health_auto_export_preference_canonicalizes_to_apple_health() -> None:
     assert effective_provider_order(WEIGHT_DATA_AREA, ("health_auto_export",)) == (
         "apple_health",
+        "google_health",
         "yazio",
     )
     assert validate_provider_preference(
@@ -692,8 +703,8 @@ def test_provider_availability_uses_registry_order_for_weight(
 
     response = client.get("/api/v1/settings/provider-availability/weight")
 
-    assert response.status_code == 200
     assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "google_health",
         "yazio",
         "apple_health",
     ]
@@ -717,8 +728,8 @@ def test_weight_availability_consolidates_health_auto_export_under_apple(
 
     response = client.get("/api/v1/settings/provider-availability/weight")
 
-    assert response.status_code == 200
     assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "google_health",
         "yazio",
         "apple_health",
     ]
@@ -1285,8 +1296,8 @@ def test_activity_availability_accepts_explicit_zero_samples(client: TestClient,
 
     response = client.get(f"/api/v1/settings/provider-availability/{ACTIVITY_ENERGY_DATA_AREA}")
 
-    assert response.status_code == 200
     assert [item["provider_key"] for item in response.json()["providers"]] == [
+        "google_health",
         "yazio",
         "apple_health",
     ]
@@ -1738,3 +1749,103 @@ def test_new_target_captures_complete_activity_provider_priority_chain(
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
     ]
+def test_google_activity_and_weight_are_registered_as_separate_provider_families() -> None:
+    assert SUPPORTED_PROVIDER_KEYS[ACTIVITY_ENERGY_DATA_AREA] == (
+        "google_health",
+        "yazio",
+        "apple_health",
+    )
+    assert SUPPORTED_PROVIDER_KEYS[WEIGHT_DATA_AREA] == (
+        "google_health",
+        "yazio",
+        "apple_health",
+    )
+    assert ACTIVITY_PROVIDER_SOURCE_TYPES["google_health"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    assert ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["google_health"] == (
+        GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+    )
+    assert WEIGHT_PROVIDER_SOURCE_TYPES["google_health"] == GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE
+    assert WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS["google_health"] == (
+        GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+    )
+
+
+def test_google_activity_availability_requires_full_scope_and_canonical_evidence(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/provider-availability/activity_energy")
+    assert response.status_code == 200
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": False, "status": "no_data"}
+
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("250"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    response = client.get("/api/v1/settings/provider-availability/activity_energy")
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": True, "status": "available"}
+
+
+def test_activity_sources_response_accepts_google_canonical_source(
+    client: TestClient, user, db
+) -> None:
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        value=Decimal("250"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/activity-sources")
+    assert response.status_code == 200
+    assert response.json() == [{"source_type": GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE}]
+
+
+def test_google_weight_availability_requires_full_scope_and_canonical_evidence(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/provider-availability/weight")
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": False, "status": "no_data"}
+
+    day = date(2026, 9, 20)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 20, 8, tzinfo=UTC),
+    )
+    db.commit()
+    response = client.get("/api/v1/settings/provider-availability/weight")
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": True, "status": "available"}
