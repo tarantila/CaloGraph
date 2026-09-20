@@ -75,3 +75,57 @@ Ergebnis:
 
 - Der erste RED-Aufruf gegen ein nicht neu gebautes CI-Image meldete zusätzlich, dass die neue Testdatei im alten Image fehlte (`file or directory not found`). Nach dem CI-Image-Rebuild wurde der fachlich relevante RED-Fehler oben beobachtet.
 - Full-Repository- und UI-/Priority-Tests wurden in diesem Task nicht ausgeführt; diese Validierung bleibt beim Main-Agent nach Integration der parallelen Tasks.
+
+## Review-Fix-Nachweis
+
+Die unabhängige Task-Review identifizierte vier Punkte; alle wurden testgetrieben korrigiert:
+
+- Google Activity/Weight bleiben bis zur späteren Registry/UI-Aufgabe aus den auswählbaren Provider-Maps und Source-Type-Sets entfernt. Für die Ingestion gibt es separate stabile interne Source-Konstanten/-Gruppen.
+- Die Service-Seitenfilter werden aus dem User-IANA-Tagesschnitt berechnet und als UTC-Grenzen an den Google-Client übergeben. Der DST-Test für `Europe/Berlin` prüft die lokale halb-offene Tagesgrenze.
+- Activity akzeptiert ausschließlich die offizielle DTO-Einheit `kcal`; eine andere Energieeinheit wird vor jeder Persistenz abgewiesen.
+- Nicht unterstützte Weight-Einheiten wurden aus der Alias-Allowlist entfernt; die Allowlist entspricht damit exakt den vorhandenen Konversionen.
+
+### Fix-RED
+
+Nach dem Schreiben der Review-Regressionstests und vor den Korrekturen:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml build backend-ci
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  pytest tests/test_google_health_scalar_sync.py -q
+```
+
+Ergebnis: Collection-Fehler wegen des noch fehlenden internen Symbols
+`GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE` in `app.activity`.
+
+### Fix-GREEN
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml build backend-ci
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  pytest tests/test_google_health_scalar_sync.py -q
+```
+
+Ergebnis:
+
+```text
+..........                                                               [100%]
+10 passed
+```
+
+Die Tests decken zusätzlich die internen Source-Konstanten, lokale DST-Grenzen,
+halb-offene Tagesbereiche sowie Activity-Unit-Rejection ab.
+
+### Fix-angrenzende Tests
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  pytest tests/test_importers.py tests/test_yazio_provider.py -q
+```
+
+Ergebnis:
+
+```text
+.................................................................        [100%]
+65 passed
+```

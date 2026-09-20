@@ -8,14 +8,26 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPES
-from app.google_health.client import ActiveEnergyBurnedDataPoint, WeightDataPoint
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPES,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+)
+from app.google_health.client import (
+    ActiveEnergyBurnedDataPoint,
+    GoogleHealthDataPointPage,
+    WeightDataPoint,
+)
 from app.models import GoogleHealthConnection, HealthSample, User
 from app.services.google_health_scalar_sync import (
     sync_google_health_activity,
     sync_google_health_weight,
 )
-from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPES
+from app.weight import (
+    WEIGHT_METRIC,
+    WEIGHT_PROVIDER_SOURCE_TYPES,
+    GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+)
 
 
 START = datetime(2026, 9, 15, 22, 30, tzinfo=UTC)
@@ -168,8 +180,8 @@ def test_invalid_scalar_input_persists_nothing(db: Session, user: User, point) -
             db,
             user_id=user.id,
             source_instance_id=connection.id,
-            requested_start=date(2026, 9, 15),
-            requested_end=date(2026, 9, 15),
+            requested_start=date(2026, 9, 16),
+            requested_end=date(2026, 9, 16),
             data_points=(point,),
         )
     assert db.scalar(select(func.count(HealthSample.id))) == 0
@@ -193,6 +205,97 @@ def test_cross_user_connection_is_rejected_without_persistence(db: Session, user
     assert db.scalar(select(func.count(HealthSample.id))) == 0
 
 
-def test_source_type_constants_are_isolated() -> None:
-    assert ACTIVITY_PROVIDER_SOURCE_TYPES["google_health"] == "google_health_activity_v4"
-    assert WEIGHT_PROVIDER_SOURCE_TYPES["google_health"] == "google_health_weight_v4"
+def test_source_type_constants_are_stable() -> None:
+    assert GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE == "google_health_activity_v4"
+    assert GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE == "google_health_weight_v4"
+
+
+def test_google_source_types_are_internal_until_registry_task() -> None:
+    assert "google_health" not in ACTIVITY_PROVIDER_SOURCE_TYPES
+    assert "google_health" not in WEIGHT_PROVIDER_SOURCE_TYPES
+    assert GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE == "google_health_activity_v4"
+    assert GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE == "google_health_weight_v4"
+
+
+class _CapturingPagedClient:
+    def __init__(self) -> None:
+        self.bounds: tuple[datetime, datetime] | None = None
+
+    def iter_data_points_pages(self, data_type, *, start_time, end_time, page_size, max_pages):
+        assert data_type == "active-energy-burned"
+        self.bounds = (start_time, end_time)
+        assert page_size == 100
+        assert max_pages == 3
+        return ()
+
+    def close(self) -> None:
+        pass
+
+
+def test_scalar_service_uses_user_local_day_bounds_across_dst(db: Session, user: User) -> None:
+    from app.database import SessionLocal
+    from app.services.google_health_scalar_sync import GoogleHealthScalarSyncService
+
+    _connection(db, user)
+    client = _CapturingPagedClient()
+    service = GoogleHealthScalarSyncService(
+        session_factory=SessionLocal,
+        client_factory=lambda _credentials: client,
+        credentials_factory=lambda token: token,
+        decrypt_refresh_token=lambda value: "refresh",
+        max_pages=3,
+    )
+
+    source_id, pages = service._fetch(
+        user_id=user.id,
+        requested_start=date(2026, 3, 29),
+        requested_end=date(2026, 3, 29),
+        data_type="active-energy-burned",
+    )
+
+    assert source_id is not None
+    assert pages == ()
+    assert client.bounds == (
+        datetime(2026, 3, 28, 23, 0, tzinfo=UTC),
+        datetime(2026, 3, 29, 22, 0, tzinfo=UTC),
+    )
+
+
+def test_activity_local_day_accepts_before_dst_boundary_and_rejects_next_day(
+    db: Session, user: User
+) -> None:
+    connection = _connection(db, user)
+    valid = ActiveEnergyBurnedDataPoint(
+        name="users/me/dataTypes/active-energy-burned/dataPoints/dst-valid",
+        start_time=datetime(2026, 3, 28, 23, 30, tzinfo=UTC),
+        end_time=datetime(2026, 3, 29, 0, 0, tzinfo=UTC),
+        value=Decimal("1"),
+        unit="kcal",
+    )
+    sync_google_health_activity(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        requested_start=date(2026, 3, 29),
+        requested_end=date(2026, 3, 29),
+        data_points=(valid,),
+    )
+    assert db.scalar(select(func.count(HealthSample.id))) == 1
+
+    next_day = ActiveEnergyBurnedDataPoint(
+        name="users/me/dataTypes/active-energy-burned/dataPoints/dst-next",
+        start_time=datetime(2026, 3, 29, 22, 0, tzinfo=UTC),
+        end_time=datetime(2026, 3, 29, 22, 1, tzinfo=UTC),
+        value=Decimal("1"),
+        unit="kcal",
+    )
+    with pytest.raises(ValueError):
+        sync_google_health_activity(
+            db,
+            user_id=user.id,
+            source_instance_id=connection.id,
+            requested_start=date(2026, 3, 29),
+            requested_end=date(2026, 3, 29),
+            data_points=(next_day,),
+        )
+    assert db.scalar(select(func.count(HealthSample.id))) == 1

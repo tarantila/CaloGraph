@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
-from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.activity import ACTIVE_ENERGY_METRIC
+from app.activity import ACTIVE_ENERGY_METRIC, GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
 from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     ActiveEnergyBurnedDataPoint,
@@ -23,10 +23,10 @@ from app.google_health.client import (
 from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.models import GoogleHealthConnection, ImportBatch, User
 from app.services.import_service import _persist_sample_batch, _start_batch
-from app.weight import WEIGHT_METRIC
+from app.weight import WEIGHT_METRIC, GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE
 
-ACTIVITY_SOURCE_TYPE = "google_health_activity_v4"
-WEIGHT_SOURCE_TYPE = "google_health_weight_v4"
+ACTIVITY_SOURCE_TYPE = GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+WEIGHT_SOURCE_TYPE = GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE
 _SOURCE_NAME = "Google Health"
 _DEFAULT_CONNECTOR = "google-health-api-v4"
 _MASS_UNIT_ALIASES = {
@@ -36,9 +36,6 @@ _MASS_UNIT_ALIASES = {
     "g": "g",
     "gram": "g",
     "grams": "g",
-    "mg": "mg",
-    "milligram": "mg",
-    "milligrams": "mg",
     "lb": "lb",
     "lbs": "lb",
     "pound": "lb",
@@ -148,6 +145,8 @@ def _sample_for_activity(
     original_value = _decimal(point.value)
     original_unit = point.unit
     if not isinstance(original_unit, str) or not original_unit or len(original_unit) > 64:
+        raise ValueError("Google Health datapoint unit is invalid")
+    if original_unit != "kcal":
         raise ValueError("Google Health datapoint unit is invalid")
     try:
         canonical_value = normalize_value(original_value, original_unit, "kcal")
@@ -347,11 +346,23 @@ class GoogleHealthScalarSyncService:
         _validate_request(requested_start, requested_end)
         db = self._session_factory()
         try:
+            user = db.scalar(select(User).where(User.id == user_id))
             connection = db.scalar(
-                select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
+                select(GoogleHealthConnection).where(
+                    GoogleHealthConnection.user_id == user_id,
+                )
             )
-            if connection is None or connection.state != "active":
+            if (
+                user is None
+                or connection is None
+                or connection.state != "active"
+                or not isinstance(user.timezone, str)
+            ):
                 raise ValueError("Google Health connection is unavailable")
+            try:
+                timezone = ZoneInfo(user.timezone)
+            except (ValueError, ZoneInfoNotFoundError):
+                raise ValueError("user timezone is invalid") from None
             source_instance_id = connection.id
             refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token)
         finally:
@@ -359,15 +370,17 @@ class GoogleHealthScalarSyncService:
         credentials = self._credentials_factory(refresh_token)
         client = self._client_factory(credentials)
         try:
+            local_start = datetime.combine(
+                requested_start, datetime.min.time(), tzinfo=timezone
+            )
+            local_end = datetime.combine(
+                requested_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone
+            )
             pages = tuple(
                 client.iter_data_points_pages(
                     data_type,
-                    start_time=datetime.combine(
-                        requested_start, datetime.min.time(), tzinfo=UTC
-                    ),
-                    end_time=datetime.combine(
-                        requested_end + timedelta(days=1), datetime.min.time(), tzinfo=UTC
-                    ),
+                    start_time=local_start.astimezone(UTC),
+                    end_time=local_end.astimezone(UTC),
                     page_size=self._page_size,
                     max_pages=self._max_pages,
                 )
