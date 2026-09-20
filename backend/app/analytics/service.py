@@ -4,11 +4,16 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
+from app.activity import (
+    ACTIVE_ENERGY_METRIC,
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+)
 from app.models import (
+    GoogleHealthConnection,
     HealthSample,
     NutritionTarget,
     TrackingOverride,
@@ -83,6 +88,20 @@ def _activity_sources_for_target(target: NutritionTarget) -> tuple[str, ...]:
         return (target.activity_source_type,)
     return ()
 
+
+def _google_activity_source_filter(db: Session, user_id: Any):
+    connection_id = db.scalar(
+        select(GoogleHealthConnection.id).where(
+            GoogleHealthConnection.user_id == user_id,
+            GoogleHealthConnection.state == "active",
+        )
+    )
+    if connection_id is None:
+        return HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    return or_(
+        HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        HealthSample.source_identifier == str(connection_id),
+    )
 
 def _activity_value_for_day(
     *,
@@ -186,15 +205,13 @@ def _build_daily_point(
 def daily_points(
     db: Session, user: User, start: date, end: date, source: str | None = None
 ) -> list[DailyPoint]:
-    samples = list(
-        db.scalars(
-            select(HealthSample).where(
-                HealthSample.user_id == user.id,
-                HealthSample.local_date >= start,
-                HealthSample.local_date <= end,
-            )
-        )
+    sample_statement = select(HealthSample).where(
+        HealthSample.user_id == user.id,
+        HealthSample.local_date >= start,
+        HealthSample.local_date <= end,
+        _google_activity_source_filter(db, user.id),
     )
+    samples = list(db.scalars(sample_statement))
     targets = list(
         db.scalars(
             select(NutritionTarget)
@@ -284,6 +301,7 @@ def _budget_balance_chunk(
             HealthSample.user_id == user.id,
             HealthSample.local_date.in_(tracked_dates),
             HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+            _google_activity_source_filter(db, user.id),
         )
         .group_by(HealthSample.local_date, HealthSample.source_type)
     ).all()

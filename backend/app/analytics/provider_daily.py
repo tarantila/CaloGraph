@@ -11,7 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.activity import ACTIVE_ENERGY_METRIC
-from app.analytics.service import TrackingInputs, _build_daily_point
+from app.analytics.service import (
+    TrackingInputs,
+    _build_daily_point,
+    _google_activity_source_filter,
+)
 from app.models import HealthSample, NutritionTarget, TrackingOverride
 from app.nutrition.enums import CoverageState, PresenceState, ResolutionState
 from app.nutrition.resolution import (
@@ -209,6 +213,7 @@ def read_provider_daily_points(
             HealthSample.local_date >= start,
             HealthSample.local_date <= end,
             HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+            _google_activity_source_filter(db, user_id),
         )
         .group_by(HealthSample.local_date, HealthSample.source_type)
     ).all()

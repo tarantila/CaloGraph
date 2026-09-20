@@ -463,7 +463,10 @@ class TargetInput(BaseModel):
     )
     activity_mode: Literal["off", "full"] = "off"
     activity_source_type: Literal[
-        "yazio_export_v1", "apple_health_xml", "health_auto_export_v2"
+        "google_health_activity_v4",
+        "yazio_export_v1",
+        "apple_health_xml",
+        "health_auto_export_v2",
     ] | None = None
     protein_g: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     carbs_g: Decimal | None = Field(default=None, ge=0)

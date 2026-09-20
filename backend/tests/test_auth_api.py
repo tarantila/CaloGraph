@@ -675,6 +675,17 @@ def test_target_rejects_invalid_activity_configuration(
         )
 
 
+def test_target_accepts_google_activity_source_literal() -> None:
+    target = TargetInput(
+        valid_from=date(2026, 8, 11),
+        calories_kcal=Decimal("2000"),
+        protein_g=Decimal("140"),
+        activity_mode="full",
+        activity_source_type="google_health_activity_v4",
+    )
+    assert target.activity_source_type == "google_health_activity_v4"
+
+
 def test_target_rejects_activity_source_without_user_data(
     client: TestClient, user: User
 ) -> None:

@@ -1804,11 +1804,13 @@ def test_google_activity_availability_requires_full_scope_and_canonical_evidence
 def test_activity_sources_response_accepts_google_canonical_source(
     client: TestClient, user, db
 ) -> None:
+    connection = _add_google(db, user)
     _add_sample(
         db,
         user,
         metric_type=ACTIVE_ENERGY_METRIC,
         source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        source_identifier=str(connection.id),
         value=Decimal("250"),
         local_date=date(2026, 9, 20),
     )
@@ -1849,3 +1851,147 @@ def test_google_weight_availability_requires_full_scope_and_canonical_evidence(
     response = client.get("/api/v1/settings/provider-availability/weight")
     google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
     assert google == {"provider_key": "google_health", "available": True, "status": "available"}
+
+
+def test_activity_sources_hide_google_evidence_from_wrong_connection(
+    client: TestClient, user, db
+) -> None:
+    connection = _add_google(db, user)
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        source_identifier=f"wrong-{connection.id}",
+        value=Decimal("250"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/activity-sources")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_google_weight_priority_uses_latest_sample_and_daily_fallback(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    day_one = date(2026, 9, 15)
+    day_two = date(2026, 9, 16)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("72.5"),
+        local_date=day_one,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("72.1"),
+        local_date=day_one,
+        start_at=datetime(2026, 9, 15, 20, tzinfo=UTC),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type="yazio_export_v1",
+        source_identifier="yazio-account",
+        value=Decimal("71.8"),
+        local_date=day_two,
+        start_at=datetime(2026, 9, 16, 8, tzinfo=UTC),
+    )
+    _add_yazio(db, user)
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "google_health", 1),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 2),
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get(
+        WEIGHT_PATH,
+        params={"start": date(2026, 9, 14).isoformat(), "end": day_two.isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["points"] == [
+        {"date": day_one.isoformat(), "weight_kg": 72.1},
+        {"date": day_two.isoformat(), "weight_kg": 71.8},
+    ]
+
+
+
+def test_google_activity_target_is_serialized_and_snapshots_provider_chain(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        source_identifier=str(connection.id),
+        value=Decimal("300"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    csrf = _login(client)
+
+    created = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "valid_from": "2026-09-20",
+            "calories_kcal": "2000",
+            "maintenance_kcal": None,
+            "target_weight_min_kg": None,
+            "target_weight_max_kg": None,
+            "activity_mode": "full",
+            "activity_source_type": GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+            "protein_g": "120",
+            "carbs_g": None,
+            "fat_g": None,
+            "fiber_g": None,
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    targets = client.get("/api/v1/settings/targets")
+    assert targets.status_code == 200
+    assert any(
+        item["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+        for item in targets.json()
+    )
+    target = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from == date(2026, 9, 20),
+        )
+    )
+    assert target is not None
+    assert [
+        (row.provider_key, row.source_type)
+        for row in sorted(target.activity_sources, key=lambda row: row.priority)
+    ] == [
+        ("google_health", GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE),
+        ("yazio", "yazio_export_v1"),
+        ("apple_health", "apple_health_xml"),
+    ]

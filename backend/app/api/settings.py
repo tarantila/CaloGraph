@@ -4,8 +4,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -15,6 +14,7 @@ from app.activity import (
     ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
     ACTIVITY_PROVIDER_SOURCE_TYPES,
     ACTIVITY_SOURCE_TYPES,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
@@ -28,6 +28,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import (
     ApiToken,
+    GoogleHealthConnection,
     HealthSample,
     NutritionTarget,
     PasskeyCredential,
@@ -888,18 +889,29 @@ def _lock_target_owner(db: Session, user_id: UUID) -> None:
     db.scalar(select(User).where(User.id == user_id).with_for_update())
 
 def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
-    return list(
-        db.scalars(
-            select(HealthSample.source_type)
-            .where(
-                HealthSample.user_id == user_id,
-                HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
-                HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
-            )
-            .distinct()
-            .order_by(HealthSample.source_type)
+    active_connection_id = db.scalar(
+        select(GoogleHealthConnection.id).where(
+            GoogleHealthConnection.user_id == user_id,
+            GoogleHealthConnection.state == "active",
         )
     )
+    statement = select(HealthSample.source_type).where(
+        HealthSample.user_id == user_id,
+        HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+        HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
+    )
+    if active_connection_id is None:
+        statement = statement.where(
+            HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+        )
+    else:
+        statement = statement.where(
+            or_(
+                HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+                HealthSample.source_identifier == str(active_connection_id),
+            )
+        )
+    return list(db.scalars(statement.distinct().order_by(HealthSample.source_type)))
 
 
 def _activity_provider_source_type(
