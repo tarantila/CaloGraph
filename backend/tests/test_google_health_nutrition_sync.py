@@ -576,6 +576,39 @@ def test_sync_requires_active_connection_and_exact_nutrition_scope(
     assert "adapter" not in harness.events
 
 
+def test_sync_marks_active_nutrition_only_connection_for_reauth_without_provider_io(
+    db: Session, user: User
+) -> None:
+    connection = _connection(
+        db,
+        user,
+        state="active",
+        granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
+    )
+    encrypted_token = connection.encrypted_refresh_token
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-log"),), page_token=None, next_page_token=None)},
+    )
+
+    with pytest.raises(GoogleHealthNutritionSyncError) as raised:
+        harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id)
+    )
+    assert connection is not None
+    assert raised.value.code == "scope_missing"
+    assert str(raised.value) == "scope_missing: Google Health readonly permissions are unavailable."
+    assert not harness.clients
+    assert "decrypt" not in harness.events
+    assert "credentials" not in harness.events
+    assert "adapter" not in harness.events
+    assert connection.state == "reauth_required"
+    assert connection.last_error == "scope_missing"
+    assert connection.encrypted_refresh_token == encrypted_token
+
+
 def test_sync_requires_connection_owned_by_requested_user_without_writes(
     db: Session, user: User
 ) -> None:

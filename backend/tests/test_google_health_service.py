@@ -200,7 +200,9 @@ def test_successful_reauth_updates_existing_nutrition_connection_in_place(
     connection_id = connection.id
 
     start_url = start_google_health_oauth(db, user, now=now)
-    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    query = parse_qs(urlsplit(start_url).query)
+    assert query["prompt"] == ["consent"]
+    state = query["state"][0]
     result = complete_google_health_oauth(
         db,
         user,
@@ -220,6 +222,51 @@ def test_successful_reauth_updates_existing_nutrition_connection_in_place(
     assert set(connection.granted_scopes) == GOOGLE_HEALTH_REQUIRED_SCOPES
     assert decrypt_credential(connection.encrypted_refresh_token) == "new-refresh-token"
     assert connection.last_success_at.replace(tzinfo=UTC) == now
+
+
+def test_scope_missing_callback_preserves_existing_connection_credentials_and_history(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    historical_success = now - timedelta(days=1)
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=encrypt_credential("old-refresh-token"),
+        granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
+        state="active",
+        last_success_at=historical_success,
+    )
+    db.add(connection)
+    db.commit()
+    connection_id = connection.id
+    encrypted_token = connection.encrypted_refresh_token
+
+    start_url = start_google_health_oauth(db, user, now=now)
+    state = parse_qs(urlsplit(start_url).query)["state"][0]
+    result = complete_google_health_oauth(
+        db,
+        user,
+        state=state,
+        code="scope-missing-code",
+        error=None,
+        now=now,
+        oauth_adapter=TokenAdapter(
+            {
+                "refresh_token": "must-not-replace-old-token",
+                "scope": GOOGLE_HEALTH_NUTRITION_SCOPE,
+            }
+        ),
+    )
+
+    db.refresh(connection)
+    assert result.state == "scope_missing"
+    assert result.last_error == "scope_missing"
+    assert connection.id == connection_id
+    assert connection.state == "reauth_required"
+    assert connection.encrypted_refresh_token == encrypted_token
+    assert decrypt_credential(connection.encrypted_refresh_token) == "old-refresh-token"
+    assert connection.last_success_at.replace(tzinfo=UTC) == historical_success
 
 
 def test_complete_rejects_unknown_expired_and_replayed_state(db, user: User, monkeypatch):
