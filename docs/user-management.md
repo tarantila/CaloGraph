@@ -234,9 +234,13 @@ to it automatically.
 Google Health is connected exclusively through the official Google Health API
 v4. CaloGraph currently reads Nutrition Log data only with the read-only OAuth
 scope `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`;
-activity and weight are not obtained through Google Health. The connection is
-stored encrypted per account. After authorization, users can start a manual
-nutrition synchronization for a bounded period under
+activity and weight are not obtained through Google Health. The official API
+also exposes Body Fat (`body-fat`) under the read-only OAuth scope
+`https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`,
+but CaloGraph currently excludes it from canonical persistence, the UI, and
+provider-priority selection; no Body-Fat implementation is included. The
+connection is stored encrypted per account. After authorization, users can
+start a manual nutrition synchronization for a bounded period under
 **Account → Integrations**.
 
 An active OAuth connection is available for provider selection only after
