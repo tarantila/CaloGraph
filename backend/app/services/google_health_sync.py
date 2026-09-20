@@ -408,7 +408,7 @@ class GoogleHealthSyncService:
         try:
             definitions = (("nutrition", "nutrition-log", True), ("activity_energy", "active-energy-burned", False),
                            ("weight", "weight", False))
-            for name, data_type, nutrition in definitions:
+            for name, data_type, is_nutrition in definitions:
                 try:
                     points, truncated = self._pages(
                         client,
@@ -448,10 +448,10 @@ class GoogleHealthSyncService:
                 covered = self._covered(
                     points,
                     timezone=timezone,
-                    nutrition=nutrition,
+                    nutrition=is_nutrition,
                 )
                 try:
-                    if nutrition:
+                    if is_nutrition:
                         persisted = self._persist_nutrition(
                             user_id=user_id,
                             source_id=source_id,

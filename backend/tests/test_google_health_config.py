@@ -24,7 +24,7 @@ def test_google_health_constants_are_fixed_official_endpoints() -> None:
         "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
         "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     )
-    assert GOOGLE_HEALTH_REQUIRED_SCOPES == frozenset(GOOGLE_HEALTH_SCOPES)
+    assert frozenset(GOOGLE_HEALTH_SCOPES) == GOOGLE_HEALTH_REQUIRED_SCOPES
     assert GOOGLE_HEALTH_CALLBACK_PATH == "/api/v1/google-health/oauth/callback"
 
 

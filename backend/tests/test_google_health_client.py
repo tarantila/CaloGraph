@@ -14,7 +14,6 @@ from app.google_health.client import (
     GOOGLE_HEALTH_WEIGHT_PATH,
     GoogleHealthAuthenticationError,
     GoogleHealthClient,
-    GoogleHealthDataPointPage,
     GoogleHealthHTTPTransport,
     GoogleHealthInvalidResponseError,
     GoogleHealthProviderUnavailableError,
@@ -158,7 +157,7 @@ def test_http_transport_uses_exact_activity_and_weight_paths() -> None:
     http_client = RecordingHTTPClient()
     transport = GoogleHealthHTTPTransport(http_client=http_client)
 
-    for data_type, expected_path in (
+    for data_type, _expected_path in (
         ("active-energy-burned", GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH),
         ("weight", GOOGLE_HEALTH_WEIGHT_PATH),
     ):

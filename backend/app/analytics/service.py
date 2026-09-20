@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.activity import (
     ACTIVE_ENERGY_METRIC,
@@ -89,7 +90,7 @@ def _activity_sources_for_target(target: NutritionTarget) -> tuple[str, ...]:
     return ()
 
 
-def _google_activity_source_filter(db: Session, user_id: Any):
+def _google_activity_source_filter(db: Session, user_id: Any) -> ColumnElement[bool]:
     connection_id = db.scalar(
         select(GoogleHealthConnection.id).where(
             GoogleHealthConnection.user_id == user_id,

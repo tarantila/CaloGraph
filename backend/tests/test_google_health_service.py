@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -78,7 +79,7 @@ def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
         refresh_token = "refresh-token"
         token = "access-token"
         expiry = None
-        granted_scopes = list(GOOGLE_HEALTH_SCOPES)
+        granted_scopes: ClassVar[list[str]] = list(GOOGLE_HEALTH_SCOPES)
 
     class FakeFlow:
         credentials = Credentials()

@@ -4,10 +4,10 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
+from alembic import command
 from app.database import engine as application_engine
 
 POSTGRES_TESTS_ENABLED = (

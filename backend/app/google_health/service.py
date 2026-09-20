@@ -149,9 +149,9 @@ def _status_from_connection(connection: GoogleHealthConnection | None) -> Google
         state = "disabled"
     elif connection is None:
         state = "not_connected"
-    elif connection.last_error == "scope_missing":
-        state = "scope_missing"
-    elif not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ())):
+    elif connection.last_error == "scope_missing" or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(
+        set(connection.granted_scopes or ())
+    ):
         state = "scope_missing"
     else:
         state = connection.state

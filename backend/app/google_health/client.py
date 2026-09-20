@@ -13,7 +13,9 @@ import httpx
 
 from app.google_health.constants import (
     GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH as _GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH,
-    GOOGLE_HEALTH_API_BASE_URL,
+)
+from app.google_health.constants import GOOGLE_HEALTH_API_BASE_URL
+from app.google_health.constants import (
     GOOGLE_HEALTH_WEIGHT_PATH as _GOOGLE_HEALTH_WEIGHT_PATH,
 )
 from app.google_health.errors import (
@@ -714,7 +716,9 @@ class GoogleHealthClient:
                 raise ValueError
             next_page_token = _parse_response_page_token(payload)
             if data_type == "nutrition-log":
-                data_points = tuple(_parse_data_point(item) for item in points_payload)
+                data_points: tuple[GoogleHealthDataPoint | NutritionLogDataPoint, ...] = tuple(
+                    _parse_data_point(item) for item in points_payload
+                )
             else:
                 data_points = tuple(
                     _parse_scalar_data_point(item, data_type) for item in points_payload
@@ -888,7 +892,7 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
         end_offset = _parse_optional_duration(interval.get("endUtcOffset"))
         scalar_key = "kcal"
         unit = "kcal"
-        dto_type = ActiveEnergyBurnedDataPoint
+        dto_type: type[GoogleHealthDataPoint] = ActiveEnergyBurnedDataPoint
     else:
         raw_value = value.get("weight")
         if not isinstance(raw_value, dict):
@@ -1330,8 +1334,8 @@ def _retry_after(headers: Mapping[str, str]) -> int:
 __all__ = [
     "GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH",
     "GOOGLE_HEALTH_API_BASE_URL",
-    "GOOGLE_HEALTH_MAX_PAGE_SIZE",
     "GOOGLE_HEALTH_MAX_PAGES",
+    "GOOGLE_HEALTH_MAX_PAGE_SIZE",
     "GOOGLE_HEALTH_NUTRITION_LOG_PATH",
     "GOOGLE_HEALTH_WEIGHT_PATH",
     "ActiveEnergyBurnedDataPoint",

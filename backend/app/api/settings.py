@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -16,7 +17,6 @@ from app.activity import (
     ACTIVITY_SOURCE_TYPES,
     GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
-from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -27,6 +27,7 @@ from app.auth.security import (
 )
 from app.config import settings
 from app.database import get_db
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.models import (
     ApiToken,
     GoogleHealthConnection,
