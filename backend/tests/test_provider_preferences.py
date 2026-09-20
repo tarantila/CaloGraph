@@ -1835,23 +1835,19 @@ def test_google_activity_availability_matrix(
         db.flush()
     if case in {"wrong_user", "wrong_connection", "wrong_metric", "wrong_source", "matching"}:
         sample_user = user
-        sample_connection = connection
         if case == "wrong_user":
             sample_user = User(username="availability-other-user", password_hash="synthetic-password-hash")
             db.add(sample_user)
             db.flush()
-            sample_connection = _add_google(db, sample_user)
-            sample_connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
+        sample_identifier = (
+            f"wrong-{connection.id}" if case == "wrong_connection" else str(connection.id)
+        )
         _add_sample(
             db,
             sample_user,
             metric_type=WEIGHT_METRIC if case == "wrong_metric" else ACTIVE_ENERGY_METRIC,
             source_type="wrong-source" if case == "wrong_source" else GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
-            source_identifier=(
-                f"wrong-{sample_connection.id}"
-                if case == "wrong_connection"
-                else str(sample_connection.id)
-            ),
+            source_identifier=sample_identifier,
             value=Decimal("250"),
             local_date=date(2026, 9, 20),
         )
