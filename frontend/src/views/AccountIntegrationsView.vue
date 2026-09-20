@@ -7,18 +7,13 @@ import DateInput from '../components/DateInput.vue'
 import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
-import type { GoogleHealthStatus, ImportSummary, YazioStatus } from '../types'
+import type { GoogleHealthDomainKey, GoogleHealthSyncResult, GoogleHealthStatus, ImportSummary, YazioStatus } from '../types'
 
-interface GoogleHealthSyncResult {
-  status: string
-  fetched_count: number
-  persisted_count: number
-  requested_start: string | null
-  requested_end: string | null
-  covered_start: string | null
-  covered_end: string | null
-}
-
+const googleSyncDomains: ReadonlyArray<{ key: GoogleHealthDomainKey; labelKey: string }> = [
+  { key: 'nutrition', labelKey: 'accountIntegrations.googleDomainNutrition' },
+  { key: 'activity_energy', labelKey: 'accountIntegrations.googleDomainActivity' },
+  { key: 'weight', labelKey: 'accountIntegrations.googleDomainWeight' },
+]
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 const yazio = ref<YazioStatus | null>(null)
@@ -98,22 +93,36 @@ function timestampLabel(value: string | null | undefined): string {
   return value ? formatGermanDateTime(value) : t('accountIntegrations.notAvailable')
 }
 
-function googleDateLabel(value: string | null): string {
-  if (!value) return t('accountIntegrations.notAvailable')
-  return formatGermanDateTime(`${value}T12:00:00Z`).split(',')[0] ?? t('accountIntegrations.notAvailable')
+
+
+const googleNeedsReauth = computed(() => (
+  google.value?.state === 'reauth_required' || google.value?.state === 'scope_missing'
+))
+
+function googleDomainStatusLabel(status: string): string {
+  if (status === 'success') return t('accountIntegrations.googleDomainSuccess')
+  if (status === 'truncated') return t('accountIntegrations.googleDomainTruncated')
+  if (status === 'no_data') return t('accountIntegrations.googleDomainNoData')
+  if (status === 'reauth_required') return t('accountIntegrations.googleReauth')
+  if (status === 'failed') return t('accountIntegrations.googleDomainFailed')
+  return t('accountIntegrations.notAvailable')
 }
 
-function googleDateRangeLabel(start: string | null, end: string | null): string {
-  const first = googleDateLabel(start)
-  const last = googleDateLabel(end)
-  return first === last ? first : `${first} – ${last}`
+function googleDomainErrorLabel(errorCode: string | null): string {
+  if (errorCode === 'scope_missing') return t('accountIntegrations.googleScopeMissing')
+  if (errorCode === 'reauth_required') return t('accountIntegrations.googleReauth')
+  return t('accountIntegrations.googleDomainFailed')
 }
 
 function googleSyncStatusLabel(status: string): string {
-  if (status === 'completed') return t('accountIntegrations.googleSyncCompleted')
-  if (status === 'partial') return t('accountIntegrations.googleSyncPartial')
+  if (status === 'success') return t('accountIntegrations.googleSyncSuccess')
+  if (status === 'partial_failure') return t('accountIntegrations.googleSyncPartialFailure')
+  if (status === 'reauth_required') return t('accountIntegrations.googleReauth')
+  if (status === 'failed') return t('accountIntegrations.googleDomainFailed')
+  if (status === 'no_data') return t('accountIntegrations.googleDomainNoData')
   return t('accountIntegrations.notAvailable')
 }
+
 async function load(): Promise<void> {
   const generation = ++loadGeneration
   stopYazioPolling()
@@ -451,6 +460,9 @@ void load()
         </div>
         <p>{{ t('accountIntegrations.googleDescription') }}</p>
         <p><strong>{{ t('accountIntegrations.googleStatus') }}:</strong> {{ googleStatusLabel }}</p>
+        <p v-if="googleNeedsReauth" class="setup-notice google-reauth-message" role="status">
+          {{ t('accountIntegrations.googleReauthMessage') }}
+        </p>
         <p v-if="google?.last_success_at" class="table-secondary">
           {{ t('accountIntegrations.lastSuccess') }}: {{ timestampLabel(google.last_success_at) }}
         </p>
@@ -465,9 +477,16 @@ void load()
           class="button compact-action"
           type="button"
           :disabled="googleActionBusy"
+          :aria-label="googleNeedsReauth ? t('accountIntegrations.googleReauthorize') : undefined"
           @click="connectGoogle"
         >
-          {{ googleActionBusy ? t('accountIntegrations.googleConnecting') : google?.state === 'not_connected' ? t('accountIntegrations.googleConnect') : t('accountIntegrations.googleReconnect') }}
+          {{ googleActionBusy
+            ? t('accountIntegrations.googleConnecting')
+            : google?.state === 'not_connected'
+              ? t('accountIntegrations.googleConnect')
+              : googleNeedsReauth
+                ? t('accountIntegrations.googleReauthorize')
+                : t('accountIntegrations.googleReconnect') }}
         </button>
         <div v-if="googleCanSync" class="google-sync-panel">
           <h3>{{ t('accountIntegrations.googleSyncTitle') }}</h3>
@@ -480,18 +499,25 @@ void load()
           >
             {{ googleActionBusy ? t('accountIntegrations.googleSyncRunning') : t('accountIntegrations.googleSyncAction') }}
           </button>
-          <p v-if="googleSyncResult" class="setup-notice google-health-sync-result" role="status">
-            {{ t('accountIntegrations.googleSyncResult', {
-              status: googleSyncStatusLabel(googleSyncResult.status),
-              fetched: googleSyncResult.fetched_count,
-              persisted: googleSyncResult.persisted_count,
-              requested: googleDateRangeLabel(googleSyncResult.requested_start, googleSyncResult.requested_end),
-              covered: googleDateRangeLabel(googleSyncResult.covered_start, googleSyncResult.covered_end),
-            }) }}
-          </p>
-          <p v-if="googleSyncWarning" class="import-message warning" role="status">{{ googleSyncWarning }}</p>
-          <p v-if="googleSyncError" class="import-message error google-health-sync-error" role="alert">{{ googleSyncError }}</p>
         </div>
+        <section v-if="googleSyncResult" class="setup-notice google-health-sync-result" role="status">
+          <p><strong>{{ googleSyncStatusLabel(googleSyncResult.status) }}</strong></p>
+          <ul class="google-sync-domain-results" :aria-label="t('accountIntegrations.googleSyncDomainsLabel')">
+            <li v-for="domain in googleSyncDomains" :key="domain.key" :data-domain="domain.key">
+              <strong>{{ t(domain.labelKey) }}</strong>:
+              {{ googleDomainStatusLabel(googleSyncResult[domain.key].status) }} ·
+              {{ t('accountIntegrations.googleSyncCounts', {
+                fetched: googleSyncResult[domain.key].fetched_count,
+                persisted: googleSyncResult[domain.key].persisted_count,
+              }) }}
+              <span v-if="googleSyncResult[domain.key].error_code">
+                · {{ googleDomainErrorLabel(googleSyncResult[domain.key].error_code) }}
+              </span>
+            </li>
+          </ul>
+        </section>
+        <p v-if="googleSyncWarning" class="import-message warning" role="status">{{ googleSyncWarning }}</p>
+        <p v-if="googleSyncError" class="import-message error google-health-sync-error" role="alert">{{ googleSyncError }}</p>
       </section>
 
       <section class="card form-card integration-card apple-health-card" aria-labelledby="apple-health-title">

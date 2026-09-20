@@ -129,6 +129,28 @@ export interface GoogleHealthStatus {
   last_error: string | null
 }
 
+export type GoogleHealthDomainKey = 'nutrition' | 'activity_energy' | 'weight'
+export type GoogleHealthAggregateStatus = 'success' | 'partial_failure' | 'reauth_required' | 'failed' | 'no_data'
+export type GoogleHealthDomainStatus = 'success' | 'truncated' | 'no_data' | 'failed' | 'reauth_required'
+
+export interface GoogleHealthDomainResult {
+  status: GoogleHealthDomainStatus
+  fetched_count: number
+  persisted_count: number
+  requested_start: string
+  requested_end: string
+  covered_start: string | null
+  covered_end: string | null
+  error_code: string | null
+}
+
+export interface GoogleHealthSyncResult {
+  status: GoogleHealthAggregateStatus
+  nutrition: GoogleHealthDomainResult
+  activity_energy: GoogleHealthDomainResult
+  weight: GoogleHealthDomainResult
+}
+
 export type DecimalTransport = string | number | null
 
 export interface Target {

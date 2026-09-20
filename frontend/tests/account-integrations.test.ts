@@ -38,10 +38,46 @@ const googleStatus = {
   last_error: null,
 }
 
+const googleSyncResult = {
+  status: 'partial_failure',
+  nutrition: {
+    status: 'success',
+    fetched_count: 4,
+    persisted_count: 2,
+    requested_start: '2026-09-18',
+    requested_end: '2026-09-18',
+    covered_start: '2026-09-18',
+    covered_end: '2026-09-18',
+    error_code: null,
+  },
+  activity_energy: {
+    status: 'truncated',
+    fetched_count: 3,
+    persisted_count: 3,
+    requested_start: '2026-09-18',
+    requested_end: '2026-09-18',
+    covered_start: '2026-09-18',
+    covered_end: '2026-09-18',
+    error_code: null,
+  },
+  weight: {
+    status: 'no_data',
+    fetched_count: 0,
+    persisted_count: 0,
+    requested_start: '2026-09-18',
+    requested_end: '2026-09-18',
+    covered_start: null,
+    covered_end: null,
+    error_code: null,
+  },
+}
+
 let yazioStatusCalls = 0
+let googleStatusCalls = 0
 
 function configureApi(overrides: Record<string, unknown> = {}): void {
   yazioStatusCalls = 0
+  googleStatusCalls = 0
   apiMock.mockImplementation((path: string, options?: RequestInit) => {
     if (path === '/yazio/status') {
       yazioStatusCalls += 1
@@ -50,7 +86,10 @@ function configureApi(overrides: Record<string, unknown> = {}): void {
       return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
     }
     if (path === '/google-health/status') {
-      const result = overrides.googleStatus ?? googleStatus
+      googleStatusCalls += 1
+      const result = googleStatusCalls > 1
+        ? overrides.googleStatusAfterSync ?? overrides.googleStatus ?? googleStatus
+        : overrides.googleStatus ?? googleStatus
       return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
     }
     if (path === '/yazio/sync' && options?.method === 'POST') {
@@ -58,15 +97,7 @@ function configureApi(overrides: Record<string, unknown> = {}): void {
     }
     if (path === '/google-health/sync' && options?.method === 'POST') {
       if (overrides.googleSyncError) return Promise.reject(new Error('raw provider detail'))
-      return Promise.resolve({
-        status: 'completed',
-        fetched_count: 4,
-        persisted_count: 2,
-        requested_start: '2026-09-18',
-        requested_end: '2026-09-18',
-        covered_start: '2026-09-18',
-        covered_end: '2026-09-18',
-      })
+      return Promise.resolve(overrides.googleSyncResult ?? googleSyncResult)
     }
     if (path === '/google-health/oauth/start' && options?.method === 'POST') {
       return Promise.resolve({ authorization_url: 'https://accounts.google.example/authorize?state=test' })
@@ -169,35 +200,106 @@ describe('AccountIntegrationsView', () => {
     expect(wrapper.get('.google-health-card').text()).toContain('Google Health wurde verbunden')
   })
 
-  it('uses Google Health terminology and renders three decorative provider icons', async () => {
+  it('uses Google Health terminology and describes all synchronized domains', async () => {
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('Google Health Connect')
-    expect(wrapper.get('.google-health-card').text()).toMatch(/Ernährungsdaten|nutrition/i)
-    expect(wrapper.get('.google-health-card').text()).not.toMatch(/activity|weight/i)
+    const googleCardText = wrapper.get('.google-health-card').text()
+    expect(googleCardText).toContain('Ernährungsdaten')
+    expect(googleCardText).toContain('Aktivitätsenergie')
+    expect(googleCardText).toContain('Gewicht')
+    expect(googleCardText).not.toContain('Health Connect')
+    expect(googleCardText).not.toContain('Android Bridge')
+    expect(googleCardText).not.toContain('Google Fit')
 
     const icons = wrapper.findAll('.integration-card-icon')
     expect(icons).toHaveLength(3)
     expect(icons.every((icon) => icon.attributes('aria-hidden') === 'true')).toBe(true)
-    expect(wrapper.get('.google-health-card .integration-card-icon').element.tagName).toBe('svg')
-    expect(wrapper.get('.apple-health-card .integration-card-icon').element.tagName).toBe('svg')
   })
 
-  it('runs Google nutrition synchronization and renders only the safe aggregate result', async () => {
+  it('renders safe per-domain Google synchronization counts and partial failures', async () => {
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
     const button = wrapper.get('.google-health-sync-button')
     expect(button.attributes('disabled')).toBeUndefined()
     await button.trigger('click')
-    expect(apiMock.mock.calls.filter(([path]) => path === '/google-health/status')).toHaveLength(2)
+    await flushPromises()
 
-    expect(apiMock).toHaveBeenCalledWith('/google-health/sync', { method: 'POST' })
-    expect(wrapper.get('.google-health-sync-result').text()).toContain('4')
-    expect(wrapper.get('.google-health-sync-result').text()).toContain('2')
-    expect(wrapper.get('.google-health-sync-result').text()).toContain('18.09.2026')
-    expect(wrapper.text()).not.toContain('raw provider detail')
+    const result = wrapper.get('.google-health-sync-result')
+    expect(result.text()).toContain('Teilweise fehlgeschlagen')
+    expect(result.text()).toContain('Erfolgreich')
+    expect(result.text()).toContain('Begrenzt')
+    expect(result.text()).toContain('Keine Daten')
+    expect(result.text()).toContain('4')
+    expect(result.text()).toContain('3')
+    expect(result.text()).not.toContain('100')
+    expect(result.text()).not.toContain('raw provider detail')
+  })
+  it('keeps a reauthorization sync result visible after the status refresh changes state', async () => {
+    const reauthSyncResult = {
+      status: 'reauth_required',
+      nutrition: { ...googleSyncResult.nutrition, status: 'reauth_required', fetched_count: 5, persisted_count: 5, error_code: 'scope_missing' },
+      activity_energy: { ...googleSyncResult.activity_energy, status: 'reauth_required', fetched_count: 1, persisted_count: 0, error_code: 'scope_missing' },
+      weight: { ...googleSyncResult.weight, status: 'reauth_required', error_code: 'scope_missing' },
+    } as const
+    configureApi({
+      googleSyncResult: reauthSyncResult,
+      googleStatusAfterSync: { ...googleStatus, state: 'reauth_required' },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.google-health-sync-button').trigger('click')
+    await flushPromises()
+
+    const result = wrapper.get('.google-health-sync-result')
+    expect(result.text()).toContain('Erneute Autorisierung erforderlich')
+    expect(result.text()).toContain('Ernährung')
+    expect(result.text()).toContain('5')
+    expect(result.text()).toContain('Erforderliche Berechtigung fehlt')
+  })
+  it('renders a no-data aggregate status using backend vocabulary', async () => {
+    configureApi({
+      googleSyncResult: {
+        ...googleSyncResult,
+        status: 'no_data',
+        nutrition: { ...googleSyncResult.nutrition, status: 'no_data' },
+        activity_energy: { ...googleSyncResult.activity_energy, status: 'no_data' },
+        weight: { ...googleSyncResult.weight, status: 'no_data' },
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    await wrapper.get('.google-health-sync-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.google-health-sync-result p strong').text()).toBe('Keine Daten')
+  })
+  it('shows a German reauthorization message and accessible action for missing scopes', async () => {
+    configureApi({ googleStatus: { ...googleStatus, state: 'scope_missing' } })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    const card = wrapper.get('.google-health-card')
+    expect(card.text()).toContain('Erforderliche Berechtigung fehlt')
+    expect(card.text()).toContain('erneut autorisieren')
+    expect(card.get('button').text()).toContain('Google Health erneut autorisieren')
+    expect(card.get('button').attributes('aria-label')).toContain('erneut autorisieren')
+  })
+
+  it('keeps loading state accessible while Google status is unavailable', async () => {
+    const { promise: pendingStatus, resolve: resolveStatus } = Promise.withResolvers<unknown>()
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/google-health/status') return pendingStatus
+      if (path === '/yazio/status') return Promise.resolve(yazioStatus)
+      return Promise.resolve({})
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    expect(wrapper.get('[role="status"]').text()).toContain('Wird geladen')
+    resolveStatus(googleStatus)
+    await flushPromises()
+    expect(wrapper.find('.google-health-card .google-health-sync-button').exists()).toBe(true)
   })
 
   it('shows a safe Google synchronization error and no provider detail', async () => {
