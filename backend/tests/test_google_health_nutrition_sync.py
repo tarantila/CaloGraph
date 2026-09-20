@@ -19,7 +19,10 @@ from app.google_health.client import (
     NutritionQuantity,
 )
 from app.google_health.constants import GOOGLE_HEALTH_SCOPE
-from app.google_health.errors import GoogleHealthProviderUnavailableError
+from app.google_health.errors import (
+    GoogleHealthAuthenticationError,
+    GoogleHealthProviderUnavailableError,
+)
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.models import (
     NutritionConsumptionEvent,
@@ -298,7 +301,7 @@ def test_sync_invokes_lifecycle_after_commit_with_committed_evidence(
                 select(func.count()).select_from(NutritionSourceObservation).where(
                     NutritionSourceObservation.ingestion_run_id == run.id,
                 )
-            ) == 1
+            ) == 2
 
     monkeypatch.setattr(google_sync, "datetime", FixedDateTime)
     monkeypatch.setattr(google_sync, "rebuild_affected_nutrition_days", lifecycle)
@@ -335,7 +338,7 @@ def test_lifecycle_hard_failure_preserves_committed_evidence_and_is_distinct(
 
     with SessionLocal() as observer:
         assert observer.scalar(select(func.count()).select_from(NutritionIngestionRun)) == 1
-        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
+        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 2
 
 
 def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, user: User) -> None:
@@ -362,9 +365,9 @@ def test_sync_distinct_write_session_commits_for_separate_reader(db: Session, us
         requested_end=DAY,
     )
 
-    assert len(sessions) == 5
+    assert len(sessions) == 6
     with SessionLocal() as observer:
-        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 1
+        assert observer.scalar(select(func.count()).select_from(NutritionSourceObservation)) == 2
     assert all(not session.in_transaction() for session in sessions)
 
 
@@ -397,7 +400,7 @@ def test_sync_distinct_write_session_rolls_back_adapter_failure(db: Session, use
         )
 
     assert raised.value.code == "persistence_error"
-    assert len(sessions) == 2
+    assert len(sessions) == 3
     with SessionLocal() as observer:
         assert _domain_counts(observer) == {model: 0 for model in DOMAIN_MODELS}
     assert all(not session.in_transaction() for session in sessions)
@@ -459,7 +462,7 @@ def test_sync_commit_failure_rolls_back_and_closes_distinct_write_session(
         )
 
     assert raised.value.code == "persistence_error"
-    assert len(sessions) == 2
+    assert len(sessions) == 3
     assert write_session is not None
     assert write_session.inner is not sessions[0]
     assert write_session.commit_called is True
@@ -608,7 +611,7 @@ def test_sync_result_summary_contains_counts_and_coverage_only(db: Session, user
 
     assert result.status == "completed"
     assert result.fetched_count == 1
-    assert result.persisted_count == 1
+    assert result.persisted_count == 2
     assert result.requested_start == DAY
     assert result.requested_end == DAY
     assert result.covered_start == DAY
@@ -796,3 +799,63 @@ def test_google_existing_policy_is_immutable_and_projection_uses_it(
     )
     assert projection is not None
     assert projection.priority_policy_id == snapshot.policy_id
+
+
+def test_sync_records_attempt_and_success_metadata_after_lifecycle(
+    db: Session, user: User
+) -> None:
+    connection = _connection(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-status-success"),), page_token=None, next_page_token=None)},
+    )
+
+    harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    db.expire_all()
+    refreshed = db.get(GoogleHealthConnection, connection.id)
+    assert refreshed is not None
+    assert refreshed.last_attempt_at is not None
+    assert refreshed.last_success_at is not None
+    assert refreshed.last_success_at >= refreshed.last_attempt_at
+    assert refreshed.last_error is None
+    assert refreshed.state == "active"
+
+
+@pytest.mark.parametrize(
+    ("remote_error", "expected_code", "expected_state"),
+    [
+        (GoogleHealthAuthenticationError("synthetic auth failure"), "reauth_required", "reauth_required"),
+        (
+            GoogleHealthProviderUnavailableError("provider payload includes secret-token"),
+            "provider_error",
+            "active",
+        ),
+    ],
+)
+def test_sync_records_safe_failure_metadata(
+    db: Session,
+    user: User,
+    remote_error: Exception,
+    expected_code: str,
+    expected_state: str,
+) -> None:
+    connection = _connection(db, user)
+    harness = SyncHarness(
+        db,
+        {None: _page((_point("google-status-failure"),), page_token=None, next_page_token=None)},
+        remote_error=remote_error,
+    )
+
+    with pytest.raises(GoogleHealthNutritionSyncError) as raised:
+        harness.service().sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+
+    assert raised.value.code == expected_code
+    assert "secret-token" not in str(raised.value)
+    db.expire_all()
+    refreshed = db.get(GoogleHealthConnection, connection.id)
+    assert refreshed is not None
+    assert refreshed.last_attempt_at is not None
+    assert refreshed.last_success_at is None
+    assert refreshed.last_error == expected_code
+    assert refreshed.state == expected_state

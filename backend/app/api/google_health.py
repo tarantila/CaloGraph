@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import NoReturn
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import current_user, require_csrf
-from app.database import get_db
+from app.config import settings
+from app.database import SessionLocal, get_db
 from app.google_health.errors import GoogleHealthDisabledError, GoogleHealthOAuthError
 from app.google_health.service import (
     complete_google_health_oauth,
@@ -13,7 +18,17 @@ from app.google_health.service import (
     start_google_health_oauth,
 )
 from app.models import User
-from app.schemas_google_health import GoogleHealthOAuthStartResponse, GoogleHealthStatus
+from app.schemas_google_health import (
+    GoogleHealthOAuthStartResponse,
+    GoogleHealthStatus,
+    GoogleHealthSyncResponse,
+)
+from app.services.google_health_nutrition_sync import (
+    GoogleHealthNutritionSyncError,
+    GoogleHealthNutritionSyncService,
+)
+from app.services.rate_limit import check_rate_limit, normalize_client_ip
+from app.services.user_operation_lock import shared_user_operation
 
 router = APIRouter(prefix="/google-health", tags=["Google Health"])
 
@@ -40,6 +55,56 @@ def _oauth_error(exc: GoogleHealthOAuthError) -> HTTPException:
         else exc.status_code
     )
     return HTTPException(status_code=status, detail=detail)
+
+
+def _rate_limit_google_health_sync(db: Session, request: Request, user: User) -> None:
+    with shared_user_operation(db, user.id):
+        client = normalize_client_ip(request.client.host if request.client else None)
+        check_rate_limit(
+            db,
+            "google-health-sync-ip",
+            f"ip:{client}",
+            settings.reconcile_ip_rate_limit,
+            settings.reconcile_rate_limit_window_seconds,
+        )
+        check_rate_limit(
+            db,
+            "google-health-sync-user",
+            f"user:{user.id}",
+            settings.reconcile_rate_limit,
+            settings.reconcile_rate_limit_window_seconds,
+        )
+
+
+def _sync_error(exc: GoogleHealthNutritionSyncError) -> NoReturn:
+    details = {
+        "disabled": (404, "Google Health ist nicht verfügbar."),
+        "not_configured": (409, "Google Health ist nicht konfiguriert."),
+        "connection_not_configured": (
+            404,
+            "Google Health-Verbindung ist nicht eingerichtet.",
+        ),
+        "connection_inactive": (409, "Google Health muss erneut autorisiert werden."),
+        "scope_missing": (
+            409,
+            "Die erforderliche schreibgeschützte Berechtigung wurde nicht erteilt.",
+        ),
+        "reauth_required": (409, "Google Health muss erneut autorisiert werden."),
+        "rate_limited": (429, "Google Health ist vorübergehend nicht verfügbar."),
+        "transient_error": (502, "Google Health ist vorübergehend nicht verfügbar."),
+        "provider_error": (502, "Google Health ist vorübergehend nicht verfügbar."),
+        "pagination_error": (502, "Google Health ist vorübergehend nicht verfügbar."),
+        "invalid_response": (502, "Google Health ist vorübergehend nicht verfügbar."),
+        "persistence_error": (503, "Google Health-Daten konnten nicht gespeichert werden."),
+        "credential_decryption_error": (503, "Google Health ist derzeit nicht verfügbar."),
+        "credentials_unavailable": (503, "Google Health ist derzeit nicht verfügbar."),
+        "invalid_request": (422, "Der angeforderte Datumsbereich ist ungültig."),
+    }
+    status_code, detail = details.get(
+        exc.code,
+        (502, "Google Health ist vorübergehend nicht verfügbar."),
+    )
+    raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 def _wants_spa_redirect(request: Request) -> bool:
@@ -75,6 +140,42 @@ def _oauth_spa_redirect(result: str) -> RedirectResponse:
     return RedirectResponse(
         url=f"/konto/integrationen?google_health={result}",
         status_code=303,
+    )
+
+
+@router.post("/sync", response_model=GoogleHealthSyncResponse)
+def google_health_sync(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=366),
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> GoogleHealthSyncResponse:
+    if not settings.google_health_enabled:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
+    if not settings.google_health_client_id or not settings.google_health_client_secret:
+        raise HTTPException(status_code=409, detail="Google Health ist nicht konfiguriert.")
+
+    _rate_limit_google_health_sync(db, request, user)
+    end = datetime.now(ZoneInfo(user.timezone)).date()
+    start = end - timedelta(days=days - 1)
+    try:
+        result = GoogleHealthNutritionSyncService(session_factory=SessionLocal).sync(
+            user_id=user.id,
+            requested_start=start,
+            requested_end=end,
+        )
+    except GoogleHealthDisabledError as exc:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.") from exc
+    except GoogleHealthNutritionSyncError as exc:
+        _sync_error(exc)
+    return GoogleHealthSyncResponse(
+        status=result.status,
+        fetched_count=result.fetched_count,
+        persisted_count=result.persisted_count,
+        requested_start=result.requested_start,
+        requested_end=result.requested_end,
+        covered_start=result.covered_start,
+        covered_end=result.covered_end,
     )
 
 

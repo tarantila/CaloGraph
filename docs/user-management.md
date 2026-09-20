@@ -229,6 +229,20 @@ Because direct YAZIO retrieval uses an undocumented interface, Apple Health
 remains an independently configured provider option; CaloGraph does not switch
 to it automatically.
 
+## Personal Google Health connection
+
+Google Health is connected exclusively through the official Google Health API
+v4. CaloGraph currently reads Nutrition Log data only with the read-only OAuth
+scope `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`;
+activity and weight are not obtained through Google Health. The connection is
+stored encrypted per account. After authorization, users can start a manual
+nutrition synchronization for a bounded period under
+**Account → Integrations**.
+
+An active OAuth connection is available for provider selection only after
+canonical Google nutrition evidence exists. Without that evidence, the source
+remains visible but is reported as `no_data` and unavailable.
+
 ## Nutrition provider priority
 
 Under **Konto → Datenquellen**, each user can order the providers for the

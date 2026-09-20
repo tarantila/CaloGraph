@@ -143,6 +143,7 @@ def _point(
     total_carbohydrate: NutritionQuantity | None = NutritionQuantity(40.0, "g"),
     total_fat: NutritionQuantity | None = NutritionQuantity(12.0, "g"),
     food_display_name: str | None = "Bowl",
+    meal_type: str | None = None,
 ) -> NutritionLogDataPoint:
     return NutritionLogDataPoint(
         name=name,
@@ -153,6 +154,7 @@ def _point(
             energy_from_fat=energy_from_fat,
             total_carbohydrate=total_carbohydrate,
             total_fat=total_fat,
+            meal_type=meal_type,
             serving=serving,
             food=food,
             food_display_name=food_display_name,
@@ -725,7 +727,13 @@ def test_out_of_range_points_are_discarded_before_persistence(db, user):
     assert {
         source.source_record_id
         for source in _rows(db, NutritionSourceObservation)
+        if source.source_namespace == "google_health.nutrition_log"
     } == {"in-range"}
+    assert {
+        source.source_record_id
+        for source in _rows(db, NutritionSourceObservation)
+        if source.source_namespace == "google_health.food"
+    } == {"users/me/dataTypes/food/dataPoints/food-1"}
 
 
 def test_overlong_direct_dto_name_is_rejected_before_domain_writes(db, user):
@@ -941,7 +949,7 @@ def test_every_domain_target_has_exactly_one_provenance_with_lineage(db, user):
     )
     sources = _rows(db, NutritionSourceObservation)
     provenance = _rows(db, NutritionProvenance)
-    assert len(sources) == 1
+    assert len(sources) == 2
     assert sources[0].provider_key == PROVIDER
     assert sources[0].source_instance_id == connection.id
     target_columns = (
@@ -974,52 +982,62 @@ def test_every_domain_target_has_exactly_one_provenance_with_lineage(db, user):
     assert len(provenance_target_ids) == len(persisted_target_ids)
     assert set(provenance_target_ids) == set(persisted_target_ids)
     assert all(provenance_target_ids.count(target_id) == 1 for target_id in persisted_target_ids)
-    assert all(item.source_observation_id == sources[0].id for item in provenance)
+    assert {item.source_observation_id for item in provenance} == {source.id for source in sources}
     assert all(item.lineage_state in {state.value for state in LineageState} for item in provenance)
 
 
-def test_food_reference_alone_does_not_create_empty_profile_or_tombstone(db, user):
-    food_resource = "users/me/dataTypes/food/dataPoints/food-alone"
+def test_food_events_create_snapshot_and_simple_events_do_not(db, user):
     connection = _connection(db, user)
+    food_resource = "users/me/dataTypes/food/dataPoints/food-product"
     _ingest(
         db,
         user,
         (
             _point(
-                name="food-only",
+                name="food-product",
                 food=food_resource,
-                nutrients=(),
-                energy=None,
-                total_carbohydrate=None,
-                total_fat=None,
-                food_display_name=None,
+                food_display_name="Bowl",
+                meal_type="DINNER",
             ),
+            _point(
+                name="simple-product",
+                food=None,
+                food_display_name=None,
+                meal_type="SNACK",
+            ),
+            _anonymous_direct_point(),
         ),
         connection=connection,
     )
-    events = _rows(db, NutritionConsumptionEvent)
-    assert len(events) == 1
-    event = events[0]
-    assert event.event_kind == "product"
-    identity = next(
-        identity
-        for identity in _rows(db, NutritionExternalIdentity)
-        if (
-            identity.provider_key == PROVIDER
-            and identity.source_instance_id == connection.id
-            and identity.identity_value == food_resource
-            and identity.identity_kind in {"product", "food"}
+
+    events = {event.logical_event_key: event for event in _rows(db, NutritionConsumptionEvent)}
+    product = events["food-product"]
+    simple = events["simple-product"]
+    anonymous = next(event for event in events.values() if event.logical_event_key.startswith("anonymous:"))
+
+    assert product.food_snapshot_id is not None
+    snapshot = db.get(NutritionFoodSnapshot, product.food_snapshot_id)
+    assert snapshot is not None
+    assert snapshot.name == "Bowl"
+    assert len(snapshot.content_hash) == 64
+    assert snapshot.provider_metadata["meal_type"] == "DINNER"
+    assert snapshot.provider_metadata["food"] == food_resource
+    identity = db.scalar(
+        select(NutritionExternalIdentity).where(
+            NutritionExternalIdentity.namespace == "google_health.food",
+            NutritionExternalIdentity.identity_value == food_resource,
         )
     )
-    assert identity.namespace
-    assert any(
-        link.external_identity_id == identity.id and link.consumption_event_id == event.id
-        for link in _rows(db, NutritionExternalIdentityLink)
-    )
-    assert not _rows(db, NutritionFoodProfile)
-    assert not _rows(db, NutritionFoodSnapshot)
-    assert not _rows(db, NutritionSourceTombstone)
-    assert not _rows(db, HealthSample)
+    assert identity is not None
+    profile = db.scalar(select(NutritionFoodProfile))
+    assert profile is not None
+    assert profile.current_snapshot_id == snapshot.id
+    assert identity.provider_metadata["display_name"] == "Bowl"
+    assert product.provider_metadata["meal_type"] == "DINNER"
+    assert simple.food_snapshot_id is None
+    assert anonymous.food_snapshot_id is None
+    assert db.scalar(select(func.count()).select_from(NutritionFoodProfile)) == 1
+    assert db.scalar(select(func.count()).select_from(NutritionFoodSnapshot)) == 1
 
 
 

@@ -109,3 +109,30 @@ def test_google_health_direct_and_file_secret_sources_conflict_without_leaks(
     assert direct not in message
     assert str(secret_file) not in message
     assert "file-google-secret" not in message
+
+
+def test_google_health_runtime_templates_wire_non_secret_google_values() -> None:
+    project_root = next(
+        (
+            candidate
+            for candidate in (Path.cwd(), Path.cwd().parent, Path("/workspace"))
+            if (candidate / "docker-compose.yml").is_file()
+        ),
+        None,
+    )
+    assert project_root is not None
+    compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+    development = (project_root / ".env.example").read_text(encoding="utf-8")
+    production = (project_root / ".env.production.example").read_text(encoding="utf-8")
+
+    for template in (development, production):
+        assert "GOOGLE_HEALTH_ENABLED=" in template
+        assert "GOOGLE_HEALTH_CLIENT_ID=" in template
+        assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE=" in template
+        assert "GOOGLE_HEALTH_CLIENT_SECRET=" not in template
+
+    assert "GOOGLE_HEALTH_ENABLED: ${GOOGLE_HEALTH_ENABLED:-false}" in compose
+    assert "GOOGLE_HEALTH_CLIENT_ID: ${GOOGLE_HEALTH_CLIENT_ID-}" in compose
+    assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE: /run/secrets/google_health_client_secret" in compose
+    assert "google_health_client_secret:" in compose
+    assert "file: ${GOOGLE_HEALTH_CLIENT_SECRET_FILE:-/dev/null}" in compose
