@@ -8,10 +8,12 @@ WEIGHT_PROVIDER_SOURCE_TYPES: dict[str, str] = {
     "apple_health": "apple_health_xml",
     "health_auto_export": "health_auto_export_v2",
     "yazio": "yazio_export_v1",
+    "google_health": "google_health_weight_v4",
 }
 WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS: dict[str, tuple[str, ...]] = {
     "apple_health": ("apple_health_xml", "health_auto_export_v2"),
     "yazio": ("yazio_export_v1",),
+    "google_health": ("google_health_weight_v4",),
 }
 WEIGHT_SOURCE_TYPES = frozenset(WEIGHT_PROVIDER_SOURCE_TYPES.values())
 
