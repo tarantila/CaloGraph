@@ -79,6 +79,7 @@ class UserProviderPreference(Base):
     __table_args__ = (
         CheckConstraint("length(data_area) > 0", name="ck_provider_preferences_data_area"),
         CheckConstraint("length(provider_key) > 0", name="ck_provider_preferences_provider_key"),
+        {"info": {"skip_autogenerate": True}},
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -461,7 +462,7 @@ class ApiToken(Base):
 class NutritionTarget(Base):
     __tablename__ = "nutrition_targets"
     __table_args__ = (
-        UniqueConstraint("id", "user_id", name="uq_nutrition_targets_id_user"),
+        Index("uq_nutrition_targets_id_user", "id", "user_id", unique=True),
         UniqueConstraint("user_id", "valid_from", name="uq_target_user_valid_from"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="ck_target_date_range"),
         CheckConstraint(
@@ -531,11 +532,6 @@ class NutritionTargetActivitySource(Base):
             ["nutrition_targets.id", "nutrition_targets.user_id"],
             name="fk_nutrition_target_activity_sources_target_user",
             ondelete="CASCADE",
-        ),
-        UniqueConstraint(
-            "target_id",
-            "priority",
-            name="uq_nutrition_target_activity_sources_target_priority",
         ),
         CheckConstraint(
             "priority >= 1",
