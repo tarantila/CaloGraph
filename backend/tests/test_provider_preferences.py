@@ -1810,6 +1810,7 @@ def test_google_activity_availability_requires_full_scope_and_canonical_evidence
         ("not_configured", "not_configured"),
         ("reauth", "reauth_required"),
         ("incomplete_scopes", "reauth_required"),
+        ("wrong_user", "no_data"),
         ("wrong_connection", "no_data"),
         ("wrong_metric", "no_data"),
         ("wrong_source", "no_data"),
@@ -1824,7 +1825,7 @@ def test_google_activity_availability_matrix(
         monkeypatch.setattr(settings, "google_health_client_id", "client-id")
         monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = None
-    if case in {"reauth", "incomplete_scopes", "wrong_connection", "wrong_metric", "wrong_source", "matching"}:
+    if case not in {"disabled", "not_configured"}:
         connection = _add_google(db, user, state="reauth_required" if case == "reauth" else "active")
         connection.granted_scopes = (
             ["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"]
@@ -1832,14 +1833,24 @@ def test_google_activity_availability_matrix(
             else sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
         )
         db.flush()
-    if case in {"wrong_connection", "wrong_metric", "wrong_source", "matching"}:
+    if case in {"wrong_user", "wrong_connection", "wrong_metric", "wrong_source", "matching"}:
+        sample_user = user
+        sample_connection = connection
+        if case == "wrong_user":
+            sample_user = User(username="availability-other-user", password_hash="synthetic-password-hash")
+            db.add(sample_user)
+            db.flush()
+            sample_connection = _add_google(db, sample_user)
+            sample_connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
         _add_sample(
             db,
-            user,
+            sample_user,
             metric_type=WEIGHT_METRIC if case == "wrong_metric" else ACTIVE_ENERGY_METRIC,
             source_type="wrong-source" if case == "wrong_source" else GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
             source_identifier=(
-                str(connection.id) if case == "matching" else f"wrong-{connection.id}"
+                f"wrong-{sample_connection.id}"
+                if case == "wrong_connection"
+                else str(sample_connection.id)
             ),
             value=Decimal("250"),
             local_date=date(2026, 9, 20),
