@@ -363,6 +363,21 @@ def _date_value(value: object, *, context: YazioProviderErrorContext) -> date:
         raise _invalid_response(context)
     return parsed
 
+def _weight_date_value(
+    value: object, *, context: YazioProviderErrorContext
+) -> date:
+    if not isinstance(value, str):
+        raise _invalid_response(context, location="date")
+    if "T" in value or " " in value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _invalid_response(context, location="date") from exc
+        return parsed.date()
+    return _date_value(value, context=context)
+
+
+
 
 def _token_from_response(
     response: object,
@@ -872,7 +887,7 @@ def _normalize_weight_entry(
     provider_date = _field(entry, "date")
     if provider_date is _MISSING or provider_date is UNSET or provider_date is None:
         return None
-    parsed_date = _date_value(provider_date, context=context)
+    parsed_date = _weight_date_value(provider_date, context=context)
     value = _numeric(_field(entry, "value"), context=context)
     if value is None:
         return None

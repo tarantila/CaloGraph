@@ -310,6 +310,46 @@ def test_sdk_translates_network_timeout_and_redacts_secrets(monkeypatch: pytest.
 
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "private-app-secret")
     assert "private-app-secret" not in repr(settings)
+
+@pytest.mark.parametrize(
+    "provider_date",
+    ["2026-01-02T03:04:05Z", "2026-01-02T03:04:05+05:30"],
+)
+def test_sdk_normalizes_v22_weight_timestamp_shape_without_changing_identity(
+    provider_date: str,
+) -> None:
+    entry = type(
+        "WeightEntry",
+        (),
+        {
+            "date": provider_date,
+            "id": "synthetic-provider-id",
+            "value": 1.0,
+            "external_id": "synthetic-external-id",
+            "gateway": "synthetic-gateway",
+            "source": "synthetic-source",
+        },
+    )()
+
+    normalized = yazio_sdk_provider._normalize_weight_entry(
+        entry,
+        context=yazio_sdk_provider._context(
+            "latest_weight", "latest_weight", "WeightEntry"
+        ),
+    )
+
+    assert normalized == {
+        "id": "synthetic-provider-id",
+        "date": "2026-01-02",
+        "value": 1.0,
+        "unit": "kg",
+        "external_id": "synthetic-external-id",
+        "gateway": "synthetic-gateway",
+        "source": "synthetic-source",
+        "_identity": "synthetic-provider-id",
+    }
+
+
 def test_sdk_weight_skips_typed_record_without_stable_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
