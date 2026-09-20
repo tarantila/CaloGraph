@@ -14,7 +14,7 @@ from app.api.google_health import _oauth_error
 from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
 from app.models import User, UserSession
-from app.schemas_google_health import GoogleHealthStatus
+from app.schemas_google_health import GoogleHealthDomainResult, GoogleHealthStatus
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
 
 
@@ -27,27 +27,34 @@ def test_google_health_sync_success_uses_inclusive_user_local_range(
     csrf = _login(client)
     captured: dict[str, object] = {}
 
+
     class FakeService:
         def __init__(self, **kwargs):
             del kwargs
 
         def sync(self, **kwargs):
             captured.update(kwargs)
+            domain = GoogleHealthDomainResult(
+                status="success",
+                fetched_count=3,
+                persisted_count=2,
+                requested_start=kwargs["requested_start"],
+                requested_end=kwargs["requested_end"],
+                covered_start=kwargs["requested_start"],
+                covered_end=kwargs["requested_end"],
+            )
             return type(
                 "Result",
                 (),
                 {
-                    "status": "completed",
-                    "fetched_count": 3,
-                    "persisted_count": 2,
-                    "requested_start": kwargs["requested_start"],
-                    "requested_end": kwargs["requested_end"],
-                    "covered_start": kwargs["requested_start"],
-                    "covered_end": kwargs["requested_end"],
+                    "status": "success",
+                    "nutrition": domain,
+                    "activity_energy": domain,
+                    "weight": domain,
                 },
             )()
 
-    monkeypatch.setattr(google_health_api, "GoogleHealthNutritionSyncService", FakeService)
+    monkeypatch.setattr(google_health_api, "GoogleHealthSyncService", FakeService)
     response = client.post(
         "/api/v1/google-health/sync?days=29",
         headers={"X-CSRF-Token": csrf},
@@ -56,14 +63,21 @@ def test_google_health_sync_success_uses_inclusive_user_local_range(
     end = datetime.now(ZoneInfo(user.timezone)).date()
     start = end - timedelta(days=28)
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "completed",
+    expected_domain = {
+        "status": "success",
         "fetched_count": 3,
         "persisted_count": 2,
         "requested_start": start.isoformat(),
         "requested_end": end.isoformat(),
         "covered_start": start.isoformat(),
         "covered_end": end.isoformat(),
+        "error_code": None,
+    }
+    assert response.json() == {
+        "status": "success",
+        "nutrition": expected_domain,
+        "activity_energy": expected_domain,
+        "weight": expected_domain,
     }
     assert captured["user_id"] == user.id
     assert captured["requested_start"] == start
@@ -73,6 +87,20 @@ def test_google_health_sync_success_uses_inclusive_user_local_range(
 def test_google_health_sync_requires_csrf(client: TestClient, user: User):
     _login(client)
     response = client.post("/api/v1/google-health/sync")
+    assert response.status_code == 403
+
+
+def test_google_health_sync_requires_authentication(client: TestClient):
+    response = client.post("/api/v1/google-health/sync")
+    assert response.status_code == 401
+
+
+def test_google_health_sync_rejects_invalid_csrf(client: TestClient, user: User):
+    _login(client)
+    response = client.post(
+        "/api/v1/google-health/sync",
+        headers={"X-CSRF-Token": "invalid-csrf-token"},
+    )
     assert response.status_code == 403
 
 
@@ -106,21 +134,25 @@ def test_google_health_sync_defaults_to_thirty_inclusive_days(
 
         def sync(self, **kwargs):
             captured.update(kwargs)
+            domain = GoogleHealthDomainResult(
+                status="no_data",
+                fetched_count=0,
+                persisted_count=0,
+                requested_start=kwargs["requested_start"],
+                requested_end=kwargs["requested_end"],
+            )
             return type(
                 "Result",
                 (),
                 {
-                    "status": "completed",
-                    "fetched_count": 0,
-                    "persisted_count": 0,
-                    "requested_start": kwargs["requested_start"],
-                    "requested_end": kwargs["requested_end"],
-                    "covered_start": None,
-                    "covered_end": None,
+                    "status": "no_data",
+                    "nutrition": domain,
+                    "activity_energy": domain,
+                    "weight": domain,
                 },
             )()
 
-    monkeypatch.setattr(google_health_api, "GoogleHealthNutritionSyncService", FakeService)
+    monkeypatch.setattr(google_health_api, "GoogleHealthSyncService", FakeService)
     response = client.post(
         "/api/v1/google-health/sync",
         headers={"X-CSRF-Token": csrf},
@@ -144,12 +176,19 @@ def test_google_health_sync_defaults_to_thirty_inclusive_days(
     ],
 )
 def test_google_health_sync_maps_errors_without_exception_text(
-    client: TestClient, user: User, monkeypatch, code: str, status: int, detail: str
+    client: TestClient,
+    user: User,
+    monkeypatch,
+    caplog,
+    code: str,
+    status: int,
+    detail: str,
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
     monkeypatch.setattr(settings, "google_health_client_id", "client-id")
     monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     csrf = _login(client)
+    sentinel = "refresh-token-sentinel raw-provider-payload 987654.321"
 
     class FakeService:
         def __init__(self, **kwargs):
@@ -157,16 +196,17 @@ def test_google_health_sync_maps_errors_without_exception_text(
 
         def sync(self, **kwargs):
             del kwargs
-            raise GoogleHealthNutritionSyncError(code, "secret provider payload")
+            raise GoogleHealthNutritionSyncError(code, sentinel)
 
-    monkeypatch.setattr(google_health_api, "GoogleHealthNutritionSyncService", FakeService)
+    monkeypatch.setattr(google_health_api, "GoogleHealthSyncService", FakeService)
     response = client.post(
         "/api/v1/google-health/sync",
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == status
     assert response.json()["detail"] == detail
-    assert "secret provider payload" not in response.text
+    assert sentinel not in response.text
+    assert sentinel not in caplog.text
 
 
 def test_google_health_sync_rejects_disabled_and_unconfigured(

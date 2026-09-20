@@ -33,7 +33,7 @@ class GoogleHealthOAuthStartResponse(BaseModel):
     authorization_url: str
 
 
-class GoogleHealthSyncResponse(BaseModel):
+class GoogleHealthDomainResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: str
@@ -43,3 +43,13 @@ class GoogleHealthSyncResponse(BaseModel):
     requested_end: date
     covered_start: date | None = None
     covered_end: date | None = None
+    error_code: str | None = None
+
+
+class GoogleHealthSyncResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    nutrition: GoogleHealthDomainResult
+    activity_energy: GoogleHealthDomainResult
+    weight: GoogleHealthDomainResult

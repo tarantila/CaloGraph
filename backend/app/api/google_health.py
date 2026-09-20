@@ -23,10 +23,8 @@ from app.schemas_google_health import (
     GoogleHealthStatus,
     GoogleHealthSyncResponse,
 )
-from app.services.google_health_nutrition_sync import (
-    GoogleHealthNutritionSyncError,
-    GoogleHealthNutritionSyncService,
-)
+from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
+from app.services.google_health_sync import GoogleHealthSyncService
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.user_operation_lock import shared_user_operation
 
@@ -159,7 +157,7 @@ def google_health_sync(
     end = datetime.now(ZoneInfo(user.timezone)).date()
     start = end - timedelta(days=days - 1)
     try:
-        result = GoogleHealthNutritionSyncService(session_factory=SessionLocal).sync(
+        result = GoogleHealthSyncService(session_factory=SessionLocal).sync(
             user_id=user.id,
             requested_start=start,
             requested_end=end,
@@ -170,15 +168,10 @@ def google_health_sync(
         _sync_error(exc)
     return GoogleHealthSyncResponse(
         status=result.status,
-        fetched_count=result.fetched_count,
-        persisted_count=result.persisted_count,
-        requested_start=result.requested_start,
-        requested_end=result.requested_end,
-        covered_start=result.covered_start,
-        covered_end=result.covered_end,
+        nutrition=result.nutrition,
+        activity_energy=result.activity_energy,
+        weight=result.weight,
     )
-
-
 @router.get("/status", response_model=GoogleHealthStatus)
 def google_health_status_route(
     user: User = Depends(current_user), db: Session = Depends(get_db)
