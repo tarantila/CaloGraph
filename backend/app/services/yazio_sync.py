@@ -194,6 +194,13 @@ def _with_provider_context(
     )
     return mapped
 
+def _with_transport_context(
+    mapped: YazioSyncError,
+    error: YazioTransportError,
+) -> YazioSyncError:
+    mapped.provider_context = error.context
+    return mapped
+
 
 def _map_yazio_provider_error(error: YazioProviderError) -> YazioSyncError:
     if isinstance(error, YazioProviderAuthenticationError):
@@ -239,6 +246,8 @@ def _provider_context_details(error: Exception) -> dict[str, object]:
     ):
         value = context.get(source_key)
         if isinstance(value, str) and value:
+            if source_key == "response_model":
+                value = value.replace("[", "").replace("]", "")
             details[detail_key] = value[:64]
     location = context.get("validation_location")
     if isinstance(location, str) and location:
@@ -603,39 +612,53 @@ def validate_yazio_credentials(
             "Es laufen bereits zu viele YAZIO-Vorgänge. Bitte später erneut versuchen."
         ) from exc
     except YazioTransportAuthenticationError as exc:
-        raise YazioAuthenticationError(
-            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
+        raise _with_transport_context(
+            YazioAuthenticationError(
+                "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
+            ),
+            exc,
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
+        raise _with_transport_context(
+            YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE),
+            exc,
+        ) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
-        raise YazioRateLimitedError(exc.retry_after) from exc
+        raise _with_transport_context(
+            YazioRateLimitedError(exc.retry_after),
+            exc,
+        ) from exc
     except YazioTransportNetworkTimeoutError as exc:
         _record_yazio_provider_failure()
-        raise YazioNetworkTimeoutError(
-            "YAZIO hat nicht rechtzeitig geantwortet."
+        raise _with_transport_context(
+            YazioNetworkTimeoutError("YAZIO hat nicht rechtzeitig geantwortet."),
+            exc,
         ) from exc
     except YazioTransportInvalidResponseError as exc:
         _record_yazio_provider_failure()
-        raise YazioInvalidResponseError(
-            "YAZIO hat eine ungültige Antwort geliefert."
+        raise _with_transport_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."),
+            exc,
         ) from exc
     except YazioTransportUnavailableError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
-        raise YazioOperationDeadlineExceeded(
-            "YAZIO hat nicht rechtzeitig geantwortet."
+        raise _with_transport_context(
+            YazioOperationDeadlineExceeded("YAZIO hat nicht rechtzeitig geantwortet."),
+            exc,
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     _clear_yazio_provider_failures()
 
@@ -687,39 +710,53 @@ def _fetch_yazio_payload_unlocked(
             provider_mode=provider_mode,
         )
     except YazioTransportAuthenticationError as exc:
-        raise YazioAuthenticationError(
-            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+        raise _with_transport_context(
+            YazioAuthenticationError(
+                "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
+            ),
+            exc,
         ) from exc
     except YazioTransportVersionBlockedError as exc:
         _record_yazio_provider_failure()
-        raise YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE) from exc
+        raise _with_transport_context(
+            YazioVersionBlockedError(YAZIO_VERSION_BLOCKED_MESSAGE),
+            exc,
+        ) from exc
     except YazioTransportRateLimitedError as exc:
         _record_yazio_provider_failure()
-        raise YazioRateLimitedError(exc.retry_after) from exc
+        raise _with_transport_context(
+            YazioRateLimitedError(exc.retry_after),
+            exc,
+        ) from exc
     except YazioTransportNetworkTimeoutError as exc:
         _record_yazio_provider_failure()
-        raise YazioNetworkTimeoutError(
-            "YAZIO-Abruf hat die maximale Wartezeit überschritten."
+        raise _with_transport_context(
+            YazioNetworkTimeoutError("YAZIO-Abruf hat die maximale Wartezeit überschritten."),
+            exc,
         ) from exc
     except YazioTransportInvalidResponseError as exc:
         _record_yazio_provider_failure()
-        raise YazioInvalidResponseError(
-            "YAZIO hat eine ungültige Antwort geliefert."
+        raise _with_transport_context(
+            YazioInvalidResponseError("YAZIO hat eine ungültige Antwort geliefert."),
+            exc,
         ) from exc
     except YazioTransportUnavailableError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     except YazioTransportDeadlineError as exc:
         _record_yazio_provider_failure()
-        raise YazioOperationDeadlineExceeded(
-            "YAZIO-Abruf hat die maximale Laufzeit überschritten."
+        raise _with_transport_context(
+            YazioOperationDeadlineExceeded("YAZIO-Abruf hat die maximale Laufzeit überschritten."),
+            exc,
         ) from exc
     except YazioTransportError as exc:
         _record_yazio_provider_failure()
-        raise YazioUnavailableError(
-            "YAZIO ist vorübergehend nicht erreichbar."
+        raise _with_transport_context(
+            YazioUnavailableError("YAZIO ist vorübergehend nicht erreichbar."),
+            exc,
         ) from exc
     _clear_yazio_provider_failures()
     return result
@@ -1108,7 +1145,7 @@ def _run_historical_yazio_sync_locked(
             actor_ref=security_reference("user", user_id),
             target_ref=security_reference("yazio_connection", connection_id),
             reason=yazio_failure_reason(exc),
-            details={"mode": "range"},
+            details={"mode": "range", **_provider_context_details(exc)},
         )
         return None
     completed_at = datetime.now(UTC)

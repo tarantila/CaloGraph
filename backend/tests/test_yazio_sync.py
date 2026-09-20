@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 from datetime import UTC, date, datetime, timedelta
@@ -26,6 +27,7 @@ from app.services.yazio_provider import YazioFoodDiary
 from app.services.yazio_sync import (
     YazioAuthenticationError,
     YazioConnectionDisabled,
+    YazioInvalidResponseError,
     YazioSdkNotConfigured,
     YazioSyncError,
     YazioVersionBlockedError,
@@ -492,6 +494,7 @@ def test_credential_decryption_failure_emits_one_safe_security_event(
 def test_fully_rejected_payload_is_not_recorded_as_success(
     db: Session, user: User, monkeypatch
 ) -> None:
+
     _configure_key(monkeypatch)
     connection = configure_yazio_connection(
         user,
@@ -532,7 +535,146 @@ def test_fully_rejected_payload_is_not_recorded_as_success(
         match="YAZIO-Daten konnten nicht verarbeitet werden",
     ):
         run_manual_yazio_sync(user.id, fetcher=overprecise_fetch)
+def test_manual_sync_worker_context_reaches_security_event(
+    db: Session, user: User, monkeypatch
+) -> None:
+    _configure_key(monkeypatch)
+    monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
+    connection = configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "test-token-secret-marker",
+        sync_interval_minutes=360,
+        sync_days=1,
+    )
+    context = {
+        "operation": "consumed_items",
+        "endpoint_key": "consumed_items",
+        "upstream_status_code": None,
+        "response_model": "Response[ConsumedItems]",
+        "error_category": "response_validation",
+        "validation_location": "products[].some_field",
+        "retryable": False,
+    }
+    output = json.dumps(
+        {
+            "ok": False,
+            "kind": "invalid_response",
+            "context": context,
+            "message": (
+                "test-food-name-secret-marker "
+                "test-token-secret-marker "
+                "test-weight-value-marker"
+            ),
+        }
+    ).encode()
 
+    class Process:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(output)
+
+        def wait(self, timeout: int | None = None) -> int:
+            del timeout
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    records: list[str] = []
+    monkeypatch.setattr(
+        yazio_transport.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(
+        security_events.logger,
+        "log",
+        lambda _level, message: records.append(message),
+    )
+
+    with pytest.raises(YazioInvalidResponseError) as caught:
+        run_manual_yazio_sync(user.id)
+
+    assert str(caught.value) == "YAZIO hat eine ungültige Antwort geliefert."
+    event = json.loads(records[0])
+    assert event["event"] == "integration.yazio.sync_failed"
+    assert event["provider_operation"] == "consumed_items"
+    assert event["provider_endpoint"] == "consumed_items"
+    assert event["provider_model"] == "ResponseConsumedItems"
+    assert event["provider_error_category"] == "response_validation"
+    assert event["provider_validation_location"] == "products.some_field"
+    assert event["provider_retryable"] is False
+    for marker in (
+        "test-food-name-secret-marker",
+        "test-token-secret-marker",
+        "test-weight-value-marker",
+    ):
+        assert marker not in records[0]
+        assert marker not in str(caught.value)
+    assert connection.last_success_at is None
+
+
+
+def test_historical_sync_worker_context_reaches_security_event(
+    db: Session, user: User, monkeypatch
+) -> None:
+    _configure_key(monkeypatch)
+    monkeypatch.setattr(settings, "yazio_provider", "sdk")
+    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
+    connection = configure_yazio_connection(
+        user,
+        "owner@example.com",
+        "yazio-password",
+        sync_interval_minutes=360,
+        sync_days=1,
+    )
+    context = {
+        "operation": "product_lookup",
+        "endpoint_key": "product",
+        "upstream_status_code": None,
+        "response_model": "Product",
+        "error_category": "response_validation",
+        "validation_location": "response",
+        "retryable": False,
+    }
+    output = json.dumps(
+        {"ok": False, "kind": "invalid_response", "context": context}
+    ).encode()
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(output)
+
+        def wait(self, timeout: int | None = None) -> int:
+            del timeout
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    records: list[str] = []
+    monkeypatch.setattr(
+        yazio_transport.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(
+        security_events.logger,
+        "log",
+        lambda _level, message: records.append(message),
+    )
+
+    assert run_scheduled_yazio_sync(connection.id) is None
+    event = json.loads(records[0])
+    assert event["provider_operation"] == "product_lookup"
+    assert event["provider_endpoint"] == "product"
+    assert event["provider_model"] == "Product"
+    assert event["provider_error_category"] == "response_validation"
+    assert event["provider_validation_location"] == "response"
+    assert event["provider_retryable"] is False
 
 def test_authentication_failure_disables_automatic_retries(
     db: Session, user: User, monkeypatch

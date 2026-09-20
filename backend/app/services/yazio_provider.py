@@ -165,6 +165,7 @@ ProviderEndpointKey = Literal[
 ProviderErrorCategory = Literal[
     "http",
     "validation",
+    "response_validation",
     "transport",
     "timeout",
     "authentication",
@@ -207,8 +208,8 @@ class YazioProviderErrorContext:
             "consumed_items", "product", "domain_worker",
         }
         categories = {
-            "http", "validation", "transport", "timeout", "authentication",
-            "rate_limit", "unavailable",
+            "http", "validation", "response_validation", "transport", "timeout",
+            "authentication", "rate_limit", "unavailable",
         }
         operation = value.get("operation")
         endpoint_key = value.get("endpoint_key")

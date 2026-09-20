@@ -13,6 +13,7 @@ from app.security_events import log_security_event
 from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_provider import (
+    YazioProviderErrorContext,
     YazioProviderInvalidResponseError,
     YazioProviderMetadata,
     YazioProviderNetworkTimeoutError,
@@ -30,6 +31,7 @@ from app.services.yazio_transport import (
     YazioTransportDeadlineError,
     YazioTransportError,
     YazioTransportInvalidResponseError,
+    YazioTransportUnavailableError,
     _BoundedYazioClient,
     _execute_worker,
     _login,
@@ -581,6 +583,143 @@ def test_worker_preserves_bounded_provider_context_without_raw_data(
     assert caught.value.context == context
     assert "private-password" not in repr(caught.value)
     assert "raw" not in repr(caught.value).lower()
+
+def test_worker_entrypoint_parent_and_sync_preserve_context(monkeypatch) -> None:
+    context = YazioProviderErrorContext(
+        operation="consumed_items",
+        endpoint_key="consumed_items",
+        upstream_status_code=None,
+        response_model="Response[ConsumedItems]",
+        error_category="response_validation",
+        validation_location="products[].some_field",
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        yazio_transport,
+        "_execute_worker",
+        lambda _payload: (_ for _ in ()).throw(
+            YazioProviderInvalidResponseError(context=context)
+        ),
+    )
+    stdin = type("Input", (), {"buffer": io.BytesIO(b'{"operation":"fetch_domain"}')})()
+    stdout = io.StringIO()
+    monkeypatch.setattr(yazio_transport.sys, "stdin", stdin)
+    monkeypatch.setattr(yazio_transport.sys, "stdout", stdout)
+
+    assert yazio_transport._worker_main() == 0
+    worker_envelope = json.loads(stdout.getvalue())
+    assert worker_envelope == {
+        "ok": False,
+        "kind": "invalid_response",
+        "context": context.to_dict(),
+    }
+
+    process = _FakeProcess(stdout.getvalue().encode())
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(YazioTransportInvalidResponseError) as caught:
+        _run_worker({"operation": "fetch_domain"}, deadline_seconds=5)
+    assert caught.value.context == context.to_dict()
+
+    with pytest.raises(YazioProviderInvalidResponseError) as provider_caught:
+        yazio_transport._raise_domain_provider_error(caught.value)
+    provider_error = provider_caught.value
+    assert provider_error.context == context
+    mapped = yazio_sync._map_yazio_provider_error(provider_error)
+    assert yazio_sync._provider_context_details(mapped) == {
+        "provider_operation": "consumed_items",
+        "provider_endpoint": "consumed_items",
+        "provider_model": "ResponseConsumedItems",
+        "provider_error_category": "response_validation",
+        "provider_validation_location": "products.some_field",
+        "provider_retryable": False,
+    }
+
+
+def test_worker_parent_preserves_product_lookup_context(monkeypatch) -> None:
+    context = {
+        "operation": "product_lookup",
+        "endpoint_key": "product",
+        "upstream_status_code": None,
+        "response_model": "Product",
+        "error_category": "response_validation",
+        "validation_location": "response",
+        "retryable": False,
+    }
+    process = _FakeProcess(
+        json.dumps(
+            {
+                "ok": False,
+                "kind": "invalid_response",
+                "context": context,
+                "message": "test-food-name-secret-marker test-token-secret-marker",
+            }
+        ).encode()
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(YazioTransportInvalidResponseError) as caught:
+        _run_worker({"operation": "fetch_domain"}, deadline_seconds=5)
+    assert caught.value.context == context
+    assert "test-food-name-secret-marker" not in repr(caught.value)
+    assert "test-token-secret-marker" not in repr(caught.value)
+
+
+def test_worker_parent_preserves_http_status_without_response_body(monkeypatch) -> None:
+    context = {
+        "operation": "consumed_items",
+        "endpoint_key": "consumed_items",
+        "upstream_status_code": 502,
+        "response_model": "Response[ConsumedItems]",
+        "error_category": "http",
+        "validation_location": None,
+        "retryable": True,
+    }
+    process = _FakeProcess(
+        json.dumps(
+            {
+                "ok": False,
+                "kind": "unavailable",
+                "context": context,
+                "body": "test-weight-value-marker",
+            }
+        ).encode()
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(YazioTransportUnavailableError) as caught:
+        _run_worker({"operation": "fetch_domain"}, deadline_seconds=5)
+    assert caught.value.context == context
+    assert "test-weight-value-marker" not in repr(caught.value)
+
+
+def test_payload_transport_rewrapping_preserves_provider_context(monkeypatch) -> None:
+    context = YazioProviderErrorContext(
+        operation="daily_summary",
+        endpoint_key="daily_summary",
+        upstream_status_code=502,
+        response_model="Response[DailySummary]",
+        error_category="http",
+        validation_location=None,
+        retryable=True,
+    )
+    monkeypatch.setattr(
+        yazio_sync,
+        "fetch_yazio_payload_transport",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            YazioTransportUnavailableError(context=context.to_dict())
+        ),
+    )
+
+    with pytest.raises(YazioSyncError) as caught:
+        yazio_sync._fetch_yazio_payload_unlocked(
+            "owner@example.com",
+            "private-password",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            False,
+            provider_mode="sdk",
+        )
+    assert caught.value.provider_context == context.to_dict()
 
 
 def test_provider_context_details_match_security_event_contract() -> None:
