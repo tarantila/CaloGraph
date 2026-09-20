@@ -9,9 +9,12 @@ from typing import ClassVar
 import pytest
 
 from app.google_health.client import (
+    GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH,
     GOOGLE_HEALTH_MAX_RESPONSE_BYTES,
+    GOOGLE_HEALTH_WEIGHT_PATH,
     GoogleHealthAuthenticationError,
     GoogleHealthClient,
+    GoogleHealthDataPointPage,
     GoogleHealthHTTPTransport,
     GoogleHealthInvalidResponseError,
     GoogleHealthProviderUnavailableError,
@@ -98,10 +101,182 @@ class FakeTransport:
     def __init__(self, response: FakeResponse | None = None) -> None:
         self.response = response or FakeResponse()
         self.calls: list[dict[str, object]] = []
-
     def get_nutrition_log(self, **kwargs: object) -> FakeResponse:
         self.calls.append(kwargs)
         return self.response
+
+
+class FakeDataTransport:
+    def __init__(self, response: FakeResponse | None = None) -> None:
+        self.response = response or FakeResponse()
+        self.calls: list[dict[str, object]] = []
+
+    def get_data_points(self, **kwargs: object) -> FakeResponse:
+        self.calls.append(kwargs)
+        return self.response
+
+
+def _activity_point() -> dict[str, object]:
+    return {
+        "name": "users/me/dataTypes/active-energy-burned/dataPoints/activity-1",
+        "startTime": "2026-01-02T10:00:00Z",
+        "endTime": "2026-01-02T11:00:00Z",
+        "startUtcOffset": "3600s",
+        "endUtcOffset": "3600s",
+        "activeEnergyBurned": {"kcal": Decimal("123.45")},
+        "dataSource": {"recordingMethod": "AUTOMATIC"},
+    }
+
+
+def _weight_point() -> dict[str, object]:
+    return {
+        "name": "users/me/dataTypes/weight/dataPoints/weight-1",
+        "startTime": "2026-01-02T10:00:00Z",
+        "endTime": "2026-01-02T10:00:00Z",
+        "startUtcOffset": "3600s",
+        "endUtcOffset": "3600s",
+        "weight": {"kilograms": Decimal("72.50")},
+        "dataSource": {"recordingMethod": "MANUAL"},
+    }
+
+
+def test_http_transport_uses_exact_activity_and_weight_paths() -> None:
+    class RecordingHTTPClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def stream(self, method: str, url: str, **kwargs: object) -> StreamContext:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return StreamContext(FakeResponse())
+
+    http_client = RecordingHTTPClient()
+    transport = GoogleHealthHTTPTransport(http_client=http_client)
+
+    for data_type, expected_path in (
+        ("active-energy-burned", GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH),
+        ("weight", GOOGLE_HEALTH_WEIGHT_PATH),
+    ):
+        transport.get_data_points(
+            data_type=data_type,
+            access_token="access-token",
+            page_size=10,
+            page_token=None,
+            start_time=None,
+            end_time=None,
+        )
+
+    assert [call["method"] for call in http_client.calls] == ["GET", "GET"]
+    assert [call["url"] for call in http_client.calls] == [
+        f"https://health.googleapis.com/v4{GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH}",
+        f"https://health.googleapis.com/v4{GOOGLE_HEALTH_WEIGHT_PATH}",
+    ]
+
+
+def test_client_parses_activity_and_weight_into_typed_pages() -> None:
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [_activity_point()]}))
+    activity_page = GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+        "active-energy-burned",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 3, tzinfo=UTC),
+        page_token=None,
+        page_size=10,
+    )
+    activity = activity_page.data_points[0]
+    assert activity.name.endswith("/activity-1")
+    assert activity.start_time == datetime(2026, 1, 2, 10, tzinfo=UTC)
+    assert activity.end_time == datetime(2026, 1, 2, 11, tzinfo=UTC)
+    assert activity.value == Decimal("123.45")
+    assert activity.unit == "kcal"
+    assert activity.start_utc_offset == "3600s"
+    assert activity.data_source is not None
+    assert activity.data_source.recording_method == "AUTOMATIC"
+
+    weight_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [_weight_point()]}))
+    weight_page = GoogleHealthClient(weight_transport, FakeCredentials()).get_data_points_page(
+        "weight",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 3, tzinfo=UTC),
+        page_token=None,
+        page_size=10,
+    )
+    weight = weight_page.data_points[0]
+    assert weight.name.endswith("/weight-1")
+    assert weight.value == Decimal("72.50")
+    assert weight.unit == "kilograms"
+    assert weight.start_time == weight.end_time
+
+
+def test_client_rejects_unallowlisted_data_type_and_invalid_physical_bounds() -> None:
+    client = GoogleHealthClient(FakeDataTransport(), FakeCredentials())
+    with pytest.raises(ValueError):
+        client.get_data_points_page(
+            "steps",
+            start_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 2, tzinfo=UTC),
+            page_token=None,
+            page_size=10,
+        )
+    with pytest.raises(ValueError):
+        client.get_data_points_page(
+            "weight",
+            start_time=datetime(2026, 1, 2),
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+    with pytest.raises(ValueError):
+        client.get_data_points_page(
+            "weight",
+            start_time=datetime(2026, 1, 2, tzinfo=UTC),
+            end_time=datetime(2026, 1, 1, tzinfo=UTC),
+            page_token=None,
+            page_size=10,
+        )
+
+
+@pytest.mark.parametrize("page_size", [0, 101])
+def test_client_rejects_unbounded_datapoint_pages(page_size: int) -> None:
+    with pytest.raises(ValueError):
+        GoogleHealthClient(FakeDataTransport(), FakeCredentials()).get_data_points_page(
+            "weight",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=page_size,
+        )
+
+
+def test_client_rejects_invalid_datapoint_token_numeric_value_and_page_length() -> None:
+    with pytest.raises(ValueError):
+        GoogleHealthClient(FakeDataTransport(), FakeCredentials()).get_data_points_page(
+            "weight", start_time=None, end_time=None, page_token="\nunsafe", page_size=10
+        )
+
+    malformed = _weight_point()
+    malformed["weight"] = {"kilograms": "nan"}
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(
+            FakeDataTransport(FakeResponse(payload={"dataPoints": [malformed]})),
+            FakeCredentials(),
+        ).get_data_points_page(
+            "weight", start_time=None, end_time=None, page_token=None, page_size=10
+        )
+
+    too_many = {"dataPoints": [_weight_point()] * 11}
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(FakeDataTransport(FakeResponse(payload=too_many)), FakeCredentials()).get_data_points_page(
+            "weight", start_time=None, end_time=None, page_token=None, page_size=10
+        )
+
+
+def test_client_maps_datapoint_provider_errors_without_raw_payload() -> None:
+    response = FakeResponse(status_code=500, payload={"secret": "do-not-leak"})
+    with pytest.raises(GoogleHealthProviderUnavailableError) as raised:
+        GoogleHealthClient(FakeDataTransport(response), FakeCredentials()).get_data_points_page(
+            "weight", start_time=None, end_time=None, page_token=None, page_size=10
+        )
+    assert "do-not-leak" not in "".join(traceback.format_exception(raised.value))
+    assert raised.value.__cause__ is None
 
 
 def test_client_uses_only_fixed_nutrition_log_get_operation() -> None:
