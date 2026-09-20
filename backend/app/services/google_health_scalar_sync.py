@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from app.google_health.client import (
 from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.models import GoogleHealthConnection, ImportBatch, User
 from app.services.import_service import _persist_sample_batch, _start_batch
-from app.weight import WEIGHT_METRIC, GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE
+from app.weight import GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE, WEIGHT_METRIC
 
 ACTIVITY_SOURCE_TYPE = GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
 WEIGHT_SOURCE_TYPE = GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE

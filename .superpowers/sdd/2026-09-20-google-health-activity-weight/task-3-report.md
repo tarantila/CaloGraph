@@ -129,3 +129,38 @@ Ergebnis:
 .................................................................        [100%]
 65 passed
 ```
+
+### Statischer Fix-Nachweis
+
+Die nachgelagerte statische Prüfung verlangte den fehlenden `UUID`-Import,
+Entfernung eines ungenutzten DTO-Imports und Ruff-konforme Importreihenfolge.
+Nach diesen ausschließlich statischen Korrekturen:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml build backend-ci
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  ruff check app/activity.py app/weight.py \
+  app/services/google_health_scalar_sync.py \
+  tests/test_google_health_scalar_sync.py
+```
+
+Ergebnis:
+
+```text
+All checks passed!
+```
+
+Der fokussierte Scalar-Testlauf wurde mit demselben neu gebauten Image erneut
+ausgeführt:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend-ci \
+  pytest tests/test_google_health_scalar_sync.py -q
+```
+
+Ergebnis:
+
+```text
+..........                                                               [100%]
+10 passed
+```

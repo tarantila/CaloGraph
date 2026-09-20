@@ -15,7 +15,6 @@ from app.activity import (
 )
 from app.google_health.client import (
     ActiveEnergyBurnedDataPoint,
-    GoogleHealthDataPointPage,
     WeightDataPoint,
 )
 from app.models import GoogleHealthConnection, HealthSample, User
@@ -24,11 +23,10 @@ from app.services.google_health_scalar_sync import (
     sync_google_health_weight,
 )
 from app.weight import (
+    GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
     WEIGHT_METRIC,
     WEIGHT_PROVIDER_SOURCE_TYPES,
-    GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
 )
-
 
 START = datetime(2026, 9, 15, 22, 30, tzinfo=UTC)
 END = datetime(2026, 9, 15, 23, 0, tzinfo=UTC)
