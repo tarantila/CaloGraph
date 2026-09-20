@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from alembic import op
+from sqlalchemy import text
 
 revision: str = "20260920_0032"
 down_revision: str | None = "20260918_0031"
@@ -39,6 +40,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    google_target_exists = bind.scalar(
+        text(
+            "SELECT 1 FROM nutrition_targets "
+            "WHERE activity_mode = 'full' "
+            "AND activity_source_type = :source_type "
+            "LIMIT 1"
+        ),
+        {"source_type": "google_health_activity_v4"},
+    )
+    if google_target_exists is not None:
+        raise RuntimeError(
+            "Cannot downgrade Google activity target constraint while Google targets exist"
+        )
     _replace_source_constraint(
         "'apple_health_xml', 'health_auto_export_v2', 'yazio_export_v1'"
     )

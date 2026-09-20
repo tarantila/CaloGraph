@@ -79,6 +79,11 @@ def test_google_activity_source_constraint_upgrades_and_downgrades() -> None:
                     "created_at": now,
                 },
             )
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot downgrade Google activity target constraint while Google targets exist",
+        ):
+            command.downgrade(alembic_config, PREVIOUS_REVISION)
         with engine.begin() as connection:
             connection.execute(
                 text("DELETE FROM nutrition_targets WHERE user_id = :user_id"),
