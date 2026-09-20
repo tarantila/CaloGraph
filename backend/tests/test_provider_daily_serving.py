@@ -114,14 +114,10 @@ def test_nutrition_provider_selection_skips_unavailable_priority_entries(monkeyp
 
     selection = provider_selection.resolve_nutrition_provider(object(), user_id=USER_ID)
     assert selection is not None
-    assert selection.provider_key == "yazio"
-    assert selection.provider_sources == (
-        ("yazio", SOURCE_INSTANCE_ID),
-        ("apple_health", SOURCE_INSTANCE_ID),
-    )
+    assert selection.provider_sources == (("yazio", SOURCE_INSTANCE_ID),)
 
 
-def test_nutrition_provider_selection_appends_missing_registry_providers(monkeypatch):
+def test_nutrition_provider_selection_does_not_append_unconfigured_providers(monkeypatch):
     monkeypatch.setattr(
         provider_selection,
         "list_provider_preferences",
@@ -142,10 +138,7 @@ def test_nutrition_provider_selection_appends_missing_registry_providers(monkeyp
 
     assert selection is not None
     assert selection.provider_key == "apple_health"
-    assert selection.provider_sources == (
-        ("apple_health", SOURCE_INSTANCE_ID),
-        ("yazio", SOURCE_INSTANCE_ID_B),
-    )
+    assert selection.provider_sources == (("apple_health", SOURCE_INSTANCE_ID),)
 
 
 def test_nutrition_provider_selection_uses_registry_when_preferences_are_empty(monkeypatch):

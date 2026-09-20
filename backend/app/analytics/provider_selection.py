@@ -86,6 +86,7 @@ def resolve_nutrition_provider(
         provider_keys = effective_provider_order(
             NUTRITION_DATA_AREA,
             tuple(item.provider_key for item in saved_preferences),
+            include_missing=not saved_preferences,
         )
     except ValueError as exc:
         raise NutritionProviderNotReady("configured provider is invalid") from exc

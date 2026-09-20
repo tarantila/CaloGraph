@@ -22,8 +22,13 @@ LEGACY_PROVIDER_KEY_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType(
     }
 )
 
-def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tuple[str, ...]:
-    """Return saved providers followed by missing providers in registry order."""
+def effective_provider_order(
+    data_area: str,
+    provider_keys: Sequence[str],
+    *,
+    include_missing: bool = True,
+) -> tuple[str, ...]:
+    """Return normalized saved providers, optionally followed by registry defaults."""
     normalized_area = normalize_data_area(data_area)
     supported = SUPPORTED_PROVIDER_KEYS.get(normalized_area)
     if supported is None:
@@ -38,7 +43,8 @@ def effective_provider_order(data_area: str, provider_keys: Sequence[str]) -> tu
             raise ValueError("provider list must not contain duplicates")
         seen.add(normalized_provider)
         effective.append(normalized_provider)
-    effective.extend(provider_key for provider_key in supported if provider_key not in seen)
+    if include_missing:
+        effective.extend(provider_key for provider_key in supported if provider_key not in seen)
     return tuple(effective)
 
 

@@ -12,6 +12,13 @@ follows [Semantic Versioning](https://semver.org/).
   `YAZIO_PROVIDER=sdk`; `YAZIO_SDK_CLIENT_ID` and
   `YAZIO_SDK_CLIENT_SECRET` remain optional maintainer/emergency overrides.
 
+### Data source priorities
+
+- When a preference list is explicitly saved, only its ordered providers form
+  the fallback chain; omitted providers are not added implicitly.
+- Accounts without a saved preference retain the existing registry fallback
+  during the migration period.
+
 
 ## [0.6.5] - 2026-09-07
 

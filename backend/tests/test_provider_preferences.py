@@ -995,6 +995,36 @@ def test_weight_priority_prefers_apple_over_yazio(
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
 
 
+def test_weight_priority_does_not_fallback_to_unlisted_provider(
+    client: TestClient,
+    user,
+    db,
+) -> None:
+    day = date(2026, 9, 15)
+    _add_yazio(db, user)
+    _add_weight_sample(
+        db,
+        user,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPES["apple_health"],
+        value=Decimal("71.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 9, tzinfo=UTC),
+        source_identifier="apple-device",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "yazio", 1),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "yazio"}
+    assert response.json()["points"] == []
+
+
 def test_weight_priority_falls_back_to_health_auto_export_without_forward_fill(
     client: TestClient,
     user,
@@ -1176,7 +1206,6 @@ def test_activity_health_auto_export_uses_apple_family_in_target_chain(
     )
     assert [(row.provider_key, row.source_type) for row in snapshots] == [
         ("apple_health", "health_auto_export_v2"),
-        ("yazio", "yazio_export_v1"),
     ]
 
 

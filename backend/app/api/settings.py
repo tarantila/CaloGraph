@@ -622,7 +622,11 @@ def update_provider_preference(
         provider_keys=normalized_providers,
     )
     if normalized_area == ACTIVITY_ENERGY_DATA_AREA:
-        activity_provider_keys = effective_provider_order(normalized_area, normalized_providers)
+        activity_provider_keys = effective_provider_order(
+            normalized_area,
+            normalized_providers,
+            include_missing=False,
+        )
         apply_activity_provider_to_current_target(
             db,
             user=user,
@@ -976,6 +980,7 @@ def _activity_priority_chain(
         provider_keys
         if provider_keys is not None
         else tuple(preference.provider_key for preference in activity_preferences),
+        include_missing=False,
     )
     return tuple(
         _activity_provider_source_type(

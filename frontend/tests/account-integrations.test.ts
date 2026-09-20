@@ -68,9 +68,11 @@ describe('AccountIntegrationsView', () => {
     apiMock.mockReset()
     setActivePinia(createPinia())
     setLocale(DEFAULT_LOCALE)
+    vi.stubEnv('TZ', 'Europe/Berlin')
     configureApi()
   })
   afterEach(() => {
+    vi.unstubAllEnvs()
     window.history.replaceState({}, '', '/')
   })
 

@@ -50,6 +50,7 @@ def resolve_scalar_provider(
         provider_keys = effective_provider_order(
             data_area,
             tuple(preference.provider_key for preference in saved_preferences),
+            include_missing=not saved_preferences,
         )
     except ValueError as exc:
         raise ScalarProviderNotReady("configured provider is invalid") from exc
