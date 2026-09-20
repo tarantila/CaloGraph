@@ -206,7 +206,7 @@ def test_get_state_requires_selection_for_multiple_providers_without_policy(db, 
     assert state.version is None
     assert state.configuration_mode == "none"
     assert [(item.id, item.label, item.available, item.rank) for item in state.sources] == [
-        ("google_health", "Google Health", True, None),
+        ("google_health", "Google Health", False, None),
         ("yazio", "YAZIO", True, None),
     ]
 
@@ -227,7 +227,7 @@ def test_get_state_reports_two_provider_global_policy_in_rank_order(db, user) ->
     assert state.version == 1
     assert state.configuration_mode == "global"
     assert [(item.id, item.label, item.available, item.rank) for item in state.sources] == [
-        ("google_health", "Google Health", True, 1),
+        ("google_health", "Google Health", False, 1),
         ("yazio", "YAZIO", True, 2),
     ]
 
@@ -261,7 +261,7 @@ def test_get_state_classifies_metric_specific_nutrition_policy_as_advanced(db, u
     assert state.version == 1
     assert state.configuration_mode == "advanced"
     assert [(item.id, item.available, item.rank) for item in state.sources] == [
-        ("google_health", True, None),
+        ("google_health", False, None),
         ("yazio", True, None),
     ]
 

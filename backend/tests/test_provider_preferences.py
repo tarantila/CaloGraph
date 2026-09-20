@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.config import settings
 from app.models import (
+    GoogleHealthConnection,
     HealthSample,
     ImportBatch,
     NutritionTarget,
@@ -17,6 +20,21 @@ from app.models import (
     UserProviderPriority,
     YazioConnection,
 )
+from app.nutrition.enums import (
+    CoverageState,
+    LineageState,
+    ObservationKind,
+    ObservationRole,
+    PresenceState,
+    ResolutionState,
+)
+from app.nutrition.models import (
+    NutritionConsumptionEvent,
+    NutritionFieldObservation,
+    NutritionIngestionRun,
+    NutritionSourceObservation,
+)
+from app.nutrition.resolution.metrics import canonical_unit
 from app.provider_preferences import (
     ACTIVITY_ENERGY_DATA_AREA,
     NUTRITION_DATA_AREA,
@@ -43,6 +61,87 @@ def _login(client: TestClient) -> str:
     )
     assert response.status_code == 200
     return response.json()["csrf_token"]
+def _add_google(db, user, *, state: str = "active") -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"encrypted-refresh-token",
+        granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
+        state=state,
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def _add_google_nutrition_evidence(db, user, connection: GoogleHealthConnection) -> None:
+    run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="google_health",
+        source_instance_id=connection.id,
+        connector_variant="availability-test",
+        status="completed",
+        coverage_state=CoverageState.COMPLETE.value,
+    )
+    db.add(run)
+    db.flush()
+    source = NutritionSourceObservation(
+        user_id=user.id,
+        ingestion_run_id=run.id,
+        provider_key="google_health",
+        source_instance_id=connection.id,
+        connector_variant="availability-test",
+        observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
+        source_namespace="google_health.nutrition_log",
+        source_record_id="availability-test",
+        source_revision=1,
+        observation_fingerprint=sha256(b"availability-test").hexdigest(),
+        local_date=date(2026, 9, 20),
+        timezone_source="provider",
+        time_confidence="exact",
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    db.add(source)
+    db.flush()
+    db.add(
+        NutritionFieldObservation(
+            user_id=user.id,
+            source_observation_id=source.id,
+            provider_field_path="nutrition.iron_mg",
+            provider_raw_value_decimal=Decimal("7"),
+            provider_raw_unit=canonical_unit("iron_mg"),
+            metric_key="iron_mg",
+            canonical_value=Decimal("7"),
+            canonical_unit=canonical_unit("iron_mg"),
+            observation_role=ObservationRole.CANONICAL.value,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.add(
+        NutritionConsumptionEvent(
+            user_id=user.id,
+            source_observation_id=source.id,
+            provider_key="google_health",
+            source_instance_id=connection.id,
+            event_kind="simple_product",
+            logical_event_key="availability-test",
+            revision=1,
+            local_date=date(2026, 9, 20),
+            amount=Decimal("1"),
+            amount_unit="serving",
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.commit()
 
 
 def _add_yazio(db, user) -> None:
@@ -480,6 +579,39 @@ def test_provider_preference_put_rejects_invalid_rank_without_mutation(
     assert client.get(PATH).json() == {
         "preferences": [{"data_area": "nutrition", "provider_key": "yazio"}]
     }
+
+
+def test_google_availability_is_no_data_for_active_connection_without_evidence(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    _add_google(db, user)
+    _login(client)
+
+    response = client.get(AVAILABILITY_PATH)
+
+    assert response.status_code == 200
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": False, "status": "no_data"}
+
+
+def test_google_availability_is_available_for_active_connection_with_canonical_evidence(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
+    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
+    connection = _add_google(db, user)
+    _add_google_nutrition_evidence(db, user, connection)
+    _login(client)
+
+    response = client.get(AVAILABILITY_PATH)
+
+    assert response.status_code == 200
+    google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": True, "status": "available"}
 
 
 def test_provider_availability_keeps_stable_status_values(client: TestClient, user, db) -> None:

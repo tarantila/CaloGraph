@@ -129,6 +129,10 @@ def resolve_provider_source_type(
 
 def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
     google = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id))
+    evidenced_providers = {
+        provider.provider_key
+        for provider in discover_nutrition_providers(db, user_id=user_id).providers
+    }
     if not settings.google_health_enabled or not settings.google_health_client_id or not settings.google_health_client_secret:
         google_status = "disabled"
     elif google is None:
@@ -136,12 +140,7 @@ def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailab
     elif google.state != "active":
         google_status = "reauth_required"
     else:
-        google_status = "available"
-
-    evidenced_providers = {
-        provider.provider_key
-        for provider in discover_nutrition_providers(db, user_id=user_id).providers
-    }
+        google_status = "available" if "google_health" in evidenced_providers else "no_data"
     if not settings.yazio_enabled:
         yazio_status = "disabled"
     else:

@@ -925,6 +925,9 @@ def _fetch_weight_range(
             normalized = _normalize_weight_entry(entry, context=context)
             if normalized is None:
                 continue
+            normalized_date = date.fromisoformat(normalized["date"])
+            if not start_day <= normalized_date <= end_day:
+                continue
             identity = normalized.pop("_identity")
             if isinstance(identity, str):
                 weights.setdefault(identity, normalized)

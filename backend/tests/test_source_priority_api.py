@@ -325,8 +325,11 @@ def test_source_priority_isolates_authenticated_users(client: TestClient, user: 
 
 
 def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
-    client: TestClient, user: User, db
+    client: TestClient, user: User, db, monkeypatch
 ) -> None:
+    monkeypatch.setattr("app.config.settings.google_health_enabled", True)
+    monkeypatch.setattr("app.config.settings.google_health_client_id", "client-id")
+    monkeypatch.setattr("app.config.settings.google_health_client_secret", "client-secret")
     _add_yazio(db, user)
     bootstrap_nutrition_priority(
         session_factory=lambda: db,
@@ -353,7 +356,7 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
         "version": 1,
         "sources": [
             {"id": "yazio", "label": "YAZIO", "available": True, "rank": 1},
-            {"id": "google_health", "label": "Google Health", "available": True, "rank": None},
+            {"id": "google_health", "label": "Google Health", "available": False, "rank": None},
         ],
         "configuration_mode": "none",
         "projection_refresh_required": False,
@@ -398,7 +401,7 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
         "status": "configured",
         "version": 2,
         "sources": [
-            {"id": "google_health", "label": "Google Health", "available": True, "rank": 1},
+            {"id": "google_health", "label": "Google Health", "available": False, "rank": 1},
             {"id": "yazio", "label": "YAZIO", "available": True, "rank": 2},
         ],
         "configuration_mode": "global",
