@@ -15,7 +15,7 @@ Expanded the German Google Health integrations UI and source-priority behavior w
 
 Ran the repository's current focused Vitest equivalent (`npm run test:unit -- --run tests/account-integrations.test.ts`) after adding the review regression assertions and before production changes.
 
-Result: **RED**, including the new reauthorization persistence assertion: the result panel disappeared after the post-sync status refresh changed the connection to `reauth_required`.
+Result: **RED**, including the new reauthorization persistence assertion: the result panel disappeared after the post-sync status refresh changed the connection to `reauth_required`, and the Google activity target source rendered its raw backend key before the type/map/locale fix.
 
 The brief's `npm test` command is not defined in `frontend/package.json`; `npm run test:unit` is the current equivalent.
 
