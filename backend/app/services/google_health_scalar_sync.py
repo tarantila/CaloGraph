@@ -56,8 +56,8 @@ class GoogleHealthScalarSyncResult:
     @property
     def persisted_count(self) -> int:
         return self.inserted + self.updated
- 
- 
+
+
 class _PagedClient(Protocol):
     def iter_data_points_pages(
         self,
