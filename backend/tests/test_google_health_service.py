@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 import app.security_events as security_events
+import app.services.google_health_connection_test as connection_test_module
 import app.services.security_audit as security_audit
 from app.config import settings
 from app.database import SessionLocal
@@ -18,7 +19,10 @@ from app.google_health.constants import (
     GOOGLE_HEALTH_REQUIRED_SCOPES,
     GOOGLE_HEALTH_SCOPES,
 )
-from app.google_health.errors import GoogleHealthTokenExchangeError
+from app.google_health.errors import (
+    GoogleHealthProviderUnavailableError,
+    GoogleHealthTokenExchangeError,
+)
 from app.google_health.oauth import hash_oauth_state, pkce_challenge
 from app.google_health.service import (
     GoogleHealthOAuthError,
@@ -949,13 +953,13 @@ def test_connection_test_uses_requested_user_credentials_without_persistence(
     clients: list[object] = []
 
     class ReadOnlyClient:
-        def get_nutrition_log_page(self, **kwargs):
+        def probe_nutrition_log(self, **kwargs):
             del kwargs
-            return object()
+            return 200
 
-        def get_data_points_page(self, *args, **kwargs):
+        def probe_data_points(self, *args, **kwargs):
             del args, kwargs
-            return object()
+            return 200
 
         def close(self):
             clients.append("closed")
@@ -977,3 +981,67 @@ def test_connection_test_uses_requested_user_credentials_without_persistence(
     ]
     assert len(clients) == 2
     assert before == history_snapshot()
+def test_connection_test_reports_bounded_failed_domain(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    _seed_credentials(db, user, refresh_token="refresh-a")
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        connection_test_module,
+        "log_security_event",
+        lambda event, **kwargs: events.append((event, kwargs["details"])),
+    )
+
+    calls: list[str] = []
+
+    class ReadOnlyClient:
+        def probe_nutrition_log(self, **kwargs):
+            del kwargs
+            calls.append("nutrition")
+            return 200
+
+        def probe_data_points(self, data_type, **kwargs):
+            del kwargs
+            calls.append(data_type)
+            if data_type == "weight":
+                raise GoogleHealthProviderUnavailableError(
+                    "provider unavailable",
+                    upstream_status_code=503,
+                )
+            return 200
+
+        def close(self):
+            calls.append("close")
+
+    service = GoogleHealthConnectionTestService(
+        session_factory=lambda: db,
+        client_factory=lambda credentials: ReadOnlyClient(),
+    )
+
+    result = service.test(user_id=user.id)
+
+    assert result.status == "failed"
+    assert result.error_category == "provider_error"
+    assert result.diagnostic is not None
+    assert result.diagnostic.domain == "weight"
+    assert result.diagnostic.operation == "weight_read"
+    assert result.diagnostic.endpoint_key == "weight_data_points"
+    assert result.diagnostic.upstream_status_code == 503
+    assert result.diagnostic.retryable is True
+    assert result.diagnostic.reauth_required is False
+    assert calls == ["nutrition", "active-energy-burned", "weight", "close"]
+    assert events == [
+        (
+            "integration.google_health.connection_test_failed",
+            {
+                "domain": "weight",
+                "operation": "weight_read",
+                "endpoint_key": "weight_data_points",
+                "upstream_status_code": 503,
+                "error_category": "provider_error",
+                "retryable": True,
+                "reauth_required": False,
+            },
+        )
+    ]

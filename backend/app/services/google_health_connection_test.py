@@ -20,27 +20,28 @@ from app.google_health.errors import (
     GoogleHealthScopeError,
 )
 from app.models import GoogleHealthConnection
+from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_sync import _default_credentials
 
 
 class _ReadOnlyClient(Protocol):
-    def get_nutrition_log_page(
+    def probe_nutrition_log(
         self,
         *,
         page_size: int,
         civil_start_time: date | None = None,
         civil_end_time: date | None = None,
-    ) -> object: ...
+    ) -> int: ...
 
-    def get_data_points_page(
+    def probe_data_points(
         self,
         data_type: str,
         *,
         start_time: datetime,
         end_time: datetime,
         page_size: int,
-    ) -> object: ...
+    ) -> int: ...
 
     def close(self) -> None: ...
 
@@ -49,7 +50,6 @@ SessionFactory = Callable[[], Session]
 ClientFactory = Callable[[object], _ReadOnlyClient]
 CredentialsFactory = Callable[[str, str, str], object]
 DecryptRefreshToken = Callable[[bytes], str]
-
 _SAFE_CATEGORIES = frozenset(
     {
         "credentials_unavailable",
@@ -61,12 +61,28 @@ _SAFE_CATEGORIES = frozenset(
         "invalid_response",
     }
 )
+_RETRYABLE_CATEGORIES = frozenset({"rate_limited", "provider_error", "transient_error"})
+_REAUTH_CATEGORIES = frozenset(
+    {"credentials_unavailable", "reauth_required", "scope_missing"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthConnectionTestDiagnostic:
+    domain: str
+    operation: str
+    endpoint_key: str
+    upstream_status_code: int | None
+    error_category: str
+    retryable: bool
+    reauth_required: bool
 
 
 @dataclass(frozen=True, slots=True)
 class GoogleHealthConnectionTestResult:
     status: str
     error_category: str | None = None
+    diagnostic: GoogleHealthConnectionTestDiagnostic | None = None
 
 
 class GoogleHealthConnectionTestService:
@@ -107,12 +123,76 @@ class GoogleHealthConnectionTestService:
         code = getattr(exc, "code", None)
         return code if isinstance(code, str) and code in _SAFE_CATEGORIES else "provider_error"
 
+    @classmethod
+    def _diagnostic(
+        cls,
+        *,
+        domain: str,
+        operation: str,
+        endpoint_key: str,
+        exc: BaseException,
+    ) -> GoogleHealthConnectionTestDiagnostic:
+        category = cls._category(exc)
+        status = getattr(exc, "upstream_status_code", None)
+        if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599:
+            status = None
+        return GoogleHealthConnectionTestDiagnostic(
+            domain=domain,
+            operation=operation,
+            endpoint_key=endpoint_key,
+            upstream_status_code=status,
+            error_category=category,
+            retryable=category in _RETRYABLE_CATEGORIES,
+            reauth_required=category in _REAUTH_CATEGORIES,
+        )
+
+    @staticmethod
+    def _log_failure(user_id: UUID, diagnostic: GoogleHealthConnectionTestDiagnostic) -> None:
+        details: dict[str, object] = {
+            "domain": diagnostic.domain,
+            "operation": diagnostic.operation,
+            "endpoint_key": diagnostic.endpoint_key,
+            "error_category": diagnostic.error_category,
+            "retryable": diagnostic.retryable,
+            "reauth_required": diagnostic.reauth_required,
+        }
+        if diagnostic.upstream_status_code is not None:
+            details["upstream_status_code"] = diagnostic.upstream_status_code
+        with suppress(Exception):
+            log_security_event(
+                "integration.google_health.connection_test_failed",
+                target_ref=security_reference("google_health", user_id),
+                details=details,
+            )
+
     def test(self, *, user_id: UUID) -> GoogleHealthConnectionTestResult:
         connection = self._connection(user_id)
         if connection is None or connection.state != "active":
-            return GoogleHealthConnectionTestResult("reauth_required", "reauth_required")
+            diagnostic = GoogleHealthConnectionTestDiagnostic(
+                "connection",
+                "connection_state",
+                "connection_state",
+                None,
+                "reauth_required",
+                False,
+                True,
+            )
+            self._log_failure(user_id, diagnostic)
+            return GoogleHealthConnectionTestResult(
+                "reauth_required", "reauth_required", diagnostic
+            )
         if not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ())):
-            return GoogleHealthConnectionTestResult("reauth_required", "scope_missing")
+            diagnostic = GoogleHealthConnectionTestDiagnostic(
+                "connection",
+                "scope_validation",
+                "scope_validation",
+                None,
+                "scope_missing",
+                False,
+                True,
+            )
+            self._log_failure(user_id, diagnostic)
+            return GoogleHealthConnectionTestResult("reauth_required", "scope_missing", diagnostic)
         try:
             client_id, client_secret = resolve_google_health_credentials(connection)
             refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token or b"")
@@ -121,41 +201,83 @@ class GoogleHealthConnectionTestService:
             credentials = self._credentials_factory(refresh_token, client_id, client_secret)
             client = self._client_factory(credentials)
         except Exception:
-            return GoogleHealthConnectionTestResult("reauth_required", "credentials_unavailable")
+            diagnostic = GoogleHealthConnectionTestDiagnostic(
+                "connection",
+                "credential_resolution",
+                "credential_resolution",
+                None,
+                "credentials_unavailable",
+                False,
+                True,
+            )
+            self._log_failure(user_id, diagnostic)
+            return GoogleHealthConnectionTestResult(
+                "reauth_required", "credentials_unavailable", diagnostic
+            )
         finally:
             refresh_token = ""
             client_secret = ""
 
         now = datetime.now(UTC)
-        try:
-            # Each request is a bounded GET and the response is deliberately discarded.
-            client.get_nutrition_log_page(
-                page_size=self._page_size,
-                civil_start_time=now.date(),
-                civil_end_time=now.date() + timedelta(days=1),
-            )
-            client.get_data_points_page(
-                "active-energy-burned",
-                start_time=now - timedelta(days=1),
-                end_time=now,
-                page_size=self._page_size,
-            )
-            client.get_data_points_page(
+        probes: tuple[tuple[str, str, str, Callable[[], object]], ...] = (
+            (
+                "nutrition",
+                "nutrition_read",
+                "nutrition_log_data_points",
+                lambda: client.probe_nutrition_log(
+                    page_size=self._page_size,
+                    civil_start_time=now.date(),
+                    civil_end_time=now.date() + timedelta(days=1),
+                ),
+            ),
+            (
+                "activity_energy",
+                "activity_read",
+                "active_energy_burned_data_points",
+                lambda: client.probe_data_points(
+                    "active-energy-burned",
+                    start_time=now - timedelta(days=1),
+                    end_time=now,
+                    page_size=self._page_size,
+                ),
+            ),
+            (
                 "weight",
-                start_time=now - timedelta(days=1),
-                end_time=now,
-                page_size=self._page_size,
-            )
-        except Exception as exc:
-            category = self._category(exc)
-            return GoogleHealthConnectionTestResult(
-                "reauth_required" if category in {"reauth_required", "scope_missing"} else "failed",
-                category,
-            )
+                "weight_read",
+                "weight_data_points",
+                lambda: client.probe_data_points(
+                    "weight",
+                    start_time=now - timedelta(days=1),
+                    end_time=now,
+                    page_size=self._page_size,
+                ),
+            ),
+        )
+        try:
+            for domain, operation, endpoint_key, probe in probes:
+                try:
+                    probe()
+                except Exception as exc:
+                    diagnostic = self._diagnostic(
+                        domain=domain,
+                        operation=operation,
+                        endpoint_key=endpoint_key,
+                        exc=exc,
+                    )
+                    self._log_failure(user_id, diagnostic)
+                    return GoogleHealthConnectionTestResult(
+                        "reauth_required" if diagnostic.reauth_required else "failed",
+                        diagnostic.error_category,
+                        diagnostic,
+                    )
         finally:
             with suppress(Exception):
                 client.close()
         return GoogleHealthConnectionTestResult("connected")
 
 
-__all__ = ["GoogleHealthConnectionTestResult", "GoogleHealthConnectionTestService"]
+__all__ = [
+    "GoogleHealthConnectionTestDiagnostic",
+    "GoogleHealthConnectionTestResult",
+    "GoogleHealthConnectionTestService",
+]

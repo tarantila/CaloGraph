@@ -511,6 +511,60 @@ class GoogleHealthClient:
             end_time=end_time,
         )
 
+    def probe_nutrition_log(
+        self,
+        *,
+        page_size: int,
+        civil_start_time: date | datetime | None = None,
+        civil_end_time: date | datetime | None = None,
+    ) -> int:
+        _validate_page_size(page_size, maximum=self._max_page_size)
+        _validate_civil_bounds(civil_start_time, civil_end_time)
+        access_token = self._access_token()
+        try:
+            response = self._transport.get_nutrition_log(
+                access_token=access_token,
+                page_size=page_size,
+                page_token=None,
+                start_time=None,
+                end_time=None,
+                civil_start_time=civil_start_time,
+                civil_end_time=civil_end_time,
+            )
+        except GoogleHealthClientError:
+            raise
+        except Exception:
+            raise GoogleHealthTransientError("Google Health transport failed temporarily") from None
+        return self._validate_probe_response(response, page_size=page_size)
+
+    def probe_data_points(
+        self,
+        data_type: str,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
+    ) -> int:
+        if data_type not in _DATA_TYPE_PATHS:
+            raise ValueError("Google Health data type is not supported")
+        _validate_page_size(page_size, maximum=self._max_page_size)
+        _validate_physical_bounds(start_time, end_time)
+        access_token = self._access_token()
+        try:
+            response = self._transport.get_data_points(
+                data_type=data_type,
+                access_token=access_token,
+                page_size=page_size,
+                page_token=None,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except GoogleHealthClientError:
+            raise
+        except Exception:
+            raise GoogleHealthTransientError("Google Health transport failed temporarily") from None
+        return self._validate_probe_response(response, page_size=page_size)
+
     def iter_data_points_pages(
         self,
         data_type: str,
@@ -599,6 +653,67 @@ class GoogleHealthClient:
         return token
 
     @staticmethod
+    def _validate_response_status(response: GoogleHealthResponse) -> int:
+        try:
+            status_code = int(response.status_code)
+        except (AttributeError, TypeError, ValueError):
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response"
+            ) from None
+        if status_code == 401:
+            raise GoogleHealthAuthenticationError(
+                "Google Health credentials require reauthentication",
+                upstream_status_code=status_code,
+            )
+        if status_code == 403:
+            raise GoogleHealthScopeError(
+                "Google Health read permission is unavailable",
+                upstream_status_code=status_code,
+            )
+        if status_code == 429:
+            raise GoogleHealthRateLimitedError(
+                _retry_after(response.headers),
+                upstream_status_code=status_code,
+            )
+        if 500 <= status_code <= 599:
+            raise GoogleHealthProviderUnavailableError(
+                "Google Health is temporarily unavailable",
+                upstream_status_code=status_code,
+            )
+        if status_code < 200 or status_code >= 300:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response",
+                upstream_status_code=status_code,
+            )
+        return status_code
+
+    @staticmethod
+    def _validate_probe_response(response: GoogleHealthResponse, *, page_size: int) -> int:
+        status_code = GoogleHealthClient._validate_response_status(response)
+        try:
+            content_length = response.headers.get("content-length")
+            if content_length is not None and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
+                raise ValueError
+            payload = response.json()
+        except Exception:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned malformed JSON",
+                upstream_status_code=status_code,
+            ) from None
+        if not isinstance(payload, dict):
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response",
+                upstream_status_code=status_code,
+            )
+        data_points = payload.get("dataPoints", [])
+        if not isinstance(data_points, list) or len(data_points) > page_size:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response",
+                upstream_status_code=status_code,
+            )
+        return status_code
+
+    @staticmethod
     def _parse_response(
         response: GoogleHealthResponse,
         *,
@@ -609,25 +724,7 @@ class GoogleHealthClient:
         civil_start_time: date | datetime | None,
         civil_end_time: date | datetime | None,
     ) -> NutritionLogPage:
-        try:
-            status_code = int(response.status_code)
-        except AttributeError, TypeError, ValueError:
-            raise GoogleHealthInvalidResponseError(
-                "Google Health returned an invalid response"
-            ) from None
-
-        if status_code == 401:
-            raise GoogleHealthAuthenticationError(
-                "Google Health credentials require reauthentication"
-            )
-        if status_code == 403:
-            raise GoogleHealthScopeError("Google Health read permission is unavailable")
-        if status_code == 429:
-            raise GoogleHealthRateLimitedError(_retry_after(response.headers))
-        if 500 <= status_code <= 599:
-            raise GoogleHealthProviderUnavailableError("Google Health is temporarily unavailable")
-        if status_code < 200 or status_code >= 300:
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
+        GoogleHealthClient._validate_response_status(response)
 
         try:
             content_length = response.headers.get("content-length")
@@ -681,24 +778,7 @@ class GoogleHealthClient:
         start_time: datetime | None,
         end_time: datetime | None,
     ) -> GoogleHealthDataPointPage:
-        try:
-            status_code = int(response.status_code)
-        except (AttributeError, TypeError, ValueError):
-            raise GoogleHealthInvalidResponseError(
-                "Google Health returned an invalid response"
-            ) from None
-        if status_code == 401:
-            raise GoogleHealthAuthenticationError(
-                "Google Health credentials require reauthentication"
-            )
-        if status_code == 403:
-            raise GoogleHealthScopeError("Google Health read permission is unavailable")
-        if status_code == 429:
-            raise GoogleHealthRateLimitedError(_retry_after(response.headers))
-        if 500 <= status_code <= 599:
-            raise GoogleHealthProviderUnavailableError("Google Health is temporarily unavailable")
-        if status_code < 200 or status_code >= 300:
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
+        GoogleHealthClient._validate_response_status(response)
         try:
             content_length = response.headers.get("content-length")
             if content_length is not None and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:

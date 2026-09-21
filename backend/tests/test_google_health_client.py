@@ -564,6 +564,30 @@ def test_transport_rejects_physical_time_bounds_before_request() -> None:
         (401, GoogleHealthAuthenticationError),
         (403, GoogleHealthScopeError),
         (429, GoogleHealthRateLimitedError),
+        (503, GoogleHealthProviderUnavailableError),
+        (418, GoogleHealthInvalidResponseError),
+    ],
+)
+def test_client_preserves_only_bounded_upstream_status(
+    status: int, error_type: type[Exception]
+) -> None:
+    response = FakeResponse(status, payload={"secret": "do-not-leak"})
+
+    with pytest.raises(error_type) as raised:
+        GoogleHealthClient(FakeTransport(response), FakeCredentials()).get_nutrition_log_page(
+            page_size=1
+        )
+
+    assert getattr(raised.value, "upstream_status_code", None) == status
+    assert "do-not-leak" not in "".join(traceback.format_exception(raised.value))
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (401, GoogleHealthAuthenticationError),
+        (403, GoogleHealthScopeError),
+        (429, GoogleHealthRateLimitedError),
         (500, GoogleHealthProviderUnavailableError),
         (302, GoogleHealthInvalidResponseError),
         (418, GoogleHealthInvalidResponseError),
@@ -582,6 +606,57 @@ def test_client_maps_provider_status_without_response_leakage(
     assert raised.value.__cause__ is None
     if isinstance(raised.value, GoogleHealthRateLimitedError):
         assert 0 <= raised.value.retry_after <= 300
+
+
+def test_connection_probe_accepts_nonempty_unparsed_domain_response() -> None:
+    transport = FakeDataTransport(
+        FakeResponse(
+            payload={
+                "dataPoints": [{"providerShape": "accepted_without_parsing"}],
+            }
+        )
+    )
+
+    status_code = GoogleHealthClient(transport, FakeCredentials()).probe_data_points(
+        "active-energy-burned",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
+        page_size=1,
+    )
+
+    assert status_code == 200
+
+
+def test_connection_probe_rejects_invalid_top_level_response() -> None:
+    client = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": "invalid"})),
+        FakeCredentials(),
+    )
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        client.probe_data_points(
+            "active-energy-burned",
+            start_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 2, tzinfo=UTC),
+            page_size=1,
+        )
+
+    assert raised.value.upstream_status_code == 200
+
+
+@pytest.mark.parametrize("data_type", ["active-energy-burned", "weight"])
+def test_client_accepts_empty_scalar_domain_response(data_type: str) -> None:
+    page = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": []})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        data_type,
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
+        page_size=1,
+    )
+
+    assert page.data_points == ()
 
 
 def test_client_maps_transport_failure_without_provider_cause() -> None:
