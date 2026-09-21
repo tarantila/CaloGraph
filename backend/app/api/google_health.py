@@ -8,17 +8,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import current_user, require_csrf
+from app.auth.dependencies import current_user, require_csrf, require_csrf_exclusive
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.google_health.errors import GoogleHealthDisabledError, GoogleHealthOAuthError
 from app.google_health.service import (
     complete_google_health_oauth,
+    delete_google_health_credentials,
+    disconnect_google_health,
     google_health_status,
+    save_google_health_credentials,
     start_google_health_oauth,
 )
+from app.google_health.credentials import GoogleHealthCredentialError
 from app.models import User
 from app.schemas_google_health import (
+    GoogleHealthCredentialsInput,
     GoogleHealthOAuthStartResponse,
     GoogleHealthStatus,
     GoogleHealthSyncResponse,
@@ -177,6 +182,51 @@ def google_health_status_route(
     user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> GoogleHealthStatus:
     return google_health_status(db, user)
+
+
+def _credential_error(exc: GoogleHealthCredentialError) -> HTTPException:
+    detail = {
+        "credential_required": "Google Health-Zugangsdaten sind erforderlich.",
+        "credential_pair_required": "Client-ID und Client-Secret müssen gemeinsam gesetzt werden.",
+        "credential_too_long": "Google Health-Zugangsdaten sind zu lang.",
+        "credential_invalid": "Google Health-Zugangsdaten sind ungültig.",
+        "credential_unavailable": "Google Health ist derzeit nicht verfügbar.",
+    }.get(exc.code, "Google Health-Zugangsdaten sind ungültig.")
+    return HTTPException(status_code=422, detail=detail)
+
+
+@router.put("/credentials", response_model=GoogleHealthStatus)
+def google_health_credentials_put(
+    payload: GoogleHealthCredentialsInput,
+    user: User = Depends(require_csrf_exclusive),
+    db: Session = Depends(get_db),
+) -> GoogleHealthStatus:
+    if not settings.google_health_enabled:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
+    try:
+        return save_google_health_credentials(db, user, payload, lock=False)
+    except GoogleHealthCredentialError as exc:
+        raise _credential_error(exc) from exc
+
+
+@router.delete("/credentials", response_model=GoogleHealthStatus)
+def google_health_credentials_delete(
+    user: User = Depends(require_csrf_exclusive),
+    db: Session = Depends(get_db),
+) -> GoogleHealthStatus:
+    if not settings.google_health_enabled:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
+    return delete_google_health_credentials(db, user, lock=False)
+
+
+@router.delete("/connection", response_model=GoogleHealthStatus)
+def google_health_connection_delete(
+    user: User = Depends(require_csrf_exclusive),
+    db: Session = Depends(get_db),
+) -> GoogleHealthStatus:
+    if not settings.google_health_enabled:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
+    return disconnect_google_health(db, user, lock=False)
 
 
 @router.post("/oauth/start", response_model=GoogleHealthOAuthStartResponse)

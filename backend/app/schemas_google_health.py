@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
 
 GoogleHealthState = Literal[
     "disabled",
+    "not_configured",
     "not_connected",
     "active",
     "reauth_required",
@@ -14,17 +17,43 @@ GoogleHealthState = Literal[
 ]
 
 
+class GoogleHealthCredentialsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str = Field(max_length=512)
+    client_secret: str | None = Field(default=None, max_length=512, repr=False)
+
+    @field_validator("client_id", "client_secret")
+    @classmethod
+    def validate_credential_value(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return value
+        if not value.strip():
+            raise ValueError("credential values must not be blank")
+        if any(ord(char) < 0x20 for char in value):
+            raise ValueError("credential values contain unsupported characters")
+        return value
+
+
 class GoogleHealthStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     available: bool
     configured: bool
+    client_id_configured: bool = False
+    client_secret_configured: bool = False
+    redirect_uri: str = ""
     state: GoogleHealthState
+    sync_state: str = "idle"
+    retry_attempt: int = 0
+    retry_max_attempts: int = 0
+    next_retry_at: datetime | None = None
     granted_scopes: tuple[str, ...] = ()
     refresh_token_expires_at: datetime | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
     last_error: str | None = None
+    last_error_category: str | None = None
 
 
 class GoogleHealthOAuthStartResponse(BaseModel):

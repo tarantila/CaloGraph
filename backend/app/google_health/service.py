@@ -23,6 +23,10 @@ from app.google_health.errors import (
     GoogleHealthOAuthError,
     GoogleHealthTokenExchangeError,
 )
+from app.google_health.credentials import (
+    GoogleHealthCredentialError,
+    credential_pair_from_input,
+)
 from app.google_health.oauth import (
     build_authorization_url,
     create_oauth_state,
@@ -32,7 +36,7 @@ from app.google_health.oauth import (
     normalize_granted_scopes,
 )
 from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
-from app.schemas_google_health import GoogleHealthStatus
+from app.schemas_google_health import GoogleHealthCredentialsInput, GoogleHealthStatus
 from app.security_events import log_security_event, security_reference
 from app.services.credential_crypto import (
     CredentialEncryptionError,
@@ -135,45 +139,77 @@ def _rate_limit_start(db: Session, user: User, client_ip: str | None) -> None:
         settings.reconcile_rate_limit_window_seconds,
     )
 
+def _configured(connection: GoogleHealthConnection | None) -> bool:
+    return bool(connection and connection.client_id and connection.encrypted_client_secret)
 
-def _configured() -> bool:
-    return bool(
-        settings.google_health_enabled
-        and settings.google_health_client_id
-        and settings.google_health_client_secret
-    )
+
+_SAFE_ERROR_CATEGORIES = frozenset(
+    {
+        "credential_unavailable",
+        "invalid_response",
+        "provider_error",
+        "rate_limited",
+        "reauth_required",
+        "scope_missing",
+        "transient_error",
+    }
+)
+
+
+def _safe_error_category(value: str | None) -> str | None:
+    return value if value in _SAFE_ERROR_CATEGORIES else None
 
 
 def _status_from_connection(connection: GoogleHealthConnection | None) -> GoogleHealthStatus:
+    client_id_configured = bool(connection and connection.client_id)
+    client_secret_configured = bool(connection and connection.encrypted_client_secret)
+    configured = client_id_configured and client_secret_configured
     if not settings.google_health_enabled:
         state = "disabled"
-    elif connection is None:
+    elif not configured:
+        state = "not_configured"
+    elif connection is None or not connection.encrypted_refresh_token:
         state = "not_connected"
-    elif connection.last_error == "scope_missing" or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(
-        set(connection.granted_scopes or ())
+    elif connection.last_error == "scope_missing" or (
+        connection.state != "reauth_required"
+        and not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     ):
         state = "scope_missing"
-    else:
+    elif connection.state in {"active", "reauth_required", "not_connected"}:
         state = connection.state
+    else:
+        state = "reauth_required"
+    error_category = _safe_error_category(connection.last_error if connection else None)
     return GoogleHealthStatus(
         available=bool(settings.google_health_enabled),
-        configured=_configured(),
+        configured=configured,
+        client_id_configured=client_id_configured,
+        client_secret_configured=client_secret_configured,
+        redirect_uri=google_health_redirect_uri(settings.calograph_public_url),
         state=state,
+        sync_state="idle",
+        retry_attempt=0,
+        retry_max_attempts=0,
+        next_retry_at=None,
         granted_scopes=tuple(connection.granted_scopes or ()) if connection else (),
         refresh_token_expires_at=connection.refresh_token_expires_at if connection else None,
         last_attempt_at=connection.last_attempt_at if connection else None,
         last_success_at=connection.last_success_at if connection else None,
-        last_error=connection.last_error if connection else None,
+        last_error=error_category,
+        last_error_category=error_category,
     )
 
 
 def _status_for_error(code: str) -> GoogleHealthStatus:
     state = "scope_missing" if code == "scope_missing" else "reauth_required"
+    safe_code = _safe_error_category(code)
     return GoogleHealthStatus(
         available=bool(settings.google_health_enabled),
-        configured=_configured(),
+        configured=False,
+        redirect_uri=google_health_redirect_uri(settings.calograph_public_url),
         state=state,
-        last_error=code,
+        last_error=safe_code,
+        last_error_category=safe_code,
     )
 
 
@@ -182,6 +218,127 @@ def google_health_status(db: Session, user: User) -> GoogleHealthStatus:
         select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id)
     )
     return _status_from_connection(connection)
+
+
+def save_google_health_credentials(
+    db: Session,
+    user: User,
+    payload: GoogleHealthCredentialsInput,
+    *,
+    lock: bool = True,
+) -> GoogleHealthStatus:
+    pair = credential_pair_from_input(payload)
+    operation = exclusive_user_lifecycle_operation(db, user.id) if lock else nullcontext()
+    with operation:
+        connection = db.scalar(
+            select(GoogleHealthConnection)
+            .where(GoogleHealthConnection.user_id == user.id)
+            .with_for_update()
+        )
+        if pair is None:
+            if connection is None or not _configured(connection):
+                raise GoogleHealthCredentialError("credential_pair_required")
+            db.commit()
+            result = _status_from_connection(connection)
+            reason = "preserved"
+        else:
+            client_id, client_secret = pair
+            try:
+                encrypted_secret = encrypt_credential(client_secret)
+            except CredentialEncryptionError:
+                raise GoogleHealthCredentialError("credential_unavailable") from None
+            if connection is None:
+                connection = GoogleHealthConnection(
+                    user_id=user.id,
+                    client_id=client_id,
+                    encrypted_client_secret=encrypted_secret,
+                    encrypted_refresh_token=None,
+                    granted_scopes=[],
+                    state="not_connected",
+                )
+                db.add(connection)
+                reason = "configured"
+            else:
+                connection.client_id = client_id
+                connection.encrypted_client_secret = encrypted_secret
+                # A client replacement invalidates consent for the old client,
+                # but deliberately retains ciphertext until explicit deletion.
+                connection.granted_scopes = []
+                connection.refresh_token_expires_at = None
+                connection.last_error = None
+                connection.state = (
+                    "reauth_required" if connection.encrypted_refresh_token else "not_connected"
+                )
+                reason = "replaced"
+            db.commit()
+            result = _status_from_connection(connection)
+    log_security_event(
+        "integration.google_health.credentials_updated",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("google_health", user.id),
+        reason=reason,
+        actor_user_id=user.id,
+    )
+    return result
+
+
+def delete_google_health_credentials(
+    db: Session, user: User, *, lock: bool = True
+) -> GoogleHealthStatus:
+    operation = exclusive_user_lifecycle_operation(db, user.id) if lock else nullcontext()
+    with operation:
+        connection = db.scalar(
+            select(GoogleHealthConnection)
+            .where(GoogleHealthConnection.user_id == user.id)
+            .with_for_update()
+        )
+        if connection is not None:
+            connection.client_id = None
+            connection.encrypted_client_secret = None
+            connection.encrypted_refresh_token = None
+            connection.granted_scopes = []
+            connection.refresh_token_expires_at = None
+            connection.state = "not_connected"
+            connection.last_error = None
+            db.commit()
+        result = _status_from_connection(connection)
+    log_security_event(
+        "integration.google_health.credentials_deleted",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("google_health", user.id),
+        reason="deleted",
+        actor_user_id=user.id,
+    )
+    return result
+
+
+def disconnect_google_health(
+    db: Session, user: User, *, lock: bool = True
+) -> GoogleHealthStatus:
+    operation = exclusive_user_lifecycle_operation(db, user.id) if lock else nullcontext()
+    with operation:
+        connection = db.scalar(
+            select(GoogleHealthConnection)
+            .where(GoogleHealthConnection.user_id == user.id)
+            .with_for_update()
+        )
+        if connection is not None:
+            connection.encrypted_refresh_token = None
+            connection.granted_scopes = []
+            connection.refresh_token_expires_at = None
+            connection.state = "not_connected"
+            connection.last_error = None
+            db.commit()
+        result = _status_from_connection(connection)
+    log_security_event(
+        "integration.google_health.connection_disconnected",
+        actor_ref=security_reference("user", user.id),
+        target_ref=security_reference("google_health", user.id),
+        reason="disconnected",
+        actor_user_id=user.id,
+    )
+    return result
+
 
 
 def start_google_health_oauth(

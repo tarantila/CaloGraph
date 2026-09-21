@@ -19,10 +19,14 @@ from app.google_health.service import (
     GoogleHealthOAuthError,
     _GoogleOAuthAdapter,
     complete_google_health_oauth,
+    delete_google_health_credentials,
+    disconnect_google_health,
     google_health_status,
+    save_google_health_credentials,
     start_google_health_oauth,
 )
 from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
+from app.schemas_google_health import GoogleHealthCredentialsInput
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
 
 
@@ -454,7 +458,75 @@ def test_start_purges_expired_flow_rows(db, user: User, monkeypatch):
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_google_health_oauth(db, user, now=now - timedelta(minutes=11))
     start_google_health_oauth(db, user, now=now - timedelta(minutes=10))
+
     start_google_health_oauth(db, user, now=now)
     flows = list(db.scalars(select(GoogleHealthOAuthFlow)))
     assert len(flows) == 1
     assert flows[0].expires_at.replace(tzinfo=UTC) > now
+
+def test_per_user_credentials_are_encrypted_and_disconnect_preserves_pair(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    saved = save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None
+    assert saved.state == "not_connected"
+    assert connection.client_id == "client-a"
+    assert connection.encrypted_client_secret != b"secret-a"
+    assert decrypt_credential(connection.encrypted_client_secret) == "secret-a"
+
+    connection.encrypted_refresh_token = encrypt_credential("refresh-a")
+    connection.granted_scopes = list(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    connection.state = "active"
+    db.commit()
+    disconnected = disconnect_google_health(db, user)
+    assert disconnected.state == "not_connected"
+    assert connection.client_id == "client-a"
+    assert connection.encrypted_client_secret is not None
+    assert connection.encrypted_refresh_token is None
+    assert connection.granted_scopes == []
+
+
+def test_credentials_replacement_is_atomic_and_deletion_clears_all_secrets(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    with pytest.raises(ValueError, match="credential_pair_required"):
+        save_google_health_credentials(
+            db, user, GoogleHealthCredentialsInput(client_id="client-b", client_secret="")
+        )
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None and connection.client_id == "client-a"
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-b", client_secret="secret-b")
+    )
+    assert connection.client_id == "client-b"
+    assert decrypt_credential(connection.encrypted_client_secret) == "secret-b"
+    deleted = delete_google_health_credentials(db, user)
+    assert deleted.state == "not_configured"
+    assert connection.client_id is None
+    assert connection.encrypted_client_secret is None
+    assert connection.encrypted_refresh_token is None
+
+
+def test_google_health_credentials_status_isolated_between_users(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    second = User(username="second-google-health", password_hash="hash")
+    db.add(second)
+    db.flush()
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    first_status = google_health_status(db, user)
+    second_status = google_health_status(db, second)
+    assert first_status.client_id_configured is True
+    assert first_status.client_secret_configured is True
+    assert first_status.state == "not_connected"
+    assert second_status.client_id_configured is False
+    assert second_status.client_secret_configured is False
+    assert second_status.state == "not_configured"

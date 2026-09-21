@@ -13,7 +13,7 @@ import app.api.google_health as google_health_api
 from app.api.google_health import _oauth_error
 from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
-from app.models import User, UserSession
+from app.models import GoogleHealthConnection, User, UserSession
 from app.schemas_google_health import GoogleHealthDomainResult, GoogleHealthStatus
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
 
@@ -376,3 +376,62 @@ def test_callback_prefers_json_for_non_html_accept_values(client: TestClient):
         )
         assert response.status_code == 401
         assert "location" not in response.headers
+
+
+def test_google_health_credential_routes_require_auth_and_csrf(
+    client: TestClient, user: User, monkeypatch
+):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    unauthenticated = client.put(
+        "/api/v1/google-health/credentials",
+        json={"client_id": "client-a", "client_secret": "secret-a"},
+    )
+    assert unauthenticated.status_code == 401
+    csrf = _login(client)
+    missing_csrf = client.put(
+        "/api/v1/google-health/credentials",
+        json={"client_id": "client-a", "client_secret": "secret-a"},
+    )
+    assert missing_csrf.status_code == 403
+    saved = client.put(
+        "/api/v1/google-health/credentials",
+        json={"client_id": "client-a", "client_secret": "secret-a"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["state"] == "not_connected"
+    assert body["client_id_configured"] is True
+    assert body["client_secret_configured"] is True
+    assert "secret-a" not in saved.text
+
+
+def test_google_health_connection_delete_keeps_client_credentials(
+    client: TestClient, user: User, db: Session, monkeypatch
+):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    csrf = _login(client)
+    saved = client.put(
+        "/api/v1/google-health/credentials",
+        json={"client_id": "client-a", "client_secret": "secret-a"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert saved.status_code == 200
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None
+    connection.encrypted_refresh_token = b"encrypted-refresh"
+    connection.granted_scopes = ["scope-a"]
+    connection.state = "active"
+    db.commit()
+    disconnected = client.delete(
+        "/api/v1/google-health/connection",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert disconnected.status_code == 200
+    body = disconnected.json()
+    assert body["state"] == "not_connected"
+    assert body["client_id_configured"] is True
+    assert body["client_secret_configured"] is True
+    assert "secret-a" not in disconnected.text
