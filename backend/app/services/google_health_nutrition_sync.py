@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.google_health.credentials import resolve_google_health_credentials
 from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     GoogleHealthClient,
@@ -79,7 +79,7 @@ class _PagedClient(Protocol):
 
 SessionFactory = Callable[[], Session]
 DecryptRefreshToken = Callable[[bytes], str]
-CredentialsFactory = Callable[[str], object]
+CredentialsFactory = Callable[[str, str, str], object]
 ClientFactory = Callable[[object], _PagedClient]
 Adapter = Callable[..., Any]
 
@@ -158,7 +158,11 @@ def _record_connection_status(
 
 
 
-def _default_credentials(refresh_token: str) -> object:
+def _default_credentials(
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> object:
     """Build Google credentials without persisting the decrypted refresh token."""
     from google.oauth2.credentials import Credentials
 
@@ -166,8 +170,8 @@ def _default_credentials(refresh_token: str) -> object:
         token=None,
         refresh_token=refresh_token,
         token_uri=GOOGLE_HEALTH_TOKEN_URI,
-        client_id=settings.google_health_client_id,
-        client_secret=settings.google_health_client_secret,
+        client_id=client_id,
+        client_secret=client_secret,
         scopes=list(GOOGLE_HEALTH_SCOPES),
     )
 
@@ -243,6 +247,15 @@ class GoogleHealthNutritionSyncService:
                 read_db.commit()
                 raise _safe_error("scope_missing")
 
+            try:
+                client_id, client_secret = resolve_google_health_credentials(connection)
+            except Exception:
+                connection.last_attempt_at = attempted_at
+                connection.last_error = "credentials_unavailable"
+                connection.state = "reauth_required"
+                read_db.commit()
+                raise _safe_error("credentials_unavailable") from None
+
             # Snapshot all values needed after the read session is released.
             source_instance_id = connection.id
             encrypted_refresh_token = connection.encrypted_refresh_token
@@ -268,7 +281,7 @@ class GoogleHealthNutritionSyncService:
             raise error from None
 
         try:
-            credentials = self._credentials_factory(refresh_token)
+            credentials = self._credentials_factory(refresh_token, client_id, client_secret)
             client = self._client_factory(credentials)
         except Exception:
             error = _safe_error("credentials_unavailable")
@@ -279,9 +292,9 @@ class GoogleHealthNutritionSyncService:
             )
             raise error from None
         finally:
-            # Do not retain the plaintext token on the service instance.
+            # Do not retain the plaintext token or client secret on the service instance.
             refresh_token = ""
-
+            client_secret = ""
         points: list[NutritionLogDataPoint] = []
         page_token: str | None = None
         seen_tokens: set[str | None] = {None}

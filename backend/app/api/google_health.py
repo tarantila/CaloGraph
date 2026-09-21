@@ -155,8 +155,6 @@ def google_health_sync(
 ) -> GoogleHealthSyncResponse:
     if not settings.google_health_enabled:
         raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
-    if not settings.google_health_client_id or not settings.google_health_client_secret:
-        raise HTTPException(status_code=409, detail="Google Health ist nicht konfiguriert.")
 
     _rate_limit_google_health_sync(db, request, user)
     end = datetime.now(ZoneInfo(user.timezone)).date()

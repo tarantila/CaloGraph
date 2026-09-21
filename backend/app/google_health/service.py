@@ -25,7 +25,9 @@ from app.google_health.errors import (
 )
 from app.google_health.credentials import (
     GoogleHealthCredentialError,
+    GoogleHealthCredentialUnavailableError,
     credential_pair_from_input,
+    resolve_google_health_credentials,
 )
 from app.google_health.oauth import (
     build_authorization_url,
@@ -117,9 +119,6 @@ def _utc(value: datetime) -> datetime:
 def _require_enabled() -> None:
     if not settings.google_health_enabled:
         raise GoogleHealthDisabledError("disabled")
-    if not settings.google_health_client_id or not settings.google_health_client_secret:
-        raise GoogleHealthDisabledError("not_configured")
-
 
 def _rate_limit_start(db: Session, user: User, client_ip: str | None) -> None:
     if client_ip is not None:
@@ -369,6 +368,10 @@ def start_google_health_oauth(
             .where(GoogleHealthConnection.user_id == user.id)
             .with_for_update()
         )
+        try:
+            client_id, _client_secret = resolve_google_health_credentials(connection)
+        except GoogleHealthCredentialUnavailableError:
+            raise GoogleHealthOAuthError("credential_unavailable") from None
         initial = connection is None
         reauthorize = bool(connection and connection.state == "reauth_required")
         missing_refresh = bool(connection and not connection.encrypted_refresh_token)
@@ -389,7 +392,7 @@ def start_google_health_oauth(
             )
         )
         url = build_authorization_url(
-            client_id=settings.google_health_client_id,
+            client_id=client_id,
             state=state,
             verifier=verifier,
             initial=initial,
@@ -550,12 +553,23 @@ def complete_google_health_oauth(
 
         adapter = oauth_adapter or _GoogleOAuthAdapter()
         redirect_uri = google_health_redirect_uri(settings.calograph_public_url)
+        connection = db.scalar(
+            select(GoogleHealthConnection)
+            .where(GoogleHealthConnection.user_id == user.id)
+            .with_for_update()
+        )
+        try:
+            client_id, client_secret = resolve_google_health_credentials(connection)
+        except GoogleHealthCredentialUnavailableError:
+            _record_failure(db, user, timestamp, "credential_unavailable")
+            db.commit()
+            raise GoogleHealthOAuthError("credential_unavailable") from None
         try:
             payload = adapter.exchange(
                 code=code or "",
                 redirect_uri=redirect_uri,
-                client_id=settings.google_health_client_id,
-                client_secret=settings.google_health_client_secret,
+                client_id=client_id,
+                client_secret=client_secret,
                 code_verifier=verifier,
             )
         except Exception as exc:

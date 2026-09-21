@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import GoogleHealthConnection, YazioConnection
 from app.nutrition.models import NutritionSourceObservation
 from app.provider_preferences import NUTRITION_DATA_AREA, effective_provider_order
@@ -45,20 +47,23 @@ def _available_owned_source_instance_ids(
             db.scalars(select(YazioConnection.id).where(YazioConnection.user_id == user_id)).all()
         )
     if provider_key == "google_health":
-        if (
-            not settings.google_health_enabled
-            or not settings.google_health_client_id
-            or not settings.google_health_client_secret
-        ):
+        if not settings.google_health_enabled:
             return ()
-        return tuple(
-            db.scalars(
-                select(GoogleHealthConnection.id).where(
-                    GoogleHealthConnection.user_id == user_id,
-                    GoogleHealthConnection.state == "active",
-                )
-            ).all()
+        connection = db.scalar(
+            select(GoogleHealthConnection).where(
+                GoogleHealthConnection.user_id == user_id,
+                GoogleHealthConnection.state == "active",
+            )
         )
+        if connection is None or not connection.encrypted_refresh_token:
+            return ()
+        if not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ())):
+            return ()
+        try:
+            resolve_google_health_credentials(connection)
+        except Exception:
+            return ()
+        return (connection.id,)
     if provider_key == "apple_health":
         source_instance_id = apple_health_source_instance_id(user_id)
         has_observation = db.scalar(

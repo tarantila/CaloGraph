@@ -22,6 +22,7 @@ from app.google_health.client import (
     WeightDataPoint,
 )
 from app.importers.common import CanonicalSample, local_date_for, normalize_value
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import GoogleHealthConnection, ImportBatch, User
 from app.services.import_service import _persist_sample_batch, _start_batch
 from app.weight import GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE, WEIGHT_METRIC
@@ -72,7 +73,7 @@ class _PagedClient(Protocol):
 
 SessionFactory = Callable[[], Session]
 ClientFactory = Callable[[object], _PagedClient]
-CredentialsFactory = Callable[[str], object]
+CredentialsFactory = Callable[[str, str, str], object]
 DecryptRefreshToken = Callable[[bytes], str]
 
 
@@ -364,12 +365,19 @@ class GoogleHealthScalarSyncService:
                 timezone = ZoneInfo(user.timezone)
             except (ValueError, ZoneInfoNotFoundError):
                 raise ValueError("user timezone is invalid") from None
+            try:
+                client_id, client_secret = resolve_google_health_credentials(connection)
+            except Exception:
+                raise ValueError("Google Health credentials are unavailable") from None
             source_instance_id = connection.id
             refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token)
         finally:
             db.close()
-        credentials = self._credentials_factory(refresh_token)
-        client = self._client_factory(credentials)
+        try:
+            credentials = self._credentials_factory(refresh_token, client_id, client_secret)
+            client = self._client_factory(credentials)
+        finally:
+            client_secret = ""
         try:
             local_start = datetime.combine(
                 requested_start, datetime.min.time(), tzinfo=timezone

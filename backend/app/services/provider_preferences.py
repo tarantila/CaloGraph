@@ -14,6 +14,7 @@ from app.activity import (
 )
 from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -127,21 +128,27 @@ def resolve_provider_source_type(
         raise ValueError("provider transports are ambiguous")
     return evidence[0] if evidence else (fallback or source_types[0])
 
-
 def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
     google = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id))
     evidenced_providers = {
         provider.provider_key
         for provider in discover_nutrition_providers(db, user_id=user_id).providers
     }
-    if not settings.google_health_enabled or not settings.google_health_client_id or not settings.google_health_client_secret:
+    if not settings.google_health_enabled:
         google_status = "disabled"
-    elif google is None:
+    elif google is None or not google.client_id or not google.encrypted_client_secret:
         google_status = "not_configured"
-    elif google.state != "active":
+    elif google.state != "active" or not google.encrypted_refresh_token:
+        google_status = "reauth_required"
+    elif not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(google.granted_scopes or ())):
         google_status = "reauth_required"
     else:
-        google_status = "available" if "google_health" in evidenced_providers else "no_data"
+        try:
+            resolve_google_health_credentials(google)
+        except Exception:
+            google_status = "not_configured"
+        else:
+            google_status = "available" if "google_health" in evidenced_providers else "no_data"
     if not settings.yazio_enabled:
         yazio_status = "disabled"
     else:
@@ -194,7 +201,6 @@ def _sample_provider_statuses(
         for provider_key, configured in source_types.items()
     }
 
-
 def _google_scalar_status(
     db: Session,
     *,
@@ -203,22 +209,23 @@ def _google_scalar_status(
     source_type: str,
     include_zero: bool,
 ) -> str:
-    if (
-        not settings.google_health_enabled
-        or not settings.google_health_client_id
-        or not settings.google_health_client_secret
-    ):
+    if not settings.google_health_enabled:
         return "disabled"
     connection = db.scalar(
         select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
     )
-    if connection is None:
+    if connection is None or not connection.client_id or not connection.encrypted_client_secret:
         return "not_configured"
     if (
         connection.state != "active"
+        or not connection.encrypted_refresh_token
         or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     ):
         return "reauth_required"
+    try:
+        resolve_google_health_credentials(connection)
+    except Exception:
+        return "not_configured"
     value_filter = HealthSample.value >= 0 if include_zero else HealthSample.value > 0
     evidence = db.scalar(
         select(HealthSample.id)

@@ -25,6 +25,7 @@ from app.models import GoogleHealthConnection, User
 from app.nutrition.enums import CoverageState
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
+from app.google_health.credentials import resolve_google_health_credentials
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.google_health_nutrition_sync import _default_credentials
@@ -72,7 +73,7 @@ class _PagedClient(Protocol):
 
 SessionFactory = Callable[[], Session]
 ClientFactory = Callable[[object], _PagedClient]
-CredentialsFactory = Callable[[str], object]
+CredentialsFactory = Callable[[str, str, str], object]
 DecryptRefreshToken = Callable[[bytes], str]
 
 _SAFE_CODES = frozenset({
@@ -172,7 +173,7 @@ class GoogleHealthSyncService:
         self._max_pages = max_pages
         self._max_points = max_points
 
-    def _snapshot(self, user_id: UUID) -> tuple[UUID, str, bytes] | str:
+    def _snapshot(self, user_id: UUID) -> tuple[UUID, str, bytes, str, str] | str:
         db = self._session_factory()
         try:
             row = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id))
@@ -191,6 +192,14 @@ class GoogleHealthSyncService:
                 row.state = "reauth_required"
                 db.commit()
                 return "scope_missing"
+            try:
+                client_id, client_secret = resolve_google_health_credentials(row)
+            except Exception:
+                row.last_attempt_at = attempted
+                row.last_error = "credentials_unavailable"
+                row.state = "reauth_required"
+                db.commit()
+                return "credentials_unavailable"
             if not isinstance(user.timezone, str) or not user.timezone:
                 return "provider_error"
             # Validate the timezone while the user row is still scoped.
@@ -200,7 +209,7 @@ class GoogleHealthSyncService:
                 return "provider_error"
             row.last_attempt_at = attempted
             db.commit()
-            return row.id, user.timezone, row.encrypted_refresh_token
+            return row.id, user.timezone, row.encrypted_refresh_token, client_id, client_secret
         finally:
             db.close()
 
@@ -360,14 +369,14 @@ class GoogleHealthSyncService:
             raise ValueError("requested date range is invalid")
         snapshot = self._snapshot(user_id)
         if isinstance(snapshot, str):
-            status = "reauth_required" if snapshot in {"scope_missing", "reauth_required"} else "failed"
+            status = "reauth_required" if snapshot in {"scope_missing", "reauth_required", "credentials_unavailable"} else "failed"
             return _empty_domains(
                 requested_start,
                 requested_end,
                 status=status,
                 error=snapshot,
             )
-        source_id, timezone, encrypted = snapshot
+        source_id, timezone, encrypted, client_id, client_secret = snapshot
         try:
             refresh = self._decrypt_refresh_token(encrypted)
             if not isinstance(refresh, str) or not refresh:
@@ -386,7 +395,7 @@ class GoogleHealthSyncService:
                 error=code,
             )
         try:
-            credentials = self._credentials_factory(refresh)
+            credentials = self._credentials_factory(refresh, client_id, client_secret)
             client = self._client_factory(credentials)
         except Exception:
             code = "credentials_unavailable"
@@ -403,6 +412,7 @@ class GoogleHealthSyncService:
             )
         finally:
             refresh = ""
+            client_secret = ""
 
         domains: dict[str, GoogleHealthDomainResult] = {}
         try:

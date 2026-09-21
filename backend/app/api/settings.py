@@ -28,6 +28,7 @@ from app.auth.security import (
 from app.config import settings
 from app.database import get_db
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import (
     ApiToken,
     GoogleHealthConnection,
@@ -894,11 +895,17 @@ def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
     connection = db.scalar(
         select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
     )
+    try:
+        credentials_configured = connection is not None and bool(
+            resolve_google_health_credentials(connection)
+        )
+    except Exception:
+        credentials_configured = False
     google_selectable = bool(
         settings.google_health_enabled
-        and settings.google_health_client_id
-        and settings.google_health_client_secret
+        and credentials_configured
         and connection is not None
+        and connection.encrypted_refresh_token
         and connection.state == "active"
         and GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     )
