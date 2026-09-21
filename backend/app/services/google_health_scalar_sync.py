@@ -107,12 +107,13 @@ def _owned_user_and_connection(
     return user, connection
 
 
-def _point_identity(point: object) -> str:
+def _point_identity(point: object) -> str | None:
     name = getattr(point, "name", None)
+    if name is None:
+        return None
     if not isinstance(name, str) or not name or len(name.encode("utf-8")) > 255:
         raise ValueError("Google Health datapoint identity is invalid")
     return name
-
 
 def _decimal(value: object) -> Decimal:
     try:
@@ -176,9 +177,9 @@ def _sample_for_weight(
     timezone: str,
     source_identifier: str,
 ) -> CanonicalSample:
-    if not isinstance(point, WeightDataPoint):
-        raise ValueError("weight data_points contain an invalid DTO")
     identity = _point_identity(point)
+    if identity is None:
+        raise ValueError("Google Health weight datapoint identity is missing")
     if point.start_time.tzinfo is None or point.end_time.tzinfo is None:
         raise ValueError("Google Health datapoint timestamp is invalid")
     if point.start_time != point.end_time:

@@ -80,6 +80,20 @@ class GoogleHealthOAuthStartResponse(BaseModel):
     authorization_url: str
 
 
+class GoogleHealthDomainDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str
+    operation: str
+    endpoint_key: str
+    parser_stage: str
+    structural_reason_code: str | None = None
+    error_category: str
+    upstream_status_code: int | None = None
+    retryable: bool
+    reauth_required: bool
+
+
 class GoogleHealthDomainResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -91,7 +105,7 @@ class GoogleHealthDomainResult(BaseModel):
     covered_start: date | None = None
     covered_end: date | None = None
     error_code: str | None = None
-
+    diagnostic: GoogleHealthDomainDiagnostic | None = None
 
 class GoogleHealthSyncResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")

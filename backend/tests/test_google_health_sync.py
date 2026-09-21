@@ -19,7 +19,11 @@ from app.google_health.client import (
     WeightDataPoint,
 )
 from app.google_health.constants import GOOGLE_HEALTH_SCOPES
-from app.google_health.errors import GoogleHealthAuthenticationError, GoogleHealthTransientError
+from app.google_health.errors import (
+    GoogleHealthAuthenticationError,
+    GoogleHealthInvalidResponseError,
+    GoogleHealthTransientError,
+)
 from app.models import GoogleHealthConnection, HealthSample, User
 from app.nutrition.models import NutritionSourceObservation
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
@@ -229,13 +233,40 @@ def test_sync_returns_safe_results_for_all_three_domains(monkeypatch) -> None:
 
 def test_activity_failure_keeps_nutrition_and_weight_success(monkeypatch) -> None:
     client = _Client(activity_error=GoogleHealthTransientError())
-    result = _service(monkeypatch, client).sync(user_id=uuid4(), requested_start=START, requested_end=END)
+    result = _service(monkeypatch, client).sync(
+        user_id=uuid4(), requested_start=START, requested_end=END
+    )
 
     assert result.status == "partial_failure"
     assert result.nutrition.persisted_count == 2
     assert result.weight.persisted_count == 1
     assert result.activity_energy.status == "failed"
     assert result.activity_energy.error_code == "transient_error"
+
+
+def test_invalid_response_has_bounded_domain_diagnostic(monkeypatch) -> None:
+    error = GoogleHealthInvalidResponseError(
+        "invalid",
+        upstream_status_code=200,
+        parser_stage="scalar_data_point",
+        structural_reason_code="missing_required_field",
+    )
+    client = _Client(activity_error=error)
+    result = _service(monkeypatch, client).sync(
+        user_id=uuid4(), requested_start=START, requested_end=END
+    )
+
+    diagnostic = result.activity_energy.diagnostic
+    assert diagnostic is not None
+    assert diagnostic.domain == "activity_energy"
+    assert diagnostic.operation == "activity_read"
+    assert diagnostic.endpoint_key == "active_energy_burned_data_points"
+    assert diagnostic.parser_stage == "scalar_data_point"
+    assert diagnostic.structural_reason_code == "missing_required_field"
+    assert diagnostic.error_category == "invalid_response"
+    assert diagnostic.upstream_status_code == 200
+    assert diagnostic.retryable is False
+    assert diagnostic.reauth_required is False
 
 
 def test_each_domain_has_independent_finite_point_budget(monkeypatch) -> None:

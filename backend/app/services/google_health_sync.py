@@ -47,6 +47,19 @@ Sleep = Callable[[float], None]
 
 
 @dataclass(frozen=True, slots=True)
+class GoogleHealthDomainDiagnostic:
+    domain: str
+    operation: str
+    endpoint_key: str
+    parser_stage: str
+    structural_reason_code: str | None
+    error_category: str
+    upstream_status_code: int | None
+    retryable: bool
+    reauth_required: bool
+
+
+@dataclass(frozen=True, slots=True)
 class GoogleHealthDomainResult:
     status: str
     fetched_count: int
@@ -56,6 +69,7 @@ class GoogleHealthDomainResult:
     covered_start: date | None = None
     covered_end: date | None = None
     error_code: str | None = None
+    diagnostic: GoogleHealthDomainDiagnostic | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +157,45 @@ def _safe_code(exc: BaseException) -> str:
     return code if isinstance(code, str) and code in _SAFE_CODES else "invalid_response"
 
 
+_DOMAIN_CONTEXT = {
+    "nutrition": ("nutrition_read", "nutrition_log_data_points"),
+    "activity_energy": ("activity_read", "active_energy_burned_data_points"),
+    "weight": ("weight_read", "weight_data_points"),
+}
+
+
+def _diagnostic(
+    domain: str,
+    exc: BaseException,
+    *,
+    error_code: str | None = None,
+    parser_stage: str | None = None,
+    structural_reason_code: str | None = None,
+) -> GoogleHealthDomainDiagnostic:
+    operation, endpoint_key = _DOMAIN_CONTEXT[domain]
+    category = error_code or _safe_code(exc)
+    upstream_status_code = getattr(exc, "upstream_status_code", None)
+    if (
+        isinstance(upstream_status_code, bool)
+        or not isinstance(upstream_status_code, int)
+        or not 100 <= upstream_status_code <= 599
+    ):
+        upstream_status_code = None
+    stage = parser_stage or getattr(exc, "parser_stage", None) or "unknown"
+    reason = structural_reason_code or getattr(exc, "structural_reason_code", None)
+    return GoogleHealthDomainDiagnostic(
+        domain=domain,
+        operation=operation,
+        endpoint_key=endpoint_key,
+        parser_stage=stage,
+        structural_reason_code=reason,
+        error_category=category,
+        upstream_status_code=upstream_status_code,
+        retryable=category in RETRYABLE_CODES,
+        reauth_required=category in _REAUTH_CODES,
+    )
+
+
 def _result(
     *,
     status: str,
@@ -152,6 +205,7 @@ def _result(
     end: date,
     covered: tuple[date | None, date | None] = (None, None),
     error: str | None = None,
+    diagnostic: GoogleHealthDomainDiagnostic | None = None,
 ) -> GoogleHealthDomainResult:
     return GoogleHealthDomainResult(
         status=status,
@@ -162,6 +216,7 @@ def _result(
         covered_start=covered[0],
         covered_end=covered[1],
         error_code=error,
+        diagnostic=diagnostic,
     )
 
 
@@ -556,6 +611,7 @@ class GoogleHealthSyncService:
                         start=requested_start,
                         end=requested_end,
                         error=code,
+                        diagnostic=_diagnostic(name, exc),
                     )
                     if code in _REAUTH_CODES:
                         for remaining_name, _, _ in definitions:
@@ -567,6 +623,7 @@ class GoogleHealthSyncService:
                                     start=requested_start,
                                     end=requested_end,
                                     error=code,
+                                    diagnostic=_diagnostic(remaining_name, exc),
                                 )
                         break
                     continue
@@ -609,6 +666,13 @@ class GoogleHealthSyncService:
                         end=requested_end,
                         covered=covered,
                         error="persistence_error",
+                        diagnostic=_diagnostic(
+                            name,
+                            exc,
+                            error_code="persistence_error",
+                            parser_stage="persistence",
+                            structural_reason_code="persistence_error",
+                        ),
                     )
                     continue
                 status = "truncated" if truncated else ("no_data" if not points else "success")
@@ -799,4 +863,9 @@ class GoogleHealthSyncService:
         raise AssertionError("sync retry loop did not return")
 
 
-__all__ = ["GoogleHealthDomainResult", "GoogleHealthSyncResult", "GoogleHealthSyncService"]
+__all__ = [
+    "GoogleHealthDomainDiagnostic",
+    "GoogleHealthDomainResult",
+    "GoogleHealthSyncResult",
+    "GoogleHealthSyncService",
+]

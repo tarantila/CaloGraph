@@ -122,7 +122,7 @@ class NutritionLogDataPoint:
 
 @dataclass(frozen=True, slots=True)
 class GoogleHealthDataPoint:
-    name: str
+    name: str | None
     start_time: datetime
     end_time: datetime
     value: Decimal
@@ -150,7 +150,7 @@ GoogleHealthWeightDataPoint = WeightDataPoint
 class _PreciseTime:
     value: datetime
     nanos: int
-
+    has_explicit_time: bool = True
 
 @dataclass(frozen=True, slots=True)
 class NutritionLogPageAggregate:
@@ -330,7 +330,9 @@ class GoogleHealthHTTPTransport:
                     or len(body) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES
                 ):
                     raise GoogleHealthInvalidResponseError(
-                        "Google Health response is too large or invalid"
+                        "Google Health response is too large or invalid",
+                        parser_stage="transport",
+                        structural_reason_code="response_too_large",
                     ) from None
                 body.extend(chunk)
             return cast(
@@ -386,7 +388,9 @@ class GoogleHealthHTTPTransport:
                     or len(body) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES
                 ):
                     raise GoogleHealthInvalidResponseError(
-                        "Google Health response is too large or invalid"
+                        "Google Health response is too large or invalid",
+                        parser_stage="transport",
+                        structural_reason_code="response_too_large",
                     ) from None
                 body.extend(chunk)
             return cast(
@@ -658,7 +662,9 @@ class GoogleHealthClient:
             status_code = int(response.status_code)
         except (AttributeError, TypeError, ValueError):
             raise GoogleHealthInvalidResponseError(
-                "Google Health returned an invalid response"
+                "Google Health returned an invalid response",
+                parser_stage="response_status",
+                structural_reason_code="invalid_status_code",
             ) from None
         if status_code == 401:
             raise GoogleHealthAuthenticationError(
@@ -684,6 +690,8 @@ class GoogleHealthClient:
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid response",
                 upstream_status_code=status_code,
+                parser_stage="response_status",
+                structural_reason_code="unexpected_status",
             )
         return status_code
 
@@ -724,7 +732,7 @@ class GoogleHealthClient:
         civil_start_time: date | datetime | None,
         civil_end_time: date | datetime | None,
     ) -> NutritionLogPage:
-        GoogleHealthClient._validate_response_status(response)
+        status_code = GoogleHealthClient._validate_response_status(response)
 
         try:
             content_length = response.headers.get("content-length")
@@ -736,15 +744,25 @@ class GoogleHealthClient:
             payload = response.json()
         except Exception:
             raise GoogleHealthInvalidResponseError(
-                "Google Health returned malformed JSON"
+                "Google Health returned malformed JSON",
+                upstream_status_code=status_code,
+                parser_stage="response_json",
+                structural_reason_code="malformed_json",
             ) from None
         if not isinstance(payload, dict):
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="top_level_not_object",
+            )
         points_payload: object = payload.get("dataPoints", [])
 
         try:
-            if not isinstance(points_payload, list) or len(points_payload) > page_size:
-                raise ValueError
+            if not isinstance(points_payload, list):
+                raise _StructuralParseError("response_envelope", "data_points_not_list")
+            if len(points_payload) > page_size:
+                raise _StructuralParseError("response_envelope", "page_size_exceeded")
             next_page_token = _parse_response_page_token(payload)
             data_points = tuple(_parse_data_point(item) for item in points_payload)
             data_points = tuple(
@@ -752,9 +770,19 @@ class GoogleHealthClient:
                 for item in data_points
                 if _matches_civil_bounds(item, civil_start_time, civil_end_time)
             )
-        except GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError:
+        except _StructuralParseError as exc:
             raise GoogleHealthInvalidResponseError(
-                "Google Health returned an invalid Nutrition Log page"
+                "Google Health returned an invalid Nutrition Log page",
+                upstream_status_code=status_code,
+                parser_stage=exc.parser_stage,
+                structural_reason_code=exc.reason_code,
+            ) from None
+        except (GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError):
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid Nutrition Log page",
+                upstream_status_code=status_code,
+                parser_stage="nutrition_data_point",
+                structural_reason_code="invalid_field",
             ) from None
 
         return NutritionLogPage(
@@ -778,7 +806,7 @@ class GoogleHealthClient:
         start_time: datetime | None,
         end_time: datetime | None,
     ) -> GoogleHealthDataPointPage:
-        GoogleHealthClient._validate_response_status(response)
+        status_code = GoogleHealthClient._validate_response_status(response)
         try:
             content_length = response.headers.get("content-length")
             if content_length is not None and int(content_length) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES:
@@ -786,14 +814,24 @@ class GoogleHealthClient:
             payload = response.json()
         except Exception:
             raise GoogleHealthInvalidResponseError(
-                "Google Health returned malformed JSON"
+                "Google Health returned malformed JSON",
+                upstream_status_code=status_code,
+                parser_stage="response_json",
+                structural_reason_code="malformed_json",
             ) from None
         if not isinstance(payload, dict):
-            raise GoogleHealthInvalidResponseError("Google Health returned an invalid response")
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="top_level_not_object",
+            )
         points_payload = payload.get("dataPoints", [])
         try:
-            if not isinstance(points_payload, list) or len(points_payload) > page_size:
-                raise ValueError
+            if not isinstance(points_payload, list):
+                raise _StructuralParseError("response_envelope", "data_points_not_list")
+            if len(points_payload) > page_size:
+                raise _StructuralParseError("response_envelope", "page_size_exceeded")
             next_page_token = _parse_response_page_token(payload)
             if data_type == "nutrition-log":
                 data_points: tuple[GoogleHealthDataPoint | NutritionLogDataPoint, ...] = tuple(
@@ -808,9 +846,21 @@ class GoogleHealthClient:
                 for item in data_points
                 if _matches_physical_bounds(item, start_time, end_time)
             )
+        except _StructuralParseError as exc:
+            raise GoogleHealthInvalidResponseError(
+                f"Google Health returned an invalid {data_type} page",
+                upstream_status_code=status_code,
+                parser_stage=exc.parser_stage,
+                structural_reason_code=exc.reason_code,
+            ) from None
         except (GoogleHealthInvalidResponseError, TypeError, ValueError, KeyError):
             raise GoogleHealthInvalidResponseError(
-                f"Google Health returned an invalid {data_type} page"
+                f"Google Health returned an invalid {data_type} page",
+                upstream_status_code=status_code,
+                parser_stage="nutrition_data_point"
+                if data_type == "nutrition-log"
+                else "scalar_data_point",
+                structural_reason_code="invalid_field",
             ) from None
         return GoogleHealthDataPointPage(
             data_points=data_points,
@@ -929,6 +979,13 @@ def _parse_response_page_token(payload: Mapping[str, object]) -> str | None:
     return token
 
 
+
+class _StructuralParseError(ValueError):
+    def __init__(self, parser_stage: str, reason_code: str) -> None:
+        self.parser_stage = parser_stage
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict) or "nutritionLog" not in value:
         raise ValueError
@@ -951,17 +1008,22 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
 
 def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataPoint:
     if not isinstance(value, dict):
-        raise ValueError
+        raise _StructuralParseError("scalar_data_point", "data_point_not_object")
     name = value.get("name")
-    if not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name):
-        raise ValueError
+    if data_type == "weight":
+        if not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name):
+            raise _StructuralParseError("scalar_data_point", "missing_required_field")
+    elif name is not None and (
+        not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name)
+    ):
+        raise _StructuralParseError("scalar_data_point", "invalid_field_type")
     if data_type == "active-energy-burned":
         raw_value = value.get("activeEnergyBurned")
         if not isinstance(raw_value, dict):
-            raise ValueError
+            raise _StructuralParseError("scalar_data_point", "missing_required_field")
         interval = raw_value.get("interval")
         if not isinstance(interval, dict):
-            raise ValueError
+            raise _StructuralParseError("scalar_data_point", "missing_required_field")
         start = _parse_timestamp(interval.get("startTime"))
         end = _parse_timestamp(interval.get("endTime"))
         if _physical_key(start) >= _physical_key(end):
@@ -997,7 +1059,7 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
     source_value = value.get("dataSource")
     source = _parse_data_source(source_value) if source_value is not None else None
     return dto_type(
-        name=name,
+        name=name if isinstance(name, str) else None,
         start_time=start_time,
         end_time=end_time,
         value=number,
@@ -1156,10 +1218,15 @@ def _parse_interval(value: Mapping[str, object]) -> NutritionLogInterval:
     civil_end = _parse_civil_datetime(value["civilEndTime"]) if "civilEndTime" in value else None
     if (
         civil_start is not None
+        and civil_start.has_explicit_time
         and _civil_key(civil_start) != _physical_key(start_precise) + start_offset
     ):
         raise ValueError
-    if civil_end is not None and _civil_key(civil_end) != _physical_key(end_precise) + end_offset:
+    if (
+        civil_end is not None
+        and civil_end.has_explicit_time
+        and _civil_key(civil_end) != _physical_key(end_precise) + end_offset
+    ):
         raise ValueError
     return NutritionLogInterval(
         start_time=start_time,
@@ -1255,7 +1322,9 @@ def _parse_civil_datetime(value: object) -> _PreciseTime:
         raise ValueError
     try:
         return _PreciseTime(
-            datetime(year, month, day, hours, minutes, seconds, nanos // 1000), nanos
+            datetime(year, month, day, hours, minutes, seconds, nanos // 1000),
+            nanos,
+            has_explicit_time={"hours", "minutes", "seconds", "nanos"} <= set(time_value),
         )
     except ValueError:
         raise ValueError from None

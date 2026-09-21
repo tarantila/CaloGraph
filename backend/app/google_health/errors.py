@@ -25,9 +25,11 @@ class GoogleHealthClientError(GoogleHealthError):
 
     def __init__(
         self,
-        message: str,
+        message: str = "Google Health client request failed",
         *,
         upstream_status_code: int | None = None,
+        parser_stage: str | None = None,
+        structural_reason_code: str | None = None,
     ) -> None:
         if (
             isinstance(upstream_status_code, bool)
@@ -41,8 +43,9 @@ class GoogleHealthClientError(GoogleHealthError):
         ):
             upstream_status_code = None
         self.upstream_status_code = upstream_status_code
+        self.parser_stage = parser_stage
+        self.structural_reason_code = structural_reason_code
         super().__init__(message)
-
 
 class GoogleHealthAuthenticationError(GoogleHealthClientError):
     """The access credential is missing, invalid, or requires reauthentication."""

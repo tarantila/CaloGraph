@@ -113,6 +113,44 @@ def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
     assert not hasattr(page, "payload")
 
 
+def test_provider_date_only_civil_time_is_accepted() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/date-only-1", 1)
+    interval_value = value["nutritionLog"]["interval"]
+    assert isinstance(interval_value, dict)
+    interval_value["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+    }
+    interval_value["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.interval.civil_start_time == datetime(
+        2026, 1, 1
+    )
+
+def test_provider_partial_civil_time_is_not_compared_as_exact() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/partial-time-1", 1)
+    interval_value = value["nutritionLog"]["interval"]
+    assert isinstance(interval_value, dict)
+    interval_value["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"minutes": 30},
+    }
+    interval_value["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"minutes": 45},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.interval.civil_end_time == datetime(
+        2026, 1, 1, 0, 45
+    )
+
 def test_unknown_meal_type_is_retained_as_a_typed_string() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/future-meal-1", 1)
     value["nutritionLog"]["mealType"] = "FUTURE_MEAL_TYPE"

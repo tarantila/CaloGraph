@@ -254,6 +254,76 @@ def test_client_parses_activity_and_weight_into_typed_pages() -> None:
     assert weight.start_utc_offset == "3600s"
 
 
+
+def test_activity_live_shape_allows_missing_identity_and_unknown_fields() -> None:
+    value = _activity_point()
+    value.pop("name")
+    value.pop("dataSource")
+    value["futureActivityField"] = {"ignored": True}
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    page = GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+        "active-energy-burned",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 3, tzinfo=UTC),
+        page_token=None,
+        page_size=10,
+    )
+
+    assert page.data_points[0].name is None
+    assert page.data_points[0].data_source is None
+
+
+def test_weight_point_without_provider_name_is_rejected() -> None:
+    value = _weight_point()
+    value.pop("name")
+    weight_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(weight_transport, FakeCredentials()).get_data_points_page(
+            "weight",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+
+
+def test_invalid_scalar_shape_exposes_bounded_parser_diagnostic() -> None:
+    value = _activity_point()
+    value["activeEnergyBurned"] = {}
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+            "active-energy-burned",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+
+    assert raised.value.parser_stage == "scalar_data_point"
+    assert raised.value.structural_reason_code == "missing_required_field"
+    assert raised.value.upstream_status_code == 200
+
+
+def test_activity_non_numeric_kcal_value_is_rejected() -> None:
+    value = _activity_point()
+    active = value["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = "not-a-number"
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+            "active-energy-burned",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+
 def test_client_rejects_unallowlisted_data_type_and_invalid_physical_bounds() -> None:
     client = GoogleHealthClient(FakeDataTransport(), FakeCredentials())
     with pytest.raises(ValueError):

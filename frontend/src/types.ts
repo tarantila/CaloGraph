@@ -143,6 +143,18 @@ export type GoogleHealthDomainKey = 'nutrition' | 'activity_energy' | 'weight'
 export type GoogleHealthAggregateStatus = 'success' | 'partial_failure' | 'reauth_required' | 'failed' | 'no_data'
 export type GoogleHealthDomainStatus = 'success' | 'truncated' | 'no_data' | 'failed' | 'reauth_required'
 
+export interface GoogleHealthDomainDiagnostic {
+  domain: string
+  operation: string
+  endpoint_key: string
+  parser_stage: string
+  structural_reason_code: string | null
+  error_category: string
+  upstream_status_code: number | null
+  retryable: boolean
+  reauth_required: boolean
+}
+
 export interface GoogleHealthDomainResult {
   status: GoogleHealthDomainStatus
   fetched_count: number
@@ -152,6 +164,7 @@ export interface GoogleHealthDomainResult {
   covered_start: string | null
   covered_end: string | null
   error_code: string | null
+  diagnostic?: GoogleHealthDomainDiagnostic | null
 }
 
 export interface GoogleHealthSyncResult {

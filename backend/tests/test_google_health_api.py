@@ -73,6 +73,7 @@ def test_google_health_sync_success_uses_inclusive_user_local_range(
         "covered_start": start.isoformat(),
         "covered_end": end.isoformat(),
         "error_code": None,
+        "diagnostic": None,
     }
     assert response.json() == {
         "status": "success",
