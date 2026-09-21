@@ -29,6 +29,11 @@ def test_google_health_models_have_only_encrypted_connection_and_flow_fields() -
         "last_attempt_at",
         "last_success_at",
         "last_error",
+        "last_error_category",
+        "sync_state",
+        "retry_attempt",
+        "retry_max_attempts",
+        "next_retry_at",
         "created_at",
         "updated_at",
     }
@@ -149,6 +154,8 @@ def test_google_health_models_persist_defaults_and_relationships(db, user: User)
 def test_google_health_connection_is_unique_per_user(db, user: User) -> None:
     db.add(
         GoogleHealthConnection(
+            client_id="models-client",
+            encrypted_client_secret=b"encrypted-models-secret",
             user_id=user.id,
             encrypted_refresh_token=b"first",
         )
@@ -156,6 +163,8 @@ def test_google_health_connection_is_unique_per_user(db, user: User) -> None:
     db.flush()
     db.add(
         GoogleHealthConnection(
+            client_id="models-client",
+            encrypted_client_secret=b"encrypted-models-secret",
             user_id=user.id,
             encrypted_refresh_token=b"second",
         )

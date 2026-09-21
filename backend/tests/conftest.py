@@ -66,6 +66,7 @@ from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import NutritionTarget, TrackingQualitySettings, User
 
+settings.credential_encryption_key = Fernet.generate_key().decode()
 settings.mfa_encryption_key = Fernet.generate_key().decode()
 settings.yazio_enabled = True
 settings.yazio_provider = "legacy"

@@ -16,7 +16,6 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.google_health.credentials import resolve_google_health_credentials
 from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     GoogleHealthClient,
@@ -28,6 +27,7 @@ from app.google_health.constants import (
     GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
+from app.google_health.credentials import resolve_google_health_credentials
 from app.google_health.errors import GoogleHealthClientError
 from app.models import GoogleHealthConnection
 from app.nutrition.models import NutritionSourceObservation
@@ -256,9 +256,14 @@ class GoogleHealthNutritionSyncService:
                 read_db.commit()
                 raise _safe_error("credentials_unavailable") from None
 
-            # Snapshot all values needed after the read session is released.
             source_instance_id = connection.id
             encrypted_refresh_token = connection.encrypted_refresh_token
+            if not encrypted_refresh_token:
+                connection.last_attempt_at = attempted_at
+                connection.last_error = "credentials_unavailable"
+                connection.state = "reauth_required"
+                read_db.commit()
+                raise _safe_error("credentials_unavailable")
             # Record the attempt before any provider or credential I/O.
             connection.last_attempt_at = attempted_at
             read_db.commit()

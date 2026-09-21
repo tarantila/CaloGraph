@@ -21,8 +21,8 @@ from app.google_health.client import (
     GoogleHealthDataPointPage,
     WeightDataPoint,
 )
-from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.google_health.credentials import resolve_google_health_credentials
+from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.models import GoogleHealthConnection, ImportBatch, User
 from app.services.import_service import _persist_sample_batch, _start_batch
 from app.weight import GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE, WEIGHT_METRIC
@@ -370,6 +370,8 @@ class GoogleHealthScalarSyncService:
             except Exception:
                 raise ValueError("Google Health credentials are unavailable") from None
             source_instance_id = connection.id
+            if not connection.encrypted_refresh_token:
+                raise ValueError("Google Health refresh token is unavailable")
             refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token)
         finally:
             db.close()

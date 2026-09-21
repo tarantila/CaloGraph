@@ -484,6 +484,8 @@ def test_sdk_v22_multi_provider_requires_selection_without_policy(db, user, monk
     _connection(db, user)
     db.add(
         GoogleHealthConnection(
+            client_id="yazio-domain-google-client",
+            encrypted_client_secret=encrypt_credential("yazio-domain-google-client-secret"),
             user_id=user.id,
             encrypted_refresh_token=b"encrypted-refresh-token",
             granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],

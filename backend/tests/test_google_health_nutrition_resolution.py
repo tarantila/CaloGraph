@@ -38,6 +38,7 @@ from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     resolve_default_provider_sources,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 
@@ -49,6 +50,8 @@ OTHER_DAY = date(2026, 9, 2)
 
 def _connection(db, user: User, *, state: str = "active", scopes: list[str] | None = None):
     connection = GoogleHealthConnection(
+        client_id="nutrition-resolution-client",
+        encrypted_client_secret=encrypt_credential("nutrition-resolution-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=list(scopes if scopes is not None else [SCOPE]),

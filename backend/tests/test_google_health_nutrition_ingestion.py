@@ -40,6 +40,7 @@ from app.nutrition.models import (
 from app.nutrition.projection import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
 from app.nutrition.resolution import resolve_provider_metric
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -99,6 +100,8 @@ _DATA_SOURCE_APPLICATION = NutritionDataSourceApplication(
 
 def _connection(db, user) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="nutrition-ingestion-client",
+        encrypted_client_secret=encrypt_credential("nutrition-ingestion-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],

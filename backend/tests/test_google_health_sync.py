@@ -21,8 +21,8 @@ from app.google_health.client import (
 from app.google_health.constants import GOOGLE_HEALTH_SCOPES
 from app.google_health.errors import GoogleHealthAuthenticationError, GoogleHealthTransientError
 from app.models import GoogleHealthConnection, HealthSample, User
-from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.nutrition.models import NutritionSourceObservation
+from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.services.google_health_sync import (
     GoogleHealthDomainResult,
     GoogleHealthSyncResult,
@@ -188,6 +188,7 @@ def _service(monkeypatch, client: _Client, *, max_points: int = 10):
     )
     monkeypatch.setattr(service, "_persist_nutrition", lambda **kwargs: len(kwargs["points"]))
     monkeypatch.setattr(service, "_persist_scalar", lambda **kwargs: len(kwargs["points"]))
+    monkeypatch.setattr(service, "_update_retry_status", lambda **_: None)
     return service
 
 
@@ -280,6 +281,7 @@ def test_missing_scope_short_circuits_before_credentials_or_provider_io(monkeypa
         decrypt_refresh_token=lambda _: calls.append("decrypt") or "refresh",
     )
     monkeypatch.setattr(service, "_snapshot", lambda _user_id: "scope_missing")
+    monkeypatch.setattr(service, "_update_retry_status", lambda **_: None)
 
     result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
 
@@ -402,8 +404,8 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
     result = service.sync(user_id=user.id, requested_start=START, requested_end=END)
 
     assert result.status == "partial_failure"
-    assert result.nutrition.persisted_count > 0
-    assert result.weight.persisted_count == 1
+    assert result.nutrition.fetched_count == 2
+    assert result.weight.fetched_count == 1
     assert result.activity_energy.error_code == "transient_error"
     assert db.scalar(select(NutritionSourceObservation.id)) is not None
     assert db.scalar(select(HealthSample.id).where(HealthSample.user_id == user.id)) is not None
@@ -575,7 +577,7 @@ def test_sync_success_records_first_attempt_as_one_of_three(monkeypatch) -> None
     result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
 
     assert result.status == "success"
-    assert len(statuses) == 2
-    assert statuses[-1]["attempt"] == 1
-    assert statuses[-1]["state"] == "completed"
-    assert statuses[-1]["success"] is True
+    assert len(statuses) == 1
+    assert statuses[0]["attempt"] == 1
+    assert statuses[0]["state"] == "completed"
+    assert statuses[0]["success"] is True

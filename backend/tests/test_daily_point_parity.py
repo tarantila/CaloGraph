@@ -83,6 +83,7 @@ from app.nutrition.repositories import (
 )
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
 from app.schemas import DailyPoint
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -295,6 +296,8 @@ def test_google_activity_samples_are_connection_scoped_in_both_parity_loaders(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     connection = GoogleHealthConnection(
+        client_id="daily-parity-client",
+        encrypted_client_secret=encrypt_credential("daily-parity-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         state="active",
@@ -1488,6 +1491,8 @@ def _d3b_yazio_diary(values: dict[str, Decimal]) -> YazioFoodDiary:
 
 def _d3b_google_connection(db: Session, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="daily-parity-client",
+        encrypted_client_secret=encrypt_credential("daily-parity-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],

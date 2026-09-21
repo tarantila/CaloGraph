@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import time as time_module
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-import time as time_module
 from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,11 +22,11 @@ from app.google_health.client import (
     NutritionLogPage,
 )
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import GoogleHealthConnection, User
 from app.nutrition.enums import CoverageState
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.projection.lifecycle import rebuild_affected_nutrition_days
-from app.google_health.credentials import resolve_google_health_credentials
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.google_health_nutrition_sync import _default_credentials
@@ -288,6 +289,11 @@ class GoogleHealthSyncService:
                 ZoneInfo(user.timezone)
             except (ValueError, ZoneInfoNotFoundError):
                 return "provider_error"
+            if not row.encrypted_refresh_token:
+                row.last_error = "credentials_unavailable"
+                row.state = "reauth_required"
+                db.commit()
+                return "credentials_unavailable"
             row.last_attempt_at = attempted
             db.commit()
             return row.id, user.timezone, row.encrypted_refresh_token, client_id, client_secret
@@ -676,12 +682,12 @@ class GoogleHealthSyncService:
         for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
             provider_attempted = False
 
-            def before_provider_attempt() -> None:
+            def before_provider_attempt(current_attempt: int = attempt) -> None:
                 nonlocal provider_attempted
                 self._update_retry_status(
                     user_id=user_id,
                     state="running",
-                    attempt=attempt,
+                    attempt=current_attempt,
                 )
                 provider_attempted = True
 
@@ -700,14 +706,14 @@ class GoogleHealthSyncService:
                     error="persistence_error",
                 )
             except Exception as exc:
-                category = _safe_code(exc)
+                failure_code = _safe_code(exc)
                 result = _empty_domains(
                     requested_start,
                     requested_end,
-                    status="reauth_required" if category in _REAUTH_CODES else "failed",
-                    error=category,
+                    status="reauth_required" if failure_code in _REAUTH_CODES else "failed",
+                    error=failure_code,
                 )
-            category = self._retry_category(result)
+            retry_category = self._retry_category(result)
             if not provider_attempted and result.provider_attempted:
                 provider_attempted = True
             if not provider_attempted or not result.provider_attempted:
@@ -716,7 +722,7 @@ class GoogleHealthSyncService:
                         user_id=user_id,
                         state="failed",
                         attempt=0,
-                        error_category=category,
+                        error_category=retry_category,
                     )
                 except _RetryStatusPersistenceError:
                     return _empty_domains(
@@ -726,13 +732,13 @@ class GoogleHealthSyncService:
                         error="persistence_error",
                     )
                 return result
-            if category not in RETRYABLE_CODES:
+            if retry_category not in RETRYABLE_CODES:
                 try:
                     self._update_retry_status(
                         user_id=user_id,
                         state="completed" if result.status in {"success", "no_data"} else "failed",
                         attempt=attempt,
-                        error_category=category,
+                        error_category=retry_category,
                         success=result.status in {"success", "no_data"},
                     )
                 except _RetryStatusPersistenceError:
@@ -749,7 +755,7 @@ class GoogleHealthSyncService:
                         user_id=user_id,
                         state="failed",
                         attempt=attempt,
-                        error_category=category,
+                        error_category=retry_category,
                     )
                 except _RetryStatusPersistenceError:
                     return _empty_domains(
@@ -768,7 +774,7 @@ class GoogleHealthSyncService:
                     state="running",
                     attempt=attempt,
                     next_retry_at=next_retry_at,
-                    error_category=category,
+                    error_category=retry_category,
                 )
             except _RetryStatusPersistenceError:
                 return _empty_domains(

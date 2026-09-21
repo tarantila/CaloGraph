@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import current_user, require_csrf, require_csrf_exclusive
 from app.config import settings
 from app.database import SessionLocal, get_db
+from app.google_health.credentials import GoogleHealthCredentialError
 from app.google_health.errors import GoogleHealthDisabledError, GoogleHealthOAuthError
 from app.google_health.service import (
     complete_google_health_oauth,
@@ -20,18 +21,23 @@ from app.google_health.service import (
     save_google_health_credentials,
     start_google_health_oauth,
 )
-from app.google_health.credentials import GoogleHealthCredentialError
 from app.models import User
 from app.schemas_google_health import (
     GoogleHealthConnectionTestResponse,
     GoogleHealthCredentialsInput,
+    GoogleHealthDomainResult,
     GoogleHealthOAuthStartResponse,
     GoogleHealthStatus,
     GoogleHealthSyncResponse,
 )
 from app.services.google_health_connection_test import GoogleHealthConnectionTestService
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
-from app.services.google_health_sync import GoogleHealthSyncService
+from app.services.google_health_sync import (
+    GoogleHealthDomainResult as ServiceGoogleHealthDomainResult,
+)
+from app.services.google_health_sync import (
+    GoogleHealthSyncService,
+)
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
 from app.services.user_operation_lock import shared_user_operation
 
@@ -148,6 +154,19 @@ def _oauth_spa_redirect(result: str) -> RedirectResponse:
     )
 
 
+def _domain_result_response(result: ServiceGoogleHealthDomainResult) -> GoogleHealthDomainResult:
+    return GoogleHealthDomainResult(
+        status=result.status,
+        fetched_count=result.fetched_count,
+        persisted_count=result.persisted_count,
+        requested_start=result.requested_start,
+        requested_end=result.requested_end,
+        covered_start=result.covered_start,
+        covered_end=result.covered_end,
+        error_code=result.error_code,
+    )
+
+
 @router.post("/sync", response_model=GoogleHealthSyncResponse)
 def google_health_sync(
     request: Request,
@@ -173,9 +192,9 @@ def google_health_sync(
         _sync_error(exc)
     return GoogleHealthSyncResponse(
         status=result.status,
-        nutrition=result.nutrition,
-        activity_energy=result.activity_energy,
-        weight=result.weight,
+        nutrition=_domain_result_response(result.nutrition),
+        activity_energy=_domain_result_response(result.activity_energy),
+        weight=_domain_result_response(result.weight),
     )
 
 

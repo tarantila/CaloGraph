@@ -18,16 +18,16 @@ from app.google_health.constants import (
     GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
-from app.google_health.errors import (
-    GoogleHealthDisabledError,
-    GoogleHealthOAuthError,
-    GoogleHealthTokenExchangeError,
-)
 from app.google_health.credentials import (
     GoogleHealthCredentialError,
     GoogleHealthCredentialUnavailableError,
     credential_pair_from_input,
     resolve_google_health_credentials,
+)
+from app.google_health.errors import (
+    GoogleHealthDisabledError,
+    GoogleHealthOAuthError,
+    GoogleHealthTokenExchangeError,
 )
 from app.google_health.oauth import (
     build_authorization_url,
@@ -175,13 +175,15 @@ def _status_from_connection(connection: GoogleHealthConnection | None) -> Google
         state = "disabled"
     elif not configured:
         state = "not_configured"
-    elif connection is None or not connection.encrypted_refresh_token:
-        state = "not_connected"
-    elif connection.last_error == "scope_missing" or (
+    elif connection and connection.last_error in {"scope_missing", "reauth_required"}:
+        state = connection.last_error
+    elif connection and (
         connection.state != "reauth_required"
         and not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     ):
         state = "scope_missing"
+    elif connection is None or not connection.encrypted_refresh_token:
+        state = "not_connected"
     elif connection.state in {"active", "reauth_required", "not_connected"}:
         state = connection.state
     else:

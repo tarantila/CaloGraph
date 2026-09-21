@@ -56,6 +56,7 @@ from app.nutrition.repositories import (
     set_projection_head,
 )
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, DAILY_PROJECTION_METRICS
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
@@ -1111,6 +1112,8 @@ def _run_yazio_parity_fixture(
 
 def _google_connection(db: Session, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="nutrition-analytics-client",
+        encrypted_client_secret=encrypt_credential("nutrition-analytics-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
