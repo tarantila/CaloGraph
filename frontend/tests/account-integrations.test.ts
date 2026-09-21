@@ -429,6 +429,23 @@ describe('AccountIntegrationsView', () => {
     expect(wrapper.get('.google-status-panel').text()).toContain('Versuch 2 von 3')
     expect(wrapper.text()).not.toContain('raw provider error')
   })
+
+  it('never renders credential or provider secret values returned by status APIs', async () => {
+    configureApi({
+      googleStatus: {
+        ...googleStatus,
+        last_error: 'client-secret-sentinel',
+        last_error_category: 'provider_error',
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('client-secret-sentinel')
+    expect(wrapper.text()).not.toContain('refresh-token-sentinel')
+    expect(wrapper.text()).not.toContain('access-token-sentinel')
+  })
+
   it('keeps terminal failed sync state distinct from a scheduled retry', async () => {
     configureApi({ googleStatus: { ...googleStatus, sync_state: 'failed', retry_attempt: 2, retry_max_attempts: 3, next_retry_at: null } })
     const wrapper = mount(AccountIntegrationsView)

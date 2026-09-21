@@ -184,3 +184,20 @@ def test_google_health_relationship_foreign_key_metadata() -> None:
     inspector = inspect(User)
     assert inspector.mapper.relationships["google_health_connection"].uselist is False
     assert inspector.mapper.relationships["google_health_oauth_flows"].uselist is True
+
+
+def test_google_health_rows_carry_user_ownership_for_every_secret_bearing_record() -> None:
+    connection = GoogleHealthConnection.__table__
+    flow = GoogleHealthOAuthFlow.__table__
+    assert not connection.c.user_id.nullable
+    assert not flow.c.user_id.nullable
+    assert connection.c.user_id.index
+    assert flow.c.user_id.index
+    assert {
+        fk.column.table.name
+        for fk in connection.c.user_id.foreign_keys
+    } == {"users"}
+    assert {fk.column.table.name for fk in flow.c.user_id.foreign_keys} == {"users"}
+    assert connection.c.encrypted_client_secret.type.python_type is bytes
+    assert connection.c.encrypted_refresh_token.type.python_type is bytes
+    assert flow.c.encrypted_pkce_verifier.type.python_type is bytes
