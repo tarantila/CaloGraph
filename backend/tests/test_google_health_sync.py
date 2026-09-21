@@ -405,10 +405,28 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
 
     assert result.status == "partial_failure"
     assert result.nutrition.fetched_count == 2
+    assert result.nutrition.persisted_count == 1
     assert result.weight.fetched_count == 1
+    assert result.weight.persisted_count == 1
     assert result.activity_energy.error_code == "transient_error"
-    assert db.scalar(select(NutritionSourceObservation.id)) is not None
-    assert db.scalar(select(HealthSample.id).where(HealthSample.user_id == user.id)) is not None
+    nutrition_rows = (
+        db.scalar(
+            select(func.count())
+            .select_from(NutritionSourceObservation)
+            .where(NutritionSourceObservation.user_id == user.id)
+        )
+        or 0
+    )
+    weight_rows = (
+        db.scalar(
+            select(func.count())
+            .select_from(HealthSample)
+            .where(HealthSample.user_id == user.id)
+        )
+        or 0
+    )
+    assert nutrition_rows == result.nutrition.persisted_count == 1
+    assert weight_rows == result.weight.persisted_count == 1
     db.expire_all()
     refreshed = db.get(GoogleHealthConnection, connection.id)
     assert refreshed is not None
