@@ -20,6 +20,8 @@ def test_google_health_models_have_only_encrypted_connection_and_flow_fields() -
     assert {column.name for column in connection.columns} == {
         "id",
         "user_id",
+        "client_id",
+        "encrypted_client_secret",
         "encrypted_refresh_token",
         "granted_scopes",
         "state",
@@ -52,12 +54,17 @@ def test_google_health_models_have_only_encrypted_connection_and_flow_fields() -
     assert not forbidden & {column.name for column in flow.columns}
 
 
-def test_google_health_connection_contract_is_encrypted_and_one_per_user() -> None:
+def test_google_health_connection_contract_is_per_user_and_encrypted() -> None:
     table = GoogleHealthConnection.__table__
     columns = table.c
     assert columns.id.primary_key
+    assert columns.client_id.type.python_type is str
+    assert columns.client_id.nullable
+    assert columns.client_id.type.length == 512
+    assert columns.encrypted_client_secret.type.python_type is bytes
+    assert columns.encrypted_client_secret.nullable
     assert columns.encrypted_refresh_token.type.python_type is bytes
-    assert not columns.encrypted_refresh_token.nullable
+    assert columns.encrypted_refresh_token.nullable
     assert not columns.granted_scopes.nullable
     assert not columns.state.nullable
     assert columns.state.type.length == 16
@@ -76,6 +83,7 @@ def test_google_health_connection_contract_is_encrypted_and_one_per_user() -> No
         and constraint.name == "ck_google_health_connections_state"
         and "active" in str(constraint.sqltext)
         and "reauth_required" in str(constraint.sqltext)
+        and "not_connected" in str(constraint.sqltext)
         for constraint in table.constraints
     )
     assert any(index.name == "ix_google_health_connections_user_id" for index in table.indexes)
@@ -92,6 +100,7 @@ def test_google_health_flow_contract_has_expiry_consumption_and_state_hash_index
     assert columns.expires_at.index
     assert columns.consumed_at.nullable
     assert {fk.ondelete for fk in columns.user_id.foreign_keys} == {"CASCADE"}
+
     assert any(
         constraint.name == "uq_google_health_oauth_flows_state_hash"
         for constraint in table.constraints
@@ -103,7 +112,9 @@ def test_google_health_flow_contract_has_expiry_consumption_and_state_hash_index
 def test_google_health_models_persist_defaults_and_relationships(db, user: User) -> None:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id.apps.googleusercontent.com",
+        encrypted_client_secret=b"encrypted-client-secret",
+        state="not_connected",
     )
     flow = GoogleHealthOAuthFlow(
         user_id=user.id,
@@ -116,7 +127,8 @@ def test_google_health_models_persist_defaults_and_relationships(db, user: User)
     db.refresh(connection)
     db.refresh(flow)
 
-    assert connection.state == "active"
+    assert connection.state == "not_connected"
+    assert connection.encrypted_refresh_token is None
     assert connection.granted_scopes == []
     assert connection.created_at is not None
     assert connection.updated_at is not None

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from app.config import Settings
 from app.google_health.constants import (
@@ -55,171 +54,33 @@ def test_google_health_redirect_uri_rejects_non_origin(public_url: str) -> None:
         google_health_redirect_uri(public_url)
 
 
-def test_google_health_settings_are_disabled_and_secret_safe() -> None:
-    client_id = "google-client-id.apps.googleusercontent.com"
-    client_secret = "synthetic-google-client-secret"
-    configured = Settings(
-        _env_file=None,
-        environment="development",
-        google_health_client_id=client_id,
-        google_health_client_secret=client_secret,
-    )
-
-    assert Settings(_env_file=None, environment="development").google_health_enabled is False
-    assert configured.google_health_client_id == client_id
-    assert configured.google_health_client_secret == client_secret
-    rendered = repr(configured)
-    serialized = configured.model_dump()
-    assert client_secret not in rendered
-    assert client_secret not in str(serialized)
-    assert "google_health_client_secret" not in serialized
-    assert "google_health_client_secret_file" not in serialized
-
-
-def test_google_health_disabled_without_global_credentials_starts() -> None:
-    configured = Settings(
-        _env_file=None,
-        environment="development",
-        google_health_enabled=False,
-    )
-
-    assert configured.google_health_enabled is False
-    assert configured.google_health_client_id == ""
-    assert configured.google_health_client_secret == ""
-    assert configured.google_health_client_secret_file is None
-
-def test_google_health_enabled_without_global_credentials_fails_closed() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="Google Health credentials are required when GOOGLE_HEALTH_ENABLED=true",
-    ):
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_enabled=True,
-        )
-
-
-def test_google_health_explicit_empty_secret_file_is_rejected_even_when_disabled(
-    tmp_path: Path,
-) -> None:
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text("", encoding="utf-8")
-
-    with pytest.raises(ValidationError, match="GOOGLE_HEALTH_CLIENT_SECRET_FILE"):
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_enabled=False,
-            google_health_client_secret_file=str(secret_file),
-        )
-
-
-def test_google_health_enabled_requires_client_id_without_leaking_secret(
-    tmp_path: Path,
-) -> None:
-    secret = "synthetic-google-enabled-secret"
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text(secret, encoding="utf-8")
-
-    with pytest.raises(ValidationError) as captured:
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_enabled=True,
-            google_health_client_secret_file=str(secret_file),
-        )
-
-    message = str(captured.value)
-    assert "Google Health credentials are required" in message
-    assert secret not in message
-    assert str(secret_file) not in message
-
-
-def test_google_health_enabled_rejects_empty_secret_file_without_leaks(
-    tmp_path: Path,
-) -> None:
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text("", encoding="utf-8")
-    client_id = "google-client-id.apps.googleusercontent.com"
-
-    with pytest.raises(ValidationError) as captured:
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_enabled=True,
-            google_health_client_id=client_id,
-            google_health_client_secret_file=str(secret_file),
-        )
-
-    message = str(captured.value)
-    assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE contains an invalid secret" in message
-    assert client_id not in message
-    assert str(secret_file) not in message
-
-
-def test_google_health_enabled_rejects_whitespace_secret_file(
-    tmp_path: Path,
-) -> None:
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text(" \t\n", encoding="utf-8")
-    client_id = "google-client-id.apps.googleusercontent.com"
-
-    with pytest.raises(ValidationError, match="Google Health credentials are required"):
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_enabled=True,
-            google_health_client_id=client_id,
-            google_health_client_secret_file=str(secret_file),
-        )
-
-
-def test_google_health_enabled_accepts_valid_credentials_from_file(
-    tmp_path: Path,
-) -> None:
-    secret = "synthetic-google-enabled-secret"
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text(secret + "\n", encoding="utf-8")
-    client_id = "google-client-id.apps.googleusercontent.com"
-
+def test_google_health_settings_keep_only_enablement_and_public_url() -> None:
     configured = Settings(
         _env_file=None,
         environment="development",
         google_health_enabled=True,
-        google_health_client_id=client_id,
-        google_health_client_secret_file=str(secret_file),
+        calograph_public_url="https://nutrition.example.test",
+        google_health_client_id="ignored-client-id",
+        google_health_client_secret="ignored-client-secret",
+        google_health_client_secret_file="/ignored/path",
     )
 
-    assert configured.google_health_client_id == client_id
-    assert configured.google_health_client_secret == secret
-    assert secret not in repr(configured)
-    assert secret not in str(configured.model_dump())
+    assert configured.google_health_enabled is True
+    assert configured.calograph_public_url == "https://nutrition.example.test"
+    assert "google_health_client_id" not in Settings.model_fields
+    assert "google_health_client_secret" not in Settings.model_fields
+    assert "google_health_client_secret_file" not in Settings.model_fields
+    serialized = configured.model_dump()
+    assert "google_health_client_id" not in serialized
+    assert "google_health_client_secret" not in serialized
+    assert "google_health_client_secret_file" not in serialized
+    assert "ignored-client-secret" not in repr(configured)
+    assert "ignored-client-secret" not in str(serialized)
 
 
-def test_google_health_disabled_preserves_explicit_credentials() -> None:
-    client_id = "google-client-id.apps.googleusercontent.com"
-    secret = "synthetic-google-disabled-secret"
-
-    configured = Settings(
-        _env_file=None,
-        environment="development",
-        google_health_enabled=False,
-        google_health_client_id=client_id,
-        google_health_client_secret=secret,
-    )
-
-    assert configured.google_health_enabled is False
-    assert configured.google_health_client_id == client_id
-    assert configured.google_health_client_secret == secret
-
-
-def test_google_health_secret_file_is_loaded_and_excluded(
-    tmp_path: Path,
-) -> None:
-    secret = "google-secret-from-file"
+def test_google_health_global_secret_file_is_not_loaded(tmp_path: Path) -> None:
     secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text(secret + "\n", encoding="utf-8")
+    secret_file.write_text("synthetic-google-secret", encoding="utf-8")
 
     configured = Settings(
         _env_file=None,
@@ -227,34 +88,12 @@ def test_google_health_secret_file_is_loaded_and_excluded(
         google_health_client_secret_file=str(secret_file),
     )
 
-    assert configured.google_health_client_secret == secret
-    assert secret not in repr(configured)
-    assert secret not in str(configured.model_dump())
-    assert str(secret_file) not in repr(configured)
+    assert not hasattr(configured, "google_health_client_secret")
     assert str(secret_file) not in str(configured.model_dump())
 
-def test_google_health_direct_and_file_secret_sources_conflict_without_leaks(
-    tmp_path: Path,
-) -> None:
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text("file-google-secret", encoding="utf-8")
-    direct = "direct-google-secret"
-
-    with pytest.raises(ValidationError) as captured:
-        Settings(
-            _env_file=None,
-            environment="development",
-            google_health_client_secret=direct,
-            google_health_client_secret_file=str(secret_file),
-        )
-
-    message = str(captured.value)
-    assert direct not in message
-    assert str(secret_file) not in message
-    assert "file-google-secret" not in message
 
 
-def test_google_health_runtime_templates_exclude_global_credentials() -> None:
+def test_google_health_runtime_templates_keep_enablement_without_global_credentials() -> None:
     project_root = next(
         (
             candidate

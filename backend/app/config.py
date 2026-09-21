@@ -134,26 +134,6 @@ class Settings(BaseSettings):
     initial_admin_setup_enabled: bool = False
     calograph_public_url: str = "http://localhost:8180"
     google_health_enabled: bool = False
-    google_health_client_id: str = Field(
-        default="",
-        min_length=0,
-        max_length=512,
-        exclude=True,
-        repr=False,
-    )
-    google_health_client_secret: str = Field(
-        default="",
-        min_length=0,
-        max_length=512,
-        exclude=True,
-        repr=False,
-    )
-    google_health_client_secret_file: str | None = Field(
-        default=None,
-        max_length=4096,
-        exclude=True,
-        repr=False,
-    )
     cookie_secure: bool = False
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
@@ -344,12 +324,6 @@ class Settings(BaseSettings):
                 "mfa_encryption_key",
                 "mfa_encryption_key_file",
                 "MFA_ENCRYPTION_KEY_FILE",
-                False,
-            ),
-            (
-                "google_health_client_secret",
-                "google_health_client_secret_file",
-                "GOOGLE_HEALTH_CLIENT_SECRET_FILE",
                 False,
             ),
         )

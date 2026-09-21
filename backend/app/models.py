@@ -251,7 +251,7 @@ class GoogleHealthConnection(Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_google_health_connections_user_id"),
         CheckConstraint(
-            "state IN ('active', 'reauth_required')",
+            "state IN ('active', 'reauth_required', 'not_connected')",
             name="ck_google_health_connections_state",
         ),
     )
@@ -260,7 +260,9 @@ class GoogleHealthConnection(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    client_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    encrypted_client_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_refresh_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     granted_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
