@@ -6,10 +6,10 @@ from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+import time as time_module
 from typing import Any, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,12 @@ from app.source_priority.bootstrap import bootstrap_nutrition_priority
 
 DEFAULT_MAX_SYNC_PAGES = 100
 DEFAULT_MAX_SYNC_POINTS = 10_000
+
+
+MAX_SYNC_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+RETRYABLE_CODES = frozenset({"rate_limited", "provider_error", "transient_error"})
+Sleep = Callable[[float], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,10 +114,12 @@ def _record_connection_status(
         if success:
             connection.last_success_at = datetime.now(UTC)
             connection.last_error = None
+            connection.last_error_category = None
             connection.state = "active"
         elif error_code is not None:
             safe_code = error_code if error_code in _SAFE_CODES else "provider_error"
             connection.last_error = safe_code
+            connection.last_error_category = safe_code
             if safe_code in _REAUTH_CODES:
                 connection.state = "reauth_required"
         db.commit()
@@ -152,13 +160,18 @@ def _empty_domains(start: date, end: date, *, status: str, error: str | None = N
 class GoogleHealthSyncService:
     """Read all domains with independent finite budgets and write each independently."""
 
-    def __init__(self, *, session_factory: SessionFactory,
-                 client_factory: ClientFactory | None = None,
-                 credentials_factory: CredentialsFactory = _default_credentials,
-                 decrypt_refresh_token: DecryptRefreshToken = decrypt_credential,
-                 page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
-                 max_pages: int = DEFAULT_MAX_SYNC_PAGES,
-                 max_points: int = DEFAULT_MAX_SYNC_POINTS) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory,
+        client_factory: ClientFactory | None = None,
+        credentials_factory: CredentialsFactory = _default_credentials,
+        decrypt_refresh_token: DecryptRefreshToken = decrypt_credential,
+        page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
+        max_pages: int = DEFAULT_MAX_SYNC_PAGES,
+        max_points: int = DEFAULT_MAX_SYNC_POINTS,
+        sleep: Sleep = time_module.sleep,
+    ) -> None:
         if not isinstance(page_size, int) or page_size <= 0:
             raise ValueError("page_size must be positive")
         if not isinstance(max_pages, int) or max_pages <= 0:
@@ -172,8 +185,51 @@ class GoogleHealthSyncService:
         self._page_size = page_size
         self._max_pages = max_pages
         self._max_points = max_points
+        self._sleep = sleep
+
+    def _update_retry_status(
+        self,
+        *,
+        user_id: UUID,
+        state: str,
+        attempt: int,
+        next_retry_at: datetime | None = None,
+        error_category: str | None = None,
+        success: bool = False,
+    ) -> None:
+        db: Session | None = None
+        try:
+            db = self._session_factory()
+            connection = db.scalar(
+                select(GoogleHealthConnection)
+                .where(GoogleHealthConnection.user_id == user_id)
+                .with_for_update()
+            )
+            if connection is None:
+                return
+            now = datetime.now(UTC)
+            connection.sync_state = state
+            connection.retry_attempt = attempt
+            connection.retry_max_attempts = MAX_SYNC_ATTEMPTS
+            connection.next_retry_at = next_retry_at
+            connection.last_attempt_at = now
+            connection.last_error_category = error_category
+            connection.last_error = error_category
+            if success:
+                connection.last_success_at = now
+                connection.last_error = None
+                connection.last_error_category = None
+            db.commit()
+        except Exception:
+            if db is not None:
+                with suppress(Exception):
+                    db.rollback()
+        finally:
+            if db is not None:
+                db.close()
 
     def _snapshot(self, user_id: UUID) -> tuple[UUID, str, bytes, str, str] | str:
+
         db = self._session_factory()
         try:
             row = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id))
@@ -364,7 +420,9 @@ class GoogleHealthSyncService:
         finally:
             db.close()
 
-    def sync(self, *, user_id: UUID, requested_start: date, requested_end: date) -> GoogleHealthSyncResult:
+    def _sync_once(
+        self, *, user_id: UUID, requested_start: date, requested_end: date
+    ) -> GoogleHealthSyncResult:
         if requested_start > requested_end:
             raise ValueError("requested date range is invalid")
         snapshot = self._snapshot(user_id)
@@ -544,6 +602,72 @@ class GoogleHealthSyncService:
             activity_energy=activity,
             weight=weight,
         )
+
+    @staticmethod
+    def _retry_category(result: GoogleHealthSyncResult) -> str | None:
+        codes = [
+            item.error_code
+            for item in (result.nutrition, result.activity_energy, result.weight)
+            if item.error_code
+        ]
+        if not codes:
+            return None
+        for code in codes:
+            if code not in RETRYABLE_CODES:
+                return code
+        return codes[0]
+
+    def sync(
+        self, *, user_id: UUID, requested_start: date, requested_end: date
+    ) -> GoogleHealthSyncResult:
+        if requested_start > requested_end:
+            raise ValueError("requested date range is invalid")
+        for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
+            self._update_retry_status(user_id=user_id, state="running", attempt=attempt)
+            try:
+                result = self._sync_once(
+                    user_id=user_id,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                )
+            except Exception as exc:
+                category = _safe_code(exc)
+                result = _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="reauth_required" if category in _REAUTH_CODES else "failed",
+                    error=category,
+                )
+            category = self._retry_category(result)
+            if category not in RETRYABLE_CODES:
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="completed" if result.status in {"success", "no_data"} else "failed",
+                    attempt=attempt,
+                    error_category=category,
+                    success=result.status in {"success", "no_data"},
+                )
+                return result
+            if attempt >= MAX_SYNC_ATTEMPTS:
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="failed",
+                    attempt=attempt,
+                    error_category=category,
+                )
+                return result
+            next_retry_at = datetime.now(UTC) + timedelta(
+                seconds=RETRY_BACKOFF_SECONDS[attempt - 1]
+            )
+            self._update_retry_status(
+                user_id=user_id,
+                state="running",
+                attempt=attempt,
+                next_retry_at=next_retry_at,
+                error_category=category,
+            )
+            self._sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
+        raise AssertionError("sync retry loop did not return")
 
 
 __all__ = ["GoogleHealthDomainResult", "GoogleHealthSyncResult", "GoogleHealthSyncService"]

@@ -56,6 +56,26 @@ class GoogleHealthStatus(BaseModel):
     last_error_category: str | None = None
 
 
+GoogleHealthConnectionTestStatus = Literal["connected", "reauth_required", "failed"]
+GoogleHealthConnectionTestErrorCategory = Literal[
+    "credential_unavailable",
+    "credentials_unavailable",
+    "reauth_required",
+    "scope_missing",
+    "rate_limited",
+    "provider_error",
+    "transient_error",
+    "invalid_response",
+]
+
+
+class GoogleHealthConnectionTestResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: GoogleHealthConnectionTestStatus
+    error_category: GoogleHealthConnectionTestErrorCategory | None = None
+
+
 class GoogleHealthOAuthStartResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

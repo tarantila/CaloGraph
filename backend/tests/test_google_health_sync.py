@@ -23,7 +23,11 @@ from app.google_health.errors import GoogleHealthAuthenticationError, GoogleHeal
 from app.models import GoogleHealthConnection, HealthSample, User
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.nutrition.models import NutritionSourceObservation
-from app.services.google_health_sync import GoogleHealthSyncService
+from app.services.google_health_sync import (
+    GoogleHealthDomainResult,
+    GoogleHealthSyncResult,
+    GoogleHealthSyncService,
+)
 
 START = date(2026, 9, 15)
 END = date(2026, 9, 15)
@@ -481,3 +485,97 @@ def test_no_data_completion_records_success_without_sensitive_values(
     assert refreshed.state == "active"
     assert refreshed.last_error is None
     assert refreshed.last_success_at is not None
+
+
+def _synthetic_sync_result(status: str, error: str | None = None) -> GoogleHealthSyncResult:
+    item = GoogleHealthDomainResult(
+        status="failed" if error else status,
+        fetched_count=0,
+        persisted_count=0,
+        requested_start=START,
+        requested_end=END,
+        error_code=error,
+    )
+    return GoogleHealthSyncResult(
+        status=status,
+        nutrition=item,
+        activity_energy=item,
+        weight=item,
+    )
+
+
+def test_sync_retries_transient_errors_with_exact_backoff_and_attempts(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    outcomes = iter(
+        [
+            _synthetic_sync_result("failed", "transient_error"),
+            _synthetic_sync_result("success"),
+        ]
+    )
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(service, "_sync_once", lambda **_: calls.append(1) or next(outcomes))
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: None)
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "success"
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
+def test_sync_exhausts_three_real_attempts_without_intermediate_result(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    calls: list[int] = []
+    sleeps: list[float] = []
+    statuses: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        service,
+        "_sync_once",
+        lambda **_: calls.append(1) or _synthetic_sync_result("failed", "provider_error"),
+    )
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: statuses.append(kwargs))
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "failed"
+    assert len(calls) == 3
+    assert sleeps == [1.0, 2.0]
+    assert statuses[-1]["attempt"] == 3
+    assert statuses[-1]["state"] == "failed"
+
+
+def test_sync_does_not_retry_non_retryable_error(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        service,
+        "_sync_once",
+        lambda **_: calls.append(1) or _synthetic_sync_result("failed", "invalid_response"),
+    )
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: None)
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "failed"
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_sync_success_records_first_attempt_as_one_of_three(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    statuses: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_sync_once", lambda **_: _synthetic_sync_result("success"))
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: statuses.append(kwargs))
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "success"
+    assert len(statuses) == 2
+    assert statuses[-1]["attempt"] == 1
+    assert statuses[-1]["state"] == "completed"
+    assert statuses[-1]["success"] is True

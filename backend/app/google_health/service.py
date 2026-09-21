@@ -145,6 +145,7 @@ def _configured(connection: GoogleHealthConnection | None) -> bool:
 _SAFE_ERROR_CATEGORIES = frozenset(
     {
         "credential_unavailable",
+        "credentials_unavailable",
         "invalid_response",
         "provider_error",
         "rate_limited",
@@ -186,16 +187,20 @@ def _status_from_connection(connection: GoogleHealthConnection | None) -> Google
         client_secret_configured=client_secret_configured,
         redirect_uri=google_health_redirect_uri(settings.calograph_public_url),
         state=state,
-        sync_state="idle",
-        retry_attempt=0,
-        retry_max_attempts=0,
-        next_retry_at=None,
+        sync_state=connection.sync_state if connection else "idle",
+        retry_attempt=connection.retry_attempt if connection else 0,
+        retry_max_attempts=connection.retry_max_attempts if connection else 0,
+        next_retry_at=connection.next_retry_at if connection else None,
         granted_scopes=tuple(connection.granted_scopes or ()) if connection else (),
         refresh_token_expires_at=connection.refresh_token_expires_at if connection else None,
         last_attempt_at=connection.last_attempt_at if connection else None,
         last_success_at=connection.last_success_at if connection else None,
         last_error=error_category,
-        last_error_category=error_category,
+        last_error_category=(
+            _safe_error_category(connection.last_error_category)
+            if connection
+            else error_category
+        ),
     )
 
 

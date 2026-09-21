@@ -23,11 +23,13 @@ from app.google_health.service import (
 from app.google_health.credentials import GoogleHealthCredentialError
 from app.models import User
 from app.schemas_google_health import (
+    GoogleHealthConnectionTestResponse,
     GoogleHealthCredentialsInput,
     GoogleHealthOAuthStartResponse,
     GoogleHealthStatus,
     GoogleHealthSyncResponse,
 )
+from app.services.google_health_connection_test import GoogleHealthConnectionTestService
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
 from app.services.google_health_sync import GoogleHealthSyncService
 from app.services.rate_limit import check_rate_limit, normalize_client_ip
@@ -174,6 +176,21 @@ def google_health_sync(
         nutrition=result.nutrition,
         activity_energy=result.activity_energy,
         weight=result.weight,
+    )
+
+
+@router.post("/connection/test", response_model=GoogleHealthConnectionTestResponse)
+def google_health_connection_test(
+    user: User = Depends(require_csrf),
+) -> GoogleHealthConnectionTestResponse:
+    if not settings.google_health_enabled:
+        raise HTTPException(status_code=404, detail="Google Health ist nicht verfügbar.")
+    result = GoogleHealthConnectionTestService(session_factory=SessionLocal).test(
+        user_id=user.id
+    )
+    return GoogleHealthConnectionTestResponse(
+        status=result.status,
+        error_category=result.error_category,
     )
 @router.get("/status", response_model=GoogleHealthStatus)
 def google_health_status_route(
