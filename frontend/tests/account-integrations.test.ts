@@ -462,6 +462,7 @@ describe('AccountIntegrationsView', () => {
     await flushPromises()
 
     expect(wrapper.get('.google-health-status-badge').text()).toBe('Synchronisierung fehlgeschlagen')
+    expect(wrapper.get('.google-status-panel').text()).not.toContain('Versuch 2 von 3')
   })
 
   it('only renders the YAZIO next-run row while scheduler and synchronization are enabled', async () => {

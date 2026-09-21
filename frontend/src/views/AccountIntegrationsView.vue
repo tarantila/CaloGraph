@@ -199,7 +199,7 @@ const googleSyncStateLabel = computed(() => {
 })
 
 function googleRetryLabel(): string {
-  if (!google.value || google.value.retry_attempt <= 0) return ''
+  if (!google.value || google.value.retry_attempt <= 0 || !google.value.next_retry_at) return ''
   return t('accountIntegrations.googleRetryAttempt', {
     attempt: google.value.retry_attempt,
     max: google.value.retry_max_attempts,
@@ -715,7 +715,7 @@ void load()
           <h3>{{ t('accountIntegrations.googleStatusTitle') }}</h3>
           <dl class="integration-details">
             <div><dt>{{ t('accountIntegrations.googleSyncState') }}</dt><dd>{{ googleSyncStateLabel }}</dd></div>
-            <div v-if="google.retry_attempt > 0"><dt>{{ t('accountIntegrations.googleRetryAttemptLabel') }}</dt><dd>{{ googleRetryLabel() }}</dd></div>
+            <div v-if="google.retry_attempt > 0 && google.next_retry_at"><dt>{{ t('accountIntegrations.googleRetryAttemptLabel') }}</dt><dd>{{ googleRetryLabel() }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastAttempt') }}</dt><dd>{{ timestampLabel(google.last_attempt_at) }}</dd></div>
             <div><dt>{{ t('accountIntegrations.lastSuccess') }}</dt><dd>{{ timestampLabel(google.last_success_at) }}</dd></div>
           </dl>
