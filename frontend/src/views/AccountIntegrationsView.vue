@@ -7,7 +7,14 @@ import DateInput from '../components/DateInput.vue'
 import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
-import type { GoogleHealthDomainKey, GoogleHealthSyncResult, GoogleHealthStatus, ImportSummary, YazioStatus } from '../types'
+import type {
+  GoogleHealthConnectionTestStatus,
+  GoogleHealthDomainKey,
+  GoogleHealthSyncResult,
+  GoogleHealthStatus,
+  ImportSummary,
+  YazioStatus,
+} from '../types'
 
 const googleSyncDomains: ReadonlyArray<{ key: GoogleHealthDomainKey; labelKey: string }> = [
   { key: 'nutrition', labelKey: 'accountIntegrations.googleDomainNutrition' },
@@ -18,6 +25,17 @@ const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 const yazio = ref<YazioStatus | null>(null)
 const google = ref<GoogleHealthStatus | null>(null)
+const googleClientId = ref('')
+const googleClientSecret = ref('')
+const googleSecretVisible = ref(false)
+const googleCredentialSaving = ref(false)
+const googleCredentialDeleting = ref(false)
+const googleDisconnecting = ref(false)
+const googleConnectionTestBusy = ref(false)
+const googleConnectionTestResult = ref<GoogleHealthConnectionTestStatus | null>(null)
+const googleCredentialError = ref('')
+const googleCredentialMessage = ref('')
+const googleConnectionTestError = ref('')
 const yazioEmail = ref('')
 const yazioPassword = ref('')
 const yazioHistoryFrom = ref('')
@@ -88,6 +106,7 @@ const googleCanSync = computed(() => (
   google.value?.available === true
   && google.value.configured === true
   && google.value.state === 'active'
+  && google.value.sync_state !== 'running'
 ))
 
 function timestampLabel(value: string | null | undefined): string {
@@ -98,6 +117,17 @@ function timestampLabel(value: string | null | undefined): string {
 
 const googleNeedsReauth = computed(() => (
   google.value?.state === 'reauth_required' || google.value?.state === 'scope_missing'
+))
+const googleCredentialsComplete = computed(() => {
+  const clientIdEmpty = !googleClientId.value.trim()
+  const secretEmpty = !googleClientSecret.value
+  if (google.value?.configured) return (clientIdEmpty && secretEmpty) || (!clientIdEmpty && !secretEmpty)
+  return !clientIdEmpty && !secretEmpty
+})
+const googleAvailable = computed(() => google.value?.available === true)
+const googleCanTest = computed(() => googleAvailable.value && google.value?.configured === true)
+const googleCanDisconnect = computed(() => googleAvailable.value && google.value?.configured === true && (
+  google.value?.state === 'active' || googleNeedsReauth.value
 ))
 
 function googleDomainStatusLabel(status: string): string {
@@ -124,6 +154,131 @@ function googleSyncStatusLabel(status: string): string {
   return t('accountIntegrations.notAvailable')
 }
 
+const googleBadgeLabel = computed(() => {
+  if (!google.value) return t('accountIntegrations.googleEmpty')
+  if (google.value.state === 'disabled' || !google.value.available) return t('accountIntegrations.googleDisabled')
+  if (google.value.state === 'not_configured') return t('accountIntegrations.googleNotConfigured')
+  if (google.value.sync_state === 'running' && google.value.next_retry_at) return t('accountIntegrations.googleRetrying')
+  if (google.value.sync_state === 'running') return t('accountIntegrations.googleSyncing')
+  if (google.value.sync_state === 'failed') return t('accountIntegrations.googleFailed')
+  if (google.value.sync_state === 'completed') return t('accountIntegrations.googleSyncSuccess')
+  if (googleNeedsReauth.value) return t('accountIntegrations.googleReauth')
+  if (google.value.state === 'not_connected') return t('accountIntegrations.googleNotConnected')
+  return t('accountIntegrations.googleActive')
+})
+const googleBadgeVariant = computed(() => {
+  if (!google.value) return 'empty'
+  if (google.value.state === 'disabled' || !google.value.available) return 'disabled'
+  if (google.value.state === 'not_configured') return 'not_configured'
+  if (google.value.sync_state === 'running' && google.value.next_retry_at) return 'retrying'
+  if (google.value.sync_state === 'running') return 'running'
+  if (google.value.sync_state === 'failed') return 'failed'
+  if (google.value.sync_state === 'completed') return 'completed'
+  return google.value.state
+})
+const googleSyncStateLabel = computed(() => {
+  if (!google.value) return t('accountIntegrations.googleEmpty')
+  if (google.value.sync_state === 'running') return t('accountIntegrations.googleSyncing')
+  if (google.value.sync_state === 'failed') return t('accountIntegrations.googleFailed')
+  if (google.value.sync_state === 'completed') return t('accountIntegrations.googleSyncSuccess')
+  return t('accountIntegrations.googleSyncIdle')
+})
+
+function googleRetryLabel(): string {
+  if (!google.value || google.value.retry_attempt <= 0) return ''
+  return t('accountIntegrations.googleRetryAttempt', {
+    attempt: google.value.retry_attempt,
+    max: google.value.retry_max_attempts,
+  })
+}
+
+async function saveGoogleCredentials(): Promise<void> {
+  if (googleCredentialSaving.value || !googleAvailable.value) return
+  googleCredentialError.value = ''
+  googleCredentialMessage.value = ''
+  if (!googleCredentialsComplete.value) {
+    googleCredentialError.value = t('accountIntegrations.googleCredentialPairRequired')
+    return
+  }
+  googleCredentialSaving.value = true
+  try {
+    google.value = await api<GoogleHealthStatus>('/google-health/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({
+        client_id: googleClientId.value.trim(),
+        client_secret: googleClientSecret.value,
+      }),
+    })
+    googleClientId.value = ''
+    googleClientSecret.value = ''
+    googleSecretVisible.value = false
+    googleCredentialMessage.value = t('accountIntegrations.googleCredentialsSaved')
+    googleConnectionTestResult.value = null
+  } catch (cause) {
+    googleCredentialError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.googleCredentialsSaveFailed', { preserveDetail: false })
+      : t('accountIntegrations.googleCredentialsSaveFailed')
+  } finally {
+    googleCredentialSaving.value = false
+  }
+}
+
+async function deleteGoogleCredentials(): Promise<void> {
+  if (googleCredentialDeleting.value || !googleAvailable.value || !window.confirm(t('accountIntegrations.googleCredentialsDeleteConfirm'))) return
+  googleCredentialDeleting.value = true
+  googleCredentialError.value = ''
+  googleCredentialMessage.value = ''
+  try {
+    google.value = await api<GoogleHealthStatus>('/google-health/credentials', { method: 'DELETE' })
+    googleClientId.value = ''
+    googleClientSecret.value = ''
+    googleSecretVisible.value = false
+    googleConnectionTestResult.value = null
+    googleCredentialMessage.value = t('accountIntegrations.googleCredentialsDeleted')
+  } catch {
+    googleCredentialError.value = t('accountIntegrations.googleCredentialsDeleteFailed')
+  } finally {
+    googleCredentialDeleting.value = false
+  }
+}
+
+async function disconnectGoogle(): Promise<void> {
+  if (googleDisconnecting.value || !googleCanDisconnect.value) return
+  googleDisconnecting.value = true
+  googleCredentialError.value = ''
+  googleCredentialMessage.value = ''
+  try {
+    google.value = await api<GoogleHealthStatus>('/google-health/connection', { method: 'DELETE' })
+    googleConnectionTestResult.value = null
+    googleCredentialMessage.value = t('accountIntegrations.googleDisconnected')
+  } catch {
+    googleCredentialError.value = t('accountIntegrations.googleDisconnectFailed')
+  } finally {
+    googleDisconnecting.value = false
+  }
+}
+
+async function testGoogleConnection(): Promise<void> {
+  if (googleConnectionTestBusy.value || !googleCanTest.value) return
+  googleConnectionTestBusy.value = true
+  googleConnectionTestResult.value = null
+  googleConnectionTestError.value = ''
+  try {
+    const result = await api<{ status: GoogleHealthConnectionTestStatus }>('/google-health/connection/test', { method: 'POST' })
+    googleConnectionTestResult.value = result.status
+    if (google.value && result.status === 'reauth_required') {
+      google.value = { ...google.value, state: 'reauth_required' }
+    } else if (google.value && result.status === 'connected') {
+      google.value = { ...google.value, state: 'active' }
+    }
+  } catch {
+    googleConnectionTestResult.value = 'failed'
+    googleConnectionTestError.value = t('accountIntegrations.googleConnectionTestFailed')
+  } finally {
+    googleConnectionTestBusy.value = false
+  }
+}
+
 async function load(): Promise<void> {
   const generation = ++loadGeneration
   stopYazioPolling()
@@ -137,6 +292,13 @@ async function load(): Promise<void> {
   googleSyncError.value = ''
   googleSyncWarning.value = ''
   initialSetupSaved.value = false
+  googleClientId.value = ''
+  googleClientSecret.value = ''
+  googleSecretVisible.value = false
+  googleCredentialError.value = ''
+  googleCredentialMessage.value = ''
+  googleConnectionTestError.value = ''
+  googleConnectionTestResult.value = null
   yazio.value = null
   google.value = null
   const callbackState = typeof window === 'undefined'
@@ -454,28 +616,99 @@ void load()
         </div>
       </section>
 
-      <section class="card form-card integration-card google-health-card" :aria-busy="googleActionBusy" aria-labelledby="google-health-title">
+      <section class="card form-card integration-card google-health-card" :aria-busy="googleActionBusy || googleCredentialSaving || googleConnectionTestBusy || googleCredentialDeleting || googleDisconnecting" aria-labelledby="google-health-title">
         <div class="integration-card-header">
           <PhGoogleLogo class="integration-card-icon" :size="20" weight="duotone" aria-hidden="true" />
           <h2 id="google-health-title">{{ t('accountIntegrations.googleTitle') }}</h2>
+          <span class="integration-status-badge google-health-status-badge" :class="`integration-status-badge--${googleBadgeVariant}`" role="status">{{ googleBadgeLabel }}</span>
         </div>
         <p>{{ t('accountIntegrations.googleDescription') }}</p>
-        <p><strong>{{ t('accountIntegrations.googleStatus') }}:</strong> {{ googleStatusLabel }}</p>
-        <p v-if="googleNeedsReauth" class="setup-notice google-reauth-message" role="status">
-          {{ t('accountIntegrations.googleReauthMessage') }}
-        </p>
-        <p v-if="google?.last_success_at" class="table-secondary">
-          {{ t('accountIntegrations.lastSuccess') }}: {{ timestampLabel(google.last_success_at) }}
-        </p>
-        <p v-if="google?.last_error" class="import-message error" role="alert">{{ google.last_error }}</p>
         <div v-if="googleError" class="import-message error" role="alert">
           <p>{{ googleError }}</p>
           <button v-if="!google" class="button compact-action" type="button" @click="load">{{ t('common.tryAgain') }}</button>
         </div>
+        <p><strong>{{ t('accountIntegrations.googleStatus') }}:</strong> {{ googleStatusLabel }}</p>
+        <p v-if="googleNeedsReauth || googleConnectionTestResult === 'reauth_required'" class="setup-notice google-reauth-message" role="status">
+          {{ t('accountIntegrations.googleReauthMessage') }}
+        </p>
         <p v-if="googleMessage" class="setup-notice" role="status">{{ googleMessage }}</p>
+        <form class="integration-panel google-credentials-panel" @submit.prevent="saveGoogleCredentials">
+          <h3>{{ t('accountIntegrations.googleCredentialsTitle') }}</h3>
+          <p class="table-secondary">{{ t('accountIntegrations.googleCredentialsDescription') }}</p>
+          <div class="form-grid google-credentials-grid">
+            <label class="field">
+              <span>{{ t('accountIntegrations.googleClientId') }}</span>
+              <input
+                v-model="googleClientId"
+                name="google-client-id"
+                type="text"
+                autocomplete="off"
+                :disabled="!googleAvailable"
+                :placeholder="google?.client_id_configured ? t('accountIntegrations.googleStoredPlaceholder') : t('accountIntegrations.googleClientIdPlaceholder')"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t('accountIntegrations.googleClientSecret') }}</span>
+              <div class="secret-input-row">
+                <input
+                  v-model="googleClientSecret"
+                  name="google-client-secret"
+                  :type="googleSecretVisible ? 'text' : 'password'"
+                  autocomplete="new-password"
+                  :disabled="!googleAvailable"
+                  :placeholder="google?.client_secret_configured ? t('accountIntegrations.googleStoredPlaceholder') : t('accountIntegrations.googleClientSecretPlaceholder')"
+                />
+                <button
+                  v-if="googleClientSecret"
+                  class="button secondary compact-action"
+                  type="button"
+                  :aria-label="googleSecretVisible ? t('accountIntegrations.googleHideSecret') : t('accountIntegrations.googleShowSecret')"
+                  @click="googleSecretVisible = !googleSecretVisible"
+                >
+                  {{ googleSecretVisible ? t('accountIntegrations.googleHideSecret') : t('accountIntegrations.googleShowSecret') }}
+                </button>
+              </div>
+            </label>
+          </div>
+          <p class="table-secondary">{{ t('accountIntegrations.googleCredentialPairHelp') }}</p>
+          <p v-if="googleCredentialError" class="import-message error" role="alert">{{ googleCredentialError }}</p>
+          <p v-if="googleCredentialMessage" class="setup-notice" role="status">{{ googleCredentialMessage }}</p>
+          <button class="button compact-action google-credentials-save" type="submit" :disabled="googleCredentialSaving || !googleAvailable || !googleCredentialsComplete">
+            {{ googleCredentialSaving ? t('accountIntegrations.googleCredentialsSaving') : google?.configured ? t('accountIntegrations.googleCredentialsReplace') : t('accountIntegrations.googleCredentialsSave') }}
+          </button>
+          <p v-if="google?.redirect_uri" class="table-secondary google-redirect-uri">
+            {{ t('accountIntegrations.googleRedirectUriHelp') }} <code>{{ google.redirect_uri }}</code>
+          </p>
+        </form>
+        <div v-if="google?.configured" class="integration-panel google-connection-actions">
+          <h3>{{ t('accountIntegrations.googleConnectionTitle') }}</h3>
+          <div class="integration-action-row">
+            <button class="button secondary compact-action google-health-connection-test" type="button" :disabled="googleConnectionTestBusy || !googleCanTest" @click="testGoogleConnection">
+              {{ googleConnectionTestBusy ? t('accountIntegrations.googleConnectionTestRunning') : t('accountIntegrations.googleConnectionTest') }}
+            </button>
+            <button v-if="googleCanDisconnect" class="button secondary compact-action google-health-disconnect" type="button" :disabled="googleDisconnecting" @click="disconnectGoogle">
+              {{ googleDisconnecting ? t('accountIntegrations.googleDisconnecting') : t('accountIntegrations.googleDisconnect') }}
+            </button>
+            <button v-if="googleAvailable && (google?.client_id_configured || google?.client_secret_configured)" class="button secondary compact-action google-health-delete-credentials" type="button" :disabled="googleCredentialDeleting" @click="deleteGoogleCredentials">
+              {{ googleCredentialDeleting ? t('accountIntegrations.googleCredentialsDeleting') : t('accountIntegrations.googleCredentialsDelete') }}
+            </button>
+          </div>
+          <p v-if="googleConnectionTestResult === 'connected'" class="setup-notice" role="status">{{ t('accountIntegrations.googleConnectionTestSuccess') }}</p>
+          <p v-else-if="googleConnectionTestResult === 'reauth_required'" class="setup-notice google-reauth-message" role="status">{{ t('accountIntegrations.googleReauthMessage') }}</p>
+          <p v-else-if="googleConnectionTestResult === 'failed'" class="import-message error" role="alert">{{ googleConnectionTestError || t('accountIntegrations.googleConnectionTestFailed') }}</p>
+        </div>
+        <div v-if="google" class="integration-panel google-status-panel">
+          <h3>{{ t('accountIntegrations.googleStatusTitle') }}</h3>
+          <dl class="integration-details">
+            <div><dt>{{ t('accountIntegrations.googleSyncState') }}</dt><dd>{{ googleSyncStateLabel }}</dd></div>
+            <div v-if="google.retry_attempt > 0"><dt>{{ t('accountIntegrations.googleRetryAttemptLabel') }}</dt><dd>{{ googleRetryLabel() }}</dd></div>
+            <div><dt>{{ t('accountIntegrations.lastAttempt') }}</dt><dd>{{ timestampLabel(google.last_attempt_at) }}</dd></div>
+            <div><dt>{{ t('accountIntegrations.lastSuccess') }}</dt><dd>{{ timestampLabel(google.last_success_at) }}</dd></div>
+          </dl>
+        </div>
         <button
           v-if="googleCanConnect"
-          class="button compact-action"
+          class="button compact-action google-health-connect"
           type="button"
           :disabled="googleActionBusy"
           :aria-label="googleNeedsReauth ? t('accountIntegrations.googleReauthorize') : undefined"

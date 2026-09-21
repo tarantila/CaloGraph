@@ -1101,6 +1101,36 @@ td strong { color: #f0f4f9; font-weight: 600; }
   color: #e8edf5;
 }
 .integration-card-header h2 { margin: 0; }
+.integration-status-badge {
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  color: var(--muted-strong);
+  font-size: .67rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: right;
+}
+.integration-status-badge--active,
+.integration-status-badge--completed { border-color: color-mix(in srgb, var(--success), var(--border) 45%); color: var(--success); }
+.integration-status-badge--not_connected,
+.integration-status-badge--not_configured,
+.integration-status-badge--empty { border-color: var(--border-strong); color: var(--muted-strong); }
+.integration-status-badge--reauth_required,
+.integration-status-badge--running,
+.integration-status-badge--retrying { border-color: color-mix(in srgb, var(--warning), var(--border) 45%); color: var(--warning); }
+.integration-status-badge--scope_missing,
+.integration-status-badge--failed { border-color: color-mix(in srgb, var(--danger), var(--border) 45%); color: var(--danger); }
+.integration-status-badge--disabled { border-color: color-mix(in srgb, var(--warning), var(--border) 45%); color: var(--warning); }
+.google-credentials-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.secret-input-row { display: flex; align-items: stretch; gap: .45rem; }
+.secret-input-row input { min-width: 0; flex: 1 1 auto; }
+.google-credentials-panel > p,
+.google-connection-actions > p,
+.google-status-panel > p { margin: 0; }
+.google-redirect-uri code { overflow-wrap: anywhere; color: var(--muted-strong); }
+.integration-action-row { display: flex; flex-wrap: wrap; gap: .55rem; }
 .integration-card-icon {
   width: 20px;
   height: 20px;

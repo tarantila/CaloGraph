@@ -117,6 +117,8 @@ export interface YazioStatus {
 }
 
 export type GoogleHealthState = 'disabled' | 'not_configured' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+export type GoogleHealthSyncState = 'idle' | 'running' | 'completed' | 'failed'
+export type GoogleHealthConnectionTestStatus = 'connected' | 'reauth_required' | 'failed'
 
 export interface GoogleHealthStatus {
   available: boolean
@@ -125,7 +127,7 @@ export interface GoogleHealthStatus {
   client_secret_configured: boolean
   redirect_uri: string
   state: GoogleHealthState
-  sync_state: string
+  sync_state: GoogleHealthSyncState
   retry_attempt: number
   retry_max_attempts: number
   next_retry_at: string | null

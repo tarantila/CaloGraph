@@ -30,12 +30,20 @@ const yazioStatus = {
 const googleStatus = {
   available: true,
   configured: true,
+  client_id_configured: true,
+  client_secret_configured: true,
+  redirect_uri: 'https://app.example.test/google-health/oauth/callback',
   state: 'active',
+  sync_state: 'idle',
+  retry_attempt: 0,
+  retry_max_attempts: 3,
+  next_retry_at: null,
   granted_scopes: ['https://www.googleapis.com/auth/fitness.activity.read'],
   refresh_token_expires_at: null,
   last_attempt_at: '2026-09-18T08:00:00Z',
   last_success_at: '2026-09-18T08:01:00Z',
   last_error: null,
+  last_error_category: null,
 }
 
 const googleSyncResult = {
@@ -95,6 +103,25 @@ function configureApi(overrides: Record<string, unknown> = {}): void {
     if (path === '/yazio/sync' && options?.method === 'POST') {
       return Promise.resolve({ inserted: 1, updated: 2, skipped: 3, failed: 0, unknown_types: [] })
     }
+    if (path === '/google-health/credentials' && options?.method === 'PUT') {
+      return Promise.resolve(overrides.googleCredentialsStatus ?? googleStatus)
+    }
+    if (path === '/google-health/credentials' && options?.method === 'DELETE') {
+      return Promise.resolve(overrides.googleCredentialsDeletedStatus ?? {
+        ...googleStatus,
+        configured: false,
+        client_id_configured: false,
+        client_secret_configured: false,
+        state: 'not_configured',
+      })
+    }
+    if (path === '/google-health/connection' && options?.method === 'DELETE') {
+      return Promise.resolve(overrides.googleDisconnectedStatus ?? { ...googleStatus, state: 'not_connected' })
+    }
+    if (path === '/google-health/connection/test' && options?.method === 'POST') {
+      if (overrides.googleConnectionTestError) return Promise.reject(new Error('provider detail'))
+      return Promise.resolve(overrides.googleConnectionTestResult ?? { status: 'connected', error_category: null })
+    }
     if (path === '/google-health/sync' && options?.method === 'POST') {
       if (overrides.googleSyncError) return Promise.reject(new Error('raw provider detail'))
       return Promise.resolve(overrides.googleSyncResult ?? googleSyncResult)
@@ -115,6 +142,7 @@ describe('AccountIntegrationsView', () => {
     configureApi()
   })
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
     window.history.replaceState({}, '', '/')
   })
@@ -162,24 +190,25 @@ describe('AccountIntegrationsView', () => {
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
-    const connect = wrapper.get('.google-health-card button')
+    const connect = wrapper.get('.google-health-connect')
     expect(connect.text()).toContain('Google Health verbinden')
     await connect.trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('/google-health/oauth/start', { method: 'POST' })
     wrapper.unmount()
 
-    configureApi({ googleStatus: { ...googleStatus, configured: false, state: 'not_connected' } })
+    configureApi({ googleStatus: { ...googleStatus, configured: false, client_id_configured: false, client_secret_configured: false, state: 'not_configured' } })
     const unconfiguredWrapper = mount(AccountIntegrationsView)
     await flushPromises()
-    expect(unconfiguredWrapper.get('.google-health-card').find('button').exists()).toBe(false)
+    expect(unconfiguredWrapper.get('.google-health-card').find('.google-health-connect').exists()).toBe(false)
     unconfiguredWrapper.unmount()
 
-    configureApi({ googleStatus: { ...googleStatus, available: false, configured: false, state: 'disabled' } })
+    configureApi({ googleStatus: { ...googleStatus, available: false, configured: false, client_id_configured: false, client_secret_configured: false, state: 'disabled' } })
     const unavailableWrapper = mount(AccountIntegrationsView)
     await flushPromises()
     expect(unavailableWrapper.get('.google-health-card').text()).toContain('Serverseitig deaktiviert')
-    expect(unavailableWrapper.get('.google-health-card').find('button').exists()).toBe(false)
+    expect(unavailableWrapper.get('.google-health-card').find('.google-health-connect').exists()).toBe(false)
+    expect(unavailableWrapper.get('input[name="google-client-id"]').attributes('disabled')).toBeDefined()
     unavailableWrapper.unmount()
   })
 
@@ -284,8 +313,8 @@ describe('AccountIntegrationsView', () => {
     const card = wrapper.get('.google-health-card')
     expect(card.text()).toContain('Erforderliche Berechtigung fehlt')
     expect(card.text()).toContain('erneut autorisieren')
-    expect(card.get('button').text()).toContain('Google Health erneut autorisieren')
-    expect(card.get('button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(card.get('.google-health-connect').text()).toContain('Google Health erneut autorisieren')
+    expect(card.get('.google-health-connect').attributes('aria-label')).toContain('erneut autorisieren')
   })
 
   it('keeps loading state accessible while Google status is unavailable', async () => {
@@ -312,6 +341,100 @@ describe('AccountIntegrationsView', () => {
 
     expect(wrapper.get('.google-health-sync-error').text()).toContain('Google-Health-Synchronisierung ist fehlgeschlagen')
     expect(wrapper.text()).not.toContain('raw provider detail')
+  })
+
+  it('saves only the current credential pair and never renders a stored secret', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('input[name="google-client-id"]').setValue('client-new')
+    await wrapper.get('input[name="google-client-secret"]').setValue('secret-new')
+    await wrapper.get('.google-credentials-panel').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('/google-health/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({ client_id: 'client-new', client_secret: 'secret-new' }),
+    })
+    expect(wrapper.get('input[name="google-client-secret"]').attributes('type')).toBe('password')
+    expect(wrapper.text()).not.toContain('secret-new')
+
+    await wrapper.get('.google-credentials-panel').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/google-health/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({ client_id: '', client_secret: '' }),
+    })
+  })
+
+  it('rejects one-sided credential changes before calling the API', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('input[name="google-client-id"]').setValue('only-client')
+    await wrapper.get('.google-credentials-panel').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.google-credentials-panel').text()).toContain('müssen gemeinsam eingegeben werden')
+    expect(apiMock.mock.calls.some(([path]) => path === '/google-health/credentials')).toBe(false)
+  })
+
+  it('tests, disconnects and explicitly deletes Google credentials', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.google-health-connection-test').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/google-health/connection/test', { method: 'POST' })
+    expect(wrapper.text()).toContain('Verbindungstest erfolgreich')
+
+    await wrapper.get('.google-health-disconnect').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/google-health/connection', { method: 'DELETE' })
+
+    await wrapper.get('.google-health-delete-credentials').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/google-health/credentials', { method: 'DELETE' })
+  })
+
+  it('promotes a failed connection test to reauthorization state', async () => {
+    configureApi({ googleConnectionTestResult: { status: 'reauth_required', error_category: 'reauth_required' } })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.google-health-connection-test').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.google-health-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(wrapper.get('.google-health-connect').text()).toContain('Google Health erneut autorisieren')
+    expect(wrapper.find('.google-health-sync-button').exists()).toBe(false)
+  })
+
+  it('shows backend retry attempts without exposing provider errors', async () => {
+    configureApi({
+      googleStatus: {
+        ...googleStatus,
+        sync_state: 'running',
+        retry_attempt: 2,
+        retry_max_attempts: 3,
+        next_retry_at: '2026-09-18T08:02:00Z',
+        last_error: 'raw provider error',
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    expect(wrapper.get('.integration-status-badge').text()).toBe('Wird erneut versucht')
+    expect(wrapper.get('.google-status-panel').text()).toContain('Versuch 2 von 3')
+    expect(wrapper.text()).not.toContain('raw provider error')
+  })
+  it('keeps terminal failed sync state distinct from a scheduled retry', async () => {
+    configureApi({ googleStatus: { ...googleStatus, sync_state: 'failed', retry_attempt: 2, retry_max_attempts: 3, next_retry_at: null } })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    expect(wrapper.get('.google-health-status-badge').text()).toBe('Synchronisierung fehlgeschlagen')
   })
 
   it('only renders the YAZIO next-run row while scheduler and synchronization are enabled', async () => {
