@@ -63,6 +63,7 @@ class GoogleHealthSyncResult:
     nutrition: GoogleHealthDomainResult
     activity_energy: GoogleHealthDomainResult
     weight: GoogleHealthDomainResult
+    provider_attempted: bool = True
 
 
 class _PagedClient(Protocol):
@@ -92,6 +93,10 @@ class _PostCommitPersistenceError(RuntimeError):
     def __init__(self, persisted_count: int) -> None:
         self.persisted_count = persisted_count
         super().__init__("Google Health post-commit processing failed")
+
+
+class _RetryStatusPersistenceError(RuntimeError):
+    pass
 
 
 def _record_connection_status(
@@ -134,11 +139,19 @@ def _record_connection_status(
 
 def _safe_code(exc: BaseException) -> str:
     code = getattr(exc, "code", None)
-    return code if isinstance(code, str) and code in _SAFE_CODES else "provider_error"
+    return code if isinstance(code, str) and code in _SAFE_CODES else "invalid_response"
 
 
-def _result(*, status: str, fetched: int, persisted: int, start: date, end: date,
-            covered: tuple[date | None, date | None] = (None, None), error: str | None = None) -> GoogleHealthDomainResult:
+def _result(
+    *,
+    status: str,
+    fetched: int,
+    persisted: int,
+    start: date,
+    end: date,
+    covered: tuple[date | None, date | None] = (None, None),
+    error: str | None = None,
+) -> GoogleHealthDomainResult:
     return GoogleHealthDomainResult(
         status=status,
         fetched_count=fetched,
@@ -151,10 +164,21 @@ def _result(*, status: str, fetched: int, persisted: int, start: date, end: date
     )
 
 
-def _empty_domains(start: date, end: date, *, status: str, error: str | None = None) -> GoogleHealthSyncResult:
+def _empty_domains(
+    start: date,
+    end: date,
+    *,
+    status: str,
+    error: str | None = None,
+) -> GoogleHealthSyncResult:
     item = _result(status=status, fetched=0, persisted=0, start=start, end=end, error=error)
-    return GoogleHealthSyncResult(status="reauth_required" if status == "reauth_required" else "failed", nutrition=item,
-                                  activity_energy=item, weight=item)
+    return GoogleHealthSyncResult(
+        status="reauth_required" if status == "reauth_required" else "failed",
+        nutrition=item,
+        activity_energy=item,
+        weight=item,
+        provider_attempted=False,
+    )
 
 
 class GoogleHealthSyncService:
@@ -224,6 +248,7 @@ class GoogleHealthSyncService:
             if db is not None:
                 with suppress(Exception):
                     db.rollback()
+            raise _RetryStatusPersistenceError() from None
         finally:
             if db is not None:
                 db.close()
@@ -403,13 +428,25 @@ class GoogleHealthSyncService:
             raise _PostCommitPersistenceError(count) from None
         return count
 
-    def _persist_scalar(self, *, user_id: UUID, source_id: UUID, start: date, end: date,
-                        points: tuple[Any, ...], activity: bool) -> int:
+    def _persist_scalar(
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        start: date,
+        end: date,
+        points: tuple[Any, ...],
+        activity: bool,
+    ) -> int:
         db = self._session_factory()
         try:
             result = (sync_google_health_activity if activity else sync_google_health_weight)(
-                db, user_id=user_id, source_instance_id=source_id, requested_start=start,
-                requested_end=end, data_points=points,
+                db,
+                user_id=user_id,
+                source_instance_id=source_id,
+                requested_start=start,
+                requested_end=end,
+                data_points=points,
             )
             db.commit()
             return result.persisted_count
@@ -421,7 +458,12 @@ class GoogleHealthSyncService:
             db.close()
 
     def _sync_once(
-        self, *, user_id: UUID, requested_start: date, requested_end: date
+        self,
+        *,
+        user_id: UUID,
+        requested_start: date,
+        requested_end: date,
+        before_provider_attempt: Callable[[], None] | None = None,
     ) -> GoogleHealthSyncResult:
         if requested_start > requested_end:
             raise ValueError("requested date range is invalid")
@@ -471,6 +513,10 @@ class GoogleHealthSyncService:
         finally:
             refresh = ""
             client_secret = ""
+
+        if before_provider_attempt is not None:
+            before_provider_attempt()
+
 
         domains: dict[str, GoogleHealthDomainResult] = {}
         try:
@@ -623,12 +669,30 @@ class GoogleHealthSyncService:
         if requested_start > requested_end:
             raise ValueError("requested date range is invalid")
         for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
-            self._update_retry_status(user_id=user_id, state="running", attempt=attempt)
+            provider_attempted = False
+
+            def before_provider_attempt() -> None:
+                nonlocal provider_attempted
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="running",
+                    attempt=attempt,
+                )
+                provider_attempted = True
+
             try:
                 result = self._sync_once(
                     user_id=user_id,
                     requested_start=requested_start,
                     requested_end=requested_end,
+                    before_provider_attempt=before_provider_attempt,
+                )
+            except _RetryStatusPersistenceError:
+                return _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="failed",
+                    error="persistence_error",
                 )
             except Exception as exc:
                 category = _safe_code(exc)
@@ -639,33 +703,75 @@ class GoogleHealthSyncService:
                     error=category,
                 )
             category = self._retry_category(result)
+            if not provider_attempted and result.provider_attempted:
+                provider_attempted = True
+            if not provider_attempted or not result.provider_attempted:
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="failed",
+                        attempt=0,
+                        error_category=category,
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
+                return result
             if category not in RETRYABLE_CODES:
-                self._update_retry_status(
-                    user_id=user_id,
-                    state="completed" if result.status in {"success", "no_data"} else "failed",
-                    attempt=attempt,
-                    error_category=category,
-                    success=result.status in {"success", "no_data"},
-                )
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="completed" if result.status in {"success", "no_data"} else "failed",
+                        attempt=attempt,
+                        error_category=category,
+                        success=result.status in {"success", "no_data"},
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
                 return result
             if attempt >= MAX_SYNC_ATTEMPTS:
-                self._update_retry_status(
-                    user_id=user_id,
-                    state="failed",
-                    attempt=attempt,
-                    error_category=category,
-                )
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="failed",
+                        attempt=attempt,
+                        error_category=category,
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
                 return result
             next_retry_at = datetime.now(UTC) + timedelta(
                 seconds=RETRY_BACKOFF_SECONDS[attempt - 1]
             )
-            self._update_retry_status(
-                user_id=user_id,
-                state="running",
-                attempt=attempt,
-                next_retry_at=next_retry_at,
-                error_category=category,
-            )
+            try:
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="running",
+                    attempt=attempt,
+                    next_retry_at=next_retry_at,
+                    error_category=category,
+                )
+            except _RetryStatusPersistenceError:
+                return _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="failed",
+                    error="persistence_error",
+                )
             self._sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
         raise AssertionError("sync retry loop did not return")
 

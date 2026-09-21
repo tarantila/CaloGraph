@@ -139,11 +139,19 @@ def test_upgrade_preserves_tokens_marks_rows_for_reauthentication_and_adds_contr
     assert columns["client_id"]["nullable"] is True
     assert columns["encrypted_client_secret"]["nullable"] is True
     assert columns["encrypted_refresh_token"]["nullable"] is True
-    assert {
-        constraint["name"] for constraint in inspector.get_check_constraints("google_health_connections")
-    } == {"ck_google_health_connections_state"}
-    check_sql = inspector.get_check_constraints("google_health_connections")[0]["sqltext"]
-    assert "not_connected" in check_sql
+    assert str(columns["sync_state"]["default"]).strip("'") == "idle"
+    assert str(columns["retry_attempt"]["default"]).strip("'") == "0"
+    assert str(columns["retry_max_attempts"]["default"]).strip("'") == "3"
+    checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("google_health_connections")
+    }
+    assert set(checks) == {
+        "ck_google_health_connections_state",
+        "ck_google_health_connections_sync_state",
+    }
+    assert "not_connected" in checks["ck_google_health_connections_state"]
+    assert "completed" in checks["ck_google_health_connections_sync_state"]
     assert {
         index["name"] for index in inspector.get_indexes("google_health_connections")
     } == {"ix_google_health_connections_user_id"}
@@ -217,7 +225,6 @@ def test_downgrade_rejects_rows_that_would_lose_null_refresh_tokens(tmp_path) ->
     with pytest.raises(RuntimeError, match="null.*refresh token"):
         _apply(engine, _revision_module(), "downgrade")
 
-
 def test_downgrade_restores_legacy_schema_without_rewriting_tokens(tmp_path) -> None:
     engine = _sqlite_baseline(tmp_path)
     token = b"opaque-encrypted-refresh-token"
@@ -229,9 +236,18 @@ def test_downgrade_restores_legacy_schema_without_rewriting_tokens(tmp_path) -> 
     columns = {column["name"]: column for column in inspector.get_columns("google_health_connections")}
     assert "client_id" not in columns
     assert "encrypted_client_secret" not in columns
+    assert "sync_state" not in columns
+    assert "retry_attempt" not in columns
+    assert "retry_max_attempts" not in columns
+    assert "next_retry_at" not in columns
+    assert "last_error_category" not in columns
     assert columns["encrypted_refresh_token"]["nullable"] is False
-    check_sql = inspector.get_check_constraints("google_health_connections")[0]["sqltext"]
-    assert "not_connected" not in check_sql
+    checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("google_health_connections")
+    }
+    assert set(checks) == {"ck_google_health_connections_state"}
+    assert "not_connected" not in checks["ck_google_health_connections_state"]
 
     with engine.connect() as connection:
         row = connection.execute(

@@ -142,6 +142,13 @@ def _configured(connection: GoogleHealthConnection | None) -> bool:
     return bool(connection and connection.client_id and connection.encrypted_client_secret)
 
 
+def _reset_sync_retry_state(connection: GoogleHealthConnection) -> None:
+    connection.sync_state = "idle"
+    connection.retry_attempt = 0
+    connection.retry_max_attempts = 3
+    connection.next_retry_at = None
+    connection.last_error_category = None
+
 _SAFE_ERROR_CATEGORIES = frozenset(
     {
         "credential_unavailable",
@@ -270,6 +277,7 @@ def save_google_health_credentials(
                 connection.granted_scopes = []
                 connection.refresh_token_expires_at = None
                 connection.last_error = None
+                _reset_sync_retry_state(connection)
                 connection.state = (
                     "reauth_required" if connection.encrypted_refresh_token else "not_connected"
                 )
@@ -304,6 +312,7 @@ def delete_google_health_credentials(
             connection.refresh_token_expires_at = None
             connection.state = "not_connected"
             connection.last_error = None
+            _reset_sync_retry_state(connection)
             db.commit()
         result = _status_from_connection(connection)
     log_security_event(
@@ -332,6 +341,7 @@ def disconnect_google_health(
             connection.refresh_token_expires_at = None
             connection.state = "not_connected"
             connection.last_error = None
+            _reset_sync_retry_state(connection)
             db.commit()
         result = _status_from_connection(connection)
     log_security_event(
@@ -486,6 +496,7 @@ def _record_failure(
     if connection is not None:
         connection.last_attempt_at = timestamp
         connection.last_error = code
+        connection.last_error_category = code
         if code in {"reauth_required", "scope_missing"}:
             connection.state = "reauth_required"
     return connection
@@ -651,6 +662,7 @@ def complete_google_health_oauth(
         connection.encrypted_refresh_token = encrypted_refresh_token
         connection.granted_scopes = list(scopes)
         connection.state = "active"
+        _reset_sync_retry_state(connection)
         connection.last_attempt_at = timestamp
         connection.last_success_at = timestamp
         connection.last_error = None
