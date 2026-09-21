@@ -511,7 +511,10 @@ def test_provider_response_without_scope_cannot_activate(db, user: User, monkeyp
         oauth_adapter=TokenAdapter({"refresh_token": "secret"}),
     )
     assert result.state == "scope_missing"
-    assert db.scalar(select(GoogleHealthConnection)) is None
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None
+    assert connection.state == "reauth_required"
+    assert connection.encrypted_refresh_token is None
 
 
 @pytest.mark.parametrize("expires_in", [float("nan"), float("inf"), -1, 10**30, "3600"])
