@@ -28,13 +28,23 @@ from app.schemas import DailyPoint
 _PRIMARY_DAILY_POINT_METRICS: Final[tuple[tuple[str, str], ...]] = (
     ("dietary_energy_kcal", "dietary_energy_kcal"),
     ("protein_g", "protein_g"),
-    ("carbohydrates_g", "carbs_g"),
+    ("carbohydrates_g", "carbohydrates_g"),
     ("fat_g", "fat_g"),
 )
 
 
 class ProviderDailyReadError(RuntimeError):
     """A selected provider cannot produce a safe canonical daily response."""
+
+def _has_usable_value(candidate: object) -> bool:
+    return (
+        getattr(candidate, "value", None) is not None
+        and getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
+        and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
+        and getattr(candidate, "presence_state", None)
+        in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
+    )
+
 
 
 def _tracking_inputs(day_candidates: Mapping[str, ProviderCandidate]) -> TrackingInputs:
@@ -73,13 +83,7 @@ def _provider_has_evidence(day_candidates: Mapping[str, ProviderCandidate]) -> b
             or getattr(candidate, "resolution_state", None) is not ResolutionState.RESOLVED
         ):
             return False
-    return any(
-        getattr(candidate, "value_contributing", False)
-        and getattr(candidate, "value", None) is not None
-        and getattr(candidate, "presence_state", None)
-        in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
-        for candidate in day_candidates.values()
-    )
+    return any(_has_usable_value(candidate) for candidate in day_candidates.values())
 
 def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[str, Decimal]:
     for metric_key in DAILY_PROJECTION_METRICS:
@@ -92,13 +96,7 @@ def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[s
     values: dict[str, Decimal] = {}
     for metric_key, daily_point_field in _PRIMARY_DAILY_POINT_METRICS:
         candidate = day_candidates[metric_key]
-        if (
-            getattr(candidate, "value_contributing", False)
-            and getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
-            and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
-            and getattr(candidate, "presence_state", None)
-            in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
-        ):
+        if _has_usable_value(candidate):
             value = getattr(candidate, "value", None)
             if value is not None:
                 values[daily_point_field] = value
