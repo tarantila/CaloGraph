@@ -3,6 +3,7 @@ from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from pydantic import ValidationError
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
@@ -56,6 +57,17 @@ def _configure(monkeypatch):
     monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+
+
+def test_google_health_credential_validation_errors_redact_secret():
+    sentinel = "secret-validation-sentinel"
+    with pytest.raises(ValidationError) as raised:
+        GoogleHealthCredentialsInput(
+            client_id="client-a",
+            client_secret=sentinel * 30,
+        )
+    assert sentinel not in str(raised.value)
+    assert sentinel not in repr(raised.value)
 
 
 def test_start_persists_hashed_state_and_encrypted_verifier(db, user: User, monkeypatch):

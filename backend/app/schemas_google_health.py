@@ -18,7 +18,7 @@ GoogleHealthState = Literal[
 
 
 class GoogleHealthCredentialsInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     client_id: str = Field(max_length=512)
     client_secret: str | None = Field(default=None, max_length=512, repr=False)

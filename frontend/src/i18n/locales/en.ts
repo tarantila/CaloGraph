@@ -199,6 +199,7 @@ const en = {
     googleDescription: 'Google Health synchronizes supported nutrition, activity energy and weight data through secure OAuth access.',
     googleStatus: 'Status',
     googleActive: 'Connected',
+    googleNotConfigured: 'Not configured yet',
     googleNotConnected: 'Not connected',
     googleReauth: 'Reauthorization required',
     googleScopeMissing: 'Required permission missing',

@@ -244,6 +244,7 @@ const de = {
     googleDescription: 'Google Health synchronisiert unterstützte Ernährungsdaten, Aktivitätsenergie und Gewicht über den sicheren OAuth-Zugriff.',
     googleStatus: 'Status',
     googleActive: 'Verbunden',
+    googleNotConfigured: 'Noch nicht eingerichtet',
     googleNotConnected: 'Nicht verbunden',
     googleReauth: 'Erneute Autorisierung erforderlich',
     googleScopeMissing: 'Erforderliche Berechtigung fehlt',

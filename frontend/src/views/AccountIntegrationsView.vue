@@ -76,6 +76,7 @@ const googleCanConnect = computed(() => {
 const googleStatusLabel = computed(() => {
   switch (google.value?.state) {
     case 'active': return t('accountIntegrations.googleActive')
+    case 'not_configured': return t('accountIntegrations.googleNotConfigured')
     case 'reauth_required': return t('accountIntegrations.googleReauth')
     case 'scope_missing': return t('accountIntegrations.googleScopeMissing')
     case 'not_connected': return t('accountIntegrations.googleNotConnected')

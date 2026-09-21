@@ -116,17 +116,25 @@ export interface YazioStatus {
   last_error: string | null
 }
 
-export type GoogleHealthState = 'disabled' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+export type GoogleHealthState = 'disabled' | 'not_configured' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
 
 export interface GoogleHealthStatus {
   available: boolean
   configured: boolean
+  client_id_configured: boolean
+  client_secret_configured: boolean
+  redirect_uri: string
   state: GoogleHealthState
+  sync_state: string
+  retry_attempt: number
+  retry_max_attempts: number
+  next_retry_at: string | null
   granted_scopes: string[]
   refresh_token_expires_at: string | null
   last_attempt_at: string | null
   last_success_at: string | null
   last_error: string | null
+  last_error_category: string | null
 }
 
 export type GoogleHealthDomainKey = 'nutrition' | 'activity_energy' | 'weight'
