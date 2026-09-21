@@ -157,6 +157,7 @@ def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
     class FakeFlow:
         credentials = Credentials()
 
+
         @classmethod
         def from_client_config(cls, config, *, scopes, redirect_uri):
             captured["config"] = config
@@ -179,6 +180,10 @@ def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
     )
 
     assert captured["scopes"] == list(GOOGLE_HEALTH_SCOPES)
+def test_oauth_start_reports_missing_user_credentials(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    with pytest.raises(GoogleHealthOAuthError, match="credential_unavailable"):
+        start_google_health_oauth(db, user)
 
 
 def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_history(
