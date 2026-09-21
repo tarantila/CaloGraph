@@ -227,10 +227,8 @@ def test_default_credentials_use_complete_readonly_scope_union(monkeypatch) -> N
             captured.update(kwargs)
 
     monkeypatch.setattr(google.oauth2.credentials, "Credentials", CapturingCredentials)
-    monkeypatch.setattr(google_sync.settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(google_sync.settings, "google_health_client_secret", "client-secret")
 
-    google_sync._default_credentials("refresh-token")
+    google_sync._default_credentials("refresh-token", "client-id", "client-secret")
 
     assert captured["scopes"] == list(GOOGLE_HEALTH_SCOPES)
     assert set(captured["scopes"]) == GOOGLE_HEALTH_REQUIRED_SCOPES

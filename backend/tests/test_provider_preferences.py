@@ -16,6 +16,7 @@ from app.activity import (
 )
 from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.services.credential_crypto import encrypt_credential
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -76,7 +77,9 @@ def _login(client: TestClient) -> str:
 def _add_google(db, user, *, state: str = "active") -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
         state=state,
     )

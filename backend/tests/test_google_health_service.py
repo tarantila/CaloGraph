@@ -53,10 +53,15 @@ class TokenAdapter:
 
 def _configure(monkeypatch):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    # Existing service tests create legacy connection rows without client
+    # fields; keep those rows usable while exercising the resolver boundary.
+    monkeypatch.setattr(
+        google_health_service,
+        "resolve_google_health_credentials",
+        lambda _connection: ("client-id", "client-secret"),
+    )
 
 
 def test_google_health_credential_validation_errors_redact_secret():
