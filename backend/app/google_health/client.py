@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 
 import httpx
 
@@ -22,6 +22,7 @@ from app.google_health.errors import (
     GoogleHealthAuthenticationError,
     GoogleHealthClientError,
     GoogleHealthInvalidResponseError,
+    GoogleHealthParserDiagnostic,
     GoogleHealthProviderUnavailableError,
     GoogleHealthRateLimitedError,
     GoogleHealthScopeError,
@@ -853,7 +854,19 @@ class GoogleHealthClient:
                 parser_stage=exc.parser_stage,
                 structural_reason_code=exc.reason_code,
             ) from None
-        except (GoogleHealthInvalidResponseError, TypeError, ValueError, KeyError):
+        except GoogleHealthInvalidResponseError as exc:
+            raise GoogleHealthInvalidResponseError(
+                f"Google Health returned an invalid {data_type} page",
+                upstream_status_code=status_code,
+                parser_stage=exc.parser_stage or (
+                    "nutrition_data_point"
+                    if data_type == "nutrition-log"
+                    else "scalar_data_point"
+                ),
+                structural_reason_code=exc.structural_reason_code or "invalid_field",
+                diagnostic=exc.diagnostic,
+            ) from None
+        except (TypeError, ValueError, KeyError):
             raise GoogleHealthInvalidResponseError(
                 f"Google Health returned an invalid {data_type} page",
                 upstream_status_code=status_code,
@@ -985,6 +998,177 @@ class _StructuralParseError(ValueError):
         self.parser_stage = parser_stage
         self.reason_code = reason_code
         super().__init__(reason_code)
+_MISSING = object()
+
+
+def _json_type(value: object) -> str:
+    if value is _MISSING:
+        return "missing"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float, Decimal)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    return "unknown"
+
+
+def _representation(value: object) -> str:
+    if value is _MISSING:
+        return "missing"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "list"
+    return "scalar"
+
+
+def _invalid_activity_field(
+    field_path: str,
+    validation_rule: str,
+    value: object,
+    expected_json_type: str,
+) -> NoReturn:
+    structural_reason = "missing_required_field" if value is _MISSING else "invalid_field"
+    presence = "missing" if value is _MISSING else "null" if value is None else "present"
+    raise GoogleHealthInvalidResponseError(
+        "Google Health returned an invalid Activity field",
+        parser_stage="scalar_data_point",
+        structural_reason_code=structural_reason,
+        diagnostic=GoogleHealthParserDiagnostic(
+            field_path=field_path,
+            validation_rule=validation_rule,
+            observed_json_type=_json_type(value),
+            expected_json_type=expected_json_type,
+            presence=presence,
+            representation=_representation(value),
+        ),
+    )
+
+
+def _parse_activity_timestamp(value: object, field_path: str) -> _PreciseTime:
+    if not isinstance(value, str):
+        _invalid_activity_field(field_path, "physical_timestamp", value, "string")
+    try:
+        return _parse_timestamp(value)
+    except ValueError:
+        _invalid_activity_field(field_path, "physical_timestamp", value, "string")
+    raise AssertionError("unreachable")
+
+
+def _parse_activity_duration(value: object, field_path: str) -> str | None:
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, str):
+        _invalid_activity_field(field_path, "duration", value, "string")
+    try:
+        _parse_duration(value)
+    except ValueError:
+        _invalid_activity_field(field_path, "duration", value, "string")
+    return value
+
+
+def _parse_activity_civil_time(value: object, field_path: str) -> _PreciseTime | None:
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, dict):
+        _invalid_activity_field(field_path, "civil_time", value, "object")
+    try:
+        return _parse_civil_datetime(value)
+    except ValueError:
+        _invalid_activity_field(field_path, "civil_time", value, "object")
+    raise AssertionError("unreachable")
+
+
+def _parse_activity_number(value: object, field_path: str) -> Decimal:
+    if value is _MISSING:
+        _invalid_activity_field(field_path, "required_number", value, "number")
+    try:
+        return _parse_nonnegative_number(value)
+    except ValueError:
+        _invalid_activity_field(field_path, "nonnegative_number", value, "number")
+    raise AssertionError("unreachable")
+
+
+def _parse_activity_optional_string(value: object, field_path: str) -> str | None:
+    if value is _MISSING or value is None:
+        return None
+    try:
+        return _bounded_string(value)
+    except ValueError:
+        _invalid_activity_field(field_path, "bounded_string", value, "string")
+    raise AssertionError("unreachable")
+
+
+def _parse_activity_data_source(value: object) -> NutritionDataSource:
+    if not isinstance(value, dict):
+        _invalid_activity_field("dataSource", "data_source_object", value, "object")
+    device_value = value.get("device", _MISSING)
+    application_value = value.get("application", _MISSING)
+    if device_value is not _MISSING and device_value is not None and not isinstance(device_value, dict):
+        _invalid_activity_field("dataSource.device", "data_source_device_object", device_value, "object")
+    if (
+        application_value is not _MISSING
+        and application_value is not None
+        and not isinstance(application_value, dict)
+    ):
+        _invalid_activity_field(
+            "dataSource.application",
+            "data_source_application_object",
+            application_value,
+            "object",
+        )
+    device_mapping = device_value if isinstance(device_value, dict) else None
+    application_mapping = application_value if isinstance(application_value, dict) else None
+    device = (
+        None
+        if device_mapping is None
+        else NutritionDataSourceDevice(
+            form_factor=_parse_activity_optional_string(
+                device_mapping.get("formFactor", _MISSING), "dataSource.device.formFactor"
+            ),
+            manufacturer=_parse_activity_optional_string(
+                device_mapping.get("manufacturer", _MISSING), "dataSource.device.manufacturer"
+            ),
+            display_name=_parse_activity_optional_string(
+                device_mapping.get("displayName", _MISSING), "dataSource.device.displayName"
+            ),
+        )
+    )
+    application = (
+        None
+        if application_mapping is None
+        else NutritionDataSourceApplication(
+            package_name=_parse_activity_optional_string(
+                application_mapping.get("packageName", _MISSING),
+                "dataSource.application.packageName",
+            ),
+            web_client_id=_parse_activity_optional_string(
+                application_mapping.get("webClientId", _MISSING),
+                "dataSource.application.webClientId",
+            ),
+            google_web_client_id=_parse_activity_optional_string(
+                application_mapping.get("googleWebClientId", _MISSING),
+                "dataSource.application.googleWebClientId",
+            ),
+        )
+    )
+    return NutritionDataSource(
+        recording_method=_parse_activity_optional_string(
+            value.get("recordingMethod", _MISSING), "dataSource.recordingMethod"
+        ),
+        platform=_parse_activity_optional_string(
+            value.get("platform", _MISSING), "dataSource.platform"
+        ),
+        device=device,
+        application=application,
+    )
 
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict) or "nutritionLog" not in value:
@@ -1009,53 +1193,118 @@ def _parse_data_point(value: object) -> NutritionLogDataPoint:
 def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataPoint:
     if not isinstance(value, dict):
         raise _StructuralParseError("scalar_data_point", "data_point_not_object")
-    name = value.get("name")
+    name = value.get("name", _MISSING)
     if data_type == "weight":
         if not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name):
             raise _StructuralParseError("scalar_data_point", "missing_required_field")
-    elif name is not None and (
+    elif name is not _MISSING and name is not None and (
         not isinstance(name, str) or not _SCALAR_RESOURCE_NAME_RE[data_type].fullmatch(name)
     ):
-        raise _StructuralParseError("scalar_data_point", "invalid_field_type")
+        _invalid_activity_field("name", "resource_name", name, "string")
     if data_type == "active-energy-burned":
-        raw_value = value.get("activeEnergyBurned")
+        raw_value = value.get("activeEnergyBurned", _MISSING)
         if not isinstance(raw_value, dict):
-            raise _StructuralParseError("scalar_data_point", "missing_required_field")
-        interval = raw_value.get("interval")
+            _invalid_activity_field("activeEnergyBurned", "required_object", raw_value, "object")
+        interval = raw_value.get("interval", _MISSING)
         if not isinstance(interval, dict):
-            raise _StructuralParseError("scalar_data_point", "missing_required_field")
-        start = _parse_timestamp(interval.get("startTime"))
-        end = _parse_timestamp(interval.get("endTime"))
+            _invalid_activity_field(
+                "activeEnergyBurned.interval", "interval_object", interval, "object"
+            )
+        start = _parse_activity_timestamp(
+            interval.get("startTime", _MISSING),
+            "activeEnergyBurned.interval.startTime",
+        )
+        end = _parse_activity_timestamp(
+            interval.get("endTime", _MISSING),
+            "activeEnergyBurned.interval.endTime",
+        )
         if _physical_key(start) >= _physical_key(end):
-            raise ValueError
-        start_time = start.value
-        end_time = end.value
-        start_offset = _parse_optional_duration(interval.get("startUtcOffset"))
-        end_offset = _parse_optional_duration(interval.get("endUtcOffset"))
-        scalar_key = "kcal"
-        unit = "kcal"
-        dto_type: type[GoogleHealthDataPoint] = ActiveEnergyBurnedDataPoint
-    else:
-        raw_value = value.get("weight")
-        if not isinstance(raw_value, dict):
-            raise ValueError
-        sample_time = raw_value.get("sampleTime")
-        if not isinstance(sample_time, dict):
-            raise ValueError
-        physical_time = _parse_timestamp(sample_time.get("physicalTime"))
-        start_time = physical_time.value
-        end_time = physical_time.value
-        offset = _parse_optional_duration(sample_time.get("utcOffset"))
-        start_offset = offset
-        end_offset = offset
-        scalar_key = "weightGrams"
-        unit = "kilograms"
-        dto_type = WeightDataPoint
+            _invalid_activity_field(
+                "activeEnergyBurned.interval",
+                "start_before_end",
+                interval,
+                "object",
+            )
+        start_offset = _parse_activity_duration(
+            interval.get("startUtcOffset", _MISSING),
+            "activeEnergyBurned.interval.startUtcOffset",
+        )
+        end_offset = _parse_activity_duration(
+            interval.get("endUtcOffset", _MISSING),
+            "activeEnergyBurned.interval.endUtcOffset",
+        )
+        civil_start = _parse_activity_civil_time(
+            interval.get("civilStartTime", _MISSING),
+            "activeEnergyBurned.interval.civilStartTime",
+        )
+        civil_end = _parse_activity_civil_time(
+            interval.get("civilEndTime", _MISSING),
+            "activeEnergyBurned.interval.civilEndTime",
+        )
+        if (
+            civil_start is not None
+            and civil_start.has_explicit_time
+            and start_offset is not None
+            and _civil_key(civil_start)
+            != _physical_key(start) + _parse_duration(start_offset)
+        ):
+            _invalid_activity_field(
+                "activeEnergyBurned.interval.civilStartTime",
+                "civil_physical_consistency",
+                interval.get("civilStartTime"),
+                "object",
+            )
+        if (
+            civil_end is not None
+            and civil_end.has_explicit_time
+            and end_offset is not None
+            and _civil_key(civil_end) != _physical_key(end) + _parse_duration(end_offset)
+        ):
+            _invalid_activity_field(
+                "activeEnergyBurned.interval.civilEndTime",
+                "civil_physical_consistency",
+                interval.get("civilEndTime"),
+                "object",
+            )
+        number = _parse_activity_number(
+            raw_value.get("kcal", _MISSING),
+            "activeEnergyBurned.kcal",
+        )
+        source_value = value.get("dataSource", _MISSING)
+        source = (
+            None
+            if source_value is _MISSING or source_value is None
+            else _parse_activity_data_source(source_value)
+        )
+        return ActiveEnergyBurnedDataPoint(
+            name=name if isinstance(name, str) else None,
+            start_time=start.value,
+            end_time=end.value,
+            value=number,
+            unit="kcal",
+            data_source=source,
+            start_utc_offset=start_offset,
+            end_utc_offset=end_offset,
+        )
+    raw_value = value.get("weight")
+    if not isinstance(raw_value, dict):
+        raise ValueError
+    sample_time = raw_value.get("sampleTime")
+    if not isinstance(sample_time, dict):
+        raise ValueError
+    physical_time = _parse_timestamp(sample_time.get("physicalTime"))
+    start_time = physical_time.value
+    end_time = physical_time.value
+    offset = _parse_optional_duration(sample_time.get("utcOffset"))
+    start_offset = offset
+    end_offset = offset
+    scalar_key = "weightGrams"
+    unit = "kilograms"
+    dto_type = WeightDataPoint
     if scalar_key not in raw_value:
         raise ValueError
     number = _parse_nonnegative_number(raw_value[scalar_key])
-    if data_type == "weight":
-        number /= Decimal("1000")
+    number /= Decimal("1000")
     source_value = value.get("dataSource")
     source = _parse_data_source(source_value) if source_value is not None else None
     return dto_type(

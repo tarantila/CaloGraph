@@ -762,3 +762,142 @@ def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> N
 def test_parser_rejects_values_outside_numeric_scale_or_range(value):
     with pytest.raises(ValueError):
         _parse_nonnegative_number(value)
+def _parse_activity_payload(point: dict[str, object]):
+    return GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": [point]})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        "active-energy-burned",
+        start_time=None,
+        end_time=None,
+        page_token=None,
+        page_size=10,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field_path", "validation_rule", "observed_type", "expected_type"),
+    [
+        (
+            lambda point: point["activeEnergyBurned"].update({"kcal": "not-a-number"}),
+            "activeEnergyBurned.kcal",
+            "nonnegative_number",
+            "string",
+            "number",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"].update({"interval": []}),
+            "activeEnergyBurned.interval",
+            "interval_object",
+            "array",
+            "object",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"]["interval"].update(
+                {"startTime": "not-a-timestamp"}
+            ),
+            "activeEnergyBurned.interval.startTime",
+            "physical_timestamp",
+            "string",
+            "string",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"]["interval"].update(
+                {"civilStartTime": {"date": {"year": "not-a-year"}}}
+            ),
+            "activeEnergyBurned.interval.civilStartTime",
+            "civil_time",
+            "object",
+            "object",
+        ),
+    ],
+)
+def test_activity_invalid_fields_have_bounded_diagnostics(
+    mutate, field_path: str, validation_rule: str, observed_type: str, expected_type: str
+) -> None:
+    point = _activity_point()
+    mutate(point)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic.field_path == field_path
+    assert diagnostic.validation_rule == validation_rule
+    assert diagnostic.observed_json_type == observed_type
+    assert diagnostic.expected_json_type == expected_type
+    assert diagnostic.presence == "present"
+    assert "not-a-number" not in str(raised.value)
+    assert "not-a-timestamp" not in str(raised.value)
+    assert "not-a-year" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "data_source",
+    [
+        None,
+        {"platform": "synthetic"},
+        {"futureField": {"enabled": True}},
+    ],
+)
+def test_activity_accepts_optional_partial_and_unknown_data_source(data_source) -> None:
+    point = _activity_point()
+    point["dataSource"] = data_source
+
+    page = _parse_activity_payload(point)
+
+    assert len(page.data_points) == 1
+
+
+def test_activity_data_source_type_has_bounded_diagnostic() -> None:
+    point = _activity_point()
+    point["dataSource"] = []
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic.field_path == "dataSource"
+    assert diagnostic.validation_rule == "data_source_object"
+    assert diagnostic.observed_json_type == "array"
+    assert diagnostic.expected_json_type == "object"
+    assert diagnostic.presence == "present"
+
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field_path"),
+    [
+        (
+            lambda point: point["dataSource"].update({"recordingMethod": []}),
+            "dataSource.recordingMethod",
+        ),
+        (
+            lambda point: point["dataSource"].update({"application": []}),
+            "dataSource.application",
+        ),
+        (
+            lambda point: point["dataSource"].update({"device": {"manufacturer": []}}),
+            "dataSource.device.manufacturer",
+        ),
+    ],
+)
+def test_activity_data_source_nested_fields_are_identified(mutate, field_path: str) -> None:
+    point = _activity_point()
+    mutate(point)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.diagnostic.field_path == field_path
+
+def test_activity_diagnostic_redacts_values_and_invalid_response_is_non_retryable() -> None:
+    point = _activity_point()
+    point["activeEnergyBurned"]["kcal"] = "secret-kcal"
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.code == "invalid_response"
+    assert raised.value.retryable is False
+    assert "secret-kcal" not in str(raised.value)

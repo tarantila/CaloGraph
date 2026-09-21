@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthParserDiagnostic:
+    field_path: str
+    validation_rule: str
+    observed_json_type: str
+    expected_json_type: str
+    presence: str
+    representation: str
+
 
 class GoogleHealthError(RuntimeError):
     """Base class for safe Google Health integration failures."""
@@ -23,6 +35,8 @@ class GoogleHealthTokenExchangeError(GoogleHealthOAuthError):
 class GoogleHealthClientError(GoogleHealthError):
     """Base class for safe read-only Google Health client failures."""
 
+    retryable = False
+
     def __init__(
         self,
         message: str = "Google Health client request failed",
@@ -30,6 +44,7 @@ class GoogleHealthClientError(GoogleHealthError):
         upstream_status_code: int | None = None,
         parser_stage: str | None = None,
         structural_reason_code: str | None = None,
+        diagnostic: GoogleHealthParserDiagnostic | None = None,
     ) -> None:
         if (
             isinstance(upstream_status_code, bool)
@@ -45,6 +60,7 @@ class GoogleHealthClientError(GoogleHealthError):
         self.upstream_status_code = upstream_status_code
         self.parser_stage = parser_stage
         self.structural_reason_code = structural_reason_code
+        self.diagnostic = diagnostic
         super().__init__(message)
 
 class GoogleHealthAuthenticationError(GoogleHealthClientError):
@@ -63,6 +79,7 @@ class GoogleHealthRateLimitedError(GoogleHealthClientError):
     """Google Health asked the caller to slow down."""
 
     code = "rate_limited"
+    retryable = True
 
     def __init__(
         self,
@@ -81,12 +98,14 @@ class GoogleHealthTransientError(GoogleHealthClientError):
     """A timeout or network failure may succeed when retried later."""
 
     code = "transient_error"
+    retryable = True
 
 
 class GoogleHealthProviderUnavailableError(GoogleHealthClientError):
     """Google Health is temporarily unavailable."""
 
     code = "provider_error"
+    retryable = True
 
 
 class GoogleHealthInvalidResponseError(GoogleHealthClientError):
