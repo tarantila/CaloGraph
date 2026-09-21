@@ -6,12 +6,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from cryptography.fernet import Fernet
-from app.config import settings
 
 import app.services.google_health_nutrition_sync as google_sync
+from app.config import settings
 from app.database import SessionLocal
 from app.google_health.client import (
     NutritionLog,
@@ -30,7 +30,6 @@ from app.google_health.errors import (
     GoogleHealthProviderUnavailableError,
 )
 from app.models import GoogleHealthConnection, User, YazioConnection
-from app.services.credential_crypto import encrypt_credential
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionDailyProjection,
@@ -51,6 +50,7 @@ from app.nutrition.projection.contracts import (
     ProjectionPersistenceStatus,
 )
 from app.nutrition.projection.lifecycle import NutritionProjectionLifecycleError
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.google_health_nutrition_sync import (
     GoogleHealthNutritionSyncError,

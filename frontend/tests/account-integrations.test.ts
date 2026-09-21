@@ -448,11 +448,11 @@ describe('AccountIntegrationsView', () => {
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('refresh-token-sentinel')
-    expect(wrapper.text()).not.toContain('access-token-sentinel')
+    expect(wrapper.html()).not.toContain('refresh-token-sentinel')
+    expect(wrapper.html()).not.toContain('access-token-sentinel')
     await wrapper.get('.google-health-connection-test').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).not.toContain('client-secret-sentinel')
+    expect(wrapper.html()).not.toContain('client-secret-sentinel')
     expect(wrapper.get('.google-health-card').text()).toContain('Verbindungstest ist fehlgeschlagen')
   })
 

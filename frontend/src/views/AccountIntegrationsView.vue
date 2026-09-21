@@ -16,6 +16,20 @@ import type {
   YazioStatus,
 } from '../types'
 
+const GOOGLE_BADGE_VARIANTS = new Set([
+  'active',
+  'completed',
+  'disabled',
+  'empty',
+  'failed',
+  'not_configured',
+  'not_connected',
+  'reauth_required',
+  'retrying',
+  'running',
+  'scope_missing',
+])
+
 const googleSyncDomains: ReadonlyArray<{ key: GoogleHealthDomainKey; labelKey: string }> = [
   { key: 'nutrition', labelKey: 'accountIntegrations.googleDomainNutrition' },
   { key: 'activity_energy', labelKey: 'accountIntegrations.googleDomainActivity' },
@@ -174,7 +188,7 @@ const googleBadgeVariant = computed(() => {
   if (google.value.sync_state === 'running') return 'running'
   if (google.value.sync_state === 'failed') return 'failed'
   if (google.value.sync_state === 'completed') return 'completed'
-  return google.value.state
+  return GOOGLE_BADGE_VARIANTS.has(google.value.state) ? google.value.state : 'empty'
 })
 const googleSyncStateLabel = computed(() => {
   if (!google.value) return t('accountIntegrations.googleEmpty')

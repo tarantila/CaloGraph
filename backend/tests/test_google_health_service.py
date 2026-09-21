@@ -1,17 +1,17 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
-import logging
 import pytest
-from pydantic import ValidationError
 from cryptography.fernet import Fernet
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from app.database import SessionLocal
-from app.config import settings
-import app.services.security_audit as security_audit
 import app.security_events as security_events
+import app.services.security_audit as security_audit
+from app.config import settings
+from app.database import SessionLocal
 from app.google_health import service as google_health_service
 from app.google_health.constants import (
     GOOGLE_HEALTH_NUTRITION_SCOPE,
@@ -33,12 +33,16 @@ from app.google_health.service import (
 from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, SecurityAuditEvent, User
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionDailyProjectionLineage,
     NutritionExternalIdentity,
     NutritionExternalIdentityLink,
     NutritionFieldObservation,
     NutritionFoodProfile,
     NutritionFoodSnapshot,
     NutritionIngestionRun,
+    NutritionProjectionHead,
     NutritionProvenance,
     NutritionServingObservation,
     NutritionSourceObservation,
@@ -862,7 +866,27 @@ def test_provider_exception_and_security_event_never_expose_secret(
             )
         ).all()
     assert audit_events
-    assert all(sentinel not in repr(event) for event in audit_events)
+    assert all(
+        sentinel not in repr(
+            {
+                "id": event.id,
+                "occurred_at": event.occurred_at,
+                "event": event.event,
+                "outcome": event.outcome,
+                "auth_method": event.auth_method,
+                "actor_user_id": event.actor_user_id,
+                "target_user_id": event.target_user_id,
+                "actor_ref": event.actor_ref,
+                "target_ref": event.target_ref,
+                "username_snapshot": event.username_snapshot,
+                "request_id": event.request_id,
+                "client_ip": event.client_ip,
+                "client_ref": event.client_ref,
+                "reason": event.reason,
+            }
+        )
+        for event in audit_events
+    )
     status = google_health_status(db, user)
     assert status.last_error == "provider_error"
     assert status.last_error_category == "provider_error"
@@ -874,14 +898,14 @@ def test_connection_test_uses_requested_user_credentials_without_persistence(
     second = User(username="second-connection-test", password_hash="hash")
     db.add(second)
     db.commit()
-    first_connection = _seed_credentials(
+    _seed_credentials(
         db,
         user,
         client_id="client-a",
         client_secret="secret-a",
         refresh_token="refresh-a",
     )
-    second_connection = _seed_credentials(
+    _seed_credentials(
         db,
         second,
         client_id="client-b",
@@ -900,6 +924,10 @@ def test_connection_test_uses_requested_user_credentials_without_persistence(
         NutritionFoodProfile,
         NutritionFoodSnapshot,
         NutritionSourceTombstone,
+        NutritionDailyProjection,
+        NutritionDailyProjectionFact,
+        NutritionDailyProjectionLineage,
+        NutritionProjectionHead,
     )
 
     def history_snapshot() -> dict[object, tuple[int, ...]]:
