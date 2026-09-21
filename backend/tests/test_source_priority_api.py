@@ -328,8 +328,6 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     client: TestClient, user: User, db, monkeypatch
 ) -> None:
     monkeypatch.setattr("app.config.settings.google_health_enabled", True)
-    monkeypatch.setattr("app.config.settings.google_health_client_id", "client-id")
-    monkeypatch.setattr("app.config.settings.google_health_client_secret", "client-secret")
     _add_yazio(db, user)
     bootstrap_nutrition_priority(
         session_factory=lambda: db,

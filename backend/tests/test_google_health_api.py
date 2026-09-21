@@ -15,15 +15,13 @@ from app.config import settings
 from app.google_health.errors import GoogleHealthOAuthError
 from app.models import GoogleHealthConnection, User, UserSession
 from app.schemas_google_health import GoogleHealthDomainResult, GoogleHealthStatus
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
-
 
 def test_google_health_sync_success_uses_inclusive_user_local_range(
     client: TestClient, user: User, monkeypatch
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     csrf = _login(client)
     captured: dict[str, object] = {}
 
@@ -109,8 +107,6 @@ def test_google_health_sync_rejects_days_bounds(
     client: TestClient, user: User, monkeypatch, days: str
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     csrf = _login(client)
     response = client.post(
         f"/api/v1/google-health/sync?days={days}",
@@ -123,8 +119,6 @@ def test_google_health_sync_defaults_to_thirty_inclusive_days(
     client: TestClient, user: User, monkeypatch
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     csrf = _login(client)
     captured: dict[str, object] = {}
 
@@ -185,8 +179,6 @@ def test_google_health_sync_maps_errors_without_exception_text(
     detail: str,
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     csrf = _login(client)
     sentinel = "refresh-token-sentinel raw-provider-payload 987654.321"
 
@@ -219,11 +211,10 @@ def test_google_health_sync_rejects_disabled_and_unconfigured(
     assert "nicht verfügbar" in disabled.json()["detail"]
 
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "")
-    monkeypatch.setattr(settings, "google_health_client_secret", "")
     unconfigured = client.post("/api/v1/google-health/sync", headers={"X-CSRF-Token": csrf})
-    assert unconfigured.status_code == 409
-    assert "nicht konfiguriert" in unconfigured.json()["detail"]
+    assert unconfigured.status_code == 200
+    assert unconfigured.json()["status"] == "failed"
+    assert unconfigured.json()["nutrition"]["error_code"] == "connection_not_configured"
 
 
 def _login(client: TestClient) -> str:
@@ -233,6 +224,17 @@ def _login(client: TestClient) -> str:
     )
     assert response.status_code == 200
     return response.json()["csrf_token"]
+
+def _add_credentials(db: Session, user: User) -> None:
+    db.add(
+        GoogleHealthConnection(
+            user_id=user.id,
+            client_id="client-id",
+            encrypted_client_secret=encrypt_credential("client-secret"),
+            state="not_connected",
+        )
+    )
+    db.commit()
 
 
 def test_google_health_requires_authentication(client: TestClient):
@@ -245,8 +247,6 @@ def test_google_health_start_requires_csrf_and_rejects_bad_origin(
     client: TestClient, user: User, monkeypatch
 ):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
     csrf = _login(client)
     assert client.post("/api/v1/google-health/oauth/start").status_code == 403
@@ -257,11 +257,12 @@ def test_google_health_start_requires_csrf_and_rejects_bad_origin(
     assert response.status_code == 403
 
 
-def test_google_health_status_and_start_contract(client: TestClient, user: User, monkeypatch):
+def test_google_health_status_and_start_contract(
+    client: TestClient, user: User, db: Session, monkeypatch
+):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    _add_credentials(db, user)
     csrf = _login(client)
     status = client.get("/api/v1/google-health/status")
     assert status.status_code == 200

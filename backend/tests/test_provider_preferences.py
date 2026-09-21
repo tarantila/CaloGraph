@@ -80,7 +80,7 @@ def _add_google(db, user, *, state: str = "active") -> GoogleHealthConnection:
         client_id="client-id",
         encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("refresh-token"),
-        granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
+        granted_scopes=sorted(GOOGLE_HEALTH_REQUIRED_SCOPES),
         state=state,
     )
     db.add(connection)
@@ -601,8 +601,6 @@ def test_google_availability_is_no_data_for_active_connection_without_evidence(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     _add_google(db, user)
     _login(client)
 
@@ -617,8 +615,6 @@ def test_google_availability_is_available_for_active_connection_with_canonical_e
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     _add_google_nutrition_evidence(db, user, connection)
     _login(client)
@@ -1779,8 +1775,6 @@ def test_google_activity_availability_requires_full_scope_and_canonical_evidence
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     db.commit()
@@ -1825,8 +1819,6 @@ def test_google_activity_availability_matrix(
 ) -> None:
     if case != "disabled":
         monkeypatch.setattr(settings, "google_health_enabled", True)
-        monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-        monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = None
     if case not in {"disabled", "not_configured"}:
         connection = _add_google(db, user, state="reauth_required" if case == "reauth" else "active")
@@ -1869,8 +1861,6 @@ def test_activity_sources_response_accepts_google_canonical_source(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     db.flush()
@@ -1895,8 +1885,6 @@ def test_google_weight_availability_requires_full_scope_and_canonical_evidence(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     db.commit()
@@ -1925,8 +1913,6 @@ def test_activity_sources_hide_google_evidence_from_wrong_connection(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     db.flush()
@@ -1951,8 +1937,6 @@ def test_google_weight_priority_uses_latest_sample_and_daily_fallback(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     day_one = date(2026, 9, 15)
@@ -2020,8 +2004,6 @@ def test_google_activity_target_is_serialized_and_snapshots_provider_chain(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     _add_sample(
@@ -2085,8 +2067,6 @@ def test_google_activity_target_update_serializes_source(
     client: TestClient, user, db, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     connection = _add_google(db, user)
     connection.granted_scopes = sorted(GOOGLE_HEALTH_REQUIRED_SCOPES)
     _add_sample(
