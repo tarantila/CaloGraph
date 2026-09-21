@@ -177,7 +177,7 @@ def _status_from_connection(connection: GoogleHealthConnection | None) -> Google
         state = "not_configured"
     elif connection and connection.last_error in {"scope_missing", "reauth_required"}:
         state = connection.last_error
-    elif connection and (
+    elif connection and connection.encrypted_refresh_token and (
         connection.state != "reauth_required"
         and not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     ):
