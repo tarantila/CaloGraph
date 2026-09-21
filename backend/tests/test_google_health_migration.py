@@ -222,7 +222,7 @@ def test_downgrade_rejects_rows_that_would_lose_null_refresh_tokens(tmp_path) ->
             {"secret": b"synthetic-encrypted-secret"},
         )
 
-    with pytest.raises(RuntimeError, match="null.*refresh token"):
+    with pytest.raises(RuntimeError, match=r"null.*refresh token"):
         _apply(engine, _revision_module(), "downgrade")
 
 def test_downgrade_restores_legacy_schema_without_rewriting_tokens(tmp_path) -> None:

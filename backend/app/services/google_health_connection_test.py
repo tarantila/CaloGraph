@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
@@ -11,13 +12,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.google_health.client import GoogleHealthClient
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.google_health.credentials import resolve_google_health_credentials
 from app.google_health.errors import (
     GoogleHealthAuthenticationError,
     GoogleHealthScopeError,
 )
-from app.google_health.client import GoogleHealthClient
 from app.models import GoogleHealthConnection
 from app.services.credential_crypto import decrypt_credential
 from app.services.google_health_nutrition_sync import _default_credentials
@@ -152,10 +153,8 @@ class GoogleHealthConnectionTestService:
                 category,
             )
         finally:
-            try:
+            with suppress(Exception):
                 client.close()
-            except Exception:
-                pass
         return GoogleHealthConnectionTestResult("connected")
 
 

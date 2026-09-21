@@ -73,9 +73,9 @@ def resolve_google_health_credentials(
 resolve_credentials = resolve_google_health_credentials
 
 __all__ = [
+    "MAX_CREDENTIAL_LENGTH",
     "GoogleHealthCredentialError",
     "GoogleHealthCredentialUnavailableError",
-    "MAX_CREDENTIAL_LENGTH",
     "credential_pair_from_input",
     "resolve_credentials",
     "resolve_google_health_credentials",

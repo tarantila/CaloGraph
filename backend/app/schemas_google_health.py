@@ -5,8 +5,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
-
 GoogleHealthState = Literal[
     "disabled",
     "not_configured",

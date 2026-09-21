@@ -16,7 +16,6 @@ from app.activity import (
 )
 from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
-from app.services.credential_crypto import encrypt_credential
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -52,6 +51,7 @@ from app.provider_preferences import (
     normalize_provider_key,
     validate_provider_preference,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.source_priority import compatibility as source_priority_compatibility
 from app.source_priority.contracts import PriorityRuleSpec
 from app.weight import (

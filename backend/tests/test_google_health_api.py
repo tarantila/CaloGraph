@@ -11,14 +11,15 @@ from sqlalchemy.orm import Session
 
 import app.api.google_health as google_health_api
 from app.api.google_health import _oauth_error
-from app.config import settings
 from app.auth.security import hash_password
+from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.google_health.errors import GoogleHealthOAuthError
 from app.models import GoogleHealthConnection, User, UserSession
 from app.schemas_google_health import GoogleHealthDomainResult, GoogleHealthStatus
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.services.google_health_nutrition_sync import GoogleHealthNutritionSyncError
+
 
 def test_google_health_sync_success_uses_inclusive_user_local_range(
     client: TestClient, user: User, monkeypatch

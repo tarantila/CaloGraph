@@ -138,9 +138,7 @@ def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailab
         google_status = "disabled"
     elif google is None or not google.client_id or not google.encrypted_client_secret:
         google_status = "not_configured"
-    elif google.state != "active" or not google.encrypted_refresh_token:
-        google_status = "reauth_required"
-    elif not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(google.granted_scopes or ())):
+    elif google.state != "active" or not google.encrypted_refresh_token or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(google.granted_scopes or ())):
         google_status = "reauth_required"
     else:
         try:
