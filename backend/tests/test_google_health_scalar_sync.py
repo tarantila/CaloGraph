@@ -18,6 +18,7 @@ from app.google_health.client import (
     WeightDataPoint,
 )
 from app.models import GoogleHealthConnection, HealthSample, User
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_scalar_sync import (
     sync_google_health_activity,
     sync_google_health_weight,
@@ -35,7 +36,9 @@ END = datetime(2026, 9, 15, 23, 0, tzinfo=UTC)
 def _connection(db: Session, user: User) -> GoogleHealthConnection:
     item = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=[],
         state="active",
     )
@@ -239,7 +242,11 @@ def test_scalar_service_uses_user_local_day_bounds_across_dst(db: Session, user:
     service = GoogleHealthScalarSyncService(
         session_factory=SessionLocal,
         client_factory=lambda _credentials: client,
-        credentials_factory=lambda token: token,
+        credentials_factory=lambda token, client_id, client_secret: (
+            token,
+            client_id,
+            client_secret,
+        ),
         decrypt_refresh_token=lambda value: "refresh",
         max_pages=3,
     )

@@ -14,7 +14,11 @@ from app.services.credential_crypto import encrypt_credential
 
 
 class _Adapter:
+    def __init__(self):
+        self.calls = []
+
     def exchange(self, **kwargs):
+        self.calls.append(kwargs)
         return {"refresh_token": "refresh", "scope": " ".join(GOOGLE_HEALTH_SCOPES)}
 
 
@@ -51,17 +55,20 @@ def test_callback_consumes_state_once_and_cross_user_cannot_use_it(db, user: Use
     db.add(second)
     db.commit()
     _add_credentials(db, second, "second")
+    adapter = _Adapter()
     now = datetime.now(UTC)
     url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(url).query)["state"][0]
 
     with pytest.raises(GoogleHealthOAuthError):
         complete_google_health_oauth(
-            db, second, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()
+            db, second, state=state, code="code", error=None, now=now, oauth_adapter=adapter
         )
     complete_google_health_oauth(
-        db, user, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()
+        db, user, state=state, code="code", error=None, now=now, oauth_adapter=adapter
     )
+    assert adapter.calls[0]["client_id"] == "client"
+    assert adapter.calls[0]["client_secret"] == "client-secret"
     with pytest.raises(GoogleHealthOAuthError):
         complete_google_health_oauth(
             db, user, state=state, code="code", error=None, now=now, oauth_adapter=_Adapter()

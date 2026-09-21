@@ -21,6 +21,7 @@ from app.google_health.client import (
 from app.google_health.constants import GOOGLE_HEALTH_SCOPES
 from app.google_health.errors import GoogleHealthAuthenticationError, GoogleHealthTransientError
 from app.models import GoogleHealthConnection, HealthSample, User
+from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.nutrition.models import NutritionSourceObservation
 from app.services.google_health_sync import GoogleHealthSyncService
 
@@ -171,12 +172,16 @@ def _service(monkeypatch, client: _Client, *, max_points: int = 10):
     service = GoogleHealthSyncService(
         session_factory=lambda: None,  # type: ignore[arg-type]
         client_factory=lambda _: client,
-        credentials_factory=lambda _: object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: object(),
         decrypt_refresh_token=lambda _: "refresh",
         max_pages=2,
         max_points=max_points,
     )
-    monkeypatch.setattr(service, "_snapshot", lambda _user_id: (uuid4(), "UTC", b"encrypted"))
+    monkeypatch.setattr(
+        service,
+        "_snapshot",
+        lambda _user_id: (uuid4(), "UTC", b"encrypted", "client-id", "client-secret"),
+    )
     monkeypatch.setattr(service, "_persist_nutrition", lambda **kwargs: len(kwargs["points"]))
     monkeypatch.setattr(service, "_persist_scalar", lambda **kwargs: len(kwargs["points"]))
     return service
@@ -267,7 +272,7 @@ def test_missing_scope_short_circuits_before_credentials_or_provider_io(monkeypa
     service = GoogleHealthSyncService(
         session_factory=lambda: None,  # type: ignore[arg-type]
         client_factory=lambda _: calls.append("client") or None,  # type: ignore[return-value]
-        credentials_factory=lambda _: calls.append("credentials") or object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: calls.append("credentials") or object(),
         decrypt_refresh_token=lambda _: calls.append("decrypt") or "refresh",
     )
     monkeypatch.setattr(service, "_snapshot", lambda _user_id: "scope_missing")
@@ -283,11 +288,12 @@ def test_missing_scope_short_circuits_before_credentials_or_provider_io(monkeypa
     ))
     assert calls == []
 
-
 def _real_connection(db: Session, user: User, scopes: list[str]) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=scopes,
         state="active",
     )
@@ -305,7 +311,7 @@ def test_real_scope_preflight_reauth_preserves_token_and_skips_provider_io(
     service = GoogleHealthSyncService(
         session_factory=SessionLocal,
         decrypt_refresh_token=lambda _: calls.append("decrypt") or "refresh",
-        credentials_factory=lambda _: calls.append("credentials") or object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: calls.append("credentials") or object(),
         client_factory=lambda _: calls.append("client") or None,  # type: ignore[return-value]
     )
 
@@ -321,7 +327,7 @@ def test_real_scope_preflight_reauth_preserves_token_and_skips_provider_io(
     assert refreshed is not None
     assert refreshed.state == "reauth_required"
     assert refreshed.last_error == "scope_missing"
-    assert refreshed.encrypted_refresh_token == b"encrypted-refresh-token"
+    assert decrypt_credential(refreshed.encrypted_refresh_token) == "refresh-token"
 
 
 def test_reauth_failure_precedes_earlier_transient_failure_in_bookkeeping(
@@ -334,7 +340,13 @@ def test_reauth_failure_precedes_earlier_transient_failure_in_bookkeeping(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(service, "_persist_scalar", GoogleHealthSyncService._persist_scalar.__get__(service))
 
@@ -362,7 +374,13 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     # Exercise real per-domain scalar/nutrition transactions while keeping
     # projection setup out of this failure-isolation assertion.
@@ -401,7 +419,13 @@ def test_post_commit_projection_failure_reports_committed_nutrition_rows(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(service, "_persist_nutrition", GoogleHealthSyncService._persist_nutrition.__get__(service))
     monkeypatch.setattr(service, "_persist_scalar", GoogleHealthSyncService._persist_scalar.__get__(service))
@@ -429,7 +453,13 @@ def test_no_data_completion_records_success_without_sensitive_values(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(
         "app.services.google_health_sync.bootstrap_nutrition_priority",

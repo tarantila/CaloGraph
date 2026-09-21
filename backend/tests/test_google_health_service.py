@@ -55,13 +55,28 @@ def _configure(monkeypatch):
     monkeypatch.setattr(settings, "google_health_enabled", True)
     monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
-    # Existing service tests create legacy connection rows without client
-    # fields; keep those rows usable while exercising the resolver boundary.
-    monkeypatch.setattr(
-        google_health_service,
-        "resolve_google_health_credentials",
-        lambda _connection: ("client-id", "client-secret"),
+
+
+def _seed_credentials(
+    db,
+    user: User,
+    *,
+    client_id: str = "client-id",
+    client_secret: str = "client-secret",
+    refresh_token: str | None = None,
+) -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        client_id=client_id,
+        encrypted_client_secret=encrypt_credential(client_secret),
+        encrypted_refresh_token=encrypt_credential(refresh_token) if refresh_token else None,
+        granted_scopes=list(GOOGLE_HEALTH_SCOPES) if refresh_token else [],
+        state="active" if refresh_token else "not_connected",
     )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
 
 
 def test_google_health_credential_validation_errors_redact_secret():
@@ -77,6 +92,7 @@ def test_google_health_credential_validation_errors_redact_secret():
 
 def test_start_persists_hashed_state_and_encrypted_verifier(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
 
     url = start_google_health_oauth(db, user, now=now)
@@ -90,6 +106,42 @@ def test_start_persists_hashed_state_and_encrypted_verifier(db, user: User, monk
     assert verifier
 
     assert query["state"][0] not in flow.state_hash
+def test_oauth_credentials_are_user_scoped(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    second = User(username="second", password_hash="hash")
+    db.add(second)
+    db.commit()
+    _seed_credentials(db, user, client_id="client-a", client_secret="secret-a")
+    _seed_credentials(db, second, client_id="client-b", client_secret="secret-b")
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+
+    url_a = start_google_health_oauth(db, user, now=now)
+    url_b = start_google_health_oauth(db, second, now=now)
+    assert parse_qs(urlsplit(url_a).query)["client_id"] == ["client-a"]
+    assert parse_qs(urlsplit(url_b).query)["client_id"] == ["client-b"]
+
+    state_a = parse_qs(urlsplit(url_a).query)["state"][0]
+    adapter_a = TokenAdapter({"refresh_token": "refresh-a", "scope": " ".join(GOOGLE_HEALTH_SCOPES)})
+    complete_google_health_oauth(
+        db, user, state=state_a, code="code-a", error=None, now=now, oauth_adapter=adapter_a
+    )
+    assert adapter_a.calls[0]["client_id"] == "client-a"
+    assert adapter_a.calls[0]["client_secret"] == "secret-a"
+
+def test_replacing_user_credentials_retains_old_token_until_callback(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    connection = _seed_credentials(db, user, refresh_token="old-refresh")
+    status = save_google_health_credentials(
+        db,
+        user,
+        GoogleHealthCredentialsInput(client_id="client-new", client_secret="secret-new"),
+    )
+    db.refresh(connection)
+    assert status.state == "reauth_required"
+    assert connection.state == "reauth_required"
+    assert decrypt_credential(connection.encrypted_refresh_token) == "old-refresh"
 
 def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
     import google_auth_oauthlib.flow
@@ -136,6 +188,8 @@ def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_h
     now = datetime(2026, 9, 10, tzinfo=UTC)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -158,6 +212,7 @@ def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_h
 
 def test_complete_exchanges_pkce_and_preserves_connection_uuid(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     query = parse_qs(urlsplit(start_url).query)
@@ -212,6 +267,8 @@ def test_successful_reauth_updates_existing_nutrition_connection_in_place(
     now = datetime(2026, 9, 10, tzinfo=UTC)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -254,6 +311,8 @@ def test_scope_missing_callback_preserves_existing_connection_credentials_and_hi
     historical_success = now - timedelta(days=1)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -293,6 +352,7 @@ def test_scope_missing_callback_preserves_existing_connection_credentials_and_hi
 
 def test_complete_rejects_unknown_expired_and_replayed_state(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     with pytest.raises(GoogleHealthOAuthError, match="unknown_state"):
         complete_google_health_oauth(db, user, state="unknown", code="code", error=None, now=now)
@@ -307,6 +367,7 @@ def test_complete_rejects_unknown_expired_and_replayed_state(db, user: User, mon
 
 def test_scope_and_refresh_token_are_required(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -348,6 +409,7 @@ def test_status_never_exposes_secret_fields(db, user: User, monkeypatch):
 
 def test_callback_revalidates_active_user_after_lock(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -373,6 +435,7 @@ def test_callback_revalidates_active_user_after_lock(db, user: User, monkeypatch
 
 def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -428,6 +491,7 @@ def test_provider_error_categories_are_fixed(message, status, expected):
 
 def test_provider_response_without_scope_cannot_activate(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -448,6 +512,7 @@ def test_provider_response_without_scope_cannot_activate(db, user: User, monkeyp
 @pytest.mark.parametrize("expires_in", [float("nan"), float("inf"), -1, 10**30, "3600"])
 def test_malformed_refresh_expiry_is_safe_error(db, user: User, monkeypatch, expires_in):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -472,6 +537,7 @@ def test_malformed_refresh_expiry_is_safe_error(db, user: User, monkeypatch, exp
 
 def test_start_purges_expired_flow_rows(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_google_health_oauth(db, user, now=now - timedelta(minutes=11))
     start_google_health_oauth(db, user, now=now - timedelta(minutes=10))

@@ -28,6 +28,7 @@ from app.google_health.errors import (
     GoogleHealthProviderUnavailableError,
 )
 from app.models import GoogleHealthConnection, User, YazioConnection
+from app.services.credential_crypto import encrypt_credential
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionDailyProjection,
@@ -124,16 +125,29 @@ class SyncHarness:
             self.decrypted.append(value)
             return "refresh-token-only-in-memory"
 
-        def credentials_factory(refresh_token: str) -> object:
+        def credentials_factory(
+            refresh_token: str,
+            client_id: str,
+            client_secret: str,
+        ) -> object:
             self.events.append("credentials")
             self.credentials.append(refresh_token)
-            return {"refresh_token": refresh_token}
+            assert client_id == "client-id"
+            assert client_secret == "client-secret"
+            return {
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
 
         def client_factory(credentials: object) -> FakePagedClient:
             if session_factory is None:
                 assert not self.db.in_transaction()
-            assert credentials == {"refresh_token": "refresh-token-only-in-memory"}
-            self.events.append("client")
+            assert credentials == {
+                "refresh_token": "refresh-token-only-in-memory",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            }
             client = FakePagedClient(
                 self.pages,
                 self.db,
@@ -205,7 +219,9 @@ def _connection(
 ) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=(
             list(GOOGLE_HEALTH_SCOPES) if granted_scopes is None else granted_scopes
         ),
