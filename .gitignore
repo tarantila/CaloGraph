@@ -61,4 +61,5 @@ Thumbs.db
 
 # Local AI / agent-generated artifacts
 .superpowers/
+.worktrees/
 docs/superpowers/
