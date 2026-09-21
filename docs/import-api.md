@@ -35,9 +35,10 @@ The authorization request asks for exactly these read-only scopes:
 - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
 
 Save a client ID and client secret together through the account integration
-settings. Replacing the pair invalidates the old consent and requires OAuth
-reauthorization; the old refresh-token ciphertext is not used with the new
-client pair. OAuth must complete successfully, including all three scopes and
+settings. Replacing the pair invalidates the local authorization for this
+connection and requires OAuth reauthorization; it does not revoke consent at
+Google. The retained refresh-token ciphertext is not used with the new client
+pair. OAuth must complete successfully, including all three scopes and
 a refresh token, before synchronization is available.
 
 Disconnect removes the user's refresh token and granted scopes but keeps the

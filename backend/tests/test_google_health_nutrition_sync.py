@@ -1014,6 +1014,19 @@ def test_sync_uses_each_users_decrypted_token_and_client_pair(
     assert result_a.run.source_instance_id == connection_a.id
     assert result_b.run.source_instance_id == connection_b.id
     assert {
-        row.user_id
+        (row.user_id, row.source_instance_id, row.source_record_id)
         for row in db.scalars(select(NutritionSourceObservation)).all()
-    } == {user.id, second.id}
+    } == {
+        (user.id, connection_a.id, "point-refresh-a"),
+        (
+            user.id,
+            connection_a.id,
+            "users/me/dataTypes/food/dataPoints/food-1",
+        ),
+        (second.id, connection_b.id, "point-refresh-b"),
+        (
+            second.id,
+            connection_b.id,
+            "users/me/dataTypes/food/dataPoints/food-1",
+        ),
+    }

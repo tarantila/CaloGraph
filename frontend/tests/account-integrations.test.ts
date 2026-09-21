@@ -119,7 +119,13 @@ function configureApi(overrides: Record<string, unknown> = {}): void {
       return Promise.resolve(overrides.googleDisconnectedStatus ?? { ...googleStatus, state: 'not_connected' })
     }
     if (path === '/google-health/connection/test' && options?.method === 'POST') {
-      if (overrides.googleConnectionTestError) return Promise.reject(new Error('provider detail'))
+      if (overrides.googleConnectionTestError) {
+        return Promise.reject(
+          overrides.googleConnectionTestError instanceof Error
+            ? overrides.googleConnectionTestError
+            : new Error('provider detail'),
+        )
+      }
       return Promise.resolve(overrides.googleConnectionTestResult ?? { status: 'connected', error_category: null })
     }
     if (path === '/google-health/sync' && options?.method === 'POST') {
@@ -430,20 +436,24 @@ describe('AccountIntegrationsView', () => {
     expect(wrapper.text()).not.toContain('raw provider error')
   })
 
-  it('never renders credential or provider secret values returned by status APIs', async () => {
+  it('never renders credential or provider secret values returned by status and error APIs', async () => {
     configureApi({
       googleStatus: {
         ...googleStatus,
-        last_error: 'client-secret-sentinel',
-        last_error_category: 'provider_error',
+        state: 'refresh-token-sentinel',
+        sync_state: 'access-token-sentinel',
       },
+      googleConnectionTestError: new Error('client-secret-sentinel'),
     })
     const wrapper = mount(AccountIntegrationsView)
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('client-secret-sentinel')
     expect(wrapper.text()).not.toContain('refresh-token-sentinel')
     expect(wrapper.text()).not.toContain('access-token-sentinel')
+    await wrapper.get('.google-health-connection-test').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('client-secret-sentinel')
+    expect(wrapper.get('.google-health-card').text()).toContain('Verbindungstest ist fehlgeschlagen')
   })
 
   it('keeps terminal failed sync state distinct from a scheduled retry', async () => {
