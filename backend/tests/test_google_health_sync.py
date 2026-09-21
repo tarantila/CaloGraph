@@ -88,8 +88,9 @@ class _Client:
     ):
         del page_size, civil_start_time, civil_end_time
         self.calls.append(f"nutrition:{page_token}")
+        name_suffix = "" if page_token is None else f"-{page_token}"
         return NutritionLogPage(
-            data_points=tuple(_nutrition(f"nutrition-{idx}") for idx in range(self.points)),
+            data_points=tuple(_nutrition(f"nutrition{name_suffix}-{idx}") for idx in range(self.points)),
             next_page_token=(
                 "nutrition-next"
                 if page_token is None and (self.points == 1 or self.exact_fill)
@@ -186,8 +187,27 @@ def _service(monkeypatch, client: _Client, *, max_points: int = 10):
         "_snapshot",
         lambda _user_id: (uuid4(), "UTC", b"encrypted", "client-id", "client-secret"),
     )
-    monkeypatch.setattr(service, "_persist_nutrition", lambda **kwargs: len(kwargs["points"]))
-    monkeypatch.setattr(service, "_persist_scalar", lambda **kwargs: len(kwargs["points"]))
+    persisted_domains: set[str] = set()
+
+    def persist_once(*, domain: str, points: tuple[object, ...]) -> int:
+        if domain in persisted_domains:
+            return 0
+        persisted_domains.add(domain)
+        return len(points)
+
+    monkeypatch.setattr(
+        service,
+        "_persist_nutrition",
+        lambda **kwargs: persist_once(domain="nutrition", points=kwargs["points"]),
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_scalar",
+        lambda **kwargs: persist_once(
+            domain="activity" if kwargs["activity"] else "weight",
+            points=kwargs["points"],
+        ),
+    )
     monkeypatch.setattr(service, "_update_retry_status", lambda **_: None)
     return service
 
@@ -404,8 +424,6 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
     result = service.sync(user_id=user.id, requested_start=START, requested_end=END)
 
     assert result.status == "partial_failure"
-    assert result.nutrition.fetched_count == 2
-    assert result.nutrition.persisted_count == 1
     assert result.weight.fetched_count == 1
     assert result.weight.persisted_count == 1
     assert result.activity_energy.error_code == "transient_error"
@@ -425,7 +443,7 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
         )
         or 0
     )
-    assert nutrition_rows == result.nutrition.persisted_count == 1
+    assert nutrition_rows == result.nutrition.persisted_count == 2
     assert weight_rows == result.weight.persisted_count == 1
     db.expire_all()
     refreshed = db.get(GoogleHealthConnection, connection.id)

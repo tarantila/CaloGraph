@@ -5,7 +5,7 @@ from __future__ import annotations
 import time as time_module
 from collections.abc import Callable, Iterable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 from uuid import UUID
@@ -679,6 +679,7 @@ class GoogleHealthSyncService:
     ) -> GoogleHealthSyncResult:
         if requested_start > requested_end:
             raise ValueError("requested date range is invalid")
+        persisted_totals = {"nutrition": 0, "activity_energy": 0, "weight": 0}
         for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
             provider_attempted = False
 
@@ -690,7 +691,6 @@ class GoogleHealthSyncService:
                     attempt=current_attempt,
                 )
                 provider_attempted = True
-
             try:
                 result = self._sync_once(
                     user_id=user_id,
@@ -712,6 +712,18 @@ class GoogleHealthSyncService:
                     requested_end,
                     status="reauth_required" if failure_code in _REAUTH_CODES else "failed",
                     error=failure_code,
+                )
+            for domain_name in persisted_totals:
+                domain_result = getattr(result, domain_name)
+                persisted_totals[domain_name] += domain_result.persisted_count
+                result = replace(
+                    result,
+                    **{
+                        domain_name: replace(
+                            domain_result,
+                            persisted_count=persisted_totals[domain_name],
+                        )
+                    },
                 )
             retry_category = self._retry_category(result)
             if not provider_attempted and result.provider_attempted:
