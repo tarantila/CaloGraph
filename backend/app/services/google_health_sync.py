@@ -515,7 +515,12 @@ class GoogleHealthSyncService:
             client_secret = ""
 
         if before_provider_attempt is not None:
-            before_provider_attempt()
+            try:
+                before_provider_attempt()
+            except Exception:
+                with suppress(Exception):
+                    client.close()
+                raise
 
 
         domains: dict[str, GoogleHealthDomainResult] = {}
