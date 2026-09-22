@@ -735,9 +735,9 @@ class VerificationNutritionEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider_key: VerificationProviderKey
-    occurred_at: datetime | None
+    local_time: str | None
     meal_type: str | None
-    food_name: str
+    display_name: str
     calories_kcal: float | None
     protein_g: float | None
     carbohydrates_g: float | None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -581,12 +581,106 @@ def _read_nutrition_food_names(
     )
     return {snapshot.id: snapshot.name for snapshot in snapshots}
 
+def _read_nutrition_provider_metadata(
+    db: Session,
+    *,
+    user_id: UUID,
+    events: list[NutritionConsumptionEvent],
+    source_instances: Mapping[str, UUID | None],
+) -> dict[UUID, Mapping[str, object]]:
+    source_ids = {item.source_observation_id for item in events}
+    if not source_ids:
+        return {}
+    source = NutritionSourceObservation
+    pairs = _source_pair_predicates(source, source_instances)
+    if not pairs:
+        return {}
+    sources = db.scalars(
+        select(source).where(
+            source.user_id == user_id,
+            source.id.in_(source_ids),
+            or_(*pairs),
+        )
+    )
+    return {item.id: item.provider_metadata for item in sources}
+
+
+def _metadata_text(metadata: Mapping[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+_GOOGLE_MEAL_TYPES = {
+    "BREAKFAST": "breakfast",
+    "LUNCH": "lunch",
+    "DINNER": "dinner",
+    "SNACK": "snack",
+}
+
+
+def _normalized_meal_type(provider_key: str, value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if provider_key != "google_health":
+        return value
+    return _GOOGLE_MEAL_TYPES.get(value.upper())
+
+
+def _provider_offset(event: NutritionConsumptionEvent) -> timezone | None:
+    value = event.provider_timezone
+    if not isinstance(value, str) or not value.endswith("s"):
+        return None
+    try:
+        seconds = int(value[:-1])
+    except ValueError:
+        return None
+    return timezone(timedelta(seconds=seconds))
+
+
+def _is_google_date_only(event: NutritionConsumptionEvent) -> bool:
+    if event.provider_key != "google_health" or event.provider_civil_datetime is None:
+        return False
+    civil = event.provider_civil_datetime
+    if civil.time() != datetime.min.time():
+        return False
+    if event.canonical_start_at is None:
+        return True
+    offset = _provider_offset(event)
+    if offset is None:
+        return True
+    canonical = event.canonical_start_at
+    if canonical.tzinfo is None:
+        canonical = canonical.replace(tzinfo=UTC)
+    local = canonical.astimezone(offset)
+    return local.date() == civil.date() and local.time() == datetime.min.time()
+
+
+def _nutrition_local_time(event: NutritionConsumptionEvent) -> str | None:
+    if event.canonical_start_at is None:
+        return None
+    if _is_google_date_only(event):
+        return None
+    if event.provider_civil_datetime is not None:
+        return event.provider_civil_datetime.strftime("%H:%M")
+    canonical = event.canonical_start_at
+    offset = _provider_offset(event)
+    if canonical.tzinfo is not None and offset is not None:
+        canonical = canonical.astimezone(offset)
+    return canonical.strftime("%H:%M")
+
 
 def _nutrition_event_response(
     event: NutritionConsumptionEvent,
     *,
     metrics: dict[str, Decimal],
     food_names: dict[UUID, str | None],
+    provider_metadata: Mapping[UUID, Mapping[str, object]],
 ) -> VerificationNutritionEvent:
     serving_is_safe = (
         event.amount is not None
@@ -594,16 +688,28 @@ def _nutrition_event_response(
         and event.amount_unit is not None
         and bool(event.amount_unit.strip())
     )
+    metadata = provider_metadata.get(event.source_observation_id, {})
+    snapshot_name = (
+        food_names.get(event.food_snapshot_id)
+        if event.food_snapshot_id is not None
+        else None
+    )
+    display_name = snapshot_name or (
+        _metadata_text(metadata, "food_display_name")
+        if event.provider_key == "google_health"
+        else None
+    )
+    meal_type = _normalized_meal_type(event.provider_key, event.daytime)
+    if meal_type is None and event.daytime is None:
+        meal_type = _normalized_meal_type(
+            event.provider_key,
+            _metadata_text(metadata, "meal_type"),
+        )
     return VerificationNutritionEvent(
         provider_key=event.provider_key,
-        occurred_at=event.canonical_start_at,
-        meal_type=event.daytime,
-        food_name=(
-            food_names.get(event.food_snapshot_id)
-            if event.food_snapshot_id is not None
-            else None
-        )
-        or _UNNAMED_FOOD,
+        local_time=_nutrition_local_time(event),
+        meal_type=meal_type,
+        display_name=display_name or _UNNAMED_FOOD,
         calories_kcal=metrics.get("dietary_energy_kcal"),
         protein_g=metrics.get("protein_g"),
         carbohydrates_g=metrics.get("carbohydrates_g"),
@@ -623,6 +729,7 @@ def _nutrition_provider_group(
     events: list[NutritionConsumptionEvent],
     metrics_by_source: dict[UUID, dict[str, Decimal]],
     food_names: dict[UUID, str | None],
+    provider_metadata: Mapping[UUID, Mapping[str, object]],
 ) -> VerificationNutritionProviderGroup:
     summary = (
         _empty_nutrition_summary()
@@ -640,6 +747,7 @@ def _nutrition_provider_group(
             event,
             metrics=metrics_by_source.get(event.source_observation_id, {}),
             food_names=food_names,
+            provider_metadata=provider_metadata,
         )
         for event in events
     ]
@@ -701,6 +809,12 @@ def read_nutrition_verification(
             events=events,
             source_instances=source_instances,
         )
+        provider_metadata = _read_nutrition_provider_metadata(
+            db,
+            user_id=user_id,
+            events=events,
+            source_instances=source_instances,
+        )
         canonical_events = [
             item for item in events if item.provider_key == selection.provider_key
         ]
@@ -716,6 +830,7 @@ def read_nutrition_verification(
                 events=canonical_events,
                 metrics_by_source=metrics_by_source,
                 food_names=food_names,
+                provider_metadata=provider_metadata,
             ),
             providers=[],
         )
@@ -739,6 +854,12 @@ def read_nutrition_verification(
         events=events,
         source_instances=source_instances,
     )
+    provider_metadata = _read_nutrition_provider_metadata(
+        db,
+        user_id=user_id,
+        events=events,
+        source_instances=source_instances,
+    )
     return VerificationNutritionResponse(
         date=local_date,
         view=view,
@@ -753,6 +874,7 @@ def read_nutrition_verification(
                 events=[item for item in events if item.provider_key == provider_key],
                 metrics_by_source=metrics_by_source,
                 food_names=food_names,
+                provider_metadata=provider_metadata,
             )
             for provider_key in _NUTRITION_PROVIDER_KEYS
         ],

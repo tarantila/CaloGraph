@@ -30,9 +30,9 @@ const canonicalGroup = {
   },
   events: [{
     provider_key: 'google_health' as const,
-    occurred_at: '2026-09-22T08:30:00Z',
+    local_time: '08:30',
     meal_type: 'breakfast',
-    food_name: 'Haferbrei',
+    display_name: 'Haferbrei',
     calories_kcal: 640,
     protein_g: 31.5,
     carbohydrates_g: 72,
@@ -109,6 +109,7 @@ describe('NutritionView', () => {
     expect(wrapper.text()).toContain('72 g')
     expect(wrapper.text()).toContain('19 g')
     expect(wrapper.text()).toContain('Haferbrei')
+    expect(wrapper.text()).toContain('08:30')
     expect(wrapper.text()).toContain('Portion')
     expect(wrapper.text()).not.toContain('google_health')
   })
@@ -123,8 +124,7 @@ describe('NutritionView', () => {
             ...canonicalGroup,
             summary: { calories_kcal: 300, protein_g: null, carbohydrates_g: null, fat_g: null },
             events: [{
-              ...canonicalGroup.events[0],
-              food_name: 'Google-Frühstück',
+              display_name: 'Google-Frühstück',
               calories_kcal: 300,
               protein_g: null,
               carbohydrates_g: null,
@@ -139,8 +139,7 @@ describe('NutritionView', () => {
             events: [{
               ...canonicalGroup.events[0],
               provider_key: 'yazio' as const,
-              food_name: 'YAZIO-Mittagessen',
-              calories_kcal: 900,
+              display_name: 'YAZIO-Mittagessen',
               protein_g: null,
               carbohydrates_g: null,
               fat_g: null,
@@ -181,9 +180,9 @@ describe('NutritionView', () => {
         ...canonicalGroup,
         events: [{
           ...canonicalGroup.events[0],
-          occurred_at: null,
+          local_time: null,
           meal_type: null,
-          food_name: 'Unbenannter Eintrag',
+          display_name: 'Unbenannter Eintrag',
           serving_amount: null,
           serving_unit: null,
         }],
@@ -193,6 +192,8 @@ describe('NutritionView', () => {
     const wrapper = await mountView()
 
     expect(wrapper.get('.verification-event-row').findAll('td').at(1)?.text()).toBe('—')
+    expect(wrapper.get('.verification-event-row').findAll('td').at(0)?.text()).toBe('—')
+    expect(wrapper.get('.verification-event-row').findAll('td').at(3)?.text()).toBe('–')
     expect(wrapper.get('.verification-event-row').find('.verification-event-food').text()).toBe('Unbenannter Eintrag')
   })
 

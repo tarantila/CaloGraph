@@ -66,9 +66,9 @@ export interface VerificationNutritionSummary {
 
 export interface VerificationNutritionEvent {
   provider_key: VerificationProviderKey
-  occurred_at: string | null
+  local_time: string | null
   meal_type: string | null
-  food_name: string
+  display_name: string
   calories_kcal: number | null
   protein_g: number | null
   carbohydrates_g: number | null

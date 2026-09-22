@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api, localizeApiError } from '../api'
-import { formatDate, formatDateTime, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { formatDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type {
@@ -204,10 +204,10 @@ onMounted(() => { void load() })
             </tr>
           </thead>
           <tbody>
-            <tr v-for="event in group.events" :key="`${group.provider_key}-${event.occurred_at}-${event.food_name}`" class="verification-event-row">
-              <td>{{ event.occurred_at ? formatDateTime(event.occurred_at) : '—' }}</td>
+            <tr v-for="(event, eventIndex) in group.events" :key="`${group.provider_key}-${event.local_time}-${event.display_name}-${eventIndex}`" class="verification-event-row">
+              <td>{{ event.local_time || '—' }}</td>
               <td>{{ event.meal_type || '—' }}</td>
-              <td class="verification-event-food"><strong>{{ event.food_name }}</strong></td>
+              <td class="verification-event-food"><strong>{{ event.display_name }}</strong></td>
               <td>{{ formatServing(event) }}</td>
               <td class="number">{{ formatCalories(event.calories_kcal) }}</td>
               <td class="number">{{ formatGrams(event.protein_g) }}</td>

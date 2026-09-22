@@ -133,9 +133,9 @@ def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
             "events": [
                 {
                     "provider_key": "yazio",
-                    "occurred_at": datetime(2026, 9, 14, 12, tzinfo=UTC),
+                    "local_time": "12:00",
                     "meal_type": "lunch",
-                    "food_name": "Lentil bowl",
+                    "display_name": "Lentil bowl",
                     "calories_kcal": Decimal("640.25"),
                     "protein_g": Decimal("31.5"),
                     "carbohydrates_g": Decimal("72"),
@@ -161,9 +161,9 @@ def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
         "events": [
             {
                 "provider_key": "yazio",
-                "occurred_at": "2026-09-14T12:00:00Z",
+                "local_time": "12:00",
                 "meal_type": "lunch",
-                "food_name": "Lentil bowl",
+                "display_name": "Lentil bowl",
                 "calories_kcal": 640.25,
                 "protein_g": 31.5,
                 "carbohydrates_g": 72.0,
@@ -657,6 +657,11 @@ def _nutrition_event(
     food_name: str | None = None,
     daytime: str | None = "lunch",
     occurred_at: datetime | None = None,
+    provider_civil_datetime: datetime | None = None,
+    provider_timezone: str | None = None,
+    provider_metadata: dict[str, object] | None = None,
+    amount: Decimal | None = Decimal("1.5"),
+    amount_unit: str | None = "portion",
     event_kind: str = ConsumptionEventKind.SIMPLE_PRODUCT.value,
     source_namespace: str = "verification-fixture",
     field_role: str = ObservationRole.CANONICAL.value,
@@ -692,10 +697,13 @@ def _nutrition_event(
         observation_fingerprint=sha256(source_key.encode()).hexdigest(),
         local_date=local_date,
         timezone_source="fixture",
+        provider_civil_datetime=provider_civil_datetime,
+        provider_timezone=provider_timezone,
         presence_state=PresenceState.SUPPLIED.value,
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
+        provider_metadata=provider_metadata or {},
     )
     db.add(source)
     db.flush()
@@ -731,16 +739,19 @@ def _nutrition_event(
         supersedes_revision=supersedes.revision if supersedes is not None else None,
         revision=revision,
         food_snapshot_id=snapshot_id,
+        provider_civil_datetime=provider_civil_datetime,
+        provider_timezone=provider_timezone,
         canonical_start_at=occurred_at
         or datetime(local_date.year, local_date.month, local_date.day, 12, tzinfo=UTC),
         local_date=local_date,
         daytime=daytime,
-        amount=Decimal("1.5"),
-        amount_unit="portion",
+        amount=amount,
+        amount_unit=amount_unit,
         presence_state=PresenceState.SUPPLIED.value,
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
+        provider_metadata=provider_metadata or {},
     )
     db.add(event)
     db.flush()
@@ -857,9 +868,9 @@ def test_nutrition_canonical_returns_selected_provider_summary_and_events(
         "events": [
             {
                 "provider_key": "google_health",
-                "occurred_at": datetime(2026, 9, 14, 12),
+                "local_time": "12:00",
                 "meal_type": "breakfast",
-                "food_name": "Google breakfast",
+                "display_name": "Google breakfast",
                 "calories_kcal": 111.0,
                 "protein_g": 5.0,
                 "carbohydrates_g": None,
@@ -920,16 +931,14 @@ def test_nutrition_all_sources_groups_events_without_cross_provider_addition(
         "apple_health",
     ]
     assert [
-        (group.summary.calories_kcal, group.record_count, [event.food_name for event in group.events])
+        (group.summary.calories_kcal, group.record_count, [event.display_name for event in group.events])
         for group in response.providers
     ] == [
         (300.0, 1, ["Google meal"]),
         (900.0, 1, ["Yazio meal"]),
         (None, 0, []),
     ]
-
-
-def test_nutrition_uses_food_snapshot_name_and_safe_fallback(
+def test_nutrition_uses_snapshot_metadata_and_safe_food_fallback(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     day = date(2026, 9, 14)
@@ -940,9 +949,26 @@ def test_nutrition_uses_food_snapshot_name_and_safe_fallback(
         provider_key="google_health",
         source_instance_id=source_instance_id,
         local_date=day,
-        logical_event_key="named",
+        logical_event_key="snapshot",
         food_name="Snapshot name",
         occurred_at=datetime(2026, 9, 14, 11, tzinfo=UTC),
+        provider_civil_datetime=datetime(2026, 9, 14, 11),
+        provider_timezone="0s",
+        provider_metadata={"food_display_name": "Metadata name"},
+        metrics={},
+    )
+    metadata_event = _nutrition_event(
+        db,
+        user,
+        provider_key="google_health",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="metadata",
+        daytime=None,
+        occurred_at=datetime(2026, 9, 14, 0, tzinfo=UTC),
+        provider_civil_datetime=datetime(2026, 9, 14, 0),
+        provider_timezone="0s",
+        provider_metadata={"food_display_name": "Metadata name", "meal_type": "BREAKFAST"},
         metrics={},
     )
     _nutrition_event(
@@ -951,7 +977,8 @@ def test_nutrition_uses_food_snapshot_name_and_safe_fallback(
         provider_key="google_health",
         source_instance_id=source_instance_id,
         local_date=day,
-        logical_event_key="unnamed",
+        logical_event_key="fallback",
+        daytime=None,
         metrics={},
     )
     monkeypatch.setattr(
@@ -966,11 +993,53 @@ def test_nutrition_uses_food_snapshot_name_and_safe_fallback(
     )
 
     assert response.canonical is not None
-    assert [event.food_name for event in response.canonical.events] == [
+    assert [event.display_name for event in response.canonical.events] == [
+        "Metadata name",
         "Snapshot name",
         "Unbenannter Eintrag",
     ]
+    assert [event.meal_type for event in response.canonical.events] == [
+        "breakfast",
+        "lunch",
+        None,
+    ]
+    assert [event.local_time for event in response.canonical.events] == [
+        None,
+        "11:00",
+        "12:00",
+    ]
+    assert metadata_event.food_snapshot_id is None
 
+def test_nutrition_amount_without_unit_is_not_displayable(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "google_health")
+    _nutrition_event(
+        db,
+        user,
+        provider_key="google_health",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="amount-only",
+        amount=Decimal("80"),
+        amount_unit=None,
+        metrics={},
+    )
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    assert response.canonical.events[0].serving_amount is None
+    assert response.canonical.events[0].serving_unit is None
 
 def test_nutrition_missing_meal_type_is_dash_compatible_none(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
@@ -1043,7 +1112,7 @@ def test_nutrition_ignores_superseded_event_revision(
 
     assert response.canonical is not None
     assert response.canonical.record_count == 1
-    assert [(event.food_name, event.calories_kcal) for event in response.canonical.events] == [
+    assert [(event.display_name, event.calories_kcal) for event in response.canonical.events] == [
         ("Current meal", 200.0)
     ]
 
@@ -1121,7 +1190,7 @@ def test_nutrition_read_is_user_scoped(
     )
 
     assert response.canonical is not None
-    assert [event.food_name for event in response.canonical.events] == ["Owned meal"]
+    assert [event.display_name for event in response.canonical.events] == ["Owned meal"]
     assert response.canonical.summary.calories_kcal == 321.0
 
 
@@ -1177,7 +1246,7 @@ def test_nutrition_omits_moved_event_after_a_newer_revision_moves_dates(
     assert old_response.canonical.status == "no_data"
     assert old_response.canonical.events == []
     assert current_response.canonical is not None
-    assert [(event.food_name, event.calories_kcal) for event in current_response.canonical.events] == [
+    assert [(event.display_name, event.calories_kcal) for event in current_response.canonical.events] == [
         ("Current date meal", 200.0)
     ]
 
@@ -1293,7 +1362,7 @@ def test_nutrition_exposes_safe_yazio_provider_and_derived_event_metrics(
 
     assert response.canonical is not None
     assert [
-        (event.food_name, event.calories_kcal) for event in response.canonical.events
+        (event.display_name, event.calories_kcal) for event in response.canonical.events
     ] == [
         ("Simple product", 120.0),
         ("Derived product", 140.0),
