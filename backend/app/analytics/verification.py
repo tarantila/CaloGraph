@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, not_, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
@@ -17,13 +17,21 @@ from app.analytics.scalar_selection import (
     resolve_scalar_provider,
 )
 from app.models import HealthSample
-from app.nutrition.enums import CoverageState, ObservationRole, PresenceState, ResolutionState
+from app.nutrition.enums import (
+    ConsumptionEventKind,
+    CoverageState,
+    LineageState,
+    ObservationRole,
+    PresenceState,
+    ResolutionState,
+)
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionFieldObservation,
     NutritionFoodSnapshot,
     NutritionSourceObservation,
 )
+from app.nutrition.resolution.metrics import canonical_unit
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA
 from app.schemas import (
@@ -328,6 +336,16 @@ def _read_current_nutrition_events(
     if not pairs:
         return []
     event = NutritionConsumptionEvent
+    higher_revision = aliased(NutritionConsumptionEvent)
+    has_higher_revision = exists(
+        select(1).where(
+            higher_revision.user_id == user_id,
+            higher_revision.provider_key == event.provider_key,
+            higher_revision.source_instance_id == event.source_instance_id,
+            higher_revision.logical_event_key == event.logical_event_key,
+            higher_revision.revision > event.revision,
+        )
+    )
     rows = list(
         db.scalars(
             select(event)
@@ -342,29 +360,79 @@ def _read_current_nutrition_events(
                 event.user_id == user_id,
                 source.user_id == user_id,
                 event.local_date == local_date,
+                or_(event.logical_event_key.is_(None), not_(has_higher_revision)),
                 or_(*pairs),
             )
             .order_by(event.canonical_start_at, event.id)
         )
     )
-    current_by_logical_key: dict[tuple[str, UUID, str], NutritionConsumptionEvent] = {}
-    current: list[NutritionConsumptionEvent] = []
-    for item in rows:
-        if item.logical_event_key is None:
-            current.append(item)
-            continue
-        key = (item.provider_key, item.source_instance_id, item.logical_event_key)
-        existing = current_by_logical_key.get(key)
-        if existing is None or item.revision > existing.revision:
-            current_by_logical_key[key] = item
-    current.extend(current_by_logical_key.values())
     return sorted(
-        current,
+        rows,
         key=lambda item: (
             item.canonical_start_at is not None,
-            item.canonical_start_at,
+            (
+                (
+                    item.canonical_start_at.replace(tzinfo=UTC)
+                    if item.canonical_start_at.tzinfo is None
+                    else item.canonical_start_at.astimezone(UTC)
+                ).isoformat()
+                if item.canonical_start_at is not None
+                else ""
+            ),
             str(item.id),
         ),
+    )
+
+
+def _nutrition_field_is_safe(
+    field: NutritionFieldObservation,
+    *,
+    source: NutritionSourceObservation,
+    event: NutritionConsumptionEvent,
+    snapshots: dict[UUID, NutritionFoodSnapshot],
+    parent_fields: dict[UUID, NutritionFieldObservation],
+) -> bool:
+    if (
+        field.metric_key not in _NUTRITION_METRIC_KEYS
+        or field.canonical_value is None
+        or field.canonical_unit != canonical_unit(field.metric_key)
+        or field.presence_state
+        not in (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+        or field.resolution_state != ResolutionState.RESOLVED.value
+        or field.lineage_state
+        not in (LineageState.CONFIRMED.value, LineageState.UNCERTAIN.value)
+    ):
+        return False
+    if (
+        field.coverage_state != CoverageState.COMPLETE.value
+        and not (
+            event.provider_key == "apple_health"
+            and field.coverage_state == CoverageState.PARTIAL.value
+        )
+    ):
+        return False
+    if event.provider_key != "yazio":
+        return field.observation_role == ObservationRole.CANONICAL.value
+    if event.event_kind == ConsumptionEventKind.SIMPLE_PRODUCT.value:
+        return (
+            source.source_namespace == "yazio.simple_product"
+            and field.observation_role == ObservationRole.PROVIDER.value
+        )
+    if (
+        event.event_kind != ConsumptionEventKind.PRODUCT.value
+        or source.source_namespace != "yazio.consumed_item"
+        or field.observation_role != ObservationRole.DERIVED.value
+        or field.derived_from_field_observation_id is None
+    ):
+        return False
+    snapshot = snapshots.get(event.food_snapshot_id)
+    parent = parent_fields.get(field.derived_from_field_observation_id)
+    return bool(
+        snapshot is not None
+        and parent is not None
+        and parent.observation_role == ObservationRole.PROVIDER.value
+        and parent.metric_key == field.metric_key
+        and parent.source_observation_id == snapshot.source_observation_id
     )
 
 
@@ -382,8 +450,8 @@ def _read_nutrition_event_metrics(
     pairs = _source_pair_predicates(source, source_instances)
     if not pairs:
         return {}
-    fields = db.scalars(
-        select(NutritionFieldObservation)
+    field_rows = db.execute(
+        select(NutritionFieldObservation, source)
         .join(
             source,
             (NutritionFieldObservation.source_observation_id == source.id)
@@ -394,12 +462,13 @@ def _read_nutrition_event_metrics(
             source.user_id == user_id,
             NutritionFieldObservation.source_observation_id.in_(source_ids),
             NutritionFieldObservation.metric_key.in_(_NUTRITION_METRIC_KEYS),
-            NutritionFieldObservation.observation_role == ObservationRole.CANONICAL.value,
-            NutritionFieldObservation.presence_state.in_(
-                (PresenceState.SUPPLIED.value, PresenceState.EXPLICIT_ZERO.value)
+            NutritionFieldObservation.observation_role.in_(
+                (
+                    ObservationRole.CANONICAL.value,
+                    ObservationRole.PROVIDER.value,
+                    ObservationRole.DERIVED.value,
+                )
             ),
-            NutritionFieldObservation.coverage_state == CoverageState.COMPLETE.value,
-            NutritionFieldObservation.resolution_state == ResolutionState.RESOLVED.value,
             or_(*pairs),
         )
         .order_by(
@@ -408,9 +477,69 @@ def _read_nutrition_event_metrics(
             NutritionFieldObservation.created_at,
             NutritionFieldObservation.id,
         )
-    )
+    ).all()
+    snapshot_ids = {
+        item.food_snapshot_id for item in events if item.food_snapshot_id is not None
+    }
+    snapshots = {
+        item.id: item
+        for item in (
+            db.scalars(
+                select(NutritionFoodSnapshot)
+                .join(
+                    source,
+                    (NutritionFoodSnapshot.source_observation_id == source.id)
+                    & (NutritionFoodSnapshot.user_id == source.user_id),
+                )
+                .where(
+                    NutritionFoodSnapshot.user_id == user_id,
+                    source.user_id == user_id,
+                    NutritionFoodSnapshot.id.in_(snapshot_ids),
+                    or_(*pairs),
+                )
+            )
+            if snapshot_ids
+            else ()
+        )
+    }
+    parent_ids = {
+        field.derived_from_field_observation_id
+        for field, _source in field_rows
+        if field.derived_from_field_observation_id is not None
+    }
+    parent_fields: dict[UUID, NutritionFieldObservation] = {}
+    if parent_ids:
+        parent_source = aliased(NutritionSourceObservation)
+        parent_pairs = _source_pair_predicates(parent_source, source_instances)
+        parent_fields = {
+            field.id: field
+            for field in db.scalars(
+                select(NutritionFieldObservation)
+                .join(
+                    parent_source,
+                    (NutritionFieldObservation.source_observation_id == parent_source.id)
+                    & (NutritionFieldObservation.user_id == parent_source.user_id),
+                )
+                .where(
+                    NutritionFieldObservation.user_id == user_id,
+                    parent_source.user_id == user_id,
+                    NutritionFieldObservation.id.in_(parent_ids),
+                    or_(*parent_pairs),
+                )
+            )
+        }
+    events_by_source = {item.source_observation_id: item for item in events}
     metrics: dict[UUID, dict[str, Decimal]] = defaultdict(dict)
-    for field in fields:
+    for field, field_source in field_rows:
+        event = events_by_source.get(field.source_observation_id)
+        if event is None or not _nutrition_field_is_safe(
+            field,
+            source=field_source,
+            event=event,
+            snapshots=snapshots,
+            parent_fields=parent_fields,
+        ):
+            continue
         if field.metric_key is not None and field.canonical_value is not None:
             metrics[field.source_observation_id].setdefault(
                 field.metric_key, field.canonical_value

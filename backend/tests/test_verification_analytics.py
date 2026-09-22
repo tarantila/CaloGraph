@@ -657,6 +657,10 @@ def _nutrition_event(
     food_name: str | None = None,
     daytime: str | None = "lunch",
     occurred_at: datetime | None = None,
+    event_kind: str = ConsumptionEventKind.SIMPLE_PRODUCT.value,
+    source_namespace: str = "verification-fixture",
+    field_role: str = ObservationRole.CANONICAL.value,
+    field_coverage_state: str = CoverageState.COMPLETE.value,
     revision: int = 1,
     supersedes: NutritionConsumptionEvent | None = None,
 ) -> NutritionConsumptionEvent:
@@ -682,7 +686,7 @@ def _nutrition_event(
         source_instance_id=source_instance_id,
         connector_variant="verification-fixture",
         observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
-        source_namespace="verification-fixture",
+        source_namespace=source_namespace,
         source_record_id=source_key,
         source_revision=revision,
         observation_fingerprint=sha256(source_key.encode()).hexdigest(),
@@ -721,7 +725,7 @@ def _nutrition_event(
         source_observation_id=source.id,
         provider_key=provider_key,
         source_instance_id=source_instance_id,
-        event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value,
+        event_kind=event_kind,
         logical_event_key=logical_event_key,
         supersedes_event_id=supersedes.id if supersedes is not None else None,
         supersedes_revision=supersedes.revision if supersedes is not None else None,
@@ -751,9 +755,9 @@ def _nutrition_event(
                 metric_key=metric_key,
                 canonical_value=value,
                 canonical_unit="kcal" if metric_key == "dietary_energy_kcal" else "g",
-                observation_role=ObservationRole.CANONICAL.value,
+                observation_role=field_role,
                 presence_state=PresenceState.SUPPLIED.value,
-                coverage_state=CoverageState.COMPLETE.value,
+                coverage_state=field_coverage_state,
                 resolution_state=ResolutionState.RESOLVED.value,
                 lineage_state=LineageState.CONFIRMED.value,
             )
@@ -1125,3 +1129,172 @@ def test_nutrition_verification_route_requires_authentication(client: TestClient
     response = client.get("/api/v1/analytics/verification/nutrition")
 
     assert response.status_code == 401
+
+
+def test_nutrition_omits_moved_event_after_a_newer_revision_moves_dates(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_day = date(2026, 9, 14)
+    current_day = date(2026, 9, 15)
+    source_instance_id = _nutrition_provider_source(db, user, "google_health")
+    superseded = _nutrition_event(
+        db,
+        user,
+        provider_key="google_health",
+        source_instance_id=source_instance_id,
+        local_date=old_day,
+        logical_event_key="moved-event",
+        food_name="Old date meal",
+        metrics={"dietary_energy_kcal": Decimal("100")},
+    )
+    _nutrition_event(
+        db,
+        user,
+        provider_key="google_health",
+        source_instance_id=source_instance_id,
+        local_date=current_day,
+        logical_event_key="moved-event",
+        revision=2,
+        supersedes=superseded,
+        food_name="Current date meal",
+        metrics={"dietary_energy_kcal": Decimal("200")},
+    )
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    old_response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=old_day, view="canonical"
+    )
+    current_response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=current_day, view="canonical"
+    )
+
+    assert old_response.canonical is not None
+    assert old_response.canonical.status == "no_data"
+    assert old_response.canonical.events == []
+    assert current_response.canonical is not None
+    assert [(event.food_name, event.calories_kcal) for event in current_response.canonical.events] == [
+        ("Current date meal", 200.0)
+    ]
+
+
+def test_nutrition_exposes_safe_partial_apple_field_metrics(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "apple_health")
+    _nutrition_event(
+        db,
+        user,
+        provider_key="apple_health",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="apple-partial",
+        food_name="Apple meal",
+        metrics={"dietary_energy_kcal": Decimal("250")},
+        field_coverage_state=CoverageState.PARTIAL.value,
+    )
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("apple_health", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    assert response.canonical.events[0].calories_kcal == 250.0
+
+
+def test_nutrition_exposes_safe_yazio_provider_and_derived_event_metrics(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "yazio")
+    _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="simple-product",
+        food_name="Simple product",
+        metrics={"dietary_energy_kcal": Decimal("120")},
+        occurred_at=datetime(2026, 9, 14, 11, tzinfo=UTC),
+        source_namespace="yazio.simple_product",
+        field_role=ObservationRole.PROVIDER.value,
+    )
+    product = _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="derived-product",
+        food_name="Derived product",
+        occurred_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+        metrics={},
+        event_kind=ConsumptionEventKind.PRODUCT.value,
+        source_namespace="yazio.consumed_item",
+    )
+    parent = NutritionFieldObservation(
+        user_id=user.id,
+        source_observation_id=product.source_observation_id,
+        provider_field_path="profile.nutrients.energy",
+        provider_raw_value_decimal=Decimal("140"),
+        provider_raw_unit="kcal",
+        metric_key="dietary_energy_kcal",
+        canonical_value=Decimal("140"),
+        canonical_unit="kcal",
+        observation_role=ObservationRole.PROVIDER.value,
+        presence_state=PresenceState.SUPPLIED.value,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+    )
+    db.add(parent)
+    db.flush()
+    db.add(
+        NutritionFieldObservation(
+            user_id=user.id,
+            source_observation_id=product.source_observation_id,
+            provider_field_path="nutrients.energy",
+            provider_raw_value_decimal=Decimal("140"),
+            provider_raw_unit="kcal",
+            metric_key="dietary_energy_kcal",
+            canonical_value=Decimal("140"),
+            canonical_unit="kcal",
+            observation_role=ObservationRole.DERIVED.value,
+            derived_from_field_observation_id=parent.id,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.UNCERTAIN.value,
+        )
+    )
+    db.flush()
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    assert [
+        (event.food_name, event.calories_kcal) for event in response.canonical.events
+    ] == [
+        ("Simple product", 120.0),
+        ("Derived product", 140.0),
+    ]
