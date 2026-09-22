@@ -569,3 +569,35 @@ def test_activity_canonical_marks_ambiguous_apple_transports_unavailable(
         "record_count": 2,
         "source_types": ["apple_health_xml", "health_auto_export_v2"],
     }
+
+
+def test_activity_all_sources_resolves_apple_transport_once_per_request(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = date(2026, 9, 14)
+    end = date(2026, 9, 15)
+    source_type = ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["apple_health"][0]
+    for day in (start, end):
+        _activity_sample(
+            db,
+            user,
+            local_date=day,
+            source_type=source_type,
+            value=Decimal("120"),
+        )
+    original_resolver = verification.resolve_provider_source_type
+    resolution_calls = 0
+
+    def count_resolution_calls(*args, **kwargs) -> str:
+        nonlocal resolution_calls
+        resolution_calls += 1
+        return original_resolver(*args, **kwargs)
+
+    monkeypatch.setattr(verification, "resolve_provider_source_type", count_resolution_calls)
+
+    response = verification.read_activity_verification(
+        db, user_id=user.id, start=start, end=end, view="all"
+    )
+
+    assert resolution_calls == 1
+    assert [item.providers[1].active_energy_kcal for item in response.days] == [120.0, 120.0]

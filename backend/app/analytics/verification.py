@@ -43,9 +43,9 @@ def _source_types_for_samples(
     ]
 
 
-def _apple_transports_are_ambiguous(db: Session, user_id: UUID) -> bool:
+def _resolve_apple_transport(db: Session, user_id: UUID) -> str | None:
     try:
-        resolve_provider_source_type(
+        return resolve_provider_source_type(
             db,
             user_id=user_id,
             data_area=ACTIVITY_ENERGY_DATA_AREA,
@@ -53,25 +53,21 @@ def _apple_transports_are_ambiguous(db: Session, user_id: UUID) -> bool:
             configured=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["apple_health"],
         )
     except ValueError:
-        return True
-    return False
+        return None
 
 
 def _canonical_selection(
     db: Session, user_id: UUID
-) -> tuple[ScalarProviderSelection | None, bool]:
+) -> tuple[ScalarProviderSelection | None, str | None]:
     try:
-        return (
-            resolve_scalar_provider(
-                db,
-                user_id=user_id,
-                data_area=ACTIVITY_ENERGY_DATA_AREA,
-                source_types=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
-            ),
-            False,
+        selection = resolve_scalar_provider(
+            db,
+            user_id=user_id,
+            data_area=ACTIVITY_ENERGY_DATA_AREA,
+            source_types=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
         )
     except ScalarProviderNotReady:
-        if not _apple_transports_are_ambiguous(db, user_id):
+        if _resolve_apple_transport(db, user_id) is not None:
             raise
         source_types = dict(ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS)
         source_types["apple_health"] = (ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["apple_health"][0],)
@@ -82,37 +78,24 @@ def _canonical_selection(
                 data_area=ACTIVITY_ENERGY_DATA_AREA,
                 source_types=source_types,
             ),
-            True,
+            None,
         )
+    return (
+        selection,
+        (
+            selection.source_type
+            if selection is not None and selection.provider_key == "apple_health"
+            else None
+        ),
+    )
 
 
 def _provider_record(
-    db: Session,
     *,
-    user_id: UUID,
     provider_key: str,
     samples: list[HealthSample],
-    selected_source_type: str | None = None,
+    apple_source_type: str | None = None,
 ) -> VerificationActivityProviderRecord:
-    if provider_key == "apple_health" and samples:
-        try:
-            source_type = selected_source_type or resolve_provider_source_type(
-                db,
-                user_id=user_id,
-                data_area=ACTIVITY_ENERGY_DATA_AREA,
-                provider_key=provider_key,
-                configured=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS[provider_key],
-            )
-        except ValueError:
-            return VerificationActivityProviderRecord(
-                provider_key=provider_key,
-                status="unavailable",
-                active_energy_kcal=None,
-                record_count=len(samples),
-                source_types=_source_types_for_samples(provider_key, samples),
-            )
-        samples = [sample for sample in samples if sample.source_type == source_type]
-
     if not samples:
         return VerificationActivityProviderRecord(
             provider_key=provider_key,
@@ -121,6 +104,25 @@ def _provider_record(
             record_count=0,
             source_types=[],
         )
+
+    if provider_key == "apple_health":
+        if apple_source_type is None:
+            return VerificationActivityProviderRecord(
+                provider_key=provider_key,
+                status="unavailable",
+                active_energy_kcal=None,
+                record_count=len(samples),
+                source_types=_source_types_for_samples(provider_key, samples),
+            )
+        samples = [sample for sample in samples if sample.source_type == apple_source_type]
+        if not samples:
+            return VerificationActivityProviderRecord(
+                provider_key=provider_key,
+                status="no_data",
+                active_energy_kcal=None,
+                record_count=0,
+                source_types=[],
+            )
 
     if provider_key == "google_health":
         active_energy_kcal = samples[0].value
@@ -145,9 +147,11 @@ def read_activity_verification(
 ) -> VerificationActivityResponse:
     """Read user-scoped activity evidence without blending provider totals."""
     selection: ScalarProviderSelection | None = None
-    apple_transports_are_ambiguous = False
+    apple_source_type: str | None = None
     if view == "canonical":
-        selection, apple_transports_are_ambiguous = _canonical_selection(db, user_id)
+        selection, apple_source_type = _canonical_selection(db, user_id)
+    else:
+        apple_source_type = _resolve_apple_transport(db, user_id)
 
     samples_by_provider_day: defaultdict[tuple[str, date], list[HealthSample]] = defaultdict(list)
     samples = db.scalars(
@@ -177,16 +181,9 @@ def read_activity_verification(
                 None
                 if selection is None
                 else _provider_record(
-                    db,
-                    user_id=user_id,
                     provider_key=selection.provider_key,
                     samples=samples_by_provider_day[(selection.provider_key, local_date)],
-                    selected_source_type=(
-                        None
-                        if apple_transports_are_ambiguous
-                        and selection.provider_key == "apple_health"
-                        else selection.source_type
-                    ),
+                    apple_source_type=apple_source_type,
                 )
             )
             days.append(
@@ -203,10 +200,9 @@ def read_activity_verification(
                 canonical=None,
                 providers=[
                     _provider_record(
-                        db,
-                        user_id=user_id,
                         provider_key=provider_key,
                         samples=samples_by_provider_day[(provider_key, local_date)],
+                        apple_source_type=apple_source_type,
                     )
                     for provider_key in _PROVIDER_KEYS
                 ],
