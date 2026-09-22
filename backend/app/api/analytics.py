@@ -40,6 +40,8 @@ from app.analytics.scalar_selection import (
     ScalarProviderUnavailable,
     resolve_scalar_provider,
 )
+from app.analytics.verification import read_activity_verification
+from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     AmbiguousAppleTransportError,
@@ -65,8 +67,14 @@ from app.problem_types import (
     PROVIDER_SELECTION_UNAVAILABLE,
     ProblemHTTPException,
 )
-from app.provider_preferences import WEIGHT_DATA_AREA
-from app.schemas import DailyPoint, MicronutrientResponse, WeightResponse
+from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA, WEIGHT_DATA_AREA
+from app.schemas import (
+    DailyPoint,
+    MicronutrientResponse,
+    VerificationActivityResponse,
+    VerificationView,
+    WeightResponse,
+)
 from app.services.achievements import unlock_achievement_keys
 from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
@@ -232,6 +240,40 @@ def _read_preferred_daily_points(
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
 
+
+
+@router.get(
+    "/analytics/verification/activity",
+    response_model=VerificationActivityResponse,
+)
+def activity_verification(
+    start: date | None = None,
+    end: date | None = None,
+    view: VerificationView = Query(default="canonical"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> VerificationActivityResponse:
+    start, end = _range(start, end, user.timezone, default_days=7)
+    try:
+        return read_activity_verification(
+            db,
+            user_id=user.id,
+            start=start,
+            end=end,
+            view=view,
+        )
+    except ScalarProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except ScalarProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
 
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(
