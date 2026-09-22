@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api, localizeApiError } from '../api'
 import { formatDate, formatWeekday, isoDateInTimeZone, shiftIsoDate } from '../date-format'
-import { i18n } from '../i18n'
+import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type {
   VerificationActivityResponse,
@@ -19,12 +19,19 @@ const view = ref<VerificationView>('canonical')
 const response = ref<VerificationActivityResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
+const energy = createNumberFormatter({ maximumFractionDigits: 1 })
 
 const rangeLabel = computed(() => `${formatDate(startDate.value)} – ${formatDate(endDate.value)}`)
 const hasActivityData = computed(() => response.value?.days.some((day) =>
   day.canonical?.status === 'available' || day.providers.some((record) => record.status === 'available'),
 ) ?? false)
 const hasDays = computed(() => Boolean(response.value?.days.length))
+
+function sourceTypeLabel(sourceType: string) {
+  const key = `activity.source.${sourceType}`
+  const label = t(key)
+  return label === key ? sourceType : label
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -146,8 +153,8 @@ onMounted(() => { void load() })
                 <td><strong>{{ t(`verification.providers.${day.canonical.provider_key}`) }}</strong></td>
                 <td>{{ t(`verification.status.${day.canonical.status}`) }}</td>
                 <td>{{ t('verification.records', { count: day.canonical.record_count }) }}</td>
-                <td>{{ day.canonical.active_energy_kcal == null ? '–' : `${day.canonical.active_energy_kcal} kcal` }}</td>
-                <td>{{ day.canonical.source_types.join(', ') || '–' }}</td>
+                <td>{{ day.canonical.active_energy_kcal == null ? '–' : `${energy.format(day.canonical.active_energy_kcal)} ${t('common.kcal')}` }}</td>
+                <td>{{ day.canonical.source_types.map(sourceTypeLabel).join(', ') || '–' }}</td>
               </tr>
               <tr v-else>
                 <td>{{ formatWeekday(day.date) }}, {{ formatDate(day.date) }}</td>
@@ -166,8 +173,8 @@ onMounted(() => { void load() })
                 <td><strong>{{ t(`verification.providers.${record.provider_key}`) }}</strong></td>
                 <td>{{ t(`verification.status.${record.status}`) }}</td>
                 <td>{{ t('verification.records', { count: record.record_count }) }}</td>
-                <td>{{ record.active_energy_kcal == null ? '–' : `${record.active_energy_kcal} kcal` }}</td>
-                <td>{{ record.source_types.join(', ') || '–' }}</td>
+                <td>{{ record.active_energy_kcal == null ? '–' : `${energy.format(record.active_energy_kcal)} ${t('common.kcal')}` }}</td>
+                <td>{{ record.source_types.map(sourceTypeLabel).join(', ') || '–' }}</td>
               </tr>
             </template>
           </tbody>

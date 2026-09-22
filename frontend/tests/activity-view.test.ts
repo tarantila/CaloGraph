@@ -90,8 +90,10 @@ describe('ActivityView', () => {
     expect(wrapper.text()).toContain('Google Health')
     expect(wrapper.text()).toContain('Verfügbar')
     expect(wrapper.text()).toContain('1 Einträge')
-    expect(wrapper.text()).toContain('321.5 kcal')
-    expect(wrapper.text()).toContain('google_health_activity_v4')
+    expect(wrapper.text()).toContain('321,5 kcal')
+    const sourceDetail = wrapper.findAll('tbody td:last-child').at(-1)
+    expect(sourceDetail?.text()).toBe('Google Health')
+    expect(wrapper.text()).not.toContain('google_health_activity_v4')
   })
 
   it('requests and renders each backend all-source provider row when toggled', async () => {
@@ -141,7 +143,7 @@ describe('ActivityView', () => {
     expect(wrapper.text()).toContain('Apple Health')
     expect(wrapper.text()).toContain('Keine Daten')
     expect(wrapper.text()).toContain('411 kcal')
-    expect(wrapper.text()).toContain('apple_health_xml')
+    expect(wrapper.text()).not.toContain('apple_health_xml')
   })
 
   it('moves the inclusive range by exactly seven days in either direction', async () => {
