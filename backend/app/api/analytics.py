@@ -40,7 +40,7 @@ from app.analytics.scalar_selection import (
     ScalarProviderUnavailable,
     resolve_scalar_provider,
 )
-from app.analytics.verification import read_activity_verification
+from app.analytics.verification import read_activity_verification, read_nutrition_verification
 from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
@@ -72,6 +72,7 @@ from app.schemas import (
     DailyPoint,
     MicronutrientResponse,
     VerificationActivityResponse,
+    VerificationNutritionResponse,
     VerificationView,
     WeightResponse,
 )
@@ -272,6 +273,38 @@ def activity_verification(
         raise ProblemHTTPException(
             status_code=503,
             detail="Der konfigurierte Datenprovider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+@router.get(
+    "/analytics/verification/nutrition",
+    response_model=VerificationNutritionResponse,
+)
+def nutrition_verification(
+    local_date: date | None = Query(default=None, alias="date"),
+    view: VerificationView = Query(default="canonical"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> VerificationNutritionResponse:
+    resolved_date = local_date or datetime.now(ZoneInfo(user.timezone)).date()
+    try:
+        return read_nutrition_verification(
+            db,
+            user_id=user.id,
+            local_date=resolved_date,
+            view=view,
+        )
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
 
