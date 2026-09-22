@@ -3,6 +3,8 @@ import {
   PhCalendarBlank,
   PhChartBar,
   PhChartLineUp,
+  PhFire,
+  PhForkKnife,
   PhInfo,
   PhList,
   PhListBullets,
@@ -31,6 +33,8 @@ const usesFocusedLayout = computed(
 const primaryNavigation = [
   { to: { name: 'overview' }, label: 'navigation.overview', icon: PhSquaresFour },
   { to: { name: 'daily' }, label: 'navigation.daily', icon: PhListBullets },
+  { to: { name: 'nutrition' }, label: 'navigation.nutrition', icon: PhForkKnife },
+  { to: { name: 'activity' }, label: 'navigation.activity', icon: PhFire },
   { to: { name: 'weight' }, label: 'navigation.weight', icon: PhChartLineUp },
   { to: { name: 'weekly' }, label: 'navigation.weekly', icon: PhChartBar },
   { to: { name: 'weekdays' }, label: 'navigation.weekdays', icon: PhCalendarBlank },

@@ -26,6 +26,71 @@ export type ActivitySourceType =
   | 'apple_health_xml'
   | 'health_auto_export_v2'
   | 'google_health_activity_v4'
+
+export type VerificationView = 'canonical' | 'all'
+export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health'
+export type VerificationRecordStatus = 'available' | 'no_data' | 'unavailable'
+export type VerificationActivitySourceType =
+  | 'google_health_activity_v4'
+  | 'yazio_export_v1'
+  | 'apple_health_xml'
+  | 'health_auto_export_v2'
+
+export interface VerificationActivityProviderRecord {
+  provider_key: VerificationProviderKey
+  status: VerificationRecordStatus
+  active_energy_kcal: number | null
+  record_count: number
+  source_types: VerificationActivitySourceType[]
+}
+
+export interface VerificationActivityDayResponse {
+  date: string
+  canonical: VerificationActivityProviderRecord | null
+  providers: VerificationActivityProviderRecord[]
+}
+
+export interface VerificationActivityResponse {
+  start_date: string
+  end_date: string
+  view: VerificationView
+  days: VerificationActivityDayResponse[]
+}
+
+export interface VerificationNutritionSummary {
+  calories_kcal: number | null
+  protein_g: number | null
+  carbohydrates_g: number | null
+  fat_g: number | null
+}
+
+export interface VerificationNutritionEvent {
+  provider_key: VerificationProviderKey
+  occurred_at: string | null
+  meal_type: string | null
+  food_name: string
+  calories_kcal: number | null
+  protein_g: number | null
+  carbohydrates_g: number | null
+  fat_g: number | null
+  serving_amount: number | null
+  serving_unit: string | null
+}
+
+export interface VerificationNutritionProviderGroup {
+  provider_key: VerificationProviderKey
+  status: VerificationRecordStatus
+  record_count: number
+  summary: VerificationNutritionSummary
+  events: VerificationNutritionEvent[]
+}
+
+export interface VerificationNutritionResponse {
+  date: string
+  view: VerificationView
+  canonical: VerificationNutritionProviderGroup | null
+  providers: VerificationNutritionProviderGroup[]
+}
 export interface DailyPoint {
   date: string
   calories_kcal: number | null
