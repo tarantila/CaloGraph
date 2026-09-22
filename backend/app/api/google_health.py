@@ -25,6 +25,7 @@ from app.models import User
 from app.schemas_google_health import (
     GoogleHealthConnectionTestResponse,
     GoogleHealthCredentialsInput,
+    GoogleHealthDomainDiagnostic,
     GoogleHealthDomainResult,
     GoogleHealthOAuthStartResponse,
     GoogleHealthStatus,
@@ -153,8 +154,8 @@ def _oauth_spa_redirect(result: str) -> RedirectResponse:
         status_code=303,
     )
 
-
 def _domain_result_response(result: ServiceGoogleHealthDomainResult) -> GoogleHealthDomainResult:
+    diagnostic = result.diagnostic
     return GoogleHealthDomainResult(
         status=result.status,
         fetched_count=result.fetched_count,
@@ -164,6 +165,29 @@ def _domain_result_response(result: ServiceGoogleHealthDomainResult) -> GoogleHe
         covered_start=result.covered_start,
         covered_end=result.covered_end,
         error_code=result.error_code,
+        diagnostic=(
+            None
+            if diagnostic is None
+            else GoogleHealthDomainDiagnostic(
+                domain=diagnostic.domain,
+                operation=diagnostic.operation,
+                endpoint_key=diagnostic.endpoint_key,
+                parser_stage=diagnostic.parser_stage,
+                structural_reason_code=diagnostic.structural_reason_code,
+                error_category=diagnostic.error_category,
+                upstream_status_code=diagnostic.upstream_status_code,
+                retryable=diagnostic.retryable,
+                reauth_required=diagnostic.reauth_required,
+                chunk_index=diagnostic.chunk_index,
+                page_index=diagnostic.page_index,
+                point_index=diagnostic.point_index,
+                field_path=diagnostic.field_path,
+                validation_rule=diagnostic.validation_rule,
+                numeric_reason_code=diagnostic.numeric_reason_code,
+                observed_json_type=diagnostic.observed_json_type,
+                expected_json_type=diagnostic.expected_json_type,
+            )
+        ),
     )
 
 

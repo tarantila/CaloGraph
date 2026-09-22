@@ -4,8 +4,8 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import NoReturn, Protocol, cast
 
@@ -39,7 +39,12 @@ GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH = _GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PA
 GOOGLE_HEALTH_WEIGHT_PATH = _GOOGLE_HEALTH_WEIGHT_PATH
 GOOGLE_HEALTH_MAX_PAGE_SIZE = 100
 GOOGLE_HEALTH_MAX_PAGES = 100
-GOOGLE_HEALTH_MAX_PAGE_TOKEN_LENGTH = 512
+GOOGLE_HEALTH_DAILY_ROLLUP_MAX_RANGE_DAYS = 90
+GOOGLE_HEALTH_DAILY_ROLLUP_FALLBACK_RANGE_DAYS = 14
+GOOGLE_HEALTH_DAILY_ROLLUP_MAX_PAGE_SIZE = 1440
+GOOGLE_HEALTH_DIAGNOSTIC_PAGE_SIZE = 100
+GOOGLE_HEALTH_DIAGNOSTIC_MAX_PAGES = 3
+GOOGLE_HEALTH_DIAGNOSTIC_MAX_POINTS = 300
 GOOGLE_HEALTH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 _DATA_TYPE_PATHS = {
@@ -204,6 +209,29 @@ class GoogleHealthDataPointPage:
     end_time: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class GoogleHealthDailyRollupDataPoint:
+    civil_date: date
+    value: Decimal
+    unit: str = "kcal"
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthDailyRollupPage:
+    data_points: tuple[GoogleHealthDailyRollupDataPoint, ...]
+    next_page_token: str | None
+    page_token: str | None
+    chunk_index: int
+    page_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthNutritionDiagnosticResult:
+    data_points: tuple[NutritionLogDataPoint, ...]
+    pages_read: int
+    truncated: bool
+
+
 class GoogleHealthResponse(Protocol):
     status_code: int
     headers: Mapping[str, str]
@@ -250,6 +278,17 @@ class GoogleHealthTransport(Protocol):
         page_token: str | None,
         start_time: datetime | None,
         end_time: datetime | None,
+    ) -> GoogleHealthResponse: ...
+
+    def post_daily_roll_up(
+        self,
+        *,
+        data_type: str,
+        access_token: str,
+        start_date: date,
+        end_date: date,
+        window_size_days: int,
+        page_token: str | None,
     ) -> GoogleHealthResponse: ...
 
     def close(self) -> None: ...
@@ -403,6 +442,56 @@ class GoogleHealthHTTPTransport:
                 _BufferedResponse(response.status_code, dict(response.headers), bytes(body)),
             )
 
+    def post_daily_roll_up(
+        self,
+        *,
+        data_type: str,
+        access_token: str,
+        start_date: date,
+        end_date: date,
+        window_size_days: int,
+        page_token: str | None,
+    ) -> GoogleHealthResponse:
+        if data_type != "active-energy-burned":
+            raise ValueError("Google Health daily rollup data type is not supported")
+        if not access_token or any(ord(char) < 0x20 for char in access_token):
+            raise GoogleHealthAuthenticationError("Google Health credentials are unavailable")
+        _validate_daily_rollup_range(start_date, end_date)
+        if window_size_days != 1:
+            raise ValueError("Google Health daily rollup requires windowSizeDays=1")
+        _validate_page_token(page_token)
+        body = _daily_rollup_body(start_date, end_date)
+        if page_token is not None:
+            body["pageToken"] = page_token
+        url = f"{GOOGLE_HEALTH_API_BASE_URL}{GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH}:dailyRollUp"
+        with self._http_client.stream(
+            "POST",
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=self._timeout,
+            follow_redirects=False,
+        ) as response:
+            body_bytes = bytearray()
+            for chunk in response.iter_bytes():
+                if (
+                    not isinstance(chunk, bytes)
+                    or len(body_bytes) + len(chunk) > GOOGLE_HEALTH_MAX_RESPONSE_BYTES
+                ):
+                    raise GoogleHealthInvalidResponseError(
+                        "Google Health response is too large or invalid",
+                        parser_stage="transport",
+                        structural_reason_code="response_too_large",
+                    ) from None
+                body_bytes.extend(chunk)
+            return cast(
+                GoogleHealthResponse,
+                _BufferedResponse(response.status_code, dict(response.headers), bytes(body_bytes)),
+            )
+
     def close(self) -> None:
         self._http_client.close()
 
@@ -431,6 +520,7 @@ class GoogleHealthClient:
         end_time: datetime | None = None,
         civil_start_time: date | datetime | None = None,
         civil_end_time: date | datetime | None = None,
+        page_index: int = 0,
     ) -> NutritionLogPage:
         _validate_page_size(page_size, maximum=self._max_page_size)
         _validate_page_token(page_token)
@@ -440,6 +530,7 @@ class GoogleHealthClient:
         try:
             get_nutrition_log = getattr(self._transport, "get_nutrition_log", None)
             if callable(get_nutrition_log):
+
                 response = get_nutrition_log(
                     access_token=access_token,
                     page_size=page_size,
@@ -479,6 +570,62 @@ class GoogleHealthClient:
             end_time=end_time,
             civil_start_time=civil_start_time,
             civil_end_time=civil_end_time,
+            page_index=page_index,
+        )
+
+    def read_nutrition_diagnostic(
+        self,
+        *,
+        civil_start_time: date | datetime | None = None,
+        civil_end_time: date | datetime | None = None,
+        max_pages: int = GOOGLE_HEALTH_DIAGNOSTIC_MAX_PAGES,
+        max_points: int = GOOGLE_HEALTH_DIAGNOSTIC_MAX_POINTS,
+    ) -> GoogleHealthNutritionDiagnosticResult:
+        _validate_page_budget(max_pages)
+        if isinstance(max_points, bool) or not isinstance(max_points, int) or max_points <= 0:
+            raise ValueError("max_points must be a positive integer")
+        points: list[NutritionLogDataPoint] = []
+        page_token: str | None = None
+        for page_index in range(max_pages):
+            page = self.get_nutrition_log_page(
+                page_size=GOOGLE_HEALTH_DIAGNOSTIC_PAGE_SIZE,
+                page_token=page_token,
+                civil_start_time=civil_start_time,
+                civil_end_time=civil_end_time,
+                page_index=page_index,
+            )
+            remaining = max_points - len(points)
+            points.extend(page.data_points[:max(remaining, 0)])
+            if len(page.data_points) > remaining:
+                return GoogleHealthNutritionDiagnosticResult(
+                    data_points=tuple(points),
+                    pages_read=page_index + 1,
+                    truncated=True,
+                )
+            next_token = page.next_page_token
+            if next_token is None:
+                return GoogleHealthNutritionDiagnosticResult(
+                    data_points=tuple(points),
+                    pages_read=page_index + 1,
+                    truncated=False,
+                )
+            if len(points) >= max_points:
+                return GoogleHealthNutritionDiagnosticResult(
+                    data_points=tuple(points),
+                    pages_read=page_index + 1,
+                    truncated=True,
+                )
+            if next_token == page_token:
+                raise GoogleHealthInvalidResponseError(
+                    "Google Health pagination token repeated",
+                    parser_stage="pagination",
+                    structural_reason_code="repeated_page_token",
+                )
+            page_token = next_token
+        return GoogleHealthNutritionDiagnosticResult(
+            data_points=tuple(points),
+            pages_read=max_pages,
+            truncated=True,
         )
 
     def get_data_points_page(
@@ -519,6 +666,108 @@ class GoogleHealthClient:
             start_time=start_time,
             end_time=end_time,
         )
+    def get_daily_rollup_page(
+        self,
+        data_type: str,
+        *,
+        start_date: date,
+        end_date: date,
+        page_token: str | None = None,
+        chunk_index: int = 0,
+        page_index: int = 0,
+    ) -> GoogleHealthDailyRollupPage:
+        if data_type != "active-energy-burned":
+            raise ValueError("Google Health daily rollup data type is not supported")
+        _validate_daily_rollup_range(start_date, end_date)
+        _validate_page_token(page_token)
+        access_token = self._access_token()
+        try:
+            response = self._transport.post_daily_roll_up(
+                data_type=data_type,
+                access_token=access_token,
+                start_date=start_date,
+                end_date=end_date,
+                window_size_days=1,
+                page_token=page_token,
+            )
+        except GoogleHealthClientError as exc:
+            _attach_page_context(exc, chunk_index=chunk_index, page_index=page_index)
+            raise
+        except Exception:
+            raise GoogleHealthTransientError("Google Health transport failed temporarily") from None
+        try:
+            return self._parse_daily_rollup_response(
+                response,
+                page_token=page_token,
+                chunk_index=chunk_index,
+                page_index=page_index,
+            )
+        except GoogleHealthClientError as exc:
+            _attach_page_context(exc, chunk_index=chunk_index, page_index=page_index)
+            raise
+
+    def iter_daily_rollup_pages(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_pages: int = GOOGLE_HEALTH_MAX_PAGES,
+    ) -> Iterator[GoogleHealthDailyRollupPage]:
+        _validate_page_budget(max_pages)
+        _validate_daily_rollup_range(start_date, end_date, maximum_days=None)
+
+        def walk(max_range_days: int) -> Iterator[GoogleHealthDailyRollupPage]:
+            chunks = _daily_rollup_chunks(start_date, end_date, max_range_days)
+            for chunk_index, (chunk_start, chunk_end) in enumerate(chunks):
+                token: str | None = None
+                seen_tokens: set[str] = set()
+                for page_index in range(max_pages):
+                    page = self.get_daily_rollup_page(
+                        "active-energy-burned",
+                        start_date=chunk_start,
+                        end_date=chunk_end,
+                        page_token=token,
+                        chunk_index=chunk_index,
+                        page_index=page_index,
+                    )
+                    yield page
+                    next_token = page.next_page_token
+                    if next_token is None:
+                        break
+                    if next_token in seen_tokens:
+                        error = GoogleHealthInvalidResponseError(
+                            "Google Health pagination token repeated",
+                            parser_stage="daily_rollup_pagination",
+                            structural_reason_code="repeated_page_token",
+                        )
+                        _attach_page_context(
+                            error, chunk_index=chunk_index, page_index=page_index
+                        )
+                        raise error
+                    seen_tokens.add(next_token)
+                    token = next_token
+                else:
+                    error = GoogleHealthInvalidResponseError(
+                        "Google Health pagination limit exceeded",
+                        parser_stage="daily_rollup_pagination",
+                        structural_reason_code="page_budget_exceeded",
+                    )
+                    _attach_page_context(
+                        error, chunk_index=chunk_index, page_index=max_pages - 1
+                    )
+                    raise error
+
+        try:
+            yield from walk(GOOGLE_HEALTH_DAILY_ROLLUP_MAX_RANGE_DAYS)
+        except GoogleHealthInvalidResponseError as exc:
+            if (
+                exc.upstream_status_code == 400
+                and getattr(exc, "chunk_index", None) == 0
+                and getattr(exc, "page_index", None) == 0
+            ):
+                yield from walk(GOOGLE_HEALTH_DAILY_ROLLUP_FALLBACK_RANGE_DAYS)
+                return
+            raise
 
     def probe_nutrition_log(
         self,
@@ -736,6 +985,7 @@ class GoogleHealthClient:
         end_time: datetime | None,
         civil_start_time: date | datetime | None,
         civil_end_time: date | datetime | None,
+        page_index: int,
     ) -> NutritionLogPage:
         status_code = GoogleHealthClient._validate_response_status(response)
 
@@ -761,7 +1011,14 @@ class GoogleHealthClient:
                 parser_stage="response_envelope",
                 structural_reason_code="top_level_not_object",
             )
-        points_payload: object = payload.get("dataPoints", [])
+        if "dataPoints" not in payload:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response envelope",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="data_points_missing",
+            ) from None
+        points_payload: object = payload["dataPoints"]
 
         try:
             if not isinstance(points_payload, list):
@@ -769,10 +1026,35 @@ class GoogleHealthClient:
             if len(points_payload) > page_size:
                 raise _StructuralParseError("response_envelope", "page_size_exceeded")
             next_page_token = _parse_response_page_token(payload)
-            data_points = tuple(_parse_data_point(item) for item in points_payload)
+            parsed_points: list[NutritionLogDataPoint] = []
+            for point_index, item in enumerate(points_payload):
+                try:
+                    parsed_points.append(_parse_nutrition_point(item))
+                except GoogleHealthInvalidResponseError as exc:
+                    _attach_point_context(
+                        exc,
+                        chunk_index=0,
+                        page_index=page_index,
+                        point_index=point_index,
+                    )
+                    raise
+                except (TypeError, ValueError, KeyError):
+                    error = GoogleHealthInvalidResponseError(
+                        "Google Health returned an invalid Nutrition Log point",
+                        upstream_status_code=status_code,
+                        parser_stage="nutrition_data_point",
+                        structural_reason_code="invalid_point",
+                    )
+                    _attach_point_context(
+                        error,
+                        chunk_index=0,
+                        page_index=page_index,
+                        point_index=point_index,
+                    )
+                    raise error from None
             data_points = tuple(
                 item
-                for item in data_points
+                for item in parsed_points
                 if _matches_civil_bounds(item, civil_start_time, civil_end_time)
             )
         except _StructuralParseError as exc:
@@ -782,7 +1064,15 @@ class GoogleHealthClient:
                 parser_stage=exc.parser_stage,
                 structural_reason_code=exc.reason_code,
             ) from None
-        except (GoogleHealthInvalidResponseError, ValueError, TypeError, KeyError):
+        except GoogleHealthInvalidResponseError as exc:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid Nutrition Log page",
+                upstream_status_code=status_code,
+                parser_stage=exc.parser_stage or "nutrition_data_point",
+                structural_reason_code=exc.structural_reason_code or "invalid_field",
+                diagnostic=exc.diagnostic,
+            ) from None
+        except (ValueError, TypeError, KeyError):
             raise GoogleHealthInvalidResponseError(
                 "Google Health returned an invalid Nutrition Log page",
                 upstream_status_code=status_code,
@@ -831,7 +1121,14 @@ class GoogleHealthClient:
                 parser_stage="response_envelope",
                 structural_reason_code="top_level_not_object",
             )
-        points_payload = payload.get("dataPoints", [])
+        if "dataPoints" not in payload:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid response envelope",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="data_points_missing",
+            ) from None
+        points_payload = payload["dataPoints"]
         try:
             if not isinstance(points_payload, list):
                 raise _StructuralParseError("response_envelope", "data_points_not_list")
@@ -889,6 +1186,96 @@ class GoogleHealthClient:
             end_time=end_time,
         )
 
+
+    @staticmethod
+    def _parse_daily_rollup_response(
+        response: GoogleHealthResponse,
+        *,
+        page_token: str | None,
+        chunk_index: int,
+        page_index: int,
+    ) -> GoogleHealthDailyRollupPage:
+        status_code = GoogleHealthClient._validate_response_status(response)
+        try:
+            payload = response.json()
+        except Exception:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned malformed daily rollup JSON",
+                upstream_status_code=status_code,
+                parser_stage="response_json",
+                structural_reason_code="malformed_json",
+            ) from None
+        if not isinstance(payload, dict):
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid daily rollup envelope",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="top_level_not_object",
+            ) from None
+        if "rollupDataPoints" not in payload:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid daily rollup envelope",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="rollup_data_points_missing",
+            ) from None
+        points_payload = payload["rollupDataPoints"]
+        if not isinstance(points_payload, list):
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned an invalid daily rollup envelope",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="rollup_data_points_not_list",
+            ) from None
+        if len(points_payload) > GOOGLE_HEALTH_DAILY_ROLLUP_MAX_PAGE_SIZE:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned too many daily rollup points",
+                upstream_status_code=status_code,
+                parser_stage="response_envelope",
+                structural_reason_code="page_size_exceeded",
+            ) from None
+        try:
+            next_page_token = _parse_response_page_token(payload)
+        except _StructuralParseError as exc:
+            raise GoogleHealthInvalidResponseError(
+                "Google Health returned invalid daily rollup pagination",
+                upstream_status_code=status_code,
+                parser_stage=exc.parser_stage,
+                structural_reason_code=exc.reason_code,
+            ) from None
+        data_points: list[GoogleHealthDailyRollupDataPoint] = []
+        for point_index, point_payload in enumerate(points_payload):
+            try:
+                data_points.append(_parse_daily_rollup_point(point_payload))
+            except GoogleHealthInvalidResponseError as exc:
+                _attach_point_context(
+                    exc,
+                    chunk_index=chunk_index,
+                    page_index=page_index,
+                    point_index=point_index,
+                )
+                raise
+            except (TypeError, ValueError, KeyError):
+                error = GoogleHealthInvalidResponseError(
+                    "Google Health returned an invalid daily rollup point",
+                    upstream_status_code=status_code,
+                    parser_stage="daily_rollup_data_point",
+                    structural_reason_code="invalid_point",
+                )
+                _attach_point_context(
+                    error,
+                    chunk_index=chunk_index,
+                    page_index=page_index,
+                    point_index=point_index,
+                )
+                raise error from None
+        return GoogleHealthDailyRollupPage(
+            data_points=tuple(data_points),
+            next_page_token=next_page_token,
+            page_token=page_token,
+            chunk_index=chunk_index,
+            page_index=page_index,
+        )
 
 _TIMESTAMP_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$"
@@ -1009,8 +1396,111 @@ class _NumericValidationError(ValueError):
         self.reason_code = reason_code
         super().__init__(reason_code)
 
+def _invalid_rollup_field(
+    field_path: str,
+    validation_rule: str,
+    value: object,
+    expected_json_type: str,
+    *,
+    numeric_reason_code: str | None = None,
+) -> NoReturn:
+    raise GoogleHealthInvalidResponseError(
+        "Google Health returned an invalid daily rollup field",
+        parser_stage="daily_rollup_data_point",
+        structural_reason_code="invalid_point",
+        diagnostic=GoogleHealthParserDiagnostic(
+            domain="activity_energy",
+            operation="activity_read",
+            endpoint_key="active_energy_burned_daily_rollup",
+            parser_stage="daily_rollup_data_point",
+            field_path=field_path,
+            validation_rule=validation_rule,
+            numeric_reason_code=numeric_reason_code,
+            observed_json_type=_json_type(value),
+            expected_json_type=expected_json_type,
+            presence="missing" if value is _MISSING else "present",
+            representation=_representation(value),
+            retryable=False,
+            reauth_required=False,
+        ),
+    )
+
+
+def _parse_daily_rollup_point(value: object) -> GoogleHealthDailyRollupDataPoint:
+    if not isinstance(value, dict):
+        _invalid_rollup_field("dataPoints", "point_object", value, "object")
+    civil_value = value.get("civilStartTime", _MISSING)
+    if civil_value is _MISSING:
+        _invalid_rollup_field("civilStartTime.date", "required_civil_date", civil_value, "object")
+    if not isinstance(civil_value, dict):
+        _invalid_rollup_field("civilStartTime", "civil_time_object", civil_value, "object")
+    try:
+        civil = _parse_civil_datetime(civil_value)
+    except ValueError:
+        _invalid_rollup_field("civilStartTime.date", "civil_date", civil_value, "object")
+    active_value = value.get("activeEnergyBurned", _MISSING)
+    if not isinstance(active_value, dict):
+        _invalid_rollup_field("activeEnergyBurned", "required_object", active_value, "object")
+    raw_number = active_value.get("kcalSum", _MISSING)
+    if raw_number is _MISSING:
+        _invalid_rollup_field("activeEnergyBurned.kcalSum", "required_number", raw_number, "number")
+    try:
+        number = _parse_nonnegative_number(raw_number)
+    except _NumericValidationError as exc:
+        _invalid_rollup_field(
+            "activeEnergyBurned.kcalSum",
+            "nonnegative_number",
+            raw_number,
+            "number",
+            numeric_reason_code=exc.reason_code,
+        )
+    except ValueError:
+        _invalid_rollup_field(
+            "activeEnergyBurned.kcalSum",
+            "nonnegative_number",
+            raw_number,
+            "number",
+            numeric_reason_code="decimal_conversion_failed",
+        )
+    return GoogleHealthDailyRollupDataPoint(civil_date=civil.value.date(), value=number)
+
+
+def _attach_point_context(
+    error: GoogleHealthClientError,
+    *,
+    chunk_index: int,
+    page_index: int,
+    point_index: int,
+) -> None:
+    _attach_page_context(error, chunk_index=chunk_index, page_index=page_index)
+    if error.diagnostic is not None:
+        diagnostic = error.diagnostic
+        field_path = diagnostic.field_path
+        if diagnostic.domain == "nutrition" and not field_path.startswith("dataPoints["):
+            field_path = f"dataPoints[{point_index}].{field_path}"
+        error.diagnostic = replace(
+            diagnostic,
+            field_path=field_path,
+            point_index=point_index,
+        )
 
 _MISSING = object()
+
+def _attach_page_context(
+    error: GoogleHealthClientError,
+    *,
+    chunk_index: int,
+    page_index: int,
+) -> None:
+    error.chunk_index = chunk_index
+    error.page_index = page_index
+    if error.diagnostic is not None:
+        error.diagnostic = replace(
+            error.diagnostic,
+            chunk_index=chunk_index,
+            page_index=page_index,
+        )
+
 
 
 def _json_type(value: object) -> str:
@@ -1204,6 +1694,64 @@ def _parse_activity_data_source(value: object) -> NutritionDataSource:
         device=device,
         application=application,
     )
+
+def _invalid_nutrition_field(
+    field_path: str,
+    validation_rule: str,
+    value: object,
+    expected_json_type: str,
+    *,
+    numeric_reason_code: str | None = None,
+) -> NoReturn:
+    raise GoogleHealthInvalidResponseError(
+        "Google Health returned an invalid Nutrition Log field",
+        parser_stage="nutrition_data_point",
+        structural_reason_code="invalid_field",
+        diagnostic=GoogleHealthParserDiagnostic(
+            domain="nutrition",
+            operation="nutrition_read",
+            endpoint_key="nutrition_log_data_points",
+            parser_stage="nutrition_data_point",
+            field_path=field_path,
+            validation_rule=validation_rule,
+            numeric_reason_code=numeric_reason_code,
+            observed_json_type=_json_type(value),
+            expected_json_type=expected_json_type,
+            presence="missing" if value is _MISSING else "present",
+            representation=_representation(value),
+            retryable=False,
+            reauth_required=False,
+        ),
+    )
+
+
+def _parse_nutrition_point(value: object) -> NutritionLogDataPoint:
+    if not isinstance(value, dict):
+        _invalid_nutrition_field("dataPoints", "point_object", value, "object")
+    nutrition_value = value.get("nutritionLog", _MISSING)
+    if not isinstance(nutrition_value, dict):
+        _invalid_nutrition_field("nutritionLog", "required_object", nutrition_value, "object")
+    interval = nutrition_value.get("interval", _MISSING)
+    if not isinstance(interval, dict):
+        _invalid_nutrition_field(
+            "nutritionLog.interval", "interval_object", interval, "object"
+        )
+    try:
+        return _parse_data_point(value)
+    except GoogleHealthInvalidResponseError:
+        raise
+    except _NumericValidationError as exc:
+        _invalid_nutrition_field(
+            "nutritionLog",
+            "nutrition_value",
+            nutrition_value,
+            "object",
+            numeric_reason_code=exc.reason_code,
+        )
+    except (TypeError, ValueError, KeyError):
+        _invalid_nutrition_field("nutritionLog", "nutrition_object", nutrition_value, "object")
+    raise AssertionError("unreachable")
+
 
 def _parse_data_point(value: object) -> NutritionLogDataPoint:
     if not isinstance(value, dict) or "nutritionLog" not in value:
@@ -1694,6 +2242,59 @@ def _matches_civil_bounds(
     return (start is None or civil_start >= _civil_boundary(start)) and (
         end is None or civil_start < _civil_boundary(end)
     )
+
+
+def _validate_daily_rollup_range(
+    start: date,
+    end: date,
+    *,
+    maximum_days: int | None = GOOGLE_HEALTH_DAILY_ROLLUP_MAX_RANGE_DAYS,
+) -> None:
+    if (
+        not isinstance(start, date)
+        or isinstance(start, datetime)
+        or not isinstance(end, date)
+        or isinstance(end, datetime)
+        or start > end
+    ):
+        raise ValueError("daily rollup date range is invalid")
+    if maximum_days is not None and (end - start).days + 1 > maximum_days:
+        raise ValueError("daily rollup date range exceeds the bounded request range")
+
+
+def _daily_rollup_chunks(
+    start: date,
+    end: date,
+    maximum_days: int,
+) -> tuple[tuple[date, date], ...]:
+    chunks: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=maximum_days - 1), end)
+        chunks.append((cursor, chunk_end))
+        cursor = chunk_end + timedelta(days=1)
+    return tuple(chunks)
+
+
+def _civil_date_object(value: date) -> dict[str, int]:
+    return {"year": value.year, "month": value.month, "day": value.day}
+
+
+def _daily_rollup_body(start: date, end: date) -> dict[str, object]:
+    _validate_daily_rollup_range(start, end)
+    return {
+        "range": {
+            "start": {
+                "date": _civil_date_object(start),
+                "time": {"hours": 0, "minutes": 0, "seconds": 0, "nanos": 0},
+            },
+            "end": {
+                "date": _civil_date_object(end),
+                "time": {"hours": 23, "minutes": 59, "seconds": 59, "nanos": 0},
+            },
+        },
+        "windowSizeDays": 1,
+    }
 
 
 def _validate_page_size(page_size: int, *, maximum: int = GOOGLE_HEALTH_MAX_PAGE_SIZE) -> None:

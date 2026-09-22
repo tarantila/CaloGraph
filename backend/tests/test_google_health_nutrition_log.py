@@ -636,23 +636,12 @@ def test_utf8_oversized_optional_strings_are_rejected(mutator) -> None:
         nutrition_client.get_nutrition_log_page(page_size=1)
 
 
-def test_empty_list_response_without_optional_data_points_is_valid() -> None:
-    nutrition_client, _ = client({})
-
-    page = nutrition_client.get_nutrition_log_page(page_size=1)
-
-    assert page.data_points == ()
-    assert page.next_page_token is None
-
-
-def test_unused_page_fields_are_ignored() -> None:
-    nutrition_client, _ = client({"futurePageMetadata": {"version": 2}})
-
-    page = nutrition_client.get_nutrition_log_page(page_size=1)
-
-    assert page.data_points == ()
-    assert page.next_page_token is None
-
+def test_missing_data_points_envelope_is_invalid() -> None:
+    for payload in ({}, {"futurePageMetadata": {"version": 2}}):
+        nutrition_client, _ = client(payload)
+        with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+            nutrition_client.get_nutrition_log_page(page_size=1)
+        assert raised.value.structural_reason_code == "data_points_missing"
 
 def test_future_data_source_values_are_retained_but_unknown_fields_are_ignored() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/future-1", 1)

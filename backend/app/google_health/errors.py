@@ -18,6 +18,9 @@ class GoogleHealthParserDiagnostic:
     representation: str
     retryable: bool
     reauth_required: bool
+    chunk_index: int | None = None
+    page_index: int | None = None
+    point_index: int | None = None
 
 
 class GoogleHealthError(RuntimeError):
@@ -68,6 +71,8 @@ class GoogleHealthClientError(GoogleHealthError):
         self.parser_stage = parser_stage
         self.structural_reason_code = structural_reason_code
         self.diagnostic = diagnostic
+        self.chunk_index: int | None = None
+        self.page_index: int | None = None
         super().__init__(message)
 
 class GoogleHealthAuthenticationError(GoogleHealthClientError):

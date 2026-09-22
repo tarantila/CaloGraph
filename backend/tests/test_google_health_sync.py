@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.google_health.client import (
     ActiveEnergyBurnedDataPoint,
+    GoogleHealthDailyRollupDataPoint,
+    GoogleHealthDailyRollupPage,
     GoogleHealthDataPointPage,
     NutritionLog,
     NutritionLogDataPoint,
@@ -108,6 +110,24 @@ class _Client:
             civil_end_time=END,
         )
 
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        if self.activity_error is not None:
+            raise self.activity_error
+        yield GoogleHealthDailyRollupPage(
+            data_points=tuple(
+                GoogleHealthDailyRollupDataPoint(START, Decimal("100"))
+                for _ in range(self.points)
+            ),
+            next_page_token=(
+                "active-energy-next" if self.exact_fill else None
+            ),
+            page_token=None,
+            chunk_index=0,
+            page_index=0,
+        )
+
     def get_data_points_page(
         self, data_type, *, start_time=None, end_time=None, page_token=None, page_size
     ):
@@ -130,9 +150,18 @@ class _Client:
 
     def close(self) -> None:
         self.calls.append("close")
-
-
 class _IteratorClient(_Client):
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        yield GoogleHealthDailyRollupPage(
+            data_points=(GoogleHealthDailyRollupDataPoint(START, Decimal("100")),),
+            next_page_token="active-energy-next",
+            page_token=None,
+            chunk_index=0,
+            page_index=0,
+        )
+
     def iter_data_points_pages(
         self,
         data_type,
@@ -155,15 +184,16 @@ class _IteratorClient(_Client):
             end_time=POINT_TIME,
         )
 
-
-
-
 class _MixedFailureClient(_Client):
     def get_nutrition_log_page(
         self, *, page_size, page_token=None, civil_start_time=None, civil_end_time=None
     ):
         del page_size, page_token, civil_start_time, civil_end_time
         raise GoogleHealthTransientError()
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        raise GoogleHealthAuthenticationError()
 
     def get_data_points_page(
         self, data_type, *, start_time=None, end_time=None, page_token=None, page_size
@@ -307,7 +337,7 @@ def test_exact_fill_iterator_activity_stops_without_overread(monkeypatch) -> Non
 
     assert len(points) == 1
     assert truncated is True
-    assert client.calls == ["active-energy-burned:None"]
+    assert client.calls == ["active-energy-burned:dailyRollUp"]
 
 
 def test_exact_fill_iterator_weight_stops_without_overread(monkeypatch) -> None:

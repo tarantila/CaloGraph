@@ -71,6 +71,7 @@ class CanonicalSample:
     source_name: Annotated[str | None, Field(max_length=190)]
     source_identifier: Annotated[str, Field(max_length=255)]
     external_sample_id: Annotated[str | None, Field(max_length=255)]
+    local_date: date | None = None
 
     @field_validator(
         "metric_type",
@@ -136,6 +137,7 @@ class CanonicalSample:
             "user": str(user_id),
             "source_type": self.source_type,
             "metric": self.metric_type,
+            "local_date": self.local_date.isoformat() if self.local_date is not None else None,
             "start": self.start_at.astimezone(UTC).isoformat(),
             "end": self.end_at.astimezone(UTC).isoformat(),
             "value": format(self.value.normalize(), "f"),

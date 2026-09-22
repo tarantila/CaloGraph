@@ -92,6 +92,14 @@ class GoogleHealthDomainDiagnostic(BaseModel):
     upstream_status_code: int | None = None
     retryable: bool
     reauth_required: bool
+    chunk_index: int | None = None
+    page_index: int | None = None
+    point_index: int | None = None
+    field_path: str | None = None
+    validation_rule: str | None = None
+    numeric_reason_code: str | None = None
+    observed_json_type: str | None = None
+    expected_json_type: str | None = None
 
 
 class GoogleHealthDomainResult(BaseModel):

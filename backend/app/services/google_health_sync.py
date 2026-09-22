@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     GoogleHealthClient,
+    GoogleHealthDailyRollupPage,
     GoogleHealthDataPointPage,
     NutritionLogDataPoint,
     NutritionLogPage,
@@ -57,7 +58,14 @@ class GoogleHealthDomainDiagnostic:
     upstream_status_code: int | None
     retryable: bool
     reauth_required: bool
-
+    chunk_index: int | None = None
+    page_index: int | None = None
+    point_index: int | None = None
+    field_path: str | None = None
+    validation_rule: str | None = None
+    numeric_reason_code: str | None = None
+    observed_json_type: str | None = None
+    expected_json_type: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class GoogleHealthDomainResult:
@@ -89,6 +97,14 @@ class _PagedClient(Protocol):
     def get_data_points_page(self, data_type: str, start_time: datetime | None = None,
                              end_time: datetime | None = None, page_token: str | None = None,
                              page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE) -> GoogleHealthDataPointPage: ...
+
+    def iter_daily_rollup_pages(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_pages: int = DEFAULT_MAX_SYNC_PAGES,
+    ) -> Iterable[GoogleHealthDailyRollupPage]: ...
 
     def close(self) -> None: ...
 
@@ -172,7 +188,9 @@ def _diagnostic(
     parser_stage: str | None = None,
     structural_reason_code: str | None = None,
 ) -> GoogleHealthDomainDiagnostic:
-    operation, endpoint_key = _DOMAIN_CONTEXT[domain]
+    detail = getattr(exc, "diagnostic", None)
+    operation = getattr(detail, "operation", None) or _DOMAIN_CONTEXT[domain][0]
+    endpoint_key = getattr(detail, "endpoint_key", None) or _DOMAIN_CONTEXT[domain][1]
     category = error_code or _safe_code(exc)
     upstream_status_code = getattr(exc, "upstream_status_code", None)
     if (
@@ -183,6 +201,12 @@ def _diagnostic(
         upstream_status_code = None
     stage = parser_stage or getattr(exc, "parser_stage", None) or "unknown"
     reason = structural_reason_code or getattr(exc, "structural_reason_code", None)
+    chunk_index = getattr(detail, "chunk_index", None)
+    if chunk_index is None:
+        chunk_index = getattr(exc, "chunk_index", None)
+    page_index = getattr(detail, "page_index", None)
+    if page_index is None:
+        page_index = getattr(exc, "page_index", None)
     return GoogleHealthDomainDiagnostic(
         domain=domain,
         operation=operation,
@@ -193,8 +217,30 @@ def _diagnostic(
         upstream_status_code=upstream_status_code,
         retryable=category in RETRYABLE_CODES,
         reauth_required=category in _REAUTH_CODES,
+        chunk_index=chunk_index,
+        page_index=page_index,
+        point_index=getattr(detail, "point_index", None),
+        field_path=getattr(detail, "field_path", None),
+        validation_rule=getattr(detail, "validation_rule", None),
+        numeric_reason_code=getattr(detail, "numeric_reason_code", None),
+        observed_json_type=getattr(detail, "observed_json_type", None),
+        expected_json_type=getattr(detail, "expected_json_type", None),
     )
 
+
+def _no_data_diagnostic(domain: str) -> GoogleHealthDomainDiagnostic:
+    operation, endpoint_key = _DOMAIN_CONTEXT[domain]
+    return GoogleHealthDomainDiagnostic(
+        domain=domain,
+        operation=operation,
+        endpoint_key=endpoint_key,
+        parser_stage="response_envelope",
+        structural_reason_code="no_data",
+        error_category="no_data",
+        upstream_status_code=None,
+        retryable=False,
+        reauth_required=False,
+    )
 
 def _result(
     *,
@@ -252,12 +298,13 @@ class GoogleHealthSyncService:
         max_points: int = DEFAULT_MAX_SYNC_POINTS,
         sleep: Sleep = time_module.sleep,
     ) -> None:
-        if not isinstance(page_size, int) or page_size <= 0:
-            raise ValueError("page_size must be positive")
-        if not isinstance(max_pages, int) or max_pages <= 0:
-            raise ValueError("max_pages must be positive")
-        if not isinstance(max_points, int) or max_points <= 0:
-            raise ValueError("max_points must be positive")
+        for value, name in (
+            (page_size, "page_size"),
+            (max_pages, "max_pages"),
+            (max_points, "max_points"),
+        ):
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be positive")
         self._session_factory = session_factory
         self._client_factory = client_factory or (lambda credentials: GoogleHealthClient(None, credentials))
         self._credentials_factory = credentials_factory
@@ -360,8 +407,30 @@ class GoogleHealthSyncService:
         points: list[Any] = []
         token: str | None = None
         seen: set[str | None] = {None}
+        page_limit = self._max_pages
+        point_limit = self._max_points
         local_start = datetime.combine(start, time.min, tzinfo=ZoneInfo(timezone))
         local_end = datetime.combine(end + timedelta(days=1), time.min, tzinfo=ZoneInfo(timezone))
+        if data_type == "active-energy-burned":
+            daily_iterator = getattr(client, "iter_daily_rollup_pages", None)
+            if not callable(daily_iterator):
+                raise ValueError("Google Health client requires the daily rollup seam")
+            truncated = False
+            for page in daily_iterator(
+                start_date=start,
+                end_date=end,
+                max_pages=page_limit,
+            ):
+                available = tuple(page.data_points)
+                remaining = point_limit - len(points)
+                points.extend(available[:max(remaining, 0)])
+                if len(available) > remaining or (
+                    len(available) >= remaining and page.next_page_token is not None
+                ):
+                    truncated = True
+                    break
+            return tuple(points), truncated
+
         iterator_factory = getattr(client, "iter_data_points_pages", None)
         direct = (
             getattr(client, "get_nutrition_log_page", None)
@@ -380,32 +449,35 @@ class GoogleHealthSyncService:
                 start_time=local_start.astimezone(UTC),
                 end_time=local_end.astimezone(UTC),
                 page_size=self._page_size,
-                max_pages=self._max_pages,
+                max_pages=page_limit,
             )
             truncated = False
             for page_number, page in enumerate(iterator):
                 available = tuple(page.data_points)
-                remaining = self._max_points - len(points)
+                remaining = point_limit - len(points)
                 points.extend(available[:max(remaining, 0)])
                 if len(available) > remaining or (
                     len(available) >= remaining and page.next_page_token is not None
                 ):
                     truncated = True
                     break
-                if page_number + 1 >= self._max_pages:
+                if page_number + 1 >= page_limit:
                     truncated = page.next_page_token is not None
                     break
             return tuple(points), truncated
 
         truncated = False
-        for page_number in range(self._max_pages):
+        for page_number in range(page_limit):
             if data_type == "nutrition-log":
-                page = direct(
-                    page_size=self._page_size,
-                    page_token=token,
-                    civil_start_time=start,
-                    civil_end_time=end + timedelta(days=1),
-                )
+                nutrition_kwargs: dict[str, object] = {
+                    "page_size": self._page_size,
+                    "page_token": token,
+                    "civil_start_time": start,
+                    "civil_end_time": end + timedelta(days=1),
+                }
+                if isinstance(client, GoogleHealthClient):
+                    nutrition_kwargs["page_index"] = page_number
+                page = direct(**nutrition_kwargs)
             else:
                 page = direct(
                     data_type,
@@ -415,7 +487,7 @@ class GoogleHealthSyncService:
                     page_size=self._page_size,
                 )
             available = tuple(page.data_points)
-            remaining = self._max_points - len(points)
+            remaining = point_limit - len(points)
             points.extend(available[:max(remaining, 0)])
             if len(available) > remaining or (
                 len(available) >= remaining and page.next_page_token is not None
@@ -428,7 +500,7 @@ class GoogleHealthSyncService:
             if next_token in seen:
                 raise ValueError("pagination token repeated")
             seen.add(next_token)
-            if page_number + 1 >= self._max_pages:
+            if page_number + 1 >= page_limit:
                 truncated = True
                 break
             token = next_token
@@ -441,6 +513,10 @@ class GoogleHealthSyncService:
         dates: list[date] = []
         zone = ZoneInfo(timezone)
         for point in points:
+            civil_date = getattr(point, "civil_date", None)
+            if isinstance(civil_date, date) and not isinstance(civil_date, datetime):
+                dates.append(civil_date)
+                continue
             interval = getattr(getattr(point, "nutrition_log", None), "interval", None)
             if nutrition and interval is not None:
                 civil = interval.civil_start_time
@@ -448,10 +524,10 @@ class GoogleHealthSyncService:
                     dates.append(civil.date())
                 elif isinstance(civil, date):
                     dates.append(civil)
-            else:
-                timestamp = getattr(point, "start_time", None)
-                if isinstance(timestamp, datetime):
-                    dates.append(timestamp.astimezone(zone).date())
+                continue
+            timestamp = getattr(point, "start_time", None)
+            if isinstance(timestamp, datetime):
+                dates.append(timestamp.astimezone(zone).date())
         return (min(dates), max(dates)) if dates else (None, None)
 
     def _persist_nutrition(self, *, user_id: UUID, source_id: UUID, start: date, end: date,
@@ -683,6 +759,7 @@ class GoogleHealthSyncService:
                     start=requested_start,
                     end=requested_end,
                     covered=covered,
+                    diagnostic=_no_data_diagnostic(name) if status == "no_data" else None,
                 )
         finally:
             with suppress(Exception):

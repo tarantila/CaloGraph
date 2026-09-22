@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 from uuid import UUID
@@ -18,6 +18,7 @@ from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     ActiveEnergyBurnedDataPoint,
     GoogleHealthActivityDataPoint,
+    GoogleHealthDailyRollupDataPoint,
     GoogleHealthDataPointPage,
     WeightDataPoint,
 )
@@ -133,11 +134,35 @@ def _timezone(user: User) -> str:
 
 
 def _sample_for_activity(
-    point: GoogleHealthActivityDataPoint,
+    point: GoogleHealthActivityDataPoint | GoogleHealthDailyRollupDataPoint,
     *,
     timezone: str,
     source_identifier: str,
 ) -> CanonicalSample:
+    if isinstance(point, GoogleHealthDailyRollupDataPoint):
+        day = point.civil_date
+        if not isinstance(day, date) or isinstance(day, datetime):
+            raise ValueError("Google Health daily rollup civil date is invalid")
+        original_value = _decimal(point.value)
+        if point.unit != "kcal":
+            raise ValueError("Google Health daily rollup unit is invalid")
+        canonical_value = normalize_value(original_value, point.unit, "kcal")
+        anchor = datetime.combine(day, time(hour=12), tzinfo=ZoneInfo(timezone)).astimezone(UTC)
+        return CanonicalSample(
+            metric_type=ACTIVE_ENERGY_METRIC,
+            value=canonical_value,
+            unit="kcal",
+            original_value=original_value,
+            original_unit="kcal",
+            start_at=anchor,
+            end_at=anchor,
+            timezone=timezone,
+            source_type=ACTIVITY_SOURCE_TYPE,
+            source_name=_SOURCE_NAME,
+            source_identifier=source_identifier,
+            external_sample_id=f"daily-rollup:active-energy:{day.isoformat()}",
+            local_date=day,
+        )
     if not isinstance(point, ActiveEnergyBurnedDataPoint):
         raise ValueError("activity data_points contain an invalid DTO")
     identity = _point_identity(point)

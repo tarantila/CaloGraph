@@ -153,6 +153,14 @@ export interface GoogleHealthDomainDiagnostic {
   upstream_status_code: number | null
   retryable: boolean
   reauth_required: boolean
+  chunk_index?: number | null
+  page_index?: number | null
+  point_index?: number | null
+  field_path?: string | null
+  validation_rule?: string | null
+  numeric_reason_code?: string | null
+  observed_json_type?: string | null
+  expected_json_type?: string | null
 }
 
 export interface GoogleHealthDomainResult {
