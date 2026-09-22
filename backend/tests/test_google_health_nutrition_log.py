@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import ClassVar
 
 import pytest
@@ -112,6 +113,46 @@ def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
     assert page.page_size == 10
     assert not hasattr(page, "payload")
 
+def test_google_double_nutrition_fields_accept_more_than_twelve_decimal_places() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/double-fields-1", 1)
+    nutrition_log = value["nutritionLog"]
+    assert isinstance(nutrition_log, dict)
+    nutrition_log.update(
+        {
+            "energy": {"kcal": Decimal("1.1234567890123")},
+            "energyFromFat": {"kcal": Decimal("2.1234567890123")},
+            "totalCarbohydrate": {"grams": Decimal("3.1234567890123")},
+            "totalFat": {"grams": Decimal("4.1234567890123")},
+            "nutrients": [
+                {
+                    "nutrient": "PROTEIN",
+                    "quantity": {"grams": Decimal("5.1234567890123")},
+                }
+            ],
+            "serving": {"amount": Decimal("6.1234567890123")},
+        }
+    )
+
+    nutrition_client, _ = client({"dataPoints": [value]})
+    parsed = nutrition_client.get_nutrition_log_page(page_size=1).data_points[0].nutrition_log
+
+    assert parsed.energy is not None
+    assert parsed.energy.value == Decimal("1.123456789012")
+    assert parsed.energy.canonical_value == Decimal("1.123457")
+    assert parsed.energy_from_fat is not None
+    assert parsed.energy_from_fat.value == Decimal("2.123456789012")
+    assert parsed.energy_from_fat.canonical_value == Decimal("2.123457")
+    assert parsed.total_carbohydrate is not None
+    assert parsed.total_carbohydrate.value == Decimal("3.123456789012")
+    assert parsed.total_carbohydrate.canonical_value == Decimal("3.123457")
+    assert parsed.total_fat is not None
+    assert parsed.total_fat.value == Decimal("4.123456789012")
+    assert parsed.total_fat.canonical_value == Decimal("4.123457")
+    assert parsed.nutrients[0].quantity.value == Decimal("5.123456789012")
+    assert parsed.nutrients[0].quantity.canonical_value == Decimal("5.123457")
+    assert parsed.serving is not None
+    assert parsed.serving.amount == Decimal("6.123456789012")
+    assert parsed.serving.canonical_amount == Decimal("6.123457")
 
 def test_provider_date_only_civil_time_is_accepted() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/date-only-1", 1)

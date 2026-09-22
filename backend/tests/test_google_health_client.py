@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import traceback
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import ClassVar
 
 import pytest
@@ -757,9 +757,9 @@ def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> N
 
 @pytest.mark.parametrize(
     "value",
-    [Decimal("0.1234567890123"), Decimal("1E+100")],
+    [Decimal("1E+100")],
 )
-def test_parser_rejects_values_outside_numeric_scale_or_range(value):
+def test_parser_rejects_values_outside_numeric_range(value):
     with pytest.raises(ValueError):
         _parse_nonnegative_number(value)
 def _parse_activity_payload(point: dict[str, object]):
@@ -804,7 +804,7 @@ def test_activity_accepts_exact_values_at_numeric_scale(
         (Decimal("12.5"), "accepted", "number"),
         (Decimal("999999999999.123456789012"), "accepted", "number"),
         (0.1, "accepted", "number"),
-        (Decimal("0.1234567890123"), "exceeds_numeric_scale_with_precision", "number"),
+        (Decimal("0.1234567890123"), "accepted", "number"),
         (Decimal("-1"), "negative", "number"),
         (Decimal("1000000000000"), "exceeds_numeric_range", "number"),
         (Decimal("NaN"), "non_finite", "number"),
@@ -825,7 +825,11 @@ def test_activity_numeric_reason_codes_are_bounded(
         page = _parse_activity_payload(point)
         assert len(page.data_points) == 1
         parsed = page.data_points[0]
-        assert parsed.value == Decimal(str(value))
+        expected_source = Decimal(str(value)).quantize(
+            Decimal("0.000000000001"),
+            rounding=ROUND_HALF_EVEN,
+        )
+        assert parsed.value == expected_source
         return
 
     with pytest.raises(GoogleHealthInvalidResponseError) as raised:
@@ -874,6 +878,37 @@ def test_activity_float_conversion_does_not_introduce_binary_scale() -> None:
 
     assert page.data_points[0].value == Decimal("0.1")
 
+def test_google_double_scalar_activity_accepts_more_than_twelve_decimal_places() -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = Decimal("1.1234567890123")
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == Decimal("1.123456789012")
+    assert page.data_points[0].canonical_value == Decimal("1.123457")
+
+
+def test_google_double_weight_accepts_more_than_twelve_decimal_places() -> None:
+    point = _weight_point()
+    weight = point["weight"]
+    assert isinstance(weight, dict)
+    weight["weightGrams"] = Decimal("72500.1234567890123")
+
+    page = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": [point]})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        "weight",
+        start_time=None,
+        end_time=None,
+        page_token=None,
+        page_size=10,
+    )
+
+    assert page.data_points[0].value == Decimal("72.500123456789")
+    assert page.data_points[0].canonical_value == Decimal("72.500123")
 
 
 

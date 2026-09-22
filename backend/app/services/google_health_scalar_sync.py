@@ -146,7 +146,11 @@ def _sample_for_activity(
         original_value = _decimal(point.value)
         if point.unit != "kcal":
             raise ValueError("Google Health daily rollup unit is invalid")
-        canonical_value = normalize_value(original_value, point.unit, "kcal")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, point.unit, "kcal")
+        )
         anchor = datetime.combine(day, time(hour=12), tzinfo=ZoneInfo(timezone)).astimezone(UTC)
         return CanonicalSample(
             metric_type=ACTIVE_ENERGY_METRIC,
@@ -177,7 +181,11 @@ def _sample_for_activity(
     if original_unit != "kcal":
         raise ValueError("Google Health datapoint unit is invalid")
     try:
-        canonical_value = normalize_value(original_value, original_unit, "kcal")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, original_unit, "kcal")
+        )
     except Exception as exc:
         raise ValueError("Google Health datapoint unit is invalid") from exc
     return CanonicalSample(
@@ -215,7 +223,11 @@ def _sample_for_weight(
         raise ValueError("Google Health datapoint unit is invalid")
     try:
         normalized_unit = _MASS_UNIT_ALIASES[original_unit.strip().lower()]
-        canonical_value = normalize_value(original_value, normalized_unit, "kg")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, normalized_unit, "kg")
+        )
     except Exception as exc:
         raise ValueError("Google Health datapoint unit is invalid") from exc
     return CanonicalSample(

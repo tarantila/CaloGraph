@@ -28,10 +28,10 @@ from app.google_health.errors import (
     GoogleHealthScopeError,
     GoogleHealthTransientError,
 )
-from app.importers.common import (
-    ORIGINAL_VALUE_LIMIT,
-    is_exactly_representable_at_scale,
-    normalize_exact_decimal_scale,
+from app.google_health.numeric import (
+    GoogleDoubleNormalizationError,
+    GoogleDoubleProjection,
+    normalize_google_double,
 )
 
 GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/dataTypes/nutrition-log/dataPoints"
@@ -62,6 +62,7 @@ _DATA_TYPE_FILTER_FIELDS = {
 class NutritionQuantity:
     value: Decimal | float
     unit: str | None = None
+    canonical_value: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,7 @@ class NutritionServing:
     food_measurement_unit: str | None = None
     food_measurement_unit_display_name: str | None = None
     amount: Decimal | float | None = None
-
+    canonical_amount: Decimal | None = None
 
 @dataclass(frozen=True, slots=True)
 class NutritionDataSourceDevice:
@@ -140,6 +141,7 @@ class GoogleHealthDataPoint:
     data_source: NutritionDataSource | None = None
     start_utc_offset: str | None = None
     end_utc_offset: str | None = None
+    canonical_value: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +216,7 @@ class GoogleHealthDailyRollupDataPoint:
     civil_date: date
     value: Decimal
     unit: str = "kcal"
-
+    canonical_value: Decimal | None = None
 
 @dataclass(frozen=True, slots=True)
 class GoogleHealthDailyRollupPage:
@@ -1445,7 +1447,7 @@ def _parse_daily_rollup_point(value: object) -> GoogleHealthDailyRollupDataPoint
     if raw_number is _MISSING:
         _invalid_rollup_field("activeEnergyBurned.kcalSum", "required_number", raw_number, "number")
     try:
-        number = _parse_nonnegative_number(raw_number)
+        projection = _parse_google_double_projection(raw_number)
     except _NumericValidationError as exc:
         _invalid_rollup_field(
             "activeEnergyBurned.kcalSum",
@@ -1462,7 +1464,11 @@ def _parse_daily_rollup_point(value: object) -> GoogleHealthDailyRollupDataPoint
             "number",
             numeric_reason_code="decimal_conversion_failed",
         )
-    return GoogleHealthDailyRollupDataPoint(civil_date=civil.value.date(), value=number)
+    return GoogleHealthDailyRollupDataPoint(
+        civil_date=civil.value.date(),
+        value=projection.source_value,
+        canonical_value=projection.canonical_value,
+    )
 
 
 def _attach_point_context(
@@ -1597,11 +1603,11 @@ def _parse_activity_civil_time(value: object, field_path: str) -> _PreciseTime |
     raise AssertionError("unreachable")
 
 
-def _parse_activity_number(value: object, field_path: str) -> Decimal:
+def _parse_activity_number(value: object, field_path: str) -> GoogleDoubleProjection:
     if value is _MISSING:
         _invalid_activity_field(field_path, "required_number", value, "number")
     try:
-        return _parse_nonnegative_number(value)
+        return _parse_google_double_projection(value)
     except _NumericValidationError as exc:
         _invalid_activity_field(
             field_path,
@@ -1849,7 +1855,7 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
                 interval.get("civilEndTime"),
                 "object",
             )
-        number = _parse_activity_number(
+        projection = _parse_activity_number(
             raw_value.get("kcal", _MISSING),
             "activeEnergyBurned.kcal",
         )
@@ -1863,11 +1869,12 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
             name=name if isinstance(name, str) else None,
             start_time=start.value,
             end_time=end.value,
-            value=number,
+            value=projection.source_value,
             unit="kcal",
             data_source=source,
             start_utc_offset=start_offset,
             end_utc_offset=end_offset,
+            canonical_value=projection.canonical_value,
         )
     raw_value = value.get("weight")
     if not isinstance(raw_value, dict):
@@ -1886,19 +1893,22 @@ def _parse_scalar_data_point(value: object, data_type: str) -> GoogleHealthDataP
     dto_type = WeightDataPoint
     if scalar_key not in raw_value:
         raise ValueError
-    number = _parse_nonnegative_number(raw_value[scalar_key])
-    number /= Decimal("1000")
+    projection = _parse_google_double_projection(
+        raw_value[scalar_key],
+        divisor=Decimal("1000"),
+    )
     source_value = value.get("dataSource")
     source = _parse_data_source(source_value) if source_value is not None else None
     return dto_type(
         name=name if isinstance(name, str) else None,
         start_time=start_time,
         end_time=end_time,
-        value=number,
+        value=projection.source_value,
         unit=unit,
         data_source=source,
         start_utc_offset=start_offset,
         end_utc_offset=end_offset,
+        canonical_value=projection.canonical_value,
     )
 
 
@@ -1974,22 +1984,28 @@ def _optional_bounded_string(value: object, *, max_bytes: int = 512) -> str | No
     return None if value is None else _bounded_string(value, max_bytes=max_bytes)
 
 
-def _parse_nonnegative_number(value: object) -> Decimal:
+def _parse_google_double_projection(
+    value: object,
+    *,
+    divisor: Decimal = Decimal("1"),
+) -> GoogleDoubleProjection:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise _NumericValidationError("not_numeric")
     try:
         result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise _NumericValidationError("decimal_conversion_failed") from None
-    if not result.is_finite():
-        raise _NumericValidationError("non_finite")
-    if result < 0:
-        raise _NumericValidationError("negative")
-    if result >= ORIGINAL_VALUE_LIMIT:
-        raise _NumericValidationError("exceeds_numeric_range")
-    if not is_exactly_representable_at_scale(result):
-        raise _NumericValidationError("exceeds_numeric_scale_with_precision")
-    return normalize_exact_decimal_scale(result)
+    try:
+        projection = normalize_google_double(result)
+        if divisor == 1:
+            return projection
+        return normalize_google_double(result / divisor)
+    except GoogleDoubleNormalizationError as exc:
+        raise _NumericValidationError(exc.reason_code) from None
+
+
+def _parse_nonnegative_number(value: object) -> Decimal:
+    return _parse_google_double_projection(value).source_value
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:
@@ -2178,11 +2194,15 @@ def _parse_quantity(
 ) -> NutritionQuantity:
     if not isinstance(value, dict) or scalar_key not in value:
         raise ValueError
-    number_value = _parse_nonnegative_number(value[scalar_key])
+    projection = _parse_google_double_projection(value[scalar_key])
     unit = _optional_bounded_string(value.get("userProvidedUnit"), max_bytes=64)
     if unit is not None and unit in (_WEIGHT_UNITS | _ENERGY_UNITS) and unit not in units:
         raise ValueError
-    return NutritionQuantity(value=number_value, unit=unit)
+    return NutritionQuantity(
+        value=projection.source_value,
+        unit=unit,
+        canonical_value=projection.canonical_value,
+    )
 
 
 def _parse_nutrient(value: object) -> NutritionNutrient:
@@ -2201,13 +2221,12 @@ def _parse_serving(value: object) -> NutritionServing:
     unit = _optional_bounded_string(value.get("foodMeasurementUnit"), max_bytes=64)
     display_name = _optional_bounded_string(value.get("foodMeasurementUnitDisplayName"))
     amount = value.get("amount")
-    amount_value: Decimal | float | None = (
-        None if amount is None else _parse_nonnegative_number(amount)
-    )
+    projection = None if amount is None else _parse_google_double_projection(amount)
     return NutritionServing(
         food_measurement_unit=unit,
         food_measurement_unit_display_name=display_name,
-        amount=amount_value,
+        amount=None if projection is None else projection.source_value,
+        canonical_amount=None if projection is None else projection.canonical_value,
     )
 
 

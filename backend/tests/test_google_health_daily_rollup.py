@@ -51,6 +51,17 @@ def test_daily_rollup_posts_civil_range_and_preserves_exact_decimal() -> None:
     assert transport.calls[0]["end_date"] == date(2026, 1, 2)
     assert transport.calls[0]["window_size_days"] == 1
 
+def test_daily_rollup_accepts_google_double_precision_beyond_source_scale() -> None:
+    transport = RollupTransport(
+        [FakeResponse(payload={"rollupDataPoints": [_point(value=Decimal("1.1234567890123"))]})]
+    )
+
+    page = GoogleHealthClient(transport, FakeCredentials()).get_daily_rollup_page(
+        "active-energy-burned", start_date=date(2026, 1, 2), end_date=date(2026, 1, 2)
+    )
+
+    assert page.data_points[0].value == Decimal("1.123456789012")
+    assert page.data_points[0].canonical_value == Decimal("1.123457")
 
 def test_daily_rollup_empty_is_valid_but_missing_envelope_is_invalid() -> None:
     empty = GoogleHealthClient(
@@ -148,17 +159,16 @@ def test_daily_rollup_reports_civil_and_numeric_field_diagnostics() -> None:
     assert raised.value.diagnostic.field_path == "civilStartTime.date"
     assert raised.value.diagnostic.point_index == 0
 
-    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
-        GoogleHealthClient(
-            RollupTransport(
-                [FakeResponse(payload={"rollupDataPoints": [_point(value=Decimal("1.1234567890123"))]})]
-            ),
-            FakeCredentials(),
-        ).get_daily_rollup_page(
-            "active-energy-burned", start_date=date(2026, 1, 2), end_date=date(2026, 1, 2)
-        )
-    assert raised.value.diagnostic is not None
-    assert raised.value.diagnostic.numeric_reason_code == "exceeds_numeric_scale_with_precision"
+    page = GoogleHealthClient(
+        RollupTransport(
+            [FakeResponse(payload={"rollupDataPoints": [_point(value=Decimal("1.1234567890123"))]})]
+        ),
+        FakeCredentials(),
+    ).get_daily_rollup_page(
+        "active-energy-burned", start_date=date(2026, 1, 2), end_date=date(2026, 1, 2)
+    )
+    assert page.data_points[0].value == Decimal("1.123456789012")
+    assert page.data_points[0].canonical_value == Decimal("1.123457")
 
 
 def test_nutrition_invalid_point_reports_safe_page_point_and_field() -> None:
