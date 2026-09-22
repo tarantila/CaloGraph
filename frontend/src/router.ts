@@ -17,7 +17,7 @@ const router = createRouter({
     },
     { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue') },
     { path: '/tage', name: 'daily', component: () => import('./views/DailyView.vue') },
-    { path: '/ernaehrung', name: 'nutrition', component: () => import('./views/OverviewView.vue') },
+    { path: '/ernaehrung', name: 'nutrition', component: () => import('./views/NutritionView.vue') },
     { path: '/aktivitaet', name: 'activity', component: () => import('./views/ActivityView.vue') },
     { path: '/gewicht', name: 'weight', component: () => import('./views/WeightView.vue') },
     { path: '/wochen', name: 'weekly', component: () => import('./views/WeeklyView.vue') },
