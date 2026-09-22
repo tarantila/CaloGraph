@@ -172,7 +172,7 @@ describe('ActivityView', () => {
   })
 
   it('shows a localized error and retries the request', async () => {
-    apiMock.mockRejectedValueOnce(new ApiError('request failed'))
+    apiMock.mockRejectedValueOnce(new ApiError('request failed', 500))
     apiMock.mockResolvedValueOnce(response({
       days: [{ date: '2026-09-22', canonical: canonicalRecord, providers: [] }],
     }))

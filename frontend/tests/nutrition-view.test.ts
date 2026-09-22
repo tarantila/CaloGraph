@@ -228,7 +228,7 @@ describe('NutritionView', () => {
   })
 
   it('shows a localized error and retries the request', async () => {
-    apiMock.mockRejectedValueOnce(new ApiError('request failed'))
+    apiMock.mockRejectedValueOnce(new ApiError('request failed', 500))
     apiMock.mockResolvedValueOnce(response({ canonical: canonicalGroup }))
 
     const wrapper = await mountView()

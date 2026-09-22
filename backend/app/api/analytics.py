@@ -40,8 +40,6 @@ from app.analytics.scalar_selection import (
     ScalarProviderUnavailable,
     resolve_scalar_provider,
 )
-from app.analytics.verification import read_activity_verification, read_nutrition_verification
-from app.activity import ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.service import (
     PRIMARY_NUTRITION_METRICS,
     AmbiguousAppleTransportError,
@@ -54,6 +52,7 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.analytics.trends_canonical import run_trends_canonical_read
+from app.analytics.verification import read_activity_verification, read_nutrition_verification
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
@@ -67,7 +66,7 @@ from app.problem_types import (
     PROVIDER_SELECTION_UNAVAILABLE,
     ProblemHTTPException,
 )
-from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA, WEIGHT_DATA_AREA
+from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
     DailyPoint,
     MicronutrientResponse,

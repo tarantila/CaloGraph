@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import UTC, date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import and_, exists, not_, or_, select
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
@@ -312,8 +314,8 @@ def _all_nutrition_sources(db: Session, user_id: UUID) -> dict[str, UUID | None]
 
 def _source_pair_predicates(
     source: type[NutritionSourceObservation],
-    source_instances: dict[str, UUID | None],
-) -> list[object]:
+    source_instances: Mapping[str, UUID | None],
+) -> list[ColumnElement[bool]]:
     return [
         and_(
             source.provider_key == provider_key,
@@ -329,7 +331,7 @@ def _read_current_nutrition_events(
     *,
     user_id: UUID,
     local_date: date,
-    source_instances: dict[str, UUID | None],
+    source_instances: Mapping[str, UUID | None],
 ) -> list[NutritionConsumptionEvent]:
     source = NutritionSourceObservation
     pairs = _source_pair_predicates(source, source_instances)
@@ -425,6 +427,8 @@ def _nutrition_field_is_safe(
         or field.derived_from_field_observation_id is None
     ):
         return False
+    if event.food_snapshot_id is None:
+        return False
     snapshot = snapshots.get(event.food_snapshot_id)
     parent = parent_fields.get(field.derived_from_field_observation_id)
     return bool(
@@ -441,7 +445,7 @@ def _read_nutrition_event_metrics(
     *,
     user_id: UUID,
     events: list[NutritionConsumptionEvent],
-    source_instances: dict[str, UUID | None],
+    source_instances: Mapping[str, UUID | None],
 ) -> dict[UUID, dict[str, Decimal]]:
     source_ids = {item.source_observation_id for item in events}
     if not source_ids:
@@ -552,7 +556,7 @@ def _read_nutrition_food_names(
     *,
     user_id: UUID,
     events: list[NutritionConsumptionEvent],
-    source_instances: dict[str, UUID | None],
+    source_instances: Mapping[str, UUID | None],
 ) -> dict[UUID, str | None]:
     snapshot_ids = {item.food_snapshot_id for item in events if item.food_snapshot_id is not None}
     if not snapshot_ids:
@@ -594,7 +598,12 @@ def _nutrition_event_response(
         provider_key=event.provider_key,
         occurred_at=event.canonical_start_at,
         meal_type=event.daytime,
-        food_name=food_names.get(event.food_snapshot_id) or _UNNAMED_FOOD,
+        food_name=(
+            food_names.get(event.food_snapshot_id)
+            if event.food_snapshot_id is not None
+            else None
+        )
+        or _UNNAMED_FOOD,
         calories_kcal=metrics.get("dietary_energy_kcal"),
         protein_g=metrics.get("protein_g"),
         carbohydrates_g=metrics.get("carbohydrates_g"),
@@ -671,7 +680,9 @@ def read_nutrition_verification(
                 canonical=None,
                 providers=[],
             )
-        source_instances = {selection.provider_key: selection.source_instance_id}
+        source_instances: Mapping[str, UUID | None] = {
+            selection.provider_key: selection.source_instance_id
+        }
         events = _read_current_nutrition_events(
             db,
             user_id=user_id,
