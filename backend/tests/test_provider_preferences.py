@@ -6,7 +6,7 @@ from hashlib import sha256
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.activity import (
     ACTIVE_ENERGY_METRIC,
@@ -623,6 +623,56 @@ def test_google_availability_is_available_for_active_connection_with_canonical_e
 
     assert response.status_code == 200
     google = next(item for item in response.json()["providers"] if item["provider_key"] == "google_health")
+    assert google == {"provider_key": "google_health", "available": True, "status": "available"}
+
+
+def test_google_availability_accepts_canonical_daily_nutrition_evidence(
+    client: TestClient, user, db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    connection = _add_google(db, user)
+    _add_google_nutrition_evidence(db, user, connection)
+    source = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user.id,
+            NutritionSourceObservation.provider_key == "google_health",
+        )
+    )
+    assert source is not None
+    db.execute(
+        delete(NutritionFieldObservation).where(
+            NutritionFieldObservation.user_id == user.id,
+            NutritionFieldObservation.source_observation_id == source.id,
+        )
+    )
+    db.add(
+        NutritionFieldObservation(
+            user_id=user.id,
+            source_observation_id=source.id,
+            provider_field_path="nutrition.energy",
+            provider_raw_value_decimal=Decimal("500"),
+            provider_raw_unit=canonical_unit("dietary_energy_kcal"),
+            metric_key="dietary_energy_kcal",
+            canonical_value=Decimal("500"),
+            canonical_unit=canonical_unit("dietary_energy_kcal"),
+            observation_role=ObservationRole.CANONICAL.value,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=CoverageState.COMPLETE.value,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+        )
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get(AVAILABILITY_PATH)
+
+    assert response.status_code == 200
+    google = next(
+        item
+        for item in response.json()["providers"]
+        if item["provider_key"] == "google_health"
+    )
     assert google == {"provider_key": "google_health", "available": True, "status": "available"}
 
 
