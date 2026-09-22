@@ -6,7 +6,6 @@ import { formatDate, formatWeekday, isoDateInTimeZone, shiftIsoDate } from '../d
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type {
-  VerificationActivityProviderRecord,
   VerificationActivityResponse,
   VerificationView,
 } from '../types'

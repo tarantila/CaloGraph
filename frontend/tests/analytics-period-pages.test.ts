@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, type RouteLocationRaw } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Component } from 'vue'
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({
@@ -12,6 +13,7 @@ vi.mock('../src/api', () => ({
 
 import AnalyticsPeriodFilter from '../src/components/AnalyticsPeriodFilter.vue'
 import DateFilter from '../src/components/DateFilter.vue'
+import ActivityView from '../src/views/ActivityView.vue'
 import DailyView from '../src/views/DailyView.vue'
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
 import WeekdaysView from '../src/views/WeekdaysView.vue'
@@ -33,7 +35,7 @@ function setUser() {
   }
 }
 
-async function mountView(component: typeof DailyView, location: RouteLocationRaw = '/') {
+async function mountView(component: Component, location: RouteLocationRaw = '/') {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component }] })
   await router.push(location)
   await router.isReady()
@@ -92,11 +94,28 @@ beforeEach(() => {
     }
     if (path.startsWith('/analytics/weekdays')) return Promise.resolve({ weekdays: [] })
     if (path.startsWith('/analytics/daily')) return Promise.resolve([])
+    if (path.startsWith('/analytics/verification/activity')) {
+      return Promise.resolve({ start_date: '2026-08-25', end_date: '2026-08-31', view: 'canonical', days: [] })
+    }
     return Promise.resolve({ points: [], budget_balance: null })
   })
 })
 
 describe('analytics page responsive period integrations', () => {
+  it('requests ActivityView’s authenticated local seven-day canonical range', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T12:00:00Z'))
+    try {
+      const wrapper = await mountView(ActivityView)
+      const end = isoDateInTimeZone('Europe/Berlin')
+      expect(requestFor('/analytics/verification/activity')).toBe(
+        `/analytics/verification/activity?start=${shiftIsoDate(end, -6)}&end=${end}&view=canonical`,
+      )
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('offers bounded long-range presets on Micronutrients without All', async () => {
     const wrapper = await mountView(MicronutrientsView)
     const filter = wrapper.getComponent(AnalyticsPeriodFilter)
