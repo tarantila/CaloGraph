@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import NoReturn, Protocol, cast
 
 import httpx
@@ -28,7 +28,11 @@ from app.google_health.errors import (
     GoogleHealthScopeError,
     GoogleHealthTransientError,
 )
-from app.importers.common import decimal_value
+from app.importers.common import (
+    ORIGINAL_VALUE_LIMIT,
+    is_exactly_representable_at_scale,
+    normalize_exact_decimal_scale,
+)
 
 GOOGLE_HEALTH_NUTRITION_LOG_PATH = "/users/me/dataTypes/nutrition-log/dataPoints"
 GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH = _GOOGLE_HEALTH_ACTIVE_ENERGY_BURNED_PATH
@@ -998,6 +1002,14 @@ class _StructuralParseError(ValueError):
         self.parser_stage = parser_stage
         self.reason_code = reason_code
         super().__init__(reason_code)
+
+
+class _NumericValidationError(ValueError):
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
 _MISSING = object()
 
 
@@ -1034,6 +1046,8 @@ def _invalid_activity_field(
     validation_rule: str,
     value: object,
     expected_json_type: str,
+    *,
+    numeric_reason_code: str | None = None,
 ) -> NoReturn:
     structural_reason = "missing_required_field" if value is _MISSING else "invalid_field"
     presence = "missing" if value is _MISSING else "null" if value is None else "present"
@@ -1042,12 +1056,19 @@ def _invalid_activity_field(
         parser_stage="scalar_data_point",
         structural_reason_code=structural_reason,
         diagnostic=GoogleHealthParserDiagnostic(
+            domain="activity_energy",
+            operation="activity_read",
+            endpoint_key="active_energy_burned_data_points",
+            parser_stage="scalar_data_point",
             field_path=field_path,
             validation_rule=validation_rule,
+            numeric_reason_code=numeric_reason_code,
             observed_json_type=_json_type(value),
             expected_json_type=expected_json_type,
             presence=presence,
             representation=_representation(value),
+            retryable=False,
+            reauth_required=False,
         ),
     )
 
@@ -1091,8 +1112,22 @@ def _parse_activity_number(value: object, field_path: str) -> Decimal:
         _invalid_activity_field(field_path, "required_number", value, "number")
     try:
         return _parse_nonnegative_number(value)
+    except _NumericValidationError as exc:
+        _invalid_activity_field(
+            field_path,
+            "nonnegative_number",
+            value,
+            "number",
+            numeric_reason_code=exc.reason_code,
+        )
     except ValueError:
-        _invalid_activity_field(field_path, "nonnegative_number", value, "number")
+        _invalid_activity_field(
+            field_path,
+            "nonnegative_number",
+            value,
+            "number",
+            numeric_reason_code="decimal_conversion_failed",
+        )
     raise AssertionError("unreachable")
 
 
@@ -1393,11 +1428,20 @@ def _optional_bounded_string(value: object, *, max_bytes: int = 512) -> str | No
 
 def _parse_nonnegative_number(value: object) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise ValueError
+        raise _NumericValidationError("not_numeric")
     try:
-        return decimal_value(value)
-    except ValueError:
-        raise ValueError from None
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise _NumericValidationError("decimal_conversion_failed") from None
+    if not result.is_finite():
+        raise _NumericValidationError("non_finite")
+    if result < 0:
+        raise _NumericValidationError("negative")
+    if result >= ORIGINAL_VALUE_LIMIT:
+        raise _NumericValidationError("exceeds_numeric_range")
+    if not is_exactly_representable_at_scale(result):
+        raise _NumericValidationError("exceeds_numeric_scale_with_precision")
+    return normalize_exact_decimal_scale(result)
 
 
 def _parse_nutrition_log(value: Mapping[str, object]) -> NutritionLog:

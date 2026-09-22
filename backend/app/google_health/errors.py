@@ -5,12 +5,19 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class GoogleHealthParserDiagnostic:
+    domain: str
+    operation: str
+    endpoint_key: str
+    parser_stage: str
     field_path: str
     validation_rule: str
+    numeric_reason_code: str | None
     observed_json_type: str
     expected_json_type: str
     presence: str
     representation: str
+    retryable: bool
+    reauth_required: bool
 
 
 class GoogleHealthError(RuntimeError):

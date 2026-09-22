@@ -18,6 +18,7 @@ from app.importers.apple_xml import parse_apple_health_xml
 from app.importers.common import (
     CanonicalSample,
     decimal_value,
+    is_exactly_representable_at_scale,
     local_date_for,
     normalize_value,
 )
@@ -66,6 +67,31 @@ def test_decimal_values_fit_the_database_contract() -> None:
         decimal_value("0.1234567890123")
     with pytest.raises(ValueError, match="zu groß"):
         normalize_value(Decimal("999999999999"), "g", "ug")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (Decimal("1"), True),
+        (Decimal("1.2"), True),
+        (Decimal("1.2300000000000"), True),
+        (Decimal("1.123456789012"), True),
+        (Decimal("1.1234567890120"), True),
+        (Decimal("1.1234567890123"), False),
+        (Decimal("0.000000000001"), True),
+        (Decimal("0.0000000000010"), True),
+        (Decimal("0.0000000000001"), False),
+    ],
+)
+def test_exact_decimal_representability_at_numeric_scale(
+    value: Decimal, expected: bool
+) -> None:
+    assert is_exactly_representable_at_scale(value, scale=12) is expected
+
+
+def test_decimal_value_normalizes_exact_trailing_zero_scale_without_rounding() -> None:
+    assert decimal_value("1.2300000000000") == Decimal("1.230000000000")
+    assert decimal_value("0.0000000000010") == Decimal("0.000000000001")
 
 
 def test_berlin_dst_and_midnight_local_date() -> None:

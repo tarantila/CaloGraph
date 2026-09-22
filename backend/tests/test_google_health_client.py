@@ -774,6 +774,108 @@ def _parse_activity_payload(point: dict[str, object]):
         page_size=10,
     )
 
+@pytest.mark.parametrize(
+    ("value", "expected_value"),
+    [
+        (Decimal("1"), Decimal("1.000000000000")),
+        (Decimal("1.2"), Decimal("1.200000000000")),
+        (Decimal("1.2300000000000"), Decimal("1.230000000000")),
+        (Decimal("1.123456789012"), Decimal("1.123456789012")),
+        (Decimal("1.1234567890120"), Decimal("1.123456789012")),
+        (Decimal("0.000000000001"), Decimal("0.000000000001")),
+        (Decimal("0.0000000000010"), Decimal("0.000000000001")),
+    ],
+)
+def test_activity_accepts_exact_values_at_numeric_scale(
+    value: Decimal, expected_value: Decimal
+) -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = value
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == expected_value
+@pytest.mark.parametrize(
+    ("value", "expected", "observed_type"),
+    [
+        (123, "accepted", "number"),
+        (Decimal("12.5"), "accepted", "number"),
+        (Decimal("999999999999.123456789012"), "accepted", "number"),
+        (0.1, "accepted", "number"),
+        (Decimal("0.1234567890123"), "exceeds_numeric_scale_with_precision", "number"),
+        (Decimal("-1"), "negative", "number"),
+        (Decimal("1000000000000"), "exceeds_numeric_range", "number"),
+        (Decimal("NaN"), "non_finite", "number"),
+        (Decimal("Infinity"), "non_finite", "number"),
+        (None, "not_numeric", "null"),
+        ("12.5", "not_numeric", "string"),
+    ],
+)
+def test_activity_numeric_reason_codes_are_bounded(
+    value, expected: str, observed_type: str
+) -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = value
+
+    if expected == "accepted":
+        page = _parse_activity_payload(point)
+        assert len(page.data_points) == 1
+        parsed = page.data_points[0]
+        assert parsed.value == Decimal(str(value))
+        return
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic is not None
+    assert diagnostic.domain == "activity_energy"
+    assert diagnostic.operation == "activity_read"
+    assert diagnostic.endpoint_key == "active_energy_burned_data_points"
+    assert diagnostic.parser_stage == "scalar_data_point"
+    assert diagnostic.field_path == "activeEnergyBurned.kcal"
+    assert diagnostic.validation_rule == "nonnegative_number"
+    assert diagnostic.numeric_reason_code == expected
+    assert diagnostic.observed_json_type == observed_type
+    assert diagnostic.expected_json_type == "number"
+    assert diagnostic.retryable is False
+    assert diagnostic.reauth_required is False
+
+
+def test_activity_numeric_conversion_failure_has_no_value() -> None:
+    class InvalidStringInt(int):
+        def __str__(self) -> str:
+            return "not-a-number"
+
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = InvalidStringInt(1)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.diagnostic is not None
+    assert raised.value.diagnostic.numeric_reason_code == "decimal_conversion_failed"
+    assert "not-a-number" not in repr(raised.value)
+
+
+def test_activity_float_conversion_does_not_introduce_binary_scale() -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = 0.1
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == Decimal("0.1")
+
+
+
 
 @pytest.mark.parametrize(
     ("mutate", "field_path", "validation_rule", "observed_type", "expected_type"),

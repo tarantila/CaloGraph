@@ -17,9 +17,44 @@ CANONICAL_VALUE_LIMIT = Decimal("100000000000000")
 CANONICAL_QUANTUM = Decimal("0.000001")
 
 
-def _decimal_places(value: Decimal) -> int:
+
+
+def is_exactly_representable_at_scale(value: Decimal, scale: int = 12) -> bool:
+    """Return whether a finite Decimal has no nonzero digits beyond scale."""
+    if isinstance(scale, bool) or not isinstance(scale, int) or scale < 0:
+        raise ValueError("scale must be a nonnegative integer")
+    if not isinstance(value, Decimal) or not value.is_finite():
+        return False
     exponent = value.as_tuple().exponent
-    return max(0, -exponent) if isinstance(exponent, int) else 0
+    if not isinstance(exponent, int):
+        return False
+    if exponent >= -scale:
+        return True
+    extra_places = -exponent - scale
+    digits = value.as_tuple().digits
+    if not any(digits):
+        return True
+    return extra_places <= len(digits) and not any(digits[-extra_places:])
+
+
+def normalize_exact_decimal_scale(value: Decimal, scale: int = 12) -> Decimal:
+    """Normalize an exactly representable Decimal without changing its value."""
+    if not is_exactly_representable_at_scale(value, scale):
+        raise ValueError("Decimal is not exactly representable at the requested scale")
+    sign, digits, exponent = value.as_tuple()
+    if not isinstance(exponent, int):
+        raise ValueError("Decimal exponent is not finite")
+    target_exponent = -scale
+    if exponent > target_exponent:
+        normalized_digits = digits + (0,) * (exponent - target_exponent)
+    elif exponent < target_exponent:
+        trim = target_exponent - exponent
+        normalized_digits = digits[:-trim] if trim < len(digits) else (0,)
+    else:
+        normalized_digits = digits
+    if not normalized_digits:
+        normalized_digits = (0,)
+    return Decimal((sign, normalized_digits, target_exponent))
 
 
 @dataclass(config=ConfigDict(strict=True, validate_assignment=True), slots=True)
@@ -75,10 +110,10 @@ class CanonicalSample:
             not value.is_finite()
             or value < 0
             or value >= ORIGINAL_VALUE_LIMIT
-            or _decimal_places(value) > 12
+            or not is_exactly_representable_at_scale(value)
         ):
             raise ValueError("Originalwert liegt außerhalb des erlaubten Bereichs")
-        return value
+        return normalize_exact_decimal_scale(value)
 
     @field_validator("start_at", "end_at")
     @classmethod
@@ -178,12 +213,12 @@ def decimal_value(value: Any) -> Decimal:
         not result.is_finite()
         or result < 0
         or result >= ORIGINAL_VALUE_LIMIT
-        or _decimal_places(result) > 12
+        or not is_exactly_representable_at_scale(result)
     ):
         raise ImportFieldError(
             "Messwert muss in Numeric(24,12) passen und nicht negativ sein"
         )
-    return result
+    return normalize_exact_decimal_scale(result)
 
 
 def normalize_value(value: Decimal, incoming_unit: str, canonical_unit: str) -> Decimal:
