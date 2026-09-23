@@ -350,7 +350,7 @@ class Settings(BaseSettings):
                 "google_health_client_secret",
                 "google_health_client_secret_file",
                 "GOOGLE_HEALTH_CLIENT_SECRET_FILE",
-                True,
+                False,
             ),
         )
         for value_field, file_field, variable_name, allow_empty in secret_fields:

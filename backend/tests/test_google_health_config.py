@@ -76,19 +76,43 @@ def test_google_health_settings_are_disabled_and_secret_safe() -> None:
     assert "google_health_client_secret_file" not in serialized
 
 
-def test_google_health_disabled_allows_empty_secret_file(tmp_path: Path) -> None:
-    secret_file = tmp_path / "google-client-secret"
-    secret_file.write_text("", encoding="utf-8")
-
+def test_google_health_disabled_without_global_credentials_starts() -> None:
     configured = Settings(
         _env_file=None,
         environment="development",
         google_health_enabled=False,
-        google_health_client_secret_file=str(secret_file),
     )
 
     assert configured.google_health_enabled is False
+    assert configured.google_health_client_id == ""
     assert configured.google_health_client_secret == ""
+    assert configured.google_health_client_secret_file is None
+
+def test_google_health_enabled_without_global_credentials_fails_closed() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="Google Health credentials are required when GOOGLE_HEALTH_ENABLED=true",
+    ):
+        Settings(
+            _env_file=None,
+            environment="development",
+            google_health_enabled=True,
+        )
+
+
+def test_google_health_explicit_empty_secret_file_is_rejected_even_when_disabled(
+    tmp_path: Path,
+) -> None:
+    secret_file = tmp_path / "google-client-secret"
+    secret_file.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="GOOGLE_HEALTH_CLIENT_SECRET_FILE"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            google_health_enabled=False,
+            google_health_client_secret_file=str(secret_file),
+        )
 
 
 def test_google_health_enabled_requires_client_id_without_leaking_secret(
@@ -129,7 +153,7 @@ def test_google_health_enabled_rejects_empty_secret_file_without_leaks(
         )
 
     message = str(captured.value)
-    assert "Google Health credentials are required" in message
+    assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE contains an invalid secret" in message
     assert client_id not in message
     assert str(secret_file) not in message
 
@@ -230,7 +254,7 @@ def test_google_health_direct_and_file_secret_sources_conflict_without_leaks(
     assert "file-google-secret" not in message
 
 
-def test_google_health_runtime_templates_wire_non_secret_google_values() -> None:
+def test_google_health_runtime_templates_exclude_global_credentials() -> None:
     project_root = next(
         (
             candidate
@@ -245,13 +269,11 @@ def test_google_health_runtime_templates_wire_non_secret_google_values() -> None
     production = (project_root / ".env.production.example").read_text(encoding="utf-8")
 
     for template in (development, production):
-        assert "GOOGLE_HEALTH_ENABLED=" in template
-        assert "GOOGLE_HEALTH_CLIENT_ID=" in template
-        assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE=" in template
-        assert "GOOGLE_HEALTH_CLIENT_SECRET=" not in template
+        assert "GOOGLE_HEALTH_ENABLED=false" in template
+        assert "GOOGLE_HEALTH_CLIENT_ID" not in template
+        assert "GOOGLE_HEALTH_CLIENT_SECRET" not in template
 
     assert "GOOGLE_HEALTH_ENABLED: ${GOOGLE_HEALTH_ENABLED:-false}" in compose
-    assert "GOOGLE_HEALTH_CLIENT_ID: ${GOOGLE_HEALTH_CLIENT_ID-}" in compose
-    assert "GOOGLE_HEALTH_CLIENT_SECRET_FILE: /run/secrets/google_health_client_secret" in compose
-    assert "google_health_client_secret:" in compose
-    assert "file: ${GOOGLE_HEALTH_CLIENT_SECRET_FILE:-/dev/null}" in compose
+    assert "GOOGLE_HEALTH_CLIENT_ID" not in compose
+    assert "GOOGLE_HEALTH_CLIENT_SECRET" not in compose
+    assert "google_health_client_secret" not in compose

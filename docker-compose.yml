@@ -69,8 +69,6 @@ services:
       BACKUP_INCLUDE_SECRETS: ${BACKUP_INCLUDE_SECRETS:-false}
       CALOGRAPH_TIMEZONE: ${CALOGRAPH_TIMEZONE:-Europe/Berlin}
       GOOGLE_HEALTH_ENABLED: ${GOOGLE_HEALTH_ENABLED:-false}
-      GOOGLE_HEALTH_CLIENT_ID: ${GOOGLE_HEALTH_CLIENT_ID-}
-      GOOGLE_HEALTH_CLIENT_SECRET_FILE: /run/secrets/google_health_client_secret
       INITIAL_ADMIN_SETUP_ENABLED: ${INITIAL_ADMIN_SETUP_ENABLED:-false}
       CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:?Set CALOGRAPH_PUBLIC_URL in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE in .env}
@@ -159,7 +157,6 @@ services:
       - rate_limit_secret
       - credential_encryption_key
       - mfa_encryption_key
-      - google_health_client_secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -368,8 +365,6 @@ secrets:
     file: ${SESSION_SECRET_FILE:?Set SESSION_SECRET_FILE in .env}
   rate_limit_secret:
     file: ${RATE_LIMIT_SECRET_FILE:?Set RATE_LIMIT_SECRET_FILE in .env}
-  google_health_client_secret:
-    file: ${GOOGLE_HEALTH_CLIENT_SECRET_FILE:-/dev/null}
   credential_encryption_key:
     file: ${CREDENTIAL_ENCRYPTION_KEY_FILE:?Set CREDENTIAL_ENCRYPTION_KEY_FILE in .env}
   mfa_encryption_key:
