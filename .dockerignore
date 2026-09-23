@@ -27,5 +27,5 @@ uploads
 !**/.env.example
 
 # Local AI / agent-generated artifacts
-.superpowers/
-docs/superpowers/
+.*owers/
+docs/*owers/
