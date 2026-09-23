@@ -1,5 +1,8 @@
 .git
 .github
+
+# Documentation is not copied into any image target.
+docs/
 # Local AI / agent tooling
 .omp/
 .codex/
@@ -25,7 +28,3 @@ uploads
 !.env.example
 !.env.production.example
 !**/.env.example
-
-# Local AI / agent-generated artifacts
-.*owers/
-docs/*owers/
