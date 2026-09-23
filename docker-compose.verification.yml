@@ -1,19 +1,5 @@
 services:
   backend:
-    image: calograph-backend-verification:${CALOGRAPH_VERSION:-0.6.5}
-    build:
-      target: backend-development
-    command:
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --reload
-    volumes:
-      - ./backend:/app
-    read_only: false
     environment:
       E2E_VERIFICATION_DATE: ${E2E_VERIFICATION_DATE}
       GOOGLE_HEALTH_ENABLED: "true"

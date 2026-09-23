@@ -4,17 +4,28 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 project_name=calograph-verification-e2e
 port=${E2E_PORT:-8188}
-verification_date=${E2E_VERIFICATION_DATE:-$(date -u +%F)}
+verification_date=${E2E_VERIFICATION_DATE:-$(TZ=Europe/Berlin date +%F)}
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/calograph-verification-e2e.XXXXXX")
 secrets_dir="$temporary_root/secrets"
 env_file="$temporary_root/.env"
 mkdir -p "$secrets_dir"
 chmod 700 "$temporary_root" "$secrets_dir"
 cleanup() {
-  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$temporary_root"
+  status=$?
+  trap - EXIT INT TERM
+  if ! compose down --volumes --remove-orphans >/dev/null 2>&1; then
+    printf 'Verification E2E Compose cleanup failed.\n' >&2
+    status=1
+  fi
+  if ! rm -rf "$temporary_root"; then
+    printf 'Verification E2E temporary-file cleanup failed.\n' >&2
+    status=1
+  fi
+  exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for secret in postgres_password session_secret rate_limit_secret; do
   openssl rand -hex 32 >"$secrets_dir/$secret"
@@ -60,7 +71,13 @@ compose() {
     "$@"
 }
 
-compose up --detach --build --wait postgres backend frontend
+compose config --quiet
+if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
+  compose up --detach --no-build --wait postgres backend frontend
+else
+  compose up --detach --build --wait postgres backend frontend
+fi
 compose exec --no-TTY backend alembic upgrade head
-compose exec --no-TTY backend python tests/e2e_verification_seed.py
+compose exec --no-TTY backend python - \
+  < "$project_root/backend/tests/e2e_verification_seed.py"
 compose run --rm --build --no-deps e2e
