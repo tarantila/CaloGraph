@@ -60,6 +60,4 @@ Thumbs.db
 .mcp.json
 
 # Local AI / agent-generated artifacts
-.superpowers/
 .worktrees/
-docs/superpowers/
