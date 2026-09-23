@@ -350,7 +350,7 @@ class Settings(BaseSettings):
                 "google_health_client_secret",
                 "google_health_client_secret_file",
                 "GOOGLE_HEALTH_CLIENT_SECRET_FILE",
-                False,
+                True,
             ),
         )
         for value_field, file_field, variable_name, allow_empty in secret_fields:
@@ -392,6 +392,17 @@ class Settings(BaseSettings):
             port=self.database_port,
             database=self.database_name,
         ).render_as_string(hide_password=False)
+        return self
+
+    @model_validator(mode="after")
+    def validate_google_health_credentials(self) -> Settings:
+        if self.google_health_enabled and (
+            not self.google_health_client_id.strip()
+            or not self.google_health_client_secret.strip()
+        ):
+            raise ValueError(
+                "Google Health credentials are required when GOOGLE_HEALTH_ENABLED=true"
+            )
         return self
 
     @field_validator("yazio_provider", mode="before")
