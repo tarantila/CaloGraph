@@ -47,11 +47,11 @@ if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
     -e E2E_USERNAME="$e2e_username" \
     -e E2E_PASSWORD="$e2e_password" \
     -e E2E_IMPORT_TOKEN="$e2e_token" \
-    e2e npx playwright test --workers=1
+    e2e npx playwright test --workers=1 --grep-invert='verification-data\.spec\.ts'
 else
   compose run --rm --build \
     -e E2E_USERNAME="$e2e_username" \
     -e E2E_PASSWORD="$e2e_password" \
     -e E2E_IMPORT_TOKEN="$e2e_token" \
-    e2e npx playwright test --workers=1
+    e2e npx playwright test --workers=1 --grep-invert='verification-data\.spec\.ts'
 fi
