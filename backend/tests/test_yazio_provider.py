@@ -348,6 +348,50 @@ def test_sdk_normalizes_v22_weight_timestamp_shape_without_changing_identity(
         "source": "synthetic-source",
         "_identity": "synthetic-provider-id",
     }
+def test_sdk_weight_discards_latest_weight_payload_outside_requested_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_clients(monkeypatch)
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_nutrients,
+        "sync_detailed",
+        lambda **_: _Response(parsed=[]),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_daily_summary_widget,
+        "sync_detailed",
+        lambda **_: _Response(parsed={}),
+    )
+    monkeypatch.setattr(
+        yazio_sdk_provider.get_latest_weight,
+        "sync_detailed",
+        lambda **_: _Response(
+            parsed=type(
+                "WeightEntry",
+                (),
+                {
+                    "date": "2026-07-31",
+                    "id": "out-of-range-weight",
+                    "value": 72.5,
+                    "external_id": None,
+                    "gateway": None,
+                    "source": None,
+                },
+            )()
+        ),
+    )
+
+    result = yazio_sdk_provider.YazioSdkProvider().fetch(
+        "owner@example.com",
+        "private-password",
+        date(2026, 8, 1),
+        date(2026, 8, 2),
+        False,
+    )
+
+    assert result.payload["weight"] == {}
+
+
 
 
 def test_sdk_weight_skips_typed_record_without_stable_identity(
@@ -410,7 +454,7 @@ def test_sdk_weight_deduplicates_by_provider_id_and_preserves_provider_date(
                 "WeightEntry",
                 (),
                 {
-                    "date": "2026-07-31",
+                    "date": "2026-08-01",
                     "id": "provider-weight-1",
                     "value": 72.5,
                     "external_id": None,
@@ -433,7 +477,7 @@ def test_sdk_weight_deduplicates_by_provider_id_and_preserves_provider_date(
     assert result.payload["weight"] == {
         "provider-weight-1": {
             "id": "provider-weight-1",
-            "date": "2026-07-31",
+            "date": "2026-08-01",
             "value": 72.5,
             "unit": "kg",
             "external_id": None,

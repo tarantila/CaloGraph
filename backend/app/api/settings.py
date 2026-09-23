@@ -4,7 +4,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
@@ -15,6 +15,7 @@ from app.activity import (
     ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
     ACTIVITY_PROVIDER_SOURCE_TYPES,
     ACTIVITY_SOURCE_TYPES,
+    GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
@@ -26,8 +27,10 @@ from app.auth.security import (
 )
 from app.config import settings
 from app.database import get_db
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.models import (
     ApiToken,
+    GoogleHealthConnection,
     HealthSample,
     NutritionTarget,
     PasskeyCredential,
@@ -888,18 +891,35 @@ def _lock_target_owner(db: Session, user_id: UUID) -> None:
     db.scalar(select(User).where(User.id == user_id).with_for_update())
 
 def _available_activity_sources(db: Session, user_id: UUID) -> list[str]:
-    return list(
-        db.scalars(
-            select(HealthSample.source_type)
-            .where(
-                HealthSample.user_id == user_id,
-                HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
-                HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
-            )
-            .distinct()
-            .order_by(HealthSample.source_type)
-        )
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
     )
+    google_selectable = bool(
+        settings.google_health_enabled
+        and settings.google_health_client_id
+        and settings.google_health_client_secret
+        and connection is not None
+        and connection.state == "active"
+        and GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
+    )
+    statement = select(HealthSample.source_type).where(
+        HealthSample.user_id == user_id,
+        HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+        HealthSample.source_type.in_(ACTIVITY_SOURCE_TYPES),
+    )
+    if not google_selectable:
+        statement = statement.where(
+            HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+        )
+    else:
+        assert connection is not None
+        statement = statement.where(
+            or_(
+                HealthSample.source_type != GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+                HealthSample.source_identifier == str(connection.id),
+            )
+        )
+    return list(db.scalars(statement.distinct().order_by(HealthSample.source_type)))
 
 
 def _activity_provider_source_type(

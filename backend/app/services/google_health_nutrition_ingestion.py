@@ -34,6 +34,7 @@ from app.nutrition.enums import (
 )
 from app.nutrition.models import (
     NutritionFieldObservation,
+    NutritionFoodSnapshot,
     NutritionIngestionRun,
     NutritionProvenance,
     NutritionServingObservation,
@@ -43,6 +44,8 @@ from app.nutrition.repositories import (
     get_current_consumption_event,
     get_or_create_consumption_event,
     get_or_create_external_identity,
+    get_or_create_food_profile,
+    get_or_create_food_snapshot,
     get_or_create_identity_link,
     get_or_create_source_observation,
 )
@@ -318,10 +321,16 @@ def _provenance(
     user_id: UUID,
     source_observation_id: UUID,
     consumption_event_id: UUID | None = None,
+    food_snapshot_id: UUID | None = None,
     serving_observation_id: UUID | None = None,
     field_observation_id: UUID | None = None,
 ) -> None:
-    targets = (consumption_event_id, serving_observation_id, field_observation_id)
+    targets = (
+        consumption_event_id,
+        food_snapshot_id,
+        serving_observation_id,
+        field_observation_id,
+    )
     if sum(target is not None for target in targets) != 1:
         raise ValueError("provenance must have exactly one target")
     filters = [
@@ -331,6 +340,7 @@ def _provenance(
     ]
     columns = (
         NutritionProvenance.consumption_event_id,
+        NutritionProvenance.food_snapshot_id,
         NutritionProvenance.serving_observation_id,
         NutritionProvenance.field_observation_id,
     )
@@ -342,6 +352,7 @@ def _provenance(
             user_id=user_id,
             source_observation_id=source_observation_id,
             consumption_event_id=consumption_event_id,
+            food_snapshot_id=food_snapshot_id,
             serving_observation_id=serving_observation_id,
             field_observation_id=field_observation_id,
             role=ObservationRole.PROVIDER.value,
@@ -717,7 +728,18 @@ def _persist_point(
     )
 
     food_identity = None
+    food_snapshot: NutritionFoodSnapshot | None = None
     if log.food is not None:
+        food_metadata = _safe_metadata(
+            {
+                **_data_source_metadata(point.data_source),
+                "food": log.food,
+                "display_name": log.food_display_name,
+                "meal_type": log.meal_type,
+            }
+        )
+        food_name = food_metadata.get("display_name")
+        food_name = food_name if isinstance(food_name, str) else None
         food_identity = get_or_create_external_identity(
             db,
             user_id=user_id,
@@ -726,7 +748,63 @@ def _persist_point(
             identity_value=log.food,
             identity_kind="product",
             source_instance_id=source_instance_id,
-            provider_metadata=_safe_metadata({"display_name": log.food_display_name}),
+            provider_metadata=food_metadata,
+        )
+        food_profile = get_or_create_food_profile(
+            db,
+            user_id=user_id,
+            provider_key=_PROVIDER,
+            source_instance_id=source_instance_id,
+            external_identity_id=food_identity.id,
+        )
+        food_content_hash = _fingerprint(
+            {
+                "food": log.food,
+                "display_name": food_name,
+                "provider_metadata": food_metadata,
+            }
+        )
+        food_source = get_or_create_source_observation(
+            db,
+            user_id=user_id,
+            ingestion_run_id=run.id,
+            provider_key=_PROVIDER,
+            source_instance_id=source_instance_id,
+            source_namespace=_FOOD_NAMESPACE,
+            source_record_id=log.food,
+            source_revision=1,
+            observation_fingerprint=food_content_hash,
+            observation_kind=ObservationKind.PRODUCT_PROFILE.value,
+            provider_civil_datetime=None,
+            provider_timezone=None,
+            canonical_start_at=None,
+            canonical_end_at=None,
+            local_date=None,
+            timezone_source=None,
+            time_confidence=None,
+            presence_state=PresenceState.SUPPLIED.value,
+            coverage_state=coverage_state,
+            resolution_state=ResolutionState.RESOLVED.value,
+            lineage_state=LineageState.CONFIRMED.value,
+            payload_hash=food_content_hash,
+            provider_metadata=food_metadata,
+        )
+        food_snapshot = get_or_create_food_snapshot(
+            db,
+            user_id=user_id,
+            food_profile_id=food_profile.id,
+            advance_current=True,
+            source_observation_id=food_source.id,
+            content_hash=food_content_hash,
+            provider_revision=str(food_source.source_revision),
+            name=food_name,
+            provider_metadata=food_metadata,
+        )
+        _provenance(
+            db,
+            user_id=user_id,
+            source_observation_id=food_source.id,
+            food_snapshot_id=food_snapshot.id,
         )
 
     logical_event_key = _logical_key(point, fingerprint)
@@ -751,7 +829,7 @@ def _persist_point(
             source_instance_id=source_instance_id,
             event_kind=_event_kind(point),
             logical_event_key=logical_event_key,
-            food_snapshot_id=None,
+            food_snapshot_id=food_snapshot.id if food_snapshot is not None else None,
             provider_civil_datetime=civil_start,
             provider_timezone=interval.start_utc_offset,
             canonical_start_at=interval.start_time,
@@ -772,8 +850,12 @@ def _persist_point(
             content_hash=fingerprint,
             provider_metadata=metadata,
         )
-    _provenance(db, user_id=user_id, source_observation_id=source.id, consumption_event_id=event.id)
-
+    _provenance(
+        db,
+        user_id=user_id,
+        source_observation_id=source.id,
+        consumption_event_id=event.id,
+    )
     event_identity = get_or_create_external_identity(
         db,
         user_id=user_id,

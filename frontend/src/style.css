@@ -1093,6 +1093,28 @@ td strong { color: #f0f4f9; font-weight: 600; }
   gap: .85rem 1rem;
   margin-top: .55rem;
 }
+.integration-card-header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .45rem;
+  color: #e8edf5;
+}
+.integration-card-header h2 { margin: 0; }
+.integration-card-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.google-sync-panel {
+  display: grid;
+  gap: .7rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--border);
+}
+.google-sync-panel h3,
+.google-sync-panel p { margin: 0; }
 .yazio-card-title {
   display: flex;
   align-items: center;

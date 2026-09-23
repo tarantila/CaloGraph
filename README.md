@@ -69,8 +69,6 @@ CaloGraph is actively evolving. Planned areas of development include:
   newer community API and SDK.
 - **Richer Apple Health ingestion:** explore additional nutrition and meal-level
   data where the available Apple Health export paths provide reliable metadata.
-- **Google Health integration:** explore the Google Health API as an additional
-  server-side source for health metrics, nutrition logs, meals and food data.
 
 These are planned development directions, not compatibility guarantees or
 release commitments. External provider APIs and available data may change over

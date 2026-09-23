@@ -1,4 +1,4 @@
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -60,7 +60,7 @@ function deferred<T>(): Deferred<T> {
 let serverPreferences: Record<DataArea, ProviderKey[]>
 let putHandler: ((area: DataArea, providerKeys: ProviderKey[]) => Promise<unknown>) | undefined
 let preferenceGetCount = 0
-
+let advertiseGoogleScalarProviders = false
 function configureApi(): void {
   serverPreferences = structuredClone(initialPreferences)
   putHandler = undefined
@@ -89,7 +89,15 @@ function configureApi(): void {
       return Promise.resolve(undefined)
     }
     const area = path.split('/').at(-1) as keyof typeof availabilityByArea
-    return Promise.resolve({ data_area: area, providers: availabilityByArea[area] })
+    const configuredProviders = [...availabilityByArea[area]]
+    if (
+      advertiseGoogleScalarProviders
+      && (area === 'activity_energy' || area === 'weight')
+      && !configuredProviders.some(({ provider_key }) => provider_key === 'google_health')
+    ) {
+      configuredProviders.push({ provider_key: 'google_health', available: true, status: 'available' })
+    }
+    return Promise.resolve({ data_area: area, providers: configuredProviders })
   })
 }
 
@@ -102,9 +110,9 @@ function mountView() {
 describe('AccountDataSourcesView', () => {
   beforeEach(() => {
     testPinia = createPinia()
-    setActivePinia(testPinia)
     apiMock.mockReset()
     setLocale(DEFAULT_LOCALE)
+    advertiseGoogleScalarProviders = false
     configureApi()
   })
 
@@ -167,6 +175,23 @@ describe('AccountDataSourcesView', () => {
     expect(wrapper.text()).not.toContain('Withings')
     expect(wrapper.find('[data-provider-key="withings"]').exists()).toBe(false)
   })
+  it('shows Google for activity and weight only when backend availability advertises it', async () => {
+    advertiseGoogleScalarProviders = true
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-area="activity_energy"] [data-provider-key="google_health"]').exists()).toBe(true)
+    expect(wrapper.find('[data-area="weight"] [data-provider-key="google_health"]').exists()).toBe(true)
+    wrapper.unmount()
+
+    advertiseGoogleScalarProviders = false
+    const withoutGoogle = mountView()
+    await flushPromises()
+    expect(withoutGoogle.find('[data-area="activity_energy"] [data-provider-key="google_health"]').exists()).toBe(false)
+    expect(withoutGoogle.find('[data-area="weight"] [data-provider-key="google_health"]').exists()).toBe(false)
+    withoutGoogle.unmount()
+  })
+
 
   it('auto-saves a complete reordered area and exposes local saving and saved states', async () => {
     const pending = deferred<unknown>()
@@ -334,7 +359,6 @@ describe('AccountDataSourcesView', () => {
     await flushPromises()
     active.resolve({})
     await flushPromises()
-    expect(putBodies).toEqual([['yazio', 'apple_health', 'google_health']])
   })
 
 

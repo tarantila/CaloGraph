@@ -85,8 +85,17 @@ def assert_safe_test_database() -> None:
 @pytest.fixture(autouse=True)
 def clean_database():
     assert_safe_test_database()
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+    with engine.connect() as connection:
+        sqlite_foreign_keys = engine.dialect.name == "sqlite"
+        if sqlite_foreign_keys:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+        Base.metadata.drop_all(connection)
+        if sqlite_foreign_keys:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
+        Base.metadata.create_all(connection)
+        connection.commit()
     yield
 
 

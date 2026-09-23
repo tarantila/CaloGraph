@@ -95,7 +95,7 @@ def _sqlite_baseline(tmp_path):
     return engine
 
 
-def test_revision_is_linked_to_0028_and_is_current_head() -> None:
+def test_revision_is_linked_to_0028_and_migration_chain_has_current_head() -> None:
     revision = _revision_module()
     assert revision.revision == _REVISION_ID
     assert revision.down_revision == "20260910_0028"
@@ -103,7 +103,7 @@ def test_revision_is_linked_to_0028_and_is_current_head() -> None:
     assert revision.depends_on is None
 
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260918_0031"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260920_0032"]
 
 
 def test_upgrade_and_downgrade_only_change_google_health_tables(tmp_path) -> None:

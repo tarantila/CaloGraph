@@ -14,7 +14,8 @@ from app.auth.dependencies import _revalidate_locked_session
 from app.config import settings
 from app.google_health.constants import (
     GOOGLE_HEALTH_AUTH_URI,
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
 from app.google_health.errors import (
@@ -78,7 +79,7 @@ class _GoogleOAuthAdapter:
                     "token_uri": GOOGLE_HEALTH_TOKEN_URI,
                 }
             },
-            scopes=[GOOGLE_HEALTH_SCOPE],
+            scopes=list(GOOGLE_HEALTH_SCOPES),
             redirect_uri=redirect_uri,
         )
         token_response = flow.fetch_token(code=code, code_verifier=code_verifier)
@@ -148,7 +149,9 @@ def _status_from_connection(connection: GoogleHealthConnection | None) -> Google
         state = "disabled"
     elif connection is None:
         state = "not_connected"
-    elif connection.last_error == "scope_missing":
+    elif connection.last_error == "scope_missing" or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(
+        set(connection.granted_scopes or ())
+    ):
         state = "scope_missing"
     else:
         state = connection.state
@@ -213,7 +216,10 @@ def start_google_health_oauth(
         reauthorize = bool(connection and connection.state == "reauth_required")
         missing_refresh = bool(connection and not connection.encrypted_refresh_token)
         scope_change = bool(
-            connection and GOOGLE_HEALTH_SCOPE not in (connection.granted_scopes or [])
+            connection
+            and not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(
+                set(connection.granted_scopes or ())
+            )
         )
         state = create_oauth_state()
         verifier = create_pkce_verifier()
@@ -268,13 +274,13 @@ def _refresh_token_expiry(payload: Mapping[str, Any], timestamp: datetime) -> da
         raise ValueError("invalid refresh token expiry")
     try:
         seconds = float(value)
-    except OverflowError, ValueError:
+    except (OverflowError, ValueError):
         raise ValueError("invalid refresh token expiry") from None
     if not isfinite(seconds) or seconds < 0 or seconds > MAX_REFRESH_TOKEN_EXPIRES_IN:
         raise ValueError("invalid refresh token expiry")
     try:
         return timestamp + timedelta(seconds=seconds)
-    except OverflowError, ValueError:
+    except (OverflowError, ValueError):
         raise ValueError("invalid refresh token expiry") from None
 
 
@@ -415,7 +421,7 @@ def complete_google_health_oauth(
         scopes = normalize_granted_scopes(
             _token_value(payload, "granted_scopes", "scopes", "scope")
         )
-        if GOOGLE_HEALTH_SCOPE not in scopes:
+        if not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(scopes)):
             connection = _record_failure(db, user, timestamp, "scope_missing")
             db.commit()
             log_security_event(

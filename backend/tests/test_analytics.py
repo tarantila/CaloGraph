@@ -7,12 +7,21 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.activity import GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
 from app.analytics import service as analytics_service
 from app.analytics.service import budget_balance, daily_points, percentile
 from app.api.analytics import _range, calendar, daily, micronutrients, trends
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import NutritionTarget, NutritionTargetActivitySource, TrackingOverride, User
+from app.models import (
+    GoogleHealthConnection,
+    HealthSample,
+    ImportBatch,
+    NutritionTarget,
+    NutritionTargetActivitySource,
+    TrackingOverride,
+    User,
+)
 from app.services.import_service import persist_import
 
 
@@ -644,3 +653,54 @@ def test_micronutrient_analysis_uses_nutrition_days_and_reports_coverage(
     assert by_metric["iron_mg"]["status"] == "below_orientation"
     assert by_metric["vitamin_d_ug"]["coverage_ratio"] == 0.5
     assert by_metric["vitamin_d_ug"]["status"] == "insufficient_data"
+
+
+def test_google_activity_daily_points_ignore_wrong_connection_evidence(
+    db: Session, user: User
+) -> None:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"refresh",
+        granted_scopes=[],
+        state="active",
+    )
+    db.add(connection)
+    db.flush()
+    target = user.targets[0]
+    target.activity_mode = "full"
+    target.activity_source_type = GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    batch = ImportBatch(user_id=user.id, source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE, status="completed")
+    db.add(batch)
+    db.flush()
+    day = date(2026, 9, 20)
+    for source_identifier, value, suffix in (
+        ("wrong-connection", Decimal("900"), "wrong"),
+        (str(connection.id), Decimal("250"), "right"),
+    ):
+        db.add(
+            HealthSample(
+                user_id=user.id,
+                import_batch_id=batch.id,
+                external_sample_id=f"google-activity-{suffix}",
+                fingerprint=f"google-activity-{suffix}-{user.id}".replace("-", "")[:64],
+                source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+                source_name="Google Health",
+                source_identifier=source_identifier,
+                metric_type="active_energy_kcal",
+                value=value,
+                unit="kcal",
+                original_value=value,
+                original_unit="kcal",
+                start_at=datetime(2026, 9, 20, 8, tzinfo=UTC),
+                end_at=datetime(2026, 9, 20, 8, tzinfo=UTC),
+                local_date=day,
+                timezone="UTC",
+            )
+        )
+    db.commit()
+
+    point = daily_points(db, user, day, day)[0]
+
+    assert point.active_energy_kcal == Decimal("250")
+    assert point.activity_credit_kcal == Decimal("250")
+    assert point.activity_data_status == "credited"

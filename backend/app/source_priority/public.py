@@ -9,11 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import User
+from app.config import settings
+from app.models import GoogleHealthConnection, User
 from app.nutrition.projection.refresh import (
     DEFAULT_REFRESH_BATCH_SIZE,
     list_stale_nutrition_projection_dates,
 )
+from app.nutrition.resolution.discovery import discover_nutrition_providers
 from app.nutrition.resolution.sources import (
     DEFAULT_SOURCE_RESOLVERS,
     resolve_default_provider_sources,
@@ -84,6 +86,37 @@ def _source_list(
     ]
 
 
+def _available_provider_keys(
+    db: Session,
+    *,
+    user_id: UUID,
+    provider_keys: set[str],
+) -> set[str]:
+    available_provider_keys = set(provider_keys)
+    if "google_health" not in available_provider_keys:
+        return available_provider_keys
+    if not (
+        settings.google_health_enabled
+        and settings.google_health_client_id
+        and settings.google_health_client_secret
+    ):
+        available_provider_keys.discard("google_health")
+        return available_provider_keys
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
+    )
+    if connection is None or connection.state != "active":
+        available_provider_keys.discard("google_health")
+        return available_provider_keys
+    evidenced_providers = {
+        provider.provider_key
+        for provider in discover_nutrition_providers(db, user_id=user_id).providers
+    }
+    if "google_health" not in evidenced_providers:
+        available_provider_keys.discard("google_health")
+    return available_provider_keys
+
+
 def _is_public_global_policy(
     nutrition_rules: list[SourcePriorityRule],
     available_provider_keys: set[str],
@@ -138,7 +171,12 @@ def get_nutrition_priority_state(
         user_id=user_id,
         provider_keys=DEFAULT_SOURCE_RESOLVERS.keys(),
     )
-    available_provider_keys = {binding.provider_key for binding in bindings}
+    provider_keys = {binding.provider_key for binding in bindings}
+    available_provider_keys = _available_provider_keys(
+        db,
+        user_id=user_id,
+        provider_keys=provider_keys,
+    )
     policies = list_policies(db, user_id)
     latest_policy = (
         max(policies, key=lambda policy: (policy.version, str(policy.id))) if policies else None
@@ -153,7 +191,7 @@ def get_nutrition_priority_state(
             user_id,
             refresh_policy.id if refresh_policy is not None else None,
         )
-        if not policies and not available_provider_keys:
+        if not policies and not provider_keys:
             return NutritionPriorityState(
                 status="no_providers",
                 version=None,
@@ -164,7 +202,7 @@ def get_nutrition_priority_state(
         return NutritionPriorityState(
             status="configuration_required" if policies else "selection_required",
             version=version,
-            sources=_source_list(available_provider_keys, set()),
+            sources=_source_list(available_provider_keys, provider_keys),
             configuration_mode="none",
             projection_refresh_required=refresh_required,
         )
@@ -183,24 +221,31 @@ def get_nutrition_priority_state(
         return NutritionPriorityState(
             status="advanced_configuration",
             version=version,
-            sources=_source_list(available_provider_keys, configured_provider_keys),
+            sources=_source_list(available_provider_keys, configured_provider_keys | provider_keys),
             configuration_mode="advanced",
             projection_refresh_required=refresh_required,
         )
 
-    if _is_public_global_policy(all_nutrition_rules, available_provider_keys):
+    if _is_public_global_policy(all_nutrition_rules, provider_keys):
         return NutritionPriorityState(
             status="configured",
             version=version,
-            sources=_source_list(available_provider_keys, configured_provider_keys, wildcard_ranks),
+            sources=_source_list(
+                available_provider_keys,
+                configured_provider_keys | provider_keys,
+                wildcard_ranks,
+            ),
             configuration_mode="global",
             projection_refresh_required=refresh_required,
         )
-
     return NutritionPriorityState(
         status="configuration_required",
         version=version,
-        sources=_source_list(available_provider_keys, configured_provider_keys, wildcard_ranks),
+        sources=_source_list(
+            available_provider_keys,
+            configured_provider_keys | provider_keys,
+            wildcard_ranks,
+        ),
         configuration_mode="none",
         projection_refresh_required=refresh_required,
     )

@@ -24,7 +24,8 @@ from app.google_health.client import (
     NutritionLogPage,
 )
 from app.google_health.constants import (
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_REQUIRED_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
     GOOGLE_HEALTH_TOKEN_URI,
 )
 from app.google_health.errors import GoogleHealthClientError
@@ -86,7 +87,7 @@ Adapter = Callable[..., Any]
 _ERROR_MESSAGES = {
     "connection_not_configured": "Google Health connection is not configured.",
     "connection_inactive": "Google Health connection is inactive.",
-    "scope_missing": "Google Health nutrition permission is unavailable.",
+    "scope_missing": "Google Health readonly permissions are unavailable.",
     "credential_decryption_error": "Google Health credentials are unavailable.",
     "credentials_unavailable": "Google Health credentials are unavailable.",
     "pagination_error": "Google Health returned invalid pagination.",
@@ -108,6 +109,53 @@ _PROVIDER_ERROR_CODES = frozenset(
         "invalid_response",
     }
 )
+_REAUTH_ERROR_CODES = frozenset(
+    {
+        "reauth_required",
+        "scope_missing",
+        "credential_decryption_error",
+        "credentials_unavailable",
+    }
+)
+
+
+def _record_connection_status(
+    session_factory: SessionFactory,
+    *,
+    user_id: UUID,
+    error_code: str | None = None,
+    success_at: datetime | None = None,
+) -> None:
+    """Record sync outcome metadata without changing the sync's error contract."""
+    db: Session | None = None
+    try:
+        db = session_factory()
+        connection = db.scalar(
+            select(GoogleHealthConnection)
+            .where(
+                GoogleHealthConnection.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if connection is not None:
+            if success_at is not None:
+                connection.last_success_at = success_at
+                connection.last_error = None
+                connection.state = "active"
+            elif error_code is not None:
+                safe_code = error_code if error_code in _ERROR_MESSAGES else "provider_error"
+                connection.last_error = safe_code
+                if safe_code in _REAUTH_ERROR_CODES:
+                    connection.state = "reauth_required"
+            db.commit()
+    except Exception:
+        if db is not None:
+            with suppress(Exception):
+                db.rollback()
+    finally:
+        if db is not None:
+            db.close()
+
 
 
 def _default_credentials(refresh_token: str) -> object:
@@ -120,7 +168,7 @@ def _default_credentials(refresh_token: str) -> object:
         token_uri=GOOGLE_HEALTH_TOKEN_URI,
         client_id=settings.google_health_client_id,
         client_secret=settings.google_health_client_secret,
-        scopes=[GOOGLE_HEALTH_SCOPE],
+        scopes=list(GOOGLE_HEALTH_SCOPES),
     )
 
 
@@ -169,15 +217,9 @@ class GoogleHealthNutritionSyncService:
         requested_start: date,
         requested_end: date,
     ) -> GoogleHealthNutritionSyncResult:
-        """Fetch all pages, then persist them in one owned transaction.
-
-        The read session is released before provider I/O. The write session is
-        created only after pagination and is owned by this orchestration
-        service, including its commit and close.
-        """
+        """Fetch all pages, then persist them in one owned transaction."""
         if requested_start > requested_end:
             raise _safe_error("invalid_request")
-
         read_db = self._session_factory()
         try:
             connection = read_db.scalar(
@@ -187,31 +229,55 @@ class GoogleHealthNutritionSyncService:
             )
             if connection is None:
                 raise _safe_error("connection_not_configured")
+
+            attempted_at = datetime.now(UTC)
             if connection.state != "active":
+                connection.last_attempt_at = attempted_at
+                connection.last_error = "connection_inactive"
+                read_db.commit()
                 raise _safe_error("connection_inactive")
-            if GOOGLE_HEALTH_SCOPE not in (connection.granted_scopes or ()):
+            if not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ())):
+                connection.last_attempt_at = attempted_at
+                connection.last_error = "scope_missing"
+                connection.state = "reauth_required"
+                read_db.commit()
                 raise _safe_error("scope_missing")
 
             # Snapshot all values needed after the read session is released.
             source_instance_id = connection.id
             encrypted_refresh_token = connection.encrypted_refresh_token
+            # Record the attempt before any provider or credential I/O.
+            connection.last_attempt_at = attempted_at
+            read_db.commit()
         finally:
             read_db.close()
 
-        # These are intentionally local variables.  They are never included in
+        # These are intentionally local variables. They are never included in
         # a result, exception, log, or provider metadata value.
         try:
             refresh_token = self._decrypt_refresh_token(encrypted_refresh_token)
             if not isinstance(refresh_token, str) or not refresh_token:
                 raise ValueError("empty credential")
         except Exception:
-            raise _safe_error("credential_decryption_error") from None
+            error = _safe_error("credential_decryption_error")
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=error.code,
+            )
+            raise error from None
 
         try:
             credentials = self._credentials_factory(refresh_token)
             client = self._client_factory(credentials)
         except Exception:
-            raise _safe_error("credentials_unavailable") from None
+            error = _safe_error("credentials_unavailable")
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=error.code,
+            )
+            raise error from None
         finally:
             # Do not retain the plaintext token on the service instance.
             refresh_token = ""
@@ -240,17 +306,35 @@ class GoogleHealthNutritionSyncService:
                     raise _safe_error("pagination_error")
                 seen_tokens.add(next_page_token)
                 page_token = next_page_token
-        except GoogleHealthNutritionSyncError:
+        except GoogleHealthNutritionSyncError as exc:
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=exc.code,
+            )
             raise
         except GoogleHealthClientError as exc:
             code = getattr(exc, "code", "provider_error")
-            raise _safe_error(code if code in _PROVIDER_ERROR_CODES else "provider_error") from None
+            error = _safe_error(code if code in _PROVIDER_ERROR_CODES else "provider_error")
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=error.code,
+            )
+            raise error from None
         except Exception:
-            raise _safe_error("provider_error") from None
+            error = _safe_error("provider_error")
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=error.code,
+            )
+            raise error from None
         finally:
             _close_client(client)
 
         write_db: Session | None = None
+        persistence_error: GoogleHealthNutritionSyncError | None = None
         try:
             write_db = self._session_factory()
             run = self._adapter(
@@ -290,24 +374,47 @@ class GoogleHealthNutritionSyncService:
             if write_db is not None:
                 with suppress(Exception):
                     write_db.rollback()
-            raise _safe_error("persistence_error") from None
+            persistence_error = _safe_error("persistence_error")
         finally:
             if write_db is not None:
                 write_db.close()
 
-        policy_at = datetime.now(UTC)
-        bootstrap_nutrition_priority(
-            session_factory=self._session_factory,
+        if persistence_error is not None:
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code=persistence_error.code,
+            )
+            raise persistence_error from None
+
+        try:
+            policy_at = datetime.now(UTC)
+            bootstrap_nutrition_priority(
+                session_factory=self._session_factory,
+                user_id=user_id,
+                effective_from=policy_at,
+            )
+            rebuild_affected_nutrition_days(
+                session_factory=self._session_factory,
+                user_id=user_id,
+                ingestion_run_id=run.id,
+                policy_at=policy_at,
+            )
+        except Exception:
+            _record_connection_status(
+                self._session_factory,
+                user_id=user_id,
+                error_code="persistence_error",
+            )
+            raise
+
+        _record_connection_status(
+            self._session_factory,
             user_id=user_id,
-            effective_from=policy_at,
-        )
-        rebuild_affected_nutrition_days(
-            session_factory=self._session_factory,
-            user_id=user_id,
-            ingestion_run_id=run.id,
-            policy_at=policy_at,
+            success_at=datetime.now(UTC),
         )
         return result
+
 
 __all__ = [
     "GoogleHealthNutritionSyncError",

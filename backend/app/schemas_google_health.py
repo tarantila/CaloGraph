@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -31,3 +31,25 @@ class GoogleHealthOAuthStartResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     authorization_url: str
+
+
+class GoogleHealthDomainResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    fetched_count: int
+    persisted_count: int
+    requested_start: date
+    requested_end: date
+    covered_start: date | None = None
+    covered_end: date | None = None
+    error_code: str | None = None
+
+
+class GoogleHealthSyncResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    nutrition: GoogleHealthDomainResult
+    activity_energy: GoogleHealthDomainResult
+    weight: GoogleHealthDomainResult

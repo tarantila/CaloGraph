@@ -9,7 +9,7 @@ from app.config import settings
 from app.google_health.constants import (
     GOOGLE_HEALTH_AUTH_URI,
     GOOGLE_HEALTH_CALLBACK_PATH,
-    GOOGLE_HEALTH_SCOPE,
+    GOOGLE_HEALTH_SCOPES,
 )
 
 _CONSENT_INTENTS = frozenset({"initial", "reauthorize", "missing_refresh", "scope_change"})
@@ -98,7 +98,7 @@ def build_authorization_url(
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "access_type": "offline",
-        "scope": GOOGLE_HEALTH_SCOPE,
+        "scope": " ".join(GOOGLE_HEALTH_SCOPES),
         "state": state,
         "code_challenge": pkce_challenge(verifier),
         "code_challenge_method": "S256",

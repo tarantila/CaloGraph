@@ -59,6 +59,61 @@ def _candidate_map(base: Decimal, *, missing: bool = False) -> dict[str, SimpleN
         )
         for index, metric_key in enumerate(DAILY_PROJECTION_METRICS)
     }
+def test_provider_daily_serves_values_without_legacy_value_contributing_attribute(monkeypatch):
+    canonical_values = {
+        metric_key: Decimal(index + 1)
+        for index, metric_key in enumerate(DAILY_PROJECTION_METRICS)
+    }
+    canonical_values.update(
+        {
+            "dietary_energy_kcal": Decimal("1800"),
+            "protein_g": Decimal("40"),
+            "carbohydrates_g": Decimal("200"),
+            "fat_g": Decimal("60"),
+        }
+    )
+
+    def fake_period(db, **kwargs):
+        del db
+        return {
+            kwargs["start"]: {
+                metric_key: SimpleNamespace(
+                    value=canonical_values[metric_key],
+                    presence_state=PresenceState.SUPPLIED,
+                    coverage_state=CoverageState.COMPLETE,
+                    resolution_state=ResolutionState.RESOLVED,
+                )
+                for metric_key in kwargs["metric_keys"]
+            }
+        }
+
+    class EmptyDb:
+        def scalars(self, statement):
+            del statement
+            return []
+
+        def execute(self, statement):
+            del statement
+            return SimpleNamespace(all=lambda: [])
+
+    monkeypatch.setattr(period_reader, "_resolve_provider_period", fake_period)
+
+    result = provider_daily.read_provider_daily_points(
+        EmptyDb(),
+        user_id=USER_ID,
+        provider_key="yazio",
+        source_instance_id=SOURCE_INSTANCE_ID,
+        start=DAY,
+        end=DAY,
+    )
+
+    assert result[0].calories_kcal == canonical_values["dietary_energy_kcal"]
+    assert result[0].protein_g == canonical_values["protein_g"]
+    assert result[0].carbs_g == canonical_values["carbohydrates_g"]
+    assert result[0].fat_g == canonical_values["fat_g"]
+    assert result[0].tracking_status == "complete"
+
+
 
 
 def test_daily_preference_serves_canonical_provider_without_legacy_value_read(monkeypatch):

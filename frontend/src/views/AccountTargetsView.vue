@@ -114,6 +114,7 @@ const selectableActivitySources = computed(() => {
 const activityPreferenceSource = computed<ActivitySourceType | null>(() => {
   const sources: Record<string, ActivitySourceType> = {
     apple_health: 'apple_health_xml',
+    google_health: 'google_health_activity_v4',
     health_auto_export: 'health_auto_export_v2',
     yazio: 'yazio_export_v1',
   }

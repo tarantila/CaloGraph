@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.activity import ACTIVE_ENERGY_METRIC, GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
 from app.analytics import daily_point_parity as parity_module
 from app.analytics.daily_point_parity import (
     CanonicalDailyPointReason,
@@ -22,6 +23,7 @@ from app.analytics.daily_point_parity import (
     DailyPointRangeParity,
     DailyPointTrackingParity,
     _build_canonical_daily_point,
+    _read_daily_point_range_inputs,
     compare_daily_point,
     compare_daily_point_range,
 )
@@ -262,6 +264,7 @@ def _projection_day(
         ),
     ],
 )
+
 def test_canonical_tracking_uses_only_d1a_indicators(
     db: Session,
     user: User,
@@ -286,6 +289,81 @@ def test_canonical_tracking_uses_only_d1a_indicators(
     assert result.point.tracking_status == expected_status
     assert result.point.tracking_score == expected_score
     assert result.point.calories_kcal == expected_calories
+
+
+def test_google_activity_samples_are_connection_scoped_in_both_parity_loaders(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        encrypted_refresh_token=b"encrypted-refresh-token",
+        state="active",
+        granted_scopes=["https://www.googleapis.com/auth/fitness.activity.read"],
+    )
+    db.add(connection)
+    db.flush()
+    target = NutritionTarget(
+        user_id=user.id,
+        valid_from=LOCAL_DATE,
+        calories_kcal=Decimal("2000"),
+        protein_g=Decimal("120"),
+        activity_mode="full",
+        activity_source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+    )
+    db.add(target)
+    batch = _range_batch(db, user)
+    for source_identifier, value, suffix in (
+        ("wrong-connection", "999", "wrong-connection"),
+        (str(connection.id), "250", "matching-connection"),
+    ):
+        at = datetime.combine(LOCAL_DATE, datetime.min.time(), tzinfo=UTC)
+        db.add(
+            HealthSample(
+                user_id=user.id,
+                import_batch_id=batch.id,
+                external_sample_id=f"{suffix}-external",
+                fingerprint=f"{suffix}-fingerprint",
+                source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+                source_name="Google Health Connect",
+                source_identifier=source_identifier,
+                metric_type=ACTIVE_ENERGY_METRIC,
+                value=Decimal(value),
+                unit="kcal",
+                original_value=Decimal(value),
+                original_unit="kcal",
+                start_at=at,
+                end_at=at,
+                local_date=LOCAL_DATE,
+                timezone="UTC",
+            )
+        )
+    db.commit()
+    projection_day = _projection_day()
+    monkeypatch.setattr(
+        "app.analytics.daily_point_parity.read_canonical_nutrition_day",
+        lambda db, user_id, local_date: projection_day,
+    )
+
+    canonical = _build_canonical_daily_point(db, user.id, LOCAL_DATE)
+    (
+        _totals,
+        _counts,
+        active_by_source,
+        _active_sources,
+        _legacy,
+        _targets,
+        _overrides,
+    ) = _read_daily_point_range_inputs(
+        db,
+        user_id=user.id,
+        start=LOCAL_DATE,
+        end=LOCAL_DATE,
+    )
+
+    assert canonical.point is not None
+    assert canonical.point.active_energy_kcal == Decimal("250")
+    assert active_by_source[(LOCAL_DATE, GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE)] == Decimal("250")
+
 
 
 def test_not_projected_is_not_comparable_without_health_sample_fallback(
