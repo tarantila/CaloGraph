@@ -18,7 +18,24 @@ type ActivityResponse = {
 const username = process.env.E2E_VERIFICATION_USERNAME ?? 'verification-e2e-user'
 const otherUsername = process.env.E2E_VERIFICATION_OTHER_USERNAME ?? 'verification-e2e-other-user'
 const password = process.env.E2E_VERIFICATION_PASSWORD ?? 'verification-e2e-local-passphrase'
-const verificationDate = process.env.E2E_VERIFICATION_DATE
+function verificationDate(): string {
+  const date = process.env.E2E_VERIFICATION_DATE
+  if (!date) {
+    throw new Error('E2E_VERIFICATION_DATE is required for Verification E2E')
+  }
+  return date
+}
+
+function verificationInstant(): Date {
+  return new Date(`${verificationDate()}T12:00:00Z`)
+}
+
+test.beforeEach(async ({ page }) => {
+  const target = verificationInstant()
+  await page.clock.install({
+    time: new Date(target.getTime() - 60_000),
+  })
+})
 
 async function login(
   page: Page,
@@ -31,6 +48,7 @@ async function login(
   await page.getByLabel('Passwort').fill(loginPassword)
   await page.getByRole('button', { name: 'Anmelden' }).click()
   await expect(page.getByRole('heading', { name: 'Ernährungsüberblick' })).toBeVisible()
+  await page.clock.pauseAt(verificationInstant())
 }
 
 function eventByName(events: Array<Record<string, unknown>>, name: string): Record<string, unknown> {
@@ -48,7 +66,7 @@ test('reads isolated nutrition evidence without provider blending', async ({ pag
   expect(body.canonical?.provider_key).toBe('google_health')
   expect(body.canonical?.record_count).toBe(6)
   expect(body.canonical?.events).toHaveLength(6)
-  if (verificationDate) expect(response.url()).toContain(`date=${verificationDate}`)
+  expect(response.url()).toContain(`date=${verificationDate()}`)
 
   const events = body.canonical!.events
   expect(eventByName(events, 'Synthetic Snapshot Food').meal_type).toBe('breakfast')
@@ -118,7 +136,7 @@ test('keeps Google activity as one daily rollup and exposes YAZIO separately', a
   await page.getByRole('button', { name: 'Alle Quellen anzeigen' }).click()
   const allResponse = await allResponsePromise
   const allBody = await allResponse.json() as ActivityResponse
-  const today = allBody.days.find((day) => day.date === verificationDate) ?? allBody.days.at(-1)!
+  const today = allBody.days.find((day) => day.date === verificationDate()) ?? allBody.days.at(-1)!
   const google = today.providers.find((record) => record.provider_key === 'google_health')!
   const yazio = today.providers.find((record) => record.provider_key === 'yazio')!
   expect(google.record_count).toBe(1)
