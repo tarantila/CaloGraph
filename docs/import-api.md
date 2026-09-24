@@ -5,6 +5,65 @@
 JSON imports use `Authorization: Bearer cg_…`. Tokens carry only the `import`
 scope, are shown once, and are stored exclusively as hashes.
 
+
+## Google Health per-user integration
+
+Google Health is an optional, user-owned integration. Set
+`GOOGLE_HEALTH_ENABLED=true` to expose the integration; this flag does not
+configure a shared Google account and does not require an operator-global
+client ID, client secret, refresh token, or other Google credential.
+
+Each CaloGraph user supplies a Google OAuth **Web application** client pair in
+the account integration settings. The client ID and client secret are stored
+for that user only, with the secret encrypted at rest. OAuth state and the
+PKCE verifier are also user-bound, short-lived, and single-use. The redirect
+URI must be registered exactly as:
+
+```text
+{CALOGRAPH_PUBLIC_URL}/api/v1/google-health/oauth/callback
+```
+
+For example, `CALOGRAPH_PUBLIC_URL=https://app.example.test` produces
+`https://app.example.test/api/v1/google-health/oauth/callback`. The callback
+URI contains no secret and must be identical in the Google Cloud OAuth client
+and in CaloGraph.
+
+The authorization request asks for exactly these read-only scopes:
+
+- `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`
+- `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`
+- `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
+
+Save a client ID and client secret together through the account integration
+settings. Replacing the pair invalidates the local authorization for this
+connection and requires OAuth reauthorization; it does not revoke consent at
+Google. The retained refresh-token ciphertext is not used with the new client
+pair. OAuth must complete successfully, including all three scopes and
+a refresh token, before synchronization is available.
+
+Disconnect removes the user's refresh token and granted scopes but keeps the
+user's client pair for a later reconnect. Delete credentials removes the
+client ID, encrypted client secret, refresh token, granted scopes, and related
+connection state. These operations affect only the authenticated user.
+
+The connection test is a bounded, read-only provider check for the
+authenticated user. It performs small GET requests for the supported domains,
+returns only a safe status and error category, closes the provider client, and
+never stores health samples, ingestion runs, or other health history.
+
+Synchronization retries only transient provider failures (`rate_limited`,
+`provider_error`, and `transient_error`). `retry_attempt` is the one-based
+attempt currently running or most recently completed, while
+`retry_max_attempts` is the fixed maximum of 3. Retries use 1 second and then
+2 seconds of backoff; after the third failed attempt the state is terminal
+`failed` and no further retry is scheduled. Authentication, scope,
+credential, malformed-response, and persistence errors are not retried.
+
+Credential values, refresh/access tokens, authorization codes, PKCE verifiers,
+and provider payloads are never returned in API responses, error details, or
+normal logs. Status and synchronization responses expose only bounded state,
+counts, timestamps, and safe error categories.
+
 ## Health Auto Export v2
 
 `POST /api/v1/import/apple-health` accepts both `{ "metrics": [...] }` and

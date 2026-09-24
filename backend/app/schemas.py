@@ -684,6 +684,87 @@ class TargetSettingsResponse(BaseModel):
 
 
 
+VerificationView = Literal["canonical", "all"]
+VerificationProviderKey = Literal["google_health", "yazio", "apple_health"]
+VerificationRecordStatus = Literal["available", "no_data", "unavailable"]
+VerificationActivitySourceType = Literal[
+    "google_health_activity_v4",
+    "yazio_export_v1",
+    "apple_health_xml",
+    "health_auto_export_v2",
+]
+
+
+class VerificationActivityProviderRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: VerificationProviderKey
+    status: VerificationRecordStatus
+    active_energy_kcal: float | None
+    record_count: int = Field(ge=0)
+    source_types: list[VerificationActivitySourceType]
+
+
+class VerificationActivityDayResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    canonical: VerificationActivityProviderRecord | None
+    providers: list[VerificationActivityProviderRecord]
+
+
+class VerificationActivityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date
+    end_date: date
+    view: VerificationView
+    days: list[VerificationActivityDayResponse]
+
+
+class VerificationNutritionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calories_kcal: float | None
+    protein_g: float | None
+    carbohydrates_g: float | None
+    fat_g: float | None
+
+
+class VerificationNutritionEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: VerificationProviderKey
+    local_time: str | None
+    meal_type: str | None
+    display_name: str
+    calories_kcal: float | None
+    protein_g: float | None
+    carbohydrates_g: float | None
+    fat_g: float | None
+    serving_amount: float | None
+    serving_unit: str | None
+
+
+class VerificationNutritionProviderGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: VerificationProviderKey
+    status: VerificationRecordStatus
+    record_count: int = Field(ge=0)
+    summary: VerificationNutritionSummary
+    events: list[VerificationNutritionEvent]
+
+
+class VerificationNutritionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    view: VerificationView
+    canonical: VerificationNutritionProviderGroup | None
+    providers: list[VerificationNutritionProviderGroup]
+
+
 class ActivitySourceResponse(BaseModel):
     source_type: Literal[
         "google_health_activity_v4",

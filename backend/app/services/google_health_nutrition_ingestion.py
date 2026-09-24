@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -20,7 +20,7 @@ from app.google_health.client import (
     NutritionQuantity,
     NutritionServing,
 )
-from app.importers.common import decimal_value
+from app.importers.common import ORIGINAL_VALUE_LIMIT, decimal_value
 from app.models import GoogleHealthConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
@@ -129,18 +129,36 @@ _WEIGHT_TO_G = {
     "microgram": Decimal("0.000001"),
     "micrograms": Decimal("0.000001"),
 }
+_GOOGLE_CANONICAL_QUANTUM = Decimal("0.000001")
 
 
 def _canonical_weight_value(
-    value: Decimal | None, raw_unit: str | None, canonical_unit: str
+    value: Decimal | None,
+    raw_unit: str | None,
+    canonical_unit: str,
+    *,
+    projected_value: Decimal | None = None,
 ) -> Decimal | None:
-    if value is None or raw_unit is None:
+    source = projected_value if projected_value is not None else value
+    if (
+        source is None
+        or raw_unit is None
+        or not source.is_finite()
+        or source < 0
+        or source >= ORIGINAL_VALUE_LIMIT
+    ):
         return None
     factor = _WEIGHT_TO_G.get(raw_unit.strip().lower())
     target_factor = _WEIGHT_TO_G.get(canonical_unit)
     if factor is None or target_factor is None:
         return None
-    return value * factor / target_factor
+    try:
+        converted = source * factor / target_factor
+        if projected_value is not None:
+            return converted.quantize(_GOOGLE_CANONICAL_QUANTUM, rounding=ROUND_HALF_EVEN)
+    except InvalidOperation:
+        return None
+    return converted
 
 
 # The DTO normally carries user-provided units, while tests and callers may
@@ -178,12 +196,13 @@ _SEMANTIC_UNITS = {
 
 
 def _json_value(value: Any) -> Any:
-    """Return a stable, JSON-safe representation without DTO repr leakage."""
+    """Return stable JSON without derived canonical projections."""
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             field.name: _json_value(getattr(value, field.name))
             for field in dataclasses.fields(value)
+            if field.name not in {"canonical_value", "canonical_amount"}
         }
     if isinstance(value, datetime):
         return value.isoformat()
@@ -272,6 +291,16 @@ def _database_safe_value(value: Decimal | None) -> Decimal | None:
         return decimal_value(value.normalize())
     except (TypeError, ValueError):
         return None
+
+
+def _canonical_decimal(quantity: NutritionQuantity | None) -> Decimal | None:
+    if quantity is None:
+        return None
+    return (
+        quantity.canonical_value
+        if quantity.canonical_value is not None
+        else _decimal(quantity)
+    )
 
 def _decimal(quantity: NutritionQuantity | None) -> Decimal | None:
     if quantity is None:
@@ -498,6 +527,7 @@ def _field_observations(
     # observations are emitted once, and top-level totals take precedence over
     # duplicate nutrient-array values.
     energy = _decimal(log.energy)
+    energy_canonical = _canonical_decimal(log.energy)
     _field(
         db,
         user_id=user_id,
@@ -506,8 +536,8 @@ def _field_observations(
         value=energy,
         raw_unit=log.energy.unit if log.energy else None,
         metric_key="dietary_energy_kcal" if energy is not None else None,
-        canonical_value=energy,
-        canonical_unit="kcal" if energy is not None else None,
+        canonical_value=energy_canonical,
+        canonical_unit="kcal" if energy_canonical is not None else None,
         role=ObservationRole.CANONICAL.value
         if energy is not None
         else ObservationRole.PROVIDER.value,
@@ -537,7 +567,12 @@ def _field_observations(
         value = _decimal(quantity)
         if quantity is None:
             continue
-        canonical_value = _canonical_weight_value(value, quantity.unit, "g")
+        canonical_value = _canonical_weight_value(
+            value,
+            quantity.unit,
+            "g",
+            projected_value=_canonical_decimal(quantity),
+        )
         metric_key = metric if canonical_value is not None else None
         canonical_unit = "g" if canonical_value is not None else None
         role = ObservationRole.CANONICAL.value if canonical_value is not None else ObservationRole.PROVIDER.value
@@ -563,7 +598,10 @@ def _field_observations(
         candidate_canonical = _canonical_nutrient(candidate.nutrient)
         candidate_value = _decimal(candidate.quantity)
         if candidate_canonical is None or _canonical_weight_value(
-            candidate_value, candidate.quantity.unit, candidate_canonical[1]
+            candidate_value,
+            candidate.quantity.unit,
+            candidate_canonical[1],
+            projected_value=_canonical_decimal(candidate.quantity),
         ) is None:
             continue
         candidate_metric = candidate_canonical[0]
@@ -590,7 +628,12 @@ def _field_observations(
             or preferred_canonical_indices.get(canonical[0]) != index
         )
         canonical_value = (
-            _canonical_weight_value(value, nutrient.quantity.unit, canonical[1])
+            _canonical_weight_value(
+                value,
+                nutrient.quantity.unit,
+                canonical[1],
+                projected_value=_canonical_decimal(nutrient.quantity),
+            )
             if canonical is not None
             else None
         )

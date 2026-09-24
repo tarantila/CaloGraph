@@ -6,10 +6,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import app.services.google_health_nutrition_sync as google_sync
+from app.config import settings
 from app.database import SessionLocal
 from app.google_health.client import (
     NutritionLog,
@@ -48,6 +50,7 @@ from app.nutrition.projection.contracts import (
     ProjectionPersistenceStatus,
 )
 from app.nutrition.projection.lifecycle import NutritionProjectionLifecycleError
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.services.google_health_nutrition_sync import (
     GoogleHealthNutritionSyncError,
@@ -124,16 +127,29 @@ class SyncHarness:
             self.decrypted.append(value)
             return "refresh-token-only-in-memory"
 
-        def credentials_factory(refresh_token: str) -> object:
+        def credentials_factory(
+            refresh_token: str,
+            client_id: str,
+            client_secret: str,
+        ) -> object:
             self.events.append("credentials")
             self.credentials.append(refresh_token)
-            return {"refresh_token": refresh_token}
+            assert client_id == "client-id"
+            assert client_secret == "client-secret"
+            return {
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
 
         def client_factory(credentials: object) -> FakePagedClient:
             if session_factory is None:
                 assert not self.db.in_transaction()
-            assert credentials == {"refresh_token": "refresh-token-only-in-memory"}
-            self.events.append("client")
+            assert credentials == {
+                "refresh_token": "refresh-token-only-in-memory",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            }
             client = FakePagedClient(
                 self.pages,
                 self.db,
@@ -205,7 +221,9 @@ def _connection(
 ) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=(
             list(GOOGLE_HEALTH_SCOPES) if granted_scopes is None else granted_scopes
         ),
@@ -227,10 +245,8 @@ def test_default_credentials_use_complete_readonly_scope_union(monkeypatch) -> N
             captured.update(kwargs)
 
     monkeypatch.setattr(google.oauth2.credentials, "Credentials", CapturingCredentials)
-    monkeypatch.setattr(google_sync.settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(google_sync.settings, "google_health_client_secret", "client-secret")
 
-    google_sync._default_credentials("refresh-token")
+    google_sync._default_credentials("refresh-token", "client-id", "client-secret")
 
     assert captured["scopes"] == list(GOOGLE_HEALTH_SCOPES)
     assert set(captured["scopes"]) == GOOGLE_HEALTH_REQUIRED_SCOPES
@@ -916,3 +932,101 @@ def test_sync_records_safe_failure_metadata(
     assert refreshed.last_success_at is None
     assert refreshed.last_error == expected_code
     assert refreshed.state == expected_state
+
+
+def test_sync_uses_each_users_decrypted_token_and_client_pair(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    second = User(username="other-sync-user", password_hash="hash", timezone="Europe/Berlin")
+    db.add(second)
+    db.commit()
+
+    def add_connection(owner: User, suffix: str) -> GoogleHealthConnection:
+        connection = GoogleHealthConnection(
+            user_id=owner.id,
+            client_id=f"client-{suffix}",
+            encrypted_client_secret=encrypt_credential(f"secret-{suffix}"),
+            encrypted_refresh_token=encrypt_credential(f"refresh-{suffix}"),
+            granted_scopes=list(GOOGLE_HEALTH_REQUIRED_SCOPES),
+            state="active",
+        )
+        db.add(connection)
+        db.commit()
+        return connection
+
+    connection_a = add_connection(user, "a")
+    connection_b = add_connection(second, "b")
+    credentials_seen: list[tuple[str, str, str]] = []
+    clients: list[object] = []
+
+    class ScopedClient:
+        def __init__(self, point_name: str) -> None:
+            self.point_name = point_name
+            self.closed = False
+
+        def get_nutrition_log_page(
+            self,
+            *,
+            page_size: int,
+            page_token: str | None = None,
+            civil_start_time: date | None = None,
+            civil_end_time: date | None = None,
+        ) -> NutritionLogPage:
+            del page_size, page_token, civil_start_time, civil_end_time
+            return _page(
+                (_point(self.point_name),),
+                page_token=None,
+                next_page_token=None,
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    def credentials_factory(refresh_token: str, client_id: str, client_secret: str) -> object:
+        credentials_seen.append((refresh_token, client_id, client_secret))
+        return (refresh_token, client_id, client_secret)
+
+    def client_factory(credentials: object) -> ScopedClient:
+        refresh_token, _client_id, _client_secret = credentials
+        client = ScopedClient(f"point-{refresh_token}")
+        clients.append(client)
+        return client
+
+    service = GoogleHealthNutritionSyncService(
+        session_factory=lambda: db,
+        client_factory=client_factory,
+        credentials_factory=credentials_factory,
+        adapter=ingest_google_health_nutrition_logs,
+    )
+    result_a = service.sync(user_id=user.id, requested_start=DAY, requested_end=DAY)
+    result_b = service.sync(user_id=second.id, requested_start=DAY, requested_end=DAY)
+
+    assert credentials_seen == [
+        ("refresh-a", "client-a", "secret-a"),
+        ("refresh-b", "client-b", "secret-b"),
+    ]
+    assert all(client.closed for client in clients)
+    assert "secret-a" not in repr(result_a)
+    assert "secret-b" not in repr(result_b)
+    assert result_a.run.user_id == user.id
+    assert result_b.run.user_id == second.id
+    assert result_a.run.source_instance_id == connection_a.id
+    assert result_b.run.source_instance_id == connection_b.id
+    assert {
+        (row.user_id, row.source_instance_id, row.source_record_id)
+        for row in db.scalars(select(NutritionSourceObservation)).all()
+    } == {
+        (user.id, connection_a.id, "point-refresh-a"),
+        (
+            user.id,
+            connection_a.id,
+            "users/me/dataTypes/food/dataPoints/food-1",
+        ),
+        (second.id, connection_b.id, "point-refresh-b"),
+        (
+            second.id,
+            connection_b.id,
+            "users/me/dataTypes/food/dataPoints/food-1",
+        ),
+    }

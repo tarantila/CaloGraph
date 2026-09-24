@@ -326,6 +326,11 @@ jobs:
           E2E_USE_PREBUILT_IMAGES: "true"
           YAZIO_SDK_CLIENT_SECRET: synthetic-ci-yazio-sdk-client-secret
         run: ./scripts/e2e.sh
+      - name: Run seeded Verification E2E
+        env:
+          CALOGRAPH_VERSION: ci
+          E2E_USE_PREBUILT_IMAGES: "true"
+        run: ./scripts/verification-e2e.sh
       - name: Run production smoke checks against prebuilt images
         env:
           CALOGRAPH_VERSION: ci

@@ -120,7 +120,7 @@ def _sample_values(
         "original_unit": sample.original_unit,
         "start_at": sample.start_at,
         "end_at": sample.end_at,
-        "local_date": local_date_for(sample.start_at, sample.timezone),
+        "local_date": sample.local_date or local_date_for(sample.start_at, sample.timezone),
         "timezone": sample.timezone,
     }
 
@@ -141,7 +141,7 @@ def _update_sample(
     existing.original_unit = sample.original_unit
     existing.start_at = sample.start_at
     existing.end_at = sample.end_at
-    existing.local_date = local_date_for(sample.start_at, sample.timezone)
+    existing.local_date = sample.local_date or local_date_for(sample.start_at, sample.timezone)
     existing.timezone = sample.timezone
     existing.source_name = sample.source_name
     existing.source_identifier = sample.source_identifier

@@ -31,6 +31,8 @@ async function mountApp(path = '/tage', isAdmin = false) {
     routes: [
       { path: '/', name: 'overview', component: { template: '<h1>Übersicht</h1>' } },
       { path: '/tage', name: 'daily', component: { template: '<h1>Tagesverlauf</h1>' } },
+      { path: '/ernaehrung', name: 'nutrition', component: { template: '<h1>Ernährung</h1>' } },
+      { path: '/aktivitaet', name: 'activity', component: { template: '<h1>Aktivität</h1>' } },
       { path: '/gewicht', name: 'weight', component: { template: '<h1>Gewicht</h1>' } },
       { path: '/wochen', name: 'weekly', component: { template: '<h1>Wochenbudget</h1>' } },
       { path: '/wochentage', name: 'weekdays', component: { template: '<h1>Wochentage</h1>' } },
@@ -77,22 +79,27 @@ describe('App-Sidebar-Navigation', () => {
     const navigationGroups = wrapper.findAll('aside nav')
 
     expect(navigationGroups).toHaveLength(2)
-    expect(navigationGroups[0].findAll('a').map((link) => link.attributes('href'))).toEqual([
-      '/',
-      '/tage',
-      '/gewicht',
-      '/wochen',
-      '/wochentage',
-      '/kalender',
-      '/trends',
-      '/mikronaehrstoffe',
-      '/erfolge',
+    expect(navigationGroups[0].findAll('a').map((link) => ({
+      href: link.attributes('href'),
+      label: link.text().trim(),
+    }))).toEqual([
+      { href: '/', label: 'Übersicht' },
+      { href: '/tage', label: 'Tagesverlauf' },
+      { href: '/ernaehrung', label: 'Ernährung' },
+      { href: '/aktivitaet', label: 'Aktivität' },
+      { href: '/gewicht', label: 'Gewicht' },
+      { href: '/wochen', label: 'Wochenbudget' },
+      { href: '/wochentage', label: 'Wochentage' },
+      { href: '/kalender', label: 'Kalender' },
+      { href: '/trends', label: 'Trends' },
+      { href: '/mikronaehrstoffe', label: 'Mikronährstoffe' },
+      { href: '/erfolge', label: 'Erfolge' },
     ])
     expect(navigationGroups[1].findAll('a').map((link) => link.attributes('href'))).toEqual([
       '/konto/persoenliche-daten',
     ])
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
-    expect(wrapper.findAll('aside nav a')).toHaveLength(10)
+    expect(wrapper.findAll('aside nav a')).toHaveLength(12)
     wrapper.unmount()
   })
 

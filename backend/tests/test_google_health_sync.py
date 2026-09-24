@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.google_health.client import (
     ActiveEnergyBurnedDataPoint,
+    GoogleHealthDailyRollupDataPoint,
+    GoogleHealthDailyRollupPage,
     GoogleHealthDataPointPage,
     NutritionLog,
     NutritionLogDataPoint,
@@ -19,10 +21,19 @@ from app.google_health.client import (
     WeightDataPoint,
 )
 from app.google_health.constants import GOOGLE_HEALTH_SCOPES
-from app.google_health.errors import GoogleHealthAuthenticationError, GoogleHealthTransientError
+from app.google_health.errors import (
+    GoogleHealthAuthenticationError,
+    GoogleHealthInvalidResponseError,
+    GoogleHealthTransientError,
+)
 from app.models import GoogleHealthConnection, HealthSample, User
 from app.nutrition.models import NutritionSourceObservation
-from app.services.google_health_sync import GoogleHealthSyncService
+from app.services.credential_crypto import decrypt_credential, encrypt_credential
+from app.services.google_health_sync import (
+    GoogleHealthDomainResult,
+    GoogleHealthSyncResult,
+    GoogleHealthSyncService,
+)
 
 START = date(2026, 9, 15)
 END = date(2026, 9, 15)
@@ -83,8 +94,9 @@ class _Client:
     ):
         del page_size, civil_start_time, civil_end_time
         self.calls.append(f"nutrition:{page_token}")
+        name_suffix = "" if page_token is None else f"-{page_token}"
         return NutritionLogPage(
-            data_points=tuple(_nutrition(f"nutrition-{idx}") for idx in range(self.points)),
+            data_points=tuple(_nutrition(f"nutrition{name_suffix}-{idx}") for idx in range(self.points)),
             next_page_token=(
                 "nutrition-next"
                 if page_token is None and (self.points == 1 or self.exact_fill)
@@ -96,6 +108,24 @@ class _Client:
             end_time=None,
             civil_start_time=START,
             civil_end_time=END,
+        )
+
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        if self.activity_error is not None:
+            raise self.activity_error
+        yield GoogleHealthDailyRollupPage(
+            data_points=tuple(
+                GoogleHealthDailyRollupDataPoint(START, Decimal("100"))
+                for _ in range(self.points)
+            ),
+            next_page_token=(
+                "active-energy-next" if self.exact_fill else None
+            ),
+            page_token=None,
+            chunk_index=0,
+            page_index=0,
         )
 
     def get_data_points_page(
@@ -120,9 +150,18 @@ class _Client:
 
     def close(self) -> None:
         self.calls.append("close")
-
-
 class _IteratorClient(_Client):
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        yield GoogleHealthDailyRollupPage(
+            data_points=(GoogleHealthDailyRollupDataPoint(START, Decimal("100")),),
+            next_page_token="active-energy-next",
+            page_token=None,
+            chunk_index=0,
+            page_index=0,
+        )
+
     def iter_data_points_pages(
         self,
         data_type,
@@ -145,15 +184,16 @@ class _IteratorClient(_Client):
             end_time=POINT_TIME,
         )
 
-
-
-
 class _MixedFailureClient(_Client):
     def get_nutrition_log_page(
         self, *, page_size, page_token=None, civil_start_time=None, civil_end_time=None
     ):
         del page_size, page_token, civil_start_time, civil_end_time
         raise GoogleHealthTransientError()
+    def iter_daily_rollup_pages(self, *, start_date, end_date, max_pages):
+        del start_date, end_date, max_pages
+        self.calls.append("active-energy-burned:dailyRollUp")
+        raise GoogleHealthAuthenticationError()
 
     def get_data_points_page(
         self, data_type, *, start_time=None, end_time=None, page_token=None, page_size
@@ -171,14 +211,38 @@ def _service(monkeypatch, client: _Client, *, max_points: int = 10):
     service = GoogleHealthSyncService(
         session_factory=lambda: None,  # type: ignore[arg-type]
         client_factory=lambda _: client,
-        credentials_factory=lambda _: object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: object(),
         decrypt_refresh_token=lambda _: "refresh",
         max_pages=2,
         max_points=max_points,
     )
-    monkeypatch.setattr(service, "_snapshot", lambda _user_id: (uuid4(), "UTC", b"encrypted"))
-    monkeypatch.setattr(service, "_persist_nutrition", lambda **kwargs: len(kwargs["points"]))
-    monkeypatch.setattr(service, "_persist_scalar", lambda **kwargs: len(kwargs["points"]))
+    monkeypatch.setattr(
+        service,
+        "_snapshot",
+        lambda _user_id: (uuid4(), "UTC", b"encrypted", "client-id", "client-secret"),
+    )
+    persisted_domains: set[str] = set()
+
+    def persist_once(*, domain: str, points: tuple[object, ...]) -> int:
+        if domain in persisted_domains:
+            return 0
+        persisted_domains.add(domain)
+        return len(points)
+
+    monkeypatch.setattr(
+        service,
+        "_persist_nutrition",
+        lambda **kwargs: persist_once(domain="nutrition", points=kwargs["points"]),
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_scalar",
+        lambda **kwargs: persist_once(
+            domain="activity" if kwargs["activity"] else "weight",
+            points=kwargs["points"],
+        ),
+    )
+    monkeypatch.setattr(service, "_update_retry_status", lambda **_: None)
     return service
 
 
@@ -199,13 +263,40 @@ def test_sync_returns_safe_results_for_all_three_domains(monkeypatch) -> None:
 
 def test_activity_failure_keeps_nutrition_and_weight_success(monkeypatch) -> None:
     client = _Client(activity_error=GoogleHealthTransientError())
-    result = _service(monkeypatch, client).sync(user_id=uuid4(), requested_start=START, requested_end=END)
+    result = _service(monkeypatch, client).sync(
+        user_id=uuid4(), requested_start=START, requested_end=END
+    )
 
     assert result.status == "partial_failure"
     assert result.nutrition.persisted_count == 2
     assert result.weight.persisted_count == 1
     assert result.activity_energy.status == "failed"
     assert result.activity_energy.error_code == "transient_error"
+
+
+def test_invalid_response_has_bounded_domain_diagnostic(monkeypatch) -> None:
+    error = GoogleHealthInvalidResponseError(
+        "invalid",
+        upstream_status_code=200,
+        parser_stage="scalar_data_point",
+        structural_reason_code="missing_required_field",
+    )
+    client = _Client(activity_error=error)
+    result = _service(monkeypatch, client).sync(
+        user_id=uuid4(), requested_start=START, requested_end=END
+    )
+
+    diagnostic = result.activity_energy.diagnostic
+    assert diagnostic is not None
+    assert diagnostic.domain == "activity_energy"
+    assert diagnostic.operation == "activity_read"
+    assert diagnostic.endpoint_key == "active_energy_burned_data_points"
+    assert diagnostic.parser_stage == "scalar_data_point"
+    assert diagnostic.structural_reason_code == "missing_required_field"
+    assert diagnostic.error_category == "invalid_response"
+    assert diagnostic.upstream_status_code == 200
+    assert diagnostic.retryable is False
+    assert diagnostic.reauth_required is False
 
 
 def test_each_domain_has_independent_finite_point_budget(monkeypatch) -> None:
@@ -246,7 +337,7 @@ def test_exact_fill_iterator_activity_stops_without_overread(monkeypatch) -> Non
 
     assert len(points) == 1
     assert truncated is True
-    assert client.calls == ["active-energy-burned:None"]
+    assert client.calls == ["active-energy-burned:dailyRollUp"]
 
 
 def test_exact_fill_iterator_weight_stops_without_overread(monkeypatch) -> None:
@@ -267,10 +358,11 @@ def test_missing_scope_short_circuits_before_credentials_or_provider_io(monkeypa
     service = GoogleHealthSyncService(
         session_factory=lambda: None,  # type: ignore[arg-type]
         client_factory=lambda _: calls.append("client") or None,  # type: ignore[return-value]
-        credentials_factory=lambda _: calls.append("credentials") or object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: calls.append("credentials") or object(),
         decrypt_refresh_token=lambda _: calls.append("decrypt") or "refresh",
     )
     monkeypatch.setattr(service, "_snapshot", lambda _user_id: "scope_missing")
+    monkeypatch.setattr(service, "_update_retry_status", lambda **_: None)
 
     result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
 
@@ -283,11 +375,12 @@ def test_missing_scope_short_circuits_before_credentials_or_provider_io(monkeypa
     ))
     assert calls == []
 
-
 def _real_connection(db: Session, user: User, scopes: list[str]) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
         user_id=user.id,
-        encrypted_refresh_token=b"encrypted-refresh-token",
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
+        encrypted_refresh_token=encrypt_credential("refresh-token"),
         granted_scopes=scopes,
         state="active",
     )
@@ -305,7 +398,7 @@ def test_real_scope_preflight_reauth_preserves_token_and_skips_provider_io(
     service = GoogleHealthSyncService(
         session_factory=SessionLocal,
         decrypt_refresh_token=lambda _: calls.append("decrypt") or "refresh",
-        credentials_factory=lambda _: calls.append("credentials") or object(),
+        credentials_factory=lambda _token, _client_id, _client_secret: calls.append("credentials") or object(),
         client_factory=lambda _: calls.append("client") or None,  # type: ignore[return-value]
     )
 
@@ -321,7 +414,7 @@ def test_real_scope_preflight_reauth_preserves_token_and_skips_provider_io(
     assert refreshed is not None
     assert refreshed.state == "reauth_required"
     assert refreshed.last_error == "scope_missing"
-    assert refreshed.encrypted_refresh_token == b"encrypted-refresh-token"
+    assert decrypt_credential(refreshed.encrypted_refresh_token) == "refresh-token"
 
 
 def test_reauth_failure_precedes_earlier_transient_failure_in_bookkeeping(
@@ -334,7 +427,13 @@ def test_reauth_failure_precedes_earlier_transient_failure_in_bookkeeping(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(service, "_persist_scalar", GoogleHealthSyncService._persist_scalar.__get__(service))
 
@@ -362,7 +461,13 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     # Exercise real per-domain scalar/nutrition transactions while keeping
     # projection setup out of this failure-isolation assertion.
@@ -380,11 +485,27 @@ def test_real_domain_commits_and_connection_failure_bookkeeping(
     result = service.sync(user_id=user.id, requested_start=START, requested_end=END)
 
     assert result.status == "partial_failure"
-    assert result.nutrition.persisted_count > 0
+    assert result.weight.fetched_count == 1
     assert result.weight.persisted_count == 1
     assert result.activity_energy.error_code == "transient_error"
-    assert db.scalar(select(NutritionSourceObservation.id)) is not None
-    assert db.scalar(select(HealthSample.id).where(HealthSample.user_id == user.id)) is not None
+    nutrition_rows = (
+        db.scalar(
+            select(func.count())
+            .select_from(NutritionSourceObservation)
+            .where(NutritionSourceObservation.user_id == user.id)
+        )
+        or 0
+    )
+    weight_rows = (
+        db.scalar(
+            select(func.count())
+            .select_from(HealthSample)
+            .where(HealthSample.user_id == user.id)
+        )
+        or 0
+    )
+    assert nutrition_rows == result.nutrition.persisted_count == 2
+    assert weight_rows == result.weight.persisted_count == 1
     db.expire_all()
     refreshed = db.get(GoogleHealthConnection, connection.id)
     assert refreshed is not None
@@ -401,7 +522,13 @@ def test_post_commit_projection_failure_reports_committed_nutrition_rows(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(service, "_persist_nutrition", GoogleHealthSyncService._persist_nutrition.__get__(service))
     monkeypatch.setattr(service, "_persist_scalar", GoogleHealthSyncService._persist_scalar.__get__(service))
@@ -429,7 +556,13 @@ def test_no_data_completion_records_success_without_sensitive_values(
     monkeypatch.setattr(
         service,
         "_snapshot",
-        lambda _user_id: (connection.id, user.timezone, connection.encrypted_refresh_token),
+        lambda _user_id: (
+            connection.id,
+            user.timezone,
+            connection.encrypted_refresh_token,
+            "client-id",
+            "client-secret",
+        ),
     )
     monkeypatch.setattr(
         "app.services.google_health_sync.bootstrap_nutrition_priority",
@@ -451,3 +584,97 @@ def test_no_data_completion_records_success_without_sensitive_values(
     assert refreshed.state == "active"
     assert refreshed.last_error is None
     assert refreshed.last_success_at is not None
+
+
+def _synthetic_sync_result(status: str, error: str | None = None) -> GoogleHealthSyncResult:
+    item = GoogleHealthDomainResult(
+        status="failed" if error else status,
+        fetched_count=0,
+        persisted_count=0,
+        requested_start=START,
+        requested_end=END,
+        error_code=error,
+    )
+    return GoogleHealthSyncResult(
+        status=status,
+        nutrition=item,
+        activity_energy=item,
+        weight=item,
+    )
+
+
+def test_sync_retries_transient_errors_with_exact_backoff_and_attempts(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    outcomes = iter(
+        [
+            _synthetic_sync_result("failed", "transient_error"),
+            _synthetic_sync_result("success"),
+        ]
+    )
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(service, "_sync_once", lambda **_: calls.append(1) or next(outcomes))
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: None)
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "success"
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
+def test_sync_exhausts_three_real_attempts_without_intermediate_result(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    calls: list[int] = []
+    sleeps: list[float] = []
+    statuses: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        service,
+        "_sync_once",
+        lambda **_: calls.append(1) or _synthetic_sync_result("failed", "provider_error"),
+    )
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: statuses.append(kwargs))
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "failed"
+    assert len(calls) == 3
+    assert sleeps == [1.0, 2.0]
+    assert statuses[-1]["attempt"] == 3
+    assert statuses[-1]["state"] == "failed"
+
+
+def test_sync_does_not_retry_non_retryable_error(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        service,
+        "_sync_once",
+        lambda **_: calls.append(1) or _synthetic_sync_result("failed", "invalid_response"),
+    )
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: None)
+    service._sleep = sleeps.append
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "failed"
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_sync_success_records_first_attempt_as_one_of_three(monkeypatch) -> None:
+    service = GoogleHealthSyncService(session_factory=lambda: None)  # type: ignore[arg-type]
+    statuses: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_sync_once", lambda **_: _synthetic_sync_result("success"))
+    monkeypatch.setattr(service, "_update_retry_status", lambda **kwargs: statuses.append(kwargs))
+
+    result = service.sync(user_id=uuid4(), requested_start=START, requested_end=END)
+
+    assert result.status == "success"
+    assert len(statuses) == 1
+    assert statuses[0]["attempt"] == 1
+    assert statuses[0]["state"] == "completed"
+    assert statuses[0]["success"] is True

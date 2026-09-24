@@ -25,6 +25,18 @@ describe('first-run target routing', () => {
     await router.replace('/login')
   })
 
+  it('registers protected verification page routes', () => {
+    for (const [path, name] of [
+      ['/aktivitaet', 'activity'],
+      ['/ernaehrung', 'nutrition'],
+    ] as const) {
+      const resolved = router.resolve(path)
+      expect(resolved.name).toBe(name)
+      expect(resolved.path).toBe(path)
+      expect(resolved.meta.public).not.toBe(true)
+    }
+  })
+
   it('forces targetless users into the dedicated setup route after login', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

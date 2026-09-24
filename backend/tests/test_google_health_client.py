@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import traceback
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import ClassVar
 
 import pytest
@@ -253,6 +253,76 @@ def test_client_parses_activity_and_weight_into_typed_pages() -> None:
     assert weight.end_time == weight.start_time
     assert weight.start_utc_offset == "3600s"
 
+
+
+def test_activity_live_shape_allows_missing_identity_and_unknown_fields() -> None:
+    value = _activity_point()
+    value.pop("name")
+    value.pop("dataSource")
+    value["futureActivityField"] = {"ignored": True}
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    page = GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+        "active-energy-burned",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 3, tzinfo=UTC),
+        page_token=None,
+        page_size=10,
+    )
+
+    assert page.data_points[0].name is None
+    assert page.data_points[0].data_source is None
+
+
+def test_weight_point_without_provider_name_is_rejected() -> None:
+    value = _weight_point()
+    value.pop("name")
+    weight_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(weight_transport, FakeCredentials()).get_data_points_page(
+            "weight",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+
+
+def test_invalid_scalar_shape_exposes_bounded_parser_diagnostic() -> None:
+    value = _activity_point()
+    value["activeEnergyBurned"] = {}
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+            "active-energy-burned",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
+
+    assert raised.value.parser_stage == "scalar_data_point"
+    assert raised.value.structural_reason_code == "missing_required_field"
+    assert raised.value.upstream_status_code == 200
+
+
+def test_activity_non_numeric_kcal_value_is_rejected() -> None:
+    value = _activity_point()
+    active = value["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = "not-a-number"
+    activity_transport = FakeDataTransport(FakeResponse(payload={"dataPoints": [value]}))
+
+    with pytest.raises(GoogleHealthInvalidResponseError):
+        GoogleHealthClient(activity_transport, FakeCredentials()).get_data_points_page(
+            "active-energy-burned",
+            start_time=None,
+            end_time=None,
+            page_token=None,
+            page_size=10,
+        )
 
 def test_client_rejects_unallowlisted_data_type_and_invalid_physical_bounds() -> None:
     client = GoogleHealthClient(FakeDataTransport(), FakeCredentials())
@@ -564,6 +634,30 @@ def test_transport_rejects_physical_time_bounds_before_request() -> None:
         (401, GoogleHealthAuthenticationError),
         (403, GoogleHealthScopeError),
         (429, GoogleHealthRateLimitedError),
+        (503, GoogleHealthProviderUnavailableError),
+        (418, GoogleHealthInvalidResponseError),
+    ],
+)
+def test_client_preserves_only_bounded_upstream_status(
+    status: int, error_type: type[Exception]
+) -> None:
+    response = FakeResponse(status, payload={"secret": "do-not-leak"})
+
+    with pytest.raises(error_type) as raised:
+        GoogleHealthClient(FakeTransport(response), FakeCredentials()).get_nutrition_log_page(
+            page_size=1
+        )
+
+    assert getattr(raised.value, "upstream_status_code", None) == status
+    assert "do-not-leak" not in "".join(traceback.format_exception(raised.value))
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (401, GoogleHealthAuthenticationError),
+        (403, GoogleHealthScopeError),
+        (429, GoogleHealthRateLimitedError),
         (500, GoogleHealthProviderUnavailableError),
         (302, GoogleHealthInvalidResponseError),
         (418, GoogleHealthInvalidResponseError),
@@ -582,6 +676,57 @@ def test_client_maps_provider_status_without_response_leakage(
     assert raised.value.__cause__ is None
     if isinstance(raised.value, GoogleHealthRateLimitedError):
         assert 0 <= raised.value.retry_after <= 300
+
+
+def test_connection_probe_accepts_nonempty_unparsed_domain_response() -> None:
+    transport = FakeDataTransport(
+        FakeResponse(
+            payload={
+                "dataPoints": [{"providerShape": "accepted_without_parsing"}],
+            }
+        )
+    )
+
+    status_code = GoogleHealthClient(transport, FakeCredentials()).probe_data_points(
+        "active-energy-burned",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
+        page_size=1,
+    )
+
+    assert status_code == 200
+
+
+def test_connection_probe_rejects_invalid_top_level_response() -> None:
+    client = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": "invalid"})),
+        FakeCredentials(),
+    )
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        client.probe_data_points(
+            "active-energy-burned",
+            start_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 2, tzinfo=UTC),
+            page_size=1,
+        )
+
+    assert raised.value.upstream_status_code == 200
+
+
+@pytest.mark.parametrize("data_type", ["active-energy-burned", "weight"])
+def test_client_accepts_empty_scalar_domain_response(data_type: str) -> None:
+    page = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": []})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        data_type,
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
+        page_size=1,
+    )
+
+    assert page.data_points == ()
 
 
 def test_client_maps_transport_failure_without_provider_cause() -> None:
@@ -612,8 +757,284 @@ def test_malformed_json_is_rejected_without_raw_body_or_persistence(caplog) -> N
 
 @pytest.mark.parametrize(
     "value",
-    [Decimal("0.1234567890123"), Decimal("1E+100")],
+    [Decimal("1E+100")],
 )
-def test_parser_rejects_values_outside_numeric_scale_or_range(value):
+def test_parser_rejects_values_outside_numeric_range(value):
     with pytest.raises(ValueError):
         _parse_nonnegative_number(value)
+def _parse_activity_payload(point: dict[str, object]):
+    return GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": [point]})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        "active-energy-burned",
+        start_time=None,
+        end_time=None,
+        page_token=None,
+        page_size=10,
+    )
+
+@pytest.mark.parametrize(
+    ("value", "expected_value"),
+    [
+        (Decimal("1"), Decimal("1.000000000000")),
+        (Decimal("1.2"), Decimal("1.200000000000")),
+        (Decimal("1.2300000000000"), Decimal("1.230000000000")),
+        (Decimal("1.123456789012"), Decimal("1.123456789012")),
+        (Decimal("1.1234567890120"), Decimal("1.123456789012")),
+        (Decimal("0.000000000001"), Decimal("0.000000000001")),
+        (Decimal("0.0000000000010"), Decimal("0.000000000001")),
+    ],
+)
+def test_activity_accepts_exact_values_at_numeric_scale(
+    value: Decimal, expected_value: Decimal
+) -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = value
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == expected_value
+@pytest.mark.parametrize(
+    ("value", "expected", "observed_type"),
+    [
+        (123, "accepted", "number"),
+        (Decimal("12.5"), "accepted", "number"),
+        (Decimal("999999999999.123456789012"), "accepted", "number"),
+        (0.1, "accepted", "number"),
+        (Decimal("0.1234567890123"), "accepted", "number"),
+        (Decimal("-1"), "negative", "number"),
+        (Decimal("1000000000000"), "exceeds_numeric_range", "number"),
+        (Decimal("NaN"), "non_finite", "number"),
+        (Decimal("Infinity"), "non_finite", "number"),
+        (None, "not_numeric", "null"),
+        ("12.5", "not_numeric", "string"),
+    ],
+)
+def test_activity_numeric_reason_codes_are_bounded(
+    value, expected: str, observed_type: str
+) -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = value
+
+    if expected == "accepted":
+        page = _parse_activity_payload(point)
+        assert len(page.data_points) == 1
+        parsed = page.data_points[0]
+        expected_source = Decimal(str(value)).quantize(
+            Decimal("0.000000000001"),
+            rounding=ROUND_HALF_EVEN,
+        )
+        assert parsed.value == expected_source
+        return
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic is not None
+    assert diagnostic.domain == "activity_energy"
+    assert diagnostic.operation == "activity_read"
+    assert diagnostic.endpoint_key == "active_energy_burned_data_points"
+    assert diagnostic.parser_stage == "scalar_data_point"
+    assert diagnostic.field_path == "activeEnergyBurned.kcal"
+    assert diagnostic.validation_rule == "nonnegative_number"
+    assert diagnostic.numeric_reason_code == expected
+    assert diagnostic.observed_json_type == observed_type
+    assert diagnostic.expected_json_type == "number"
+    assert diagnostic.retryable is False
+    assert diagnostic.reauth_required is False
+
+
+def test_activity_numeric_conversion_failure_has_no_value() -> None:
+    class InvalidStringInt(int):
+        def __str__(self) -> str:
+            return "not-a-number"
+
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = InvalidStringInt(1)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.diagnostic is not None
+    assert raised.value.diagnostic.numeric_reason_code == "decimal_conversion_failed"
+    assert "not-a-number" not in repr(raised.value)
+
+
+def test_activity_float_conversion_does_not_introduce_binary_scale() -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = 0.1
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == Decimal("0.1")
+
+def test_google_double_scalar_activity_accepts_more_than_twelve_decimal_places() -> None:
+    point = _activity_point()
+    active = point["activeEnergyBurned"]
+    assert isinstance(active, dict)
+    active["kcal"] = Decimal("1.1234567890123")
+
+    page = _parse_activity_payload(point)
+
+    assert page.data_points[0].value == Decimal("1.123456789012")
+    assert page.data_points[0].canonical_value == Decimal("1.123457")
+
+
+def test_google_double_weight_accepts_more_than_twelve_decimal_places() -> None:
+    point = _weight_point()
+    weight = point["weight"]
+    assert isinstance(weight, dict)
+    weight["weightGrams"] = Decimal("72500.1234567890123")
+
+    page = GoogleHealthClient(
+        FakeDataTransport(FakeResponse(payload={"dataPoints": [point]})),
+        FakeCredentials(),
+    ).get_data_points_page(
+        "weight",
+        start_time=None,
+        end_time=None,
+        page_token=None,
+        page_size=10,
+    )
+
+    assert page.data_points[0].value == Decimal("72.500123456789")
+    assert page.data_points[0].canonical_value == Decimal("72.500123")
+
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field_path", "validation_rule", "observed_type", "expected_type"),
+    [
+        (
+            lambda point: point["activeEnergyBurned"].update({"kcal": "not-a-number"}),
+            "activeEnergyBurned.kcal",
+            "nonnegative_number",
+            "string",
+            "number",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"].update({"interval": []}),
+            "activeEnergyBurned.interval",
+            "interval_object",
+            "array",
+            "object",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"]["interval"].update(
+                {"startTime": "not-a-timestamp"}
+            ),
+            "activeEnergyBurned.interval.startTime",
+            "physical_timestamp",
+            "string",
+            "string",
+        ),
+        (
+            lambda point: point["activeEnergyBurned"]["interval"].update(
+                {"civilStartTime": {"date": {"year": "not-a-year"}}}
+            ),
+            "activeEnergyBurned.interval.civilStartTime",
+            "civil_time",
+            "object",
+            "object",
+        ),
+    ],
+)
+def test_activity_invalid_fields_have_bounded_diagnostics(
+    mutate, field_path: str, validation_rule: str, observed_type: str, expected_type: str
+) -> None:
+    point = _activity_point()
+    mutate(point)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic.field_path == field_path
+    assert diagnostic.validation_rule == validation_rule
+    assert diagnostic.observed_json_type == observed_type
+    assert diagnostic.expected_json_type == expected_type
+    assert diagnostic.presence == "present"
+    assert "not-a-number" not in str(raised.value)
+    assert "not-a-timestamp" not in str(raised.value)
+    assert "not-a-year" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "data_source",
+    [
+        None,
+        {"platform": "synthetic"},
+        {"futureField": {"enabled": True}},
+    ],
+)
+def test_activity_accepts_optional_partial_and_unknown_data_source(data_source) -> None:
+    point = _activity_point()
+    point["dataSource"] = data_source
+
+    page = _parse_activity_payload(point)
+
+    assert len(page.data_points) == 1
+
+
+def test_activity_data_source_type_has_bounded_diagnostic() -> None:
+    point = _activity_point()
+    point["dataSource"] = []
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic.field_path == "dataSource"
+    assert diagnostic.validation_rule == "data_source_object"
+    assert diagnostic.observed_json_type == "array"
+    assert diagnostic.expected_json_type == "object"
+    assert diagnostic.presence == "present"
+
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field_path"),
+    [
+        (
+            lambda point: point["dataSource"].update({"recordingMethod": []}),
+            "dataSource.recordingMethod",
+        ),
+        (
+            lambda point: point["dataSource"].update({"application": []}),
+            "dataSource.application",
+        ),
+        (
+            lambda point: point["dataSource"].update({"device": {"manufacturer": []}}),
+            "dataSource.device.manufacturer",
+        ),
+    ],
+)
+def test_activity_data_source_nested_fields_are_identified(mutate, field_path: str) -> None:
+    point = _activity_point()
+    mutate(point)
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.diagnostic.field_path == field_path
+
+def test_activity_diagnostic_redacts_values_and_invalid_response_is_non_retryable() -> None:
+    point = _activity_point()
+    point["activeEnergyBurned"]["kcal"] = "secret-kcal"
+
+    with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+        _parse_activity_payload(point)
+
+    assert raised.value.code == "invalid_response"
+    assert raised.value.retryable is False
+    assert "secret-kcal" not in str(raised.value)

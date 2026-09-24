@@ -251,8 +251,12 @@ class GoogleHealthConnection(Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_google_health_connections_user_id"),
         CheckConstraint(
-            "state IN ('active', 'reauth_required')",
+            "state IN ('active', 'reauth_required', 'not_connected')",
             name="ck_google_health_connections_state",
+        ),
+        CheckConstraint(
+            "sync_state IN ('idle', 'running', 'completed', 'failed')",
+            name="ck_google_health_connections_sync_state",
         ),
     )
 
@@ -260,12 +264,19 @@ class GoogleHealthConnection(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    client_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    encrypted_client_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_refresh_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     granted_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_state: Mapped[str] = mapped_column(String(16), nullable=False, default="idle")
+    retry_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_category: Mapped[str | None] = mapped_column(String(32))
     last_error: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

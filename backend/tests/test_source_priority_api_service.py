@@ -36,6 +36,7 @@ from app.schemas_source_priority import (
     NutritionPriorityState,
     NutritionPriorityUpdateRequest,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import bootstrap_nutrition_priority
 from app.source_priority.contracts import PriorityRuleSpec
@@ -67,6 +68,8 @@ def _add_yazio(db, user: User) -> YazioConnection:
 
 def _add_google(db, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="source-priority-service-client",
+        encrypted_client_secret=encrypt_credential("source-priority-service-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=[GOOGLE_SCOPE],

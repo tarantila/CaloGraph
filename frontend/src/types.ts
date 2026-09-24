@@ -26,6 +26,71 @@ export type ActivitySourceType =
   | 'apple_health_xml'
   | 'health_auto_export_v2'
   | 'google_health_activity_v4'
+
+export type VerificationView = 'canonical' | 'all'
+export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health'
+export type VerificationRecordStatus = 'available' | 'no_data' | 'unavailable'
+export type VerificationActivitySourceType =
+  | 'google_health_activity_v4'
+  | 'yazio_export_v1'
+  | 'apple_health_xml'
+  | 'health_auto_export_v2'
+
+export interface VerificationActivityProviderRecord {
+  provider_key: VerificationProviderKey
+  status: VerificationRecordStatus
+  active_energy_kcal: number | null
+  record_count: number
+  source_types: VerificationActivitySourceType[]
+}
+
+export interface VerificationActivityDayResponse {
+  date: string
+  canonical: VerificationActivityProviderRecord | null
+  providers: VerificationActivityProviderRecord[]
+}
+
+export interface VerificationActivityResponse {
+  start_date: string
+  end_date: string
+  view: VerificationView
+  days: VerificationActivityDayResponse[]
+}
+
+export interface VerificationNutritionSummary {
+  calories_kcal: number | null
+  protein_g: number | null
+  carbohydrates_g: number | null
+  fat_g: number | null
+}
+
+export interface VerificationNutritionEvent {
+  provider_key: VerificationProviderKey
+  local_time: string | null
+  meal_type: string | null
+  display_name: string
+  calories_kcal: number | null
+  protein_g: number | null
+  carbohydrates_g: number | null
+  fat_g: number | null
+  serving_amount: number | null
+  serving_unit: string | null
+}
+
+export interface VerificationNutritionProviderGroup {
+  provider_key: VerificationProviderKey
+  status: VerificationRecordStatus
+  record_count: number
+  summary: VerificationNutritionSummary
+  events: VerificationNutritionEvent[]
+}
+
+export interface VerificationNutritionResponse {
+  date: string
+  view: VerificationView
+  canonical: VerificationNutritionProviderGroup | null
+  providers: VerificationNutritionProviderGroup[]
+}
 export interface DailyPoint {
   date: string
   calories_kcal: number | null
@@ -116,22 +181,52 @@ export interface YazioStatus {
   last_error: string | null
 }
 
-export type GoogleHealthState = 'disabled' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+export type GoogleHealthState = 'disabled' | 'not_configured' | 'not_connected' | 'active' | 'reauth_required' | 'scope_missing'
+export type GoogleHealthSyncState = 'idle' | 'running' | 'completed' | 'failed'
+export type GoogleHealthConnectionTestStatus = 'connected' | 'reauth_required' | 'failed'
 
 export interface GoogleHealthStatus {
   available: boolean
   configured: boolean
+  client_id_configured: boolean
+  client_secret_configured: boolean
+  redirect_uri: string
   state: GoogleHealthState
+  sync_state: GoogleHealthSyncState
+  retry_attempt: number
+  retry_max_attempts: number
+  next_retry_at: string | null
   granted_scopes: string[]
   refresh_token_expires_at: string | null
   last_attempt_at: string | null
   last_success_at: string | null
   last_error: string | null
+  last_error_category: string | null
 }
 
 export type GoogleHealthDomainKey = 'nutrition' | 'activity_energy' | 'weight'
 export type GoogleHealthAggregateStatus = 'success' | 'partial_failure' | 'reauth_required' | 'failed' | 'no_data'
 export type GoogleHealthDomainStatus = 'success' | 'truncated' | 'no_data' | 'failed' | 'reauth_required'
+
+export interface GoogleHealthDomainDiagnostic {
+  domain: string
+  operation: string
+  endpoint_key: string
+  parser_stage: string
+  structural_reason_code: string | null
+  error_category: string
+  upstream_status_code: number | null
+  retryable: boolean
+  reauth_required: boolean
+  chunk_index?: number | null
+  page_index?: number | null
+  point_index?: number | null
+  field_path?: string | null
+  validation_rule?: string | null
+  numeric_reason_code?: string | null
+  observed_json_type?: string | null
+  expected_json_type?: string | null
+}
 
 export interface GoogleHealthDomainResult {
   status: GoogleHealthDomainStatus
@@ -142,6 +237,7 @@ export interface GoogleHealthDomainResult {
   covered_start: string | null
   covered_end: string | null
   error_code: string | null
+  diagnostic?: GoogleHealthDomainDiagnostic | null
 }
 
 export interface GoogleHealthSyncResult {

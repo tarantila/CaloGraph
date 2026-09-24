@@ -22,6 +22,7 @@ from app.models import (
     TrackingOverride,
     User,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.services.import_service import persist_import
 
 
@@ -659,6 +660,8 @@ def test_google_activity_daily_points_ignore_wrong_connection_evidence(
     db: Session, user: User
 ) -> None:
     connection = GoogleHealthConnection(
+        client_id="analytics-client",
+        encrypted_client_secret=encrypt_credential("analytics-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"refresh",
         granted_scopes=[],

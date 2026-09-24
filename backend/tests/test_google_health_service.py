@@ -1,29 +1,64 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import select
+from pydantic import ValidationError
+from sqlalchemy import func, select
 
+import app.security_events as security_events
+import app.services.google_health_connection_test as connection_test_module
+import app.services.security_audit as security_audit
 from app.config import settings
+from app.database import SessionLocal
 from app.google_health import service as google_health_service
 from app.google_health.constants import (
     GOOGLE_HEALTH_NUTRITION_SCOPE,
     GOOGLE_HEALTH_REQUIRED_SCOPES,
     GOOGLE_HEALTH_SCOPES,
 )
-from app.google_health.errors import GoogleHealthTokenExchangeError
-from app.google_health.oauth import hash_oauth_state
+from app.google_health.errors import (
+    GoogleHealthProviderUnavailableError,
+    GoogleHealthTokenExchangeError,
+)
+from app.google_health.oauth import hash_oauth_state, pkce_challenge
 from app.google_health.service import (
     GoogleHealthOAuthError,
     _GoogleOAuthAdapter,
     complete_google_health_oauth,
+    delete_google_health_credentials,
+    disconnect_google_health,
     google_health_status,
+    save_google_health_credentials,
     start_google_health_oauth,
 )
-from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, User
+from app.models import GoogleHealthConnection, GoogleHealthOAuthFlow, SecurityAuditEvent, User
+from app.nutrition.models import (
+    NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionDailyProjectionLineage,
+    NutritionExternalIdentity,
+    NutritionExternalIdentityLink,
+    NutritionFieldObservation,
+    NutritionFoodProfile,
+    NutritionFoodSnapshot,
+    NutritionIngestionRun,
+    NutritionProjectionHead,
+    NutritionProvenance,
+    NutritionServingObservation,
+    NutritionSourceObservation,
+    NutritionSourceTombstone,
+)
+from app.schemas_google_health import GoogleHealthCredentialsInput
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
+from app.services.google_health_connection_test import GoogleHealthConnectionTestService
+from app.services.google_health_nutrition_sync import (
+    GoogleHealthNutritionSyncError,
+    GoogleHealthNutritionSyncService,
+)
 
 
 class TokenAdapter:
@@ -48,14 +83,46 @@ class TokenAdapter:
 
 def _configure(monkeypatch):
     monkeypatch.setattr(settings, "google_health_enabled", True)
-    monkeypatch.setattr(settings, "google_health_client_id", "client-id")
-    monkeypatch.setattr(settings, "google_health_client_secret", "client-secret")
     monkeypatch.setattr(settings, "calograph_public_url", "https://nutrition.example.test/")
     monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
 
 
+def _seed_credentials(
+    db,
+    user: User,
+    *,
+    client_id: str = "client-id",
+    client_secret: str = "client-secret",
+    refresh_token: str | None = None,
+) -> GoogleHealthConnection:
+    connection = GoogleHealthConnection(
+        user_id=user.id,
+        client_id=client_id,
+        encrypted_client_secret=encrypt_credential(client_secret),
+        encrypted_refresh_token=encrypt_credential(refresh_token) if refresh_token else None,
+        granted_scopes=list(GOOGLE_HEALTH_SCOPES) if refresh_token else [],
+        state="active" if refresh_token else "not_connected",
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def test_google_health_credential_validation_errors_redact_secret():
+    sentinel = "secret-validation-sentinel"
+    with pytest.raises(ValidationError) as raised:
+        GoogleHealthCredentialsInput(
+            client_id="client-a",
+            client_secret=sentinel * 30,
+        )
+    assert sentinel not in str(raised.value)
+    assert sentinel not in repr(raised.value)
+
+
 def test_start_persists_hashed_state_and_encrypted_verifier(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
 
     url = start_google_health_oauth(db, user, now=now)
@@ -69,6 +136,106 @@ def test_start_persists_hashed_state_and_encrypted_verifier(db, user: User, monk
     assert verifier
 
     assert query["state"][0] not in flow.state_hash
+def test_oauth_credentials_are_user_scoped(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    second = User(username="second", password_hash="hash")
+    db.add(second)
+    db.commit()
+    _seed_credentials(db, user, client_id="client-a", client_secret="secret-a")
+    _seed_credentials(db, second, client_id="client-b", client_secret="secret-b")
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+
+    url_a = start_google_health_oauth(db, user, now=now)
+    url_b = start_google_health_oauth(db, second, now=now)
+    assert parse_qs(urlsplit(url_a).query)["client_id"] == ["client-a"]
+    assert parse_qs(urlsplit(url_b).query)["client_id"] == ["client-b"]
+
+    state_a = parse_qs(urlsplit(url_a).query)["state"][0]
+    adapter_a = TokenAdapter({"refresh_token": "refresh-a", "scope": " ".join(GOOGLE_HEALTH_SCOPES)})
+    complete_google_health_oauth(
+        db, user, state=state_a, code="code-a", error=None, now=now, oauth_adapter=adapter_a
+    )
+    assert adapter_a.calls[0]["client_id"] == "client-a"
+    assert adapter_a.calls[0]["client_secret"] == "secret-a"
+
+def test_replacing_user_credentials_retains_old_token_until_callback(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    connection = _seed_credentials(db, user, refresh_token="old-refresh")
+    old_ciphertext = connection.encrypted_refresh_token
+    status = save_google_health_credentials(
+        db,
+        user,
+        GoogleHealthCredentialsInput(client_id="client-new", client_secret="secret-new"),
+    )
+    db.refresh(connection)
+    assert status.state == "reauth_required"
+    assert connection.state == "reauth_required"
+    assert decrypt_credential(connection.encrypted_refresh_token) == "old-refresh"
+
+    decrypted_ciphertexts: list[bytes] = []
+    original_decrypt = google_health_service.decrypt_credential
+
+    def capture_decrypt(value: bytes) -> str:
+        decrypted_ciphertexts.append(value)
+        return original_decrypt(value)
+
+    monkeypatch.setattr(google_health_service, "decrypt_credential", capture_decrypt)
+    start_url = start_google_health_oauth(
+        db, user, now=datetime(2026, 9, 10, tzinfo=UTC)
+    )
+    assert parse_qs(urlsplit(start_url).query)["client_id"] == ["client-new"]
+    assert old_ciphertext not in decrypted_ciphertexts
+
+    credential_calls: list[tuple[str, str, str]] = []
+    provider_calls: list[object] = []
+
+    def credentials_factory(refresh_token: str, client_id: str, client_secret: str) -> object:
+        credential_calls.append((refresh_token, client_id, client_secret))
+        return credential_calls[-1]
+
+    def client_factory(credentials: object) -> object:
+        provider_calls.append(credentials)
+        return object()
+
+    sync_service = GoogleHealthNutritionSyncService(
+        session_factory=lambda: db,
+        credentials_factory=credentials_factory,
+        client_factory=client_factory,
+    )
+    with pytest.raises(GoogleHealthNutritionSyncError) as sync_error:
+        sync_service.sync(
+            user_id=user.id,
+            requested_start=datetime(2026, 9, 10, tzinfo=UTC).date(),
+            requested_end=datetime(2026, 9, 10, tzinfo=UTC).date(),
+        )
+    assert sync_error.value.code == "connection_inactive"
+    connection_test = GoogleHealthConnectionTestService(
+        session_factory=lambda: db,
+        credentials_factory=credentials_factory,
+        client_factory=client_factory,
+    )
+    assert connection_test.test(user_id=user.id).error_category == "reauth_required"
+    assert credential_calls == []
+    assert provider_calls == []
+
+    new_state = parse_qs(urlsplit(start_url).query)["state"][0]
+    complete_google_health_oauth(
+        db,
+        user,
+        state=new_state,
+        code="new-code",
+        error=None,
+        now=datetime(2026, 9, 10, tzinfo=UTC),
+        oauth_adapter=TokenAdapter(
+            {"refresh_token": "new-refresh", "scope": " ".join(GOOGLE_HEALTH_SCOPES)}
+        ),
+    )
+    refreshed = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id)
+    )
+    assert refreshed is not None and refreshed.state == "active"
 
 def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
     import google_auth_oauthlib.flow
@@ -83,6 +250,7 @@ def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
 
     class FakeFlow:
         credentials = Credentials()
+
 
         @classmethod
         def from_client_config(cls, config, *, scopes, redirect_uri):
@@ -106,6 +274,10 @@ def test_refresh_credentials_request_complete_readonly_scope_union(monkeypatch):
     )
 
     assert captured["scopes"] == list(GOOGLE_HEALTH_SCOPES)
+def test_oauth_start_reports_missing_user_credentials(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    with pytest.raises(GoogleHealthOAuthError, match="credential_unavailable"):
+        start_google_health_oauth(db, user)
 
 
 def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_history(
@@ -115,6 +287,8 @@ def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_h
     now = datetime(2026, 9, 10, tzinfo=UTC)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -137,6 +311,7 @@ def test_status_marks_nutrition_only_connection_scope_missing_without_deleting_h
 
 def test_complete_exchanges_pkce_and_preserves_connection_uuid(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     query = parse_qs(urlsplit(start_url).query)
@@ -191,6 +366,8 @@ def test_successful_reauth_updates_existing_nutrition_connection_in_place(
     now = datetime(2026, 9, 10, tzinfo=UTC)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -233,6 +410,8 @@ def test_scope_missing_callback_preserves_existing_connection_credentials_and_hi
     historical_success = now - timedelta(days=1)
     connection = GoogleHealthConnection(
         user_id=user.id,
+        client_id="client-id",
+        encrypted_client_secret=encrypt_credential("client-secret"),
         encrypted_refresh_token=encrypt_credential("old-refresh-token"),
         granted_scopes=[GOOGLE_HEALTH_NUTRITION_SCOPE],
         state="active",
@@ -272,6 +451,7 @@ def test_scope_missing_callback_preserves_existing_connection_credentials_and_hi
 
 def test_complete_rejects_unknown_expired_and_replayed_state(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     with pytest.raises(GoogleHealthOAuthError, match="unknown_state"):
         complete_google_health_oauth(db, user, state="unknown", code="code", error=None, now=now)
@@ -286,6 +466,7 @@ def test_complete_rejects_unknown_expired_and_replayed_state(db, user: User, mon
 
 def test_scope_and_refresh_token_are_required(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -327,6 +508,7 @@ def test_status_never_exposes_secret_fields(db, user: User, monkeypatch):
 
 def test_callback_revalidates_active_user_after_lock(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -352,6 +534,7 @@ def test_callback_revalidates_active_user_after_lock(db, user: User, monkeypatch
 
 def test_crypto_failure_preserves_consumed_claim_and_replay_rejection(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -407,6 +590,7 @@ def test_provider_error_categories_are_fixed(message, status, expected):
 
 def test_provider_response_without_scope_cannot_activate(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -421,12 +605,16 @@ def test_provider_response_without_scope_cannot_activate(db, user: User, monkeyp
         oauth_adapter=TokenAdapter({"refresh_token": "secret"}),
     )
     assert result.state == "scope_missing"
-    assert db.scalar(select(GoogleHealthConnection)) is None
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None
+    assert connection.state == "reauth_required"
+    assert connection.encrypted_refresh_token is None
 
 
 @pytest.mark.parametrize("expires_in", [float("nan"), float("inf"), -1, 10**30, "3600"])
 def test_malformed_refresh_expiry_is_safe_error(db, user: User, monkeypatch, expires_in):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_url = start_google_health_oauth(db, user, now=now)
     state = parse_qs(urlsplit(start_url).query)["state"][0]
@@ -451,10 +639,409 @@ def test_malformed_refresh_expiry_is_safe_error(db, user: User, monkeypatch, exp
 
 def test_start_purges_expired_flow_rows(db, user: User, monkeypatch):
     _configure(monkeypatch)
+    _seed_credentials(db, user)
     now = datetime(2026, 9, 10, tzinfo=UTC)
     start_google_health_oauth(db, user, now=now - timedelta(minutes=11))
     start_google_health_oauth(db, user, now=now - timedelta(minutes=10))
+
     start_google_health_oauth(db, user, now=now)
     flows = list(db.scalars(select(GoogleHealthOAuthFlow)))
     assert len(flows) == 1
     assert flows[0].expires_at.replace(tzinfo=UTC) > now
+
+def test_per_user_credentials_are_encrypted_and_disconnect_preserves_pair(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    saved = save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None
+    assert saved.state == "not_connected"
+    assert connection.client_id == "client-a"
+    assert connection.encrypted_client_secret != b"secret-a"
+    assert decrypt_credential(connection.encrypted_client_secret) == "secret-a"
+
+    connection.encrypted_refresh_token = encrypt_credential("refresh-a")
+    connection.granted_scopes = list(GOOGLE_HEALTH_REQUIRED_SCOPES)
+    connection.state = "active"
+    db.commit()
+    disconnected = disconnect_google_health(db, user)
+    assert disconnected.state == "not_connected"
+    assert connection.client_id == "client-a"
+    assert connection.encrypted_client_secret is not None
+    assert connection.encrypted_refresh_token is None
+    assert connection.granted_scopes == []
+
+
+def test_credentials_replacement_is_atomic_and_deletion_clears_all_secrets(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    with pytest.raises(ValueError, match="credential_pair_required"):
+        save_google_health_credentials(
+            db, user, GoogleHealthCredentialsInput(client_id="client-b", client_secret="")
+        )
+    connection = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id))
+    assert connection is not None and connection.client_id == "client-a"
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-b", client_secret="secret-b")
+    )
+    assert connection.client_id == "client-b"
+    assert decrypt_credential(connection.encrypted_client_secret) == "secret-b"
+    deleted = delete_google_health_credentials(db, user)
+    assert deleted.state == "not_configured"
+    assert connection.client_id is None
+    assert connection.encrypted_client_secret is None
+    assert connection.encrypted_refresh_token is None
+
+
+def test_google_health_credentials_status_isolated_between_users(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    monkeypatch.setattr(settings, "credential_encryption_key", Fernet.generate_key().decode())
+    second = User(username="second-google-health", password_hash="hash")
+    db.add(second)
+    db.flush()
+    save_google_health_credentials(
+        db, user, GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a")
+    )
+    first_status = google_health_status(db, user)
+    second_status = google_health_status(db, second)
+    assert first_status.client_id_configured is True
+    assert first_status.client_secret_configured is True
+    assert first_status.state == "not_connected"
+    assert second_status.client_id_configured is False
+    assert second_status.client_secret_configured is False
+    assert second_status.state == "not_configured"
+def test_user_owned_client_pair_state_and_lifecycle_isolation(db, user: User, monkeypatch):
+    _configure(monkeypatch)
+    second = User(username="second-lifecycle", password_hash="hash")
+    db.add(second)
+    db.commit()
+
+    save_google_health_credentials(
+        db,
+        user,
+        GoogleHealthCredentialsInput(client_id="client-a", client_secret="secret-a"),
+    )
+    save_google_health_credentials(
+        db,
+        second,
+        GoogleHealthCredentialsInput(client_id="client-b", client_secret="secret-b"),
+    )
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    url_a = start_google_health_oauth(db, user, now=now)
+    url_b = start_google_health_oauth(db, second, now=now)
+    query_a = parse_qs(urlsplit(url_a).query)
+    query_b = parse_qs(urlsplit(url_b).query)
+    state_a = query_a["state"][0]
+    state_b = query_b["state"][0]
+    assert query_a["client_id"] == ["client-a"]
+    assert query_b["client_id"] == ["client-b"]
+    assert query_a["code_challenge_method"] == ["S256"]
+    assert query_b["code_challenge_method"] == ["S256"]
+    assert query_a["code_challenge"][0] != query_b["code_challenge"][0]
+    flow_a = db.scalar(
+        select(GoogleHealthOAuthFlow).where(GoogleHealthOAuthFlow.user_id == user.id)
+    )
+    flow_b = db.scalar(
+        select(GoogleHealthOAuthFlow).where(GoogleHealthOAuthFlow.user_id == second.id)
+    )
+    assert flow_a is not None and flow_b is not None
+    verifier_a = decrypt_credential(flow_a.encrypted_pkce_verifier)
+    verifier_b = decrypt_credential(flow_b.encrypted_pkce_verifier)
+    assert verifier_a != verifier_b
+    assert pkce_challenge(verifier_a) == query_a["code_challenge"][0]
+    assert pkce_challenge(verifier_b) == query_b["code_challenge"][0]
+
+    adapter_b = TokenAdapter(
+        {"refresh_token": "refresh-b", "scope": " ".join(GOOGLE_HEALTH_SCOPES)}
+    )
+    with pytest.raises(GoogleHealthOAuthError, match="unknown_state"):
+        complete_google_health_oauth(
+            db,
+            second,
+            state=state_a,
+            code="cross-user-code",
+            error=None,
+            now=now,
+            oauth_adapter=adapter_b,
+        )
+    assert adapter_b.calls == []
+
+    adapter_a = TokenAdapter(
+        {"refresh_token": "refresh-a", "scope": " ".join(GOOGLE_HEALTH_SCOPES)}
+    )
+    complete_google_health_oauth(
+        db, user, state=state_a, code="code-a", error=None, now=now, oauth_adapter=adapter_a
+    )
+    complete_google_health_oauth(
+        db, second, state=state_b, code="code-b", error=None, now=now, oauth_adapter=adapter_b
+    )
+    assert adapter_a.calls[0]["client_id"] == "client-a"
+    assert adapter_a.calls[0]["client_secret"] == "secret-a"
+    assert adapter_b.calls[0]["client_id"] == "client-b"
+    assert adapter_b.calls[0]["client_secret"] == "secret-b"
+
+    connection_a = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user.id)
+    )
+    connection_b = db.scalar(
+        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == second.id)
+    )
+    assert connection_a is not None and connection_b is not None
+    old_a_token = connection_a.encrypted_refresh_token
+    save_google_health_credentials(
+        db,
+        user,
+        GoogleHealthCredentialsInput(client_id="client-a-new", client_secret="secret-a-new"),
+    )
+    db.refresh(connection_a)
+    db.refresh(connection_b)
+    assert connection_a.state == "reauth_required"
+    assert connection_a.granted_scopes == []
+    assert connection_a.encrypted_refresh_token == old_a_token
+    assert connection_b.client_id == "client-b"
+    assert decrypt_credential(connection_b.encrypted_client_secret) == "secret-b"
+    assert decrypt_credential(connection_b.encrypted_refresh_token) == "refresh-b"
+
+    disconnect_google_health(db, user)
+    db.refresh(connection_b)
+    assert connection_b.state == "active"
+    assert decrypt_credential(connection_b.encrypted_refresh_token) == "refresh-b"
+    delete_google_health_credentials(db, user)
+    db.refresh(connection_b)
+    assert connection_b.client_id == "client-b"
+    assert decrypt_credential(connection_b.encrypted_client_secret) == "secret-b"
+
+
+def test_provider_exception_and_security_event_never_expose_secret(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    save_google_health_credentials(
+        db,
+        user,
+        GoogleHealthCredentialsInput(client_id="client-id", client_secret="service-secret"),
+    )
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    state = parse_qs(urlsplit(start_google_health_oauth(db, user, now=now)).query)["state"][0]
+    sentinel = "provider-secret-sentinel"
+    monkeypatch.setattr(
+        security_audit,
+        "AUDITED_EVENTS",
+        security_audit.AUDITED_EVENTS
+        | frozenset({"integration.google_health.oauth_failed"}),
+    )
+
+    class ProviderError(Exception):
+        status_code = 500
+
+    messages: list[str] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    handler = CaptureHandler()
+    security_events.logger.addHandler(handler)
+    try:
+        with pytest.raises(GoogleHealthTokenExchangeError) as raised:
+            complete_google_health_oauth(
+                db,
+                user,
+                state=state,
+                code="code",
+                error=None,
+                now=now,
+                oauth_adapter=TokenAdapter(ProviderError(f"payload={sentinel}")),
+            )
+    finally:
+        security_events.logger.removeHandler(handler)
+    assert sentinel not in str(raised.value)
+    assert messages
+    assert all(sentinel not in message for message in messages)
+    with SessionLocal() as audit_db:
+        audit_events = audit_db.scalars(
+            select(SecurityAuditEvent).where(
+                SecurityAuditEvent.event == "integration.google_health.oauth_failed"
+            )
+        ).all()
+    assert audit_events
+    assert all(
+        sentinel not in repr(
+            {
+                "id": event.id,
+                "occurred_at": event.occurred_at,
+                "event": event.event,
+                "outcome": event.outcome,
+                "auth_method": event.auth_method,
+                "actor_user_id": event.actor_user_id,
+                "target_user_id": event.target_user_id,
+                "actor_ref": event.actor_ref,
+                "target_ref": event.target_ref,
+                "username_snapshot": event.username_snapshot,
+                "request_id": event.request_id,
+                "client_ip": event.client_ip,
+                "client_ref": event.client_ref,
+                "reason": event.reason,
+            }
+        )
+        for event in audit_events
+    )
+    status = google_health_status(db, user)
+    assert status.last_error == "provider_error"
+    assert status.last_error_category == "provider_error"
+    assert sentinel not in repr(status)
+def test_connection_test_uses_requested_user_credentials_without_persistence(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    second = User(username="second-connection-test", password_hash="hash")
+    db.add(second)
+    db.commit()
+    _seed_credentials(
+        db,
+        user,
+        client_id="client-a",
+        client_secret="secret-a",
+        refresh_token="refresh-a",
+    )
+    _seed_credentials(
+        db,
+        second,
+        client_id="client-b",
+        client_secret="secret-b",
+        refresh_token="refresh-b",
+    )
+    health_models = (
+        NutritionIngestionRun,
+        NutritionSourceObservation,
+        NutritionConsumptionEvent,
+        NutritionFieldObservation,
+        NutritionServingObservation,
+        NutritionProvenance,
+        NutritionExternalIdentity,
+        NutritionExternalIdentityLink,
+        NutritionFoodProfile,
+        NutritionFoodSnapshot,
+        NutritionSourceTombstone,
+        NutritionDailyProjection,
+        NutritionDailyProjectionFact,
+        NutritionDailyProjectionLineage,
+        NutritionProjectionHead,
+    )
+
+    def history_snapshot() -> dict[object, tuple[int, ...]]:
+        return {
+            owner.id: tuple(
+                int(
+                    db.scalar(
+                        select(func.count()).select_from(model).where(model.user_id == owner.id)
+                    )
+                    or 0
+                )
+                for model in health_models
+            )
+            for owner in (user, second)
+        }
+
+    before = history_snapshot()
+    credentials_seen: list[tuple[str, str, str]] = []
+    clients: list[object] = []
+
+    class ReadOnlyClient:
+        def probe_nutrition_log(self, **kwargs):
+            del kwargs
+            return 200
+
+        def probe_data_points(self, *args, **kwargs):
+            del args, kwargs
+            return 200
+
+        def close(self):
+            clients.append("closed")
+
+    def credentials_factory(refresh_token: str, client_id: str, client_secret: str) -> object:
+        credentials_seen.append((refresh_token, client_id, client_secret))
+        return credentials_seen[-1]
+
+    service = GoogleHealthConnectionTestService(
+        session_factory=lambda: db,
+        client_factory=lambda credentials: ReadOnlyClient(),
+        credentials_factory=credentials_factory,
+    )
+    assert service.test(user_id=user.id).status == "connected"
+    assert service.test(user_id=second.id).status == "connected"
+    assert credentials_seen == [
+        ("refresh-a", "client-a", "secret-a"),
+        ("refresh-b", "client-b", "secret-b"),
+    ]
+    assert len(clients) == 2
+    assert before == history_snapshot()
+def test_connection_test_reports_bounded_failed_domain(
+    db, user: User, monkeypatch
+):
+    _configure(monkeypatch)
+    _seed_credentials(db, user, refresh_token="refresh-a")
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        connection_test_module,
+        "log_security_event",
+        lambda event, **kwargs: events.append((event, kwargs["details"])),
+    )
+
+    calls: list[str] = []
+
+    class ReadOnlyClient:
+        def probe_nutrition_log(self, **kwargs):
+            del kwargs
+            calls.append("nutrition")
+            return 200
+
+        def probe_data_points(self, data_type, **kwargs):
+            del kwargs
+            calls.append(data_type)
+            if data_type == "weight":
+                raise GoogleHealthProviderUnavailableError(
+                    "provider unavailable",
+                    upstream_status_code=503,
+                )
+            return 200
+
+        def close(self):
+            calls.append("close")
+
+    service = GoogleHealthConnectionTestService(
+        session_factory=lambda: db,
+        client_factory=lambda credentials: ReadOnlyClient(),
+    )
+
+    result = service.test(user_id=user.id)
+
+    assert result.status == "failed"
+    assert result.error_category == "provider_error"
+    assert result.diagnostic is not None
+    assert result.diagnostic.domain == "weight"
+    assert result.diagnostic.operation == "weight_read"
+    assert result.diagnostic.endpoint_key == "weight_data_points"
+    assert result.diagnostic.upstream_status_code == 503
+    assert result.diagnostic.retryable is True
+    assert result.diagnostic.reauth_required is False
+    assert calls == ["nutrition", "active-energy-burned", "weight", "close"]
+    assert events == [
+        (
+            "integration.google_health.connection_test_failed",
+            {
+                "domain": "weight",
+                "operation": "weight_read",
+                "endpoint_key": "weight_data_points",
+                "upstream_status_code": 503,
+                "error_category": "provider_error",
+                "retryable": True,
+                "reauth_required": False,
+            },
+        )
+    ]

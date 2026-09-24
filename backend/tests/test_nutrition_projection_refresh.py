@@ -44,6 +44,7 @@ from app.nutrition.projection.refresh import (
     list_stale_nutrition_projection_dates,
     refresh_stale_nutrition_projections,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
@@ -85,6 +86,8 @@ def _yazio_connection(db, user: User) -> YazioConnection:
 
 def _google_connection(db, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="nutrition-projection-client",
+        encrypted_client_secret=encrypt_credential("nutrition-projection-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"refresh-token",
         granted_scopes=[],

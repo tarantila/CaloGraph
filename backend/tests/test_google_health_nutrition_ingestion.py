@@ -40,6 +40,7 @@ from app.nutrition.models import (
 from app.nutrition.projection import ProjectionPersistenceStatus
 from app.nutrition.projection.orchestration import rebuild_nutrition_day
 from app.nutrition.resolution import resolve_provider_metric
+from app.services.credential_crypto import encrypt_credential
 from app.services.google_health_nutrition_ingestion import ingest_google_health_nutrition_logs
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
@@ -99,6 +100,8 @@ _DATA_SOURCE_APPLICATION = NutritionDataSourceApplication(
 
 def _connection(db, user) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="nutrition-ingestion-client",
+        encrypted_client_secret=encrypt_credential("nutrition-ingestion-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=["https://www.googleapis.com/auth/googlehealth.nutrition.readonly"],
@@ -256,6 +259,29 @@ def test_explicit_zero_micronutrient_remains_canonical(db, user):
     assert field.canonical_value == Decimal("0")
     assert field.metric_key == "vitamin_c_mg"
     assert field.observation_role == ObservationRole.CANONICAL.value
+
+def test_google_double_projection_persists_source_and_direct_canonical_values(db, user):
+    point = _point(
+        energy=NutritionQuantity(
+            Decimal("1.234567500000"),
+            "kcal",
+            Decimal("1.234567"),
+        ),
+        total_carbohydrate=None,
+        total_fat=None,
+        nutrients=(),
+    )
+
+    _ingest(db, user, [point])
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.provider_field_path == "nutritionLog.energy"
+        )
+    )
+
+    assert field is not None
+    assert field.provider_raw_value_decimal == Decimal("1.234567500000")
+    assert field.canonical_value == Decimal("1.234567")
 
 
 def _rows(db, model):
@@ -656,7 +682,7 @@ def test_high_precision_json_quantity_survives_google_dto_ingestion(db, user):
     assert field is not None
     assert energy.value == expected
     assert field.provider_raw_value_decimal == expected
-    assert field.canonical_value == expected
+    assert field.canonical_value == Decimal("8996.632808")
 
 
 def test_energy_user_provided_unit_does_not_convert_canonical_scalar(db, user):

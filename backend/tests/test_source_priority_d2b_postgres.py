@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.nutrition.projection.refresh import refresh_stale_nutrition_projections
 from app.schemas_source_priority import NutritionPriorityUpdateRequest
+from app.services.credential_crypto import encrypt_credential
 from app.services.yazio_nutrition_ingestion import ingest_yazio_food_diary
 from app.services.yazio_provider import (
     YazioDailyNutrientSummary,
@@ -53,6 +54,8 @@ def _add_connections(db: Session, user: User) -> None:
     )
     db.add(
         GoogleHealthConnection(
+            client_id="source-priority-d2b-client",
+            encrypted_client_secret=encrypt_credential("source-priority-d2b-client-secret"),
             user_id=user.id,
             encrypted_refresh_token=b"encrypted-refresh-token",
             granted_scopes=[GOOGLE_SCOPE],

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time as time_module
 from collections.abc import Callable, Iterable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
 from uuid import UUID
@@ -16,11 +17,13 @@ from sqlalchemy.orm import Session
 from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     GoogleHealthClient,
+    GoogleHealthDailyRollupPage,
     GoogleHealthDataPointPage,
     NutritionLogDataPoint,
     NutritionLogPage,
 )
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import GoogleHealthConnection, User
 from app.nutrition.enums import CoverageState
 from app.nutrition.models import NutritionSourceObservation
@@ -38,6 +41,32 @@ DEFAULT_MAX_SYNC_PAGES = 100
 DEFAULT_MAX_SYNC_POINTS = 10_000
 
 
+MAX_SYNC_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+RETRYABLE_CODES = frozenset({"rate_limited", "provider_error", "transient_error"})
+Sleep = Callable[[float], None]
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthDomainDiagnostic:
+    domain: str
+    operation: str
+    endpoint_key: str
+    parser_stage: str
+    structural_reason_code: str | None
+    error_category: str
+    upstream_status_code: int | None
+    retryable: bool
+    reauth_required: bool
+    chunk_index: int | None = None
+    page_index: int | None = None
+    point_index: int | None = None
+    field_path: str | None = None
+    validation_rule: str | None = None
+    numeric_reason_code: str | None = None
+    observed_json_type: str | None = None
+    expected_json_type: str | None = None
+
 @dataclass(frozen=True, slots=True)
 class GoogleHealthDomainResult:
     status: str
@@ -48,6 +77,7 @@ class GoogleHealthDomainResult:
     covered_start: date | None = None
     covered_end: date | None = None
     error_code: str | None = None
+    diagnostic: GoogleHealthDomainDiagnostic | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +86,7 @@ class GoogleHealthSyncResult:
     nutrition: GoogleHealthDomainResult
     activity_energy: GoogleHealthDomainResult
     weight: GoogleHealthDomainResult
+    provider_attempted: bool = True
 
 
 class _PagedClient(Protocol):
@@ -67,12 +98,20 @@ class _PagedClient(Protocol):
                              end_time: datetime | None = None, page_token: str | None = None,
                              page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE) -> GoogleHealthDataPointPage: ...
 
+    def iter_daily_rollup_pages(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_pages: int = DEFAULT_MAX_SYNC_PAGES,
+    ) -> Iterable[GoogleHealthDailyRollupPage]: ...
+
     def close(self) -> None: ...
 
 
 SessionFactory = Callable[[], Session]
 ClientFactory = Callable[[object], _PagedClient]
-CredentialsFactory = Callable[[str], object]
+CredentialsFactory = Callable[[str, str, str], object]
 DecryptRefreshToken = Callable[[bytes], str]
 
 _SAFE_CODES = frozenset({
@@ -85,6 +124,10 @@ class _PostCommitPersistenceError(RuntimeError):
     def __init__(self, persisted_count: int) -> None:
         self.persisted_count = persisted_count
         super().__init__("Google Health post-commit processing failed")
+
+
+class _RetryStatusPersistenceError(RuntimeError):
+    pass
 
 
 def _record_connection_status(
@@ -107,10 +150,12 @@ def _record_connection_status(
         if success:
             connection.last_success_at = datetime.now(UTC)
             connection.last_error = None
+            connection.last_error_category = None
             connection.state = "active"
         elif error_code is not None:
             safe_code = error_code if error_code in _SAFE_CODES else "provider_error"
             connection.last_error = safe_code
+            connection.last_error_category = safe_code
             if safe_code in _REAUTH_CODES:
                 connection.state = "reauth_required"
         db.commit()
@@ -125,11 +170,89 @@ def _record_connection_status(
 
 def _safe_code(exc: BaseException) -> str:
     code = getattr(exc, "code", None)
-    return code if isinstance(code, str) and code in _SAFE_CODES else "provider_error"
+    return code if isinstance(code, str) and code in _SAFE_CODES else "invalid_response"
 
 
-def _result(*, status: str, fetched: int, persisted: int, start: date, end: date,
-            covered: tuple[date | None, date | None] = (None, None), error: str | None = None) -> GoogleHealthDomainResult:
+_DOMAIN_CONTEXT = {
+    "nutrition": ("nutrition_read", "nutrition_log_data_points"),
+    "activity_energy": ("activity_read", "active_energy_burned_data_points"),
+    "weight": ("weight_read", "weight_data_points"),
+}
+
+
+def _diagnostic(
+    domain: str,
+    exc: BaseException,
+    *,
+    error_code: str | None = None,
+    parser_stage: str | None = None,
+    structural_reason_code: str | None = None,
+) -> GoogleHealthDomainDiagnostic:
+    detail = getattr(exc, "diagnostic", None)
+    operation = getattr(detail, "operation", None) or _DOMAIN_CONTEXT[domain][0]
+    endpoint_key = getattr(detail, "endpoint_key", None) or _DOMAIN_CONTEXT[domain][1]
+    category = error_code or _safe_code(exc)
+    upstream_status_code = getattr(exc, "upstream_status_code", None)
+    if (
+        isinstance(upstream_status_code, bool)
+        or not isinstance(upstream_status_code, int)
+        or not 100 <= upstream_status_code <= 599
+    ):
+        upstream_status_code = None
+    stage = parser_stage or getattr(exc, "parser_stage", None) or "unknown"
+    reason = structural_reason_code or getattr(exc, "structural_reason_code", None)
+    chunk_index = getattr(detail, "chunk_index", None)
+    if chunk_index is None:
+        chunk_index = getattr(exc, "chunk_index", None)
+    page_index = getattr(detail, "page_index", None)
+    if page_index is None:
+        page_index = getattr(exc, "page_index", None)
+    return GoogleHealthDomainDiagnostic(
+        domain=domain,
+        operation=operation,
+        endpoint_key=endpoint_key,
+        parser_stage=stage,
+        structural_reason_code=reason,
+        error_category=category,
+        upstream_status_code=upstream_status_code,
+        retryable=category in RETRYABLE_CODES,
+        reauth_required=category in _REAUTH_CODES,
+        chunk_index=chunk_index,
+        page_index=page_index,
+        point_index=getattr(detail, "point_index", None),
+        field_path=getattr(detail, "field_path", None),
+        validation_rule=getattr(detail, "validation_rule", None),
+        numeric_reason_code=getattr(detail, "numeric_reason_code", None),
+        observed_json_type=getattr(detail, "observed_json_type", None),
+        expected_json_type=getattr(detail, "expected_json_type", None),
+    )
+
+
+def _no_data_diagnostic(domain: str) -> GoogleHealthDomainDiagnostic:
+    operation, endpoint_key = _DOMAIN_CONTEXT[domain]
+    return GoogleHealthDomainDiagnostic(
+        domain=domain,
+        operation=operation,
+        endpoint_key=endpoint_key,
+        parser_stage="response_envelope",
+        structural_reason_code="no_data",
+        error_category="no_data",
+        upstream_status_code=None,
+        retryable=False,
+        reauth_required=False,
+    )
+
+def _result(
+    *,
+    status: str,
+    fetched: int,
+    persisted: int,
+    start: date,
+    end: date,
+    covered: tuple[date | None, date | None] = (None, None),
+    error: str | None = None,
+    diagnostic: GoogleHealthDomainDiagnostic | None = None,
+) -> GoogleHealthDomainResult:
     return GoogleHealthDomainResult(
         status=status,
         fetched_count=fetched,
@@ -139,31 +262,49 @@ def _result(*, status: str, fetched: int, persisted: int, start: date, end: date
         covered_start=covered[0],
         covered_end=covered[1],
         error_code=error,
+        diagnostic=diagnostic,
     )
 
 
-def _empty_domains(start: date, end: date, *, status: str, error: str | None = None) -> GoogleHealthSyncResult:
+def _empty_domains(
+    start: date,
+    end: date,
+    *,
+    status: str,
+    error: str | None = None,
+) -> GoogleHealthSyncResult:
     item = _result(status=status, fetched=0, persisted=0, start=start, end=end, error=error)
-    return GoogleHealthSyncResult(status="reauth_required" if status == "reauth_required" else "failed", nutrition=item,
-                                  activity_energy=item, weight=item)
+    return GoogleHealthSyncResult(
+        status="reauth_required" if status == "reauth_required" else "failed",
+        nutrition=item,
+        activity_energy=item,
+        weight=item,
+        provider_attempted=False,
+    )
 
 
 class GoogleHealthSyncService:
     """Read all domains with independent finite budgets and write each independently."""
 
-    def __init__(self, *, session_factory: SessionFactory,
-                 client_factory: ClientFactory | None = None,
-                 credentials_factory: CredentialsFactory = _default_credentials,
-                 decrypt_refresh_token: DecryptRefreshToken = decrypt_credential,
-                 page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
-                 max_pages: int = DEFAULT_MAX_SYNC_PAGES,
-                 max_points: int = DEFAULT_MAX_SYNC_POINTS) -> None:
-        if not isinstance(page_size, int) or page_size <= 0:
-            raise ValueError("page_size must be positive")
-        if not isinstance(max_pages, int) or max_pages <= 0:
-            raise ValueError("max_pages must be positive")
-        if not isinstance(max_points, int) or max_points <= 0:
-            raise ValueError("max_points must be positive")
+    def __init__(
+        self,
+        *,
+        session_factory: SessionFactory,
+        client_factory: ClientFactory | None = None,
+        credentials_factory: CredentialsFactory = _default_credentials,
+        decrypt_refresh_token: DecryptRefreshToken = decrypt_credential,
+        page_size: int = GOOGLE_HEALTH_MAX_PAGE_SIZE,
+        max_pages: int = DEFAULT_MAX_SYNC_PAGES,
+        max_points: int = DEFAULT_MAX_SYNC_POINTS,
+        sleep: Sleep = time_module.sleep,
+    ) -> None:
+        for value, name in (
+            (page_size, "page_size"),
+            (max_pages, "max_pages"),
+            (max_points, "max_points"),
+        ):
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be positive")
         self._session_factory = session_factory
         self._client_factory = client_factory or (lambda credentials: GoogleHealthClient(None, credentials))
         self._credentials_factory = credentials_factory
@@ -171,8 +312,52 @@ class GoogleHealthSyncService:
         self._page_size = page_size
         self._max_pages = max_pages
         self._max_points = max_points
+        self._sleep = sleep
 
-    def _snapshot(self, user_id: UUID) -> tuple[UUID, str, bytes] | str:
+    def _update_retry_status(
+        self,
+        *,
+        user_id: UUID,
+        state: str,
+        attempt: int,
+        next_retry_at: datetime | None = None,
+        error_category: str | None = None,
+        success: bool = False,
+    ) -> None:
+        db: Session | None = None
+        try:
+            db = self._session_factory()
+            connection = db.scalar(
+                select(GoogleHealthConnection)
+                .where(GoogleHealthConnection.user_id == user_id)
+                .with_for_update()
+            )
+            if connection is None:
+                return
+            now = datetime.now(UTC)
+            connection.sync_state = state
+            connection.retry_attempt = attempt
+            connection.retry_max_attempts = MAX_SYNC_ATTEMPTS
+            connection.next_retry_at = next_retry_at
+            connection.last_attempt_at = now
+            connection.last_error_category = error_category
+            connection.last_error = error_category
+            if success:
+                connection.last_success_at = now
+                connection.last_error = None
+                connection.last_error_category = None
+            db.commit()
+        except Exception:
+            if db is not None:
+                with suppress(Exception):
+                    db.rollback()
+            raise _RetryStatusPersistenceError() from None
+        finally:
+            if db is not None:
+                db.close()
+
+    def _snapshot(self, user_id: UUID) -> tuple[UUID, str, bytes, str, str] | str:
+
         db = self._session_factory()
         try:
             row = db.scalar(select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id))
@@ -191,6 +376,14 @@ class GoogleHealthSyncService:
                 row.state = "reauth_required"
                 db.commit()
                 return "scope_missing"
+            try:
+                client_id, client_secret = resolve_google_health_credentials(row)
+            except Exception:
+                row.last_attempt_at = attempted
+                row.last_error = "credentials_unavailable"
+                row.state = "reauth_required"
+                db.commit()
+                return "credentials_unavailable"
             if not isinstance(user.timezone, str) or not user.timezone:
                 return "provider_error"
             # Validate the timezone while the user row is still scoped.
@@ -198,9 +391,14 @@ class GoogleHealthSyncService:
                 ZoneInfo(user.timezone)
             except (ValueError, ZoneInfoNotFoundError):
                 return "provider_error"
+            if not row.encrypted_refresh_token:
+                row.last_error = "credentials_unavailable"
+                row.state = "reauth_required"
+                db.commit()
+                return "credentials_unavailable"
             row.last_attempt_at = attempted
             db.commit()
-            return row.id, user.timezone, row.encrypted_refresh_token
+            return row.id, user.timezone, row.encrypted_refresh_token, client_id, client_secret
         finally:
             db.close()
 
@@ -209,8 +407,30 @@ class GoogleHealthSyncService:
         points: list[Any] = []
         token: str | None = None
         seen: set[str | None] = {None}
+        page_limit = self._max_pages
+        point_limit = self._max_points
         local_start = datetime.combine(start, time.min, tzinfo=ZoneInfo(timezone))
         local_end = datetime.combine(end + timedelta(days=1), time.min, tzinfo=ZoneInfo(timezone))
+        if data_type == "active-energy-burned":
+            daily_iterator = getattr(client, "iter_daily_rollup_pages", None)
+            if not callable(daily_iterator):
+                raise ValueError("Google Health client requires the daily rollup seam")
+            truncated = False
+            for page in daily_iterator(
+                start_date=start,
+                end_date=end,
+                max_pages=page_limit,
+            ):
+                available = tuple(page.data_points)
+                remaining = point_limit - len(points)
+                points.extend(available[:max(remaining, 0)])
+                if len(available) > remaining or (
+                    len(available) >= remaining and page.next_page_token is not None
+                ):
+                    truncated = True
+                    break
+            return tuple(points), truncated
+
         iterator_factory = getattr(client, "iter_data_points_pages", None)
         direct = (
             getattr(client, "get_nutrition_log_page", None)
@@ -229,32 +449,35 @@ class GoogleHealthSyncService:
                 start_time=local_start.astimezone(UTC),
                 end_time=local_end.astimezone(UTC),
                 page_size=self._page_size,
-                max_pages=self._max_pages,
+                max_pages=page_limit,
             )
             truncated = False
             for page_number, page in enumerate(iterator):
                 available = tuple(page.data_points)
-                remaining = self._max_points - len(points)
+                remaining = point_limit - len(points)
                 points.extend(available[:max(remaining, 0)])
                 if len(available) > remaining or (
                     len(available) >= remaining and page.next_page_token is not None
                 ):
                     truncated = True
                     break
-                if page_number + 1 >= self._max_pages:
+                if page_number + 1 >= page_limit:
                     truncated = page.next_page_token is not None
                     break
             return tuple(points), truncated
 
         truncated = False
-        for page_number in range(self._max_pages):
+        for page_number in range(page_limit):
             if data_type == "nutrition-log":
-                page = direct(
-                    page_size=self._page_size,
-                    page_token=token,
-                    civil_start_time=start,
-                    civil_end_time=end + timedelta(days=1),
-                )
+                nutrition_kwargs: dict[str, object] = {
+                    "page_size": self._page_size,
+                    "page_token": token,
+                    "civil_start_time": start,
+                    "civil_end_time": end + timedelta(days=1),
+                }
+                if isinstance(client, GoogleHealthClient):
+                    nutrition_kwargs["page_index"] = page_number
+                page = direct(**nutrition_kwargs)
             else:
                 page = direct(
                     data_type,
@@ -264,7 +487,7 @@ class GoogleHealthSyncService:
                     page_size=self._page_size,
                 )
             available = tuple(page.data_points)
-            remaining = self._max_points - len(points)
+            remaining = point_limit - len(points)
             points.extend(available[:max(remaining, 0)])
             if len(available) > remaining or (
                 len(available) >= remaining and page.next_page_token is not None
@@ -277,7 +500,7 @@ class GoogleHealthSyncService:
             if next_token in seen:
                 raise ValueError("pagination token repeated")
             seen.add(next_token)
-            if page_number + 1 >= self._max_pages:
+            if page_number + 1 >= page_limit:
                 truncated = True
                 break
             token = next_token
@@ -290,6 +513,10 @@ class GoogleHealthSyncService:
         dates: list[date] = []
         zone = ZoneInfo(timezone)
         for point in points:
+            civil_date = getattr(point, "civil_date", None)
+            if isinstance(civil_date, date) and not isinstance(civil_date, datetime):
+                dates.append(civil_date)
+                continue
             interval = getattr(getattr(point, "nutrition_log", None), "interval", None)
             if nutrition and interval is not None:
                 civil = interval.civil_start_time
@@ -297,10 +524,10 @@ class GoogleHealthSyncService:
                     dates.append(civil.date())
                 elif isinstance(civil, date):
                     dates.append(civil)
-            else:
-                timestamp = getattr(point, "start_time", None)
-                if isinstance(timestamp, datetime):
-                    dates.append(timestamp.astimezone(zone).date())
+                continue
+            timestamp = getattr(point, "start_time", None)
+            if isinstance(timestamp, datetime):
+                dates.append(timestamp.astimezone(zone).date())
         return (min(dates), max(dates)) if dates else (None, None)
 
     def _persist_nutrition(self, *, user_id: UUID, source_id: UUID, start: date, end: date,
@@ -338,13 +565,25 @@ class GoogleHealthSyncService:
             raise _PostCommitPersistenceError(count) from None
         return count
 
-    def _persist_scalar(self, *, user_id: UUID, source_id: UUID, start: date, end: date,
-                        points: tuple[Any, ...], activity: bool) -> int:
+    def _persist_scalar(
+        self,
+        *,
+        user_id: UUID,
+        source_id: UUID,
+        start: date,
+        end: date,
+        points: tuple[Any, ...],
+        activity: bool,
+    ) -> int:
         db = self._session_factory()
         try:
             result = (sync_google_health_activity if activity else sync_google_health_weight)(
-                db, user_id=user_id, source_instance_id=source_id, requested_start=start,
-                requested_end=end, data_points=points,
+                db,
+                user_id=user_id,
+                source_instance_id=source_id,
+                requested_start=start,
+                requested_end=end,
+                data_points=points,
             )
             db.commit()
             return result.persisted_count
@@ -355,19 +594,26 @@ class GoogleHealthSyncService:
         finally:
             db.close()
 
-    def sync(self, *, user_id: UUID, requested_start: date, requested_end: date) -> GoogleHealthSyncResult:
+    def _sync_once(
+        self,
+        *,
+        user_id: UUID,
+        requested_start: date,
+        requested_end: date,
+        before_provider_attempt: Callable[[], None] | None = None,
+    ) -> GoogleHealthSyncResult:
         if requested_start > requested_end:
             raise ValueError("requested date range is invalid")
         snapshot = self._snapshot(user_id)
         if isinstance(snapshot, str):
-            status = "reauth_required" if snapshot in {"scope_missing", "reauth_required"} else "failed"
+            status = "reauth_required" if snapshot in {"scope_missing", "reauth_required", "credentials_unavailable"} else "failed"
             return _empty_domains(
                 requested_start,
                 requested_end,
                 status=status,
                 error=snapshot,
             )
-        source_id, timezone, encrypted = snapshot
+        source_id, timezone, encrypted, client_id, client_secret = snapshot
         try:
             refresh = self._decrypt_refresh_token(encrypted)
             if not isinstance(refresh, str) or not refresh:
@@ -386,7 +632,7 @@ class GoogleHealthSyncService:
                 error=code,
             )
         try:
-            credentials = self._credentials_factory(refresh)
+            credentials = self._credentials_factory(refresh, client_id, client_secret)
             client = self._client_factory(credentials)
         except Exception:
             code = "credentials_unavailable"
@@ -403,6 +649,16 @@ class GoogleHealthSyncService:
             )
         finally:
             refresh = ""
+            client_secret = ""
+
+        if before_provider_attempt is not None:
+            try:
+                before_provider_attempt()
+            except Exception:
+                with suppress(Exception):
+                    client.close()
+                raise
+
 
         domains: dict[str, GoogleHealthDomainResult] = {}
         try:
@@ -431,6 +687,7 @@ class GoogleHealthSyncService:
                         start=requested_start,
                         end=requested_end,
                         error=code,
+                        diagnostic=_diagnostic(name, exc),
                     )
                     if code in _REAUTH_CODES:
                         for remaining_name, _, _ in definitions:
@@ -442,6 +699,7 @@ class GoogleHealthSyncService:
                                     start=requested_start,
                                     end=requested_end,
                                     error=code,
+                                    diagnostic=_diagnostic(remaining_name, exc),
                                 )
                         break
                     continue
@@ -484,6 +742,13 @@ class GoogleHealthSyncService:
                         end=requested_end,
                         covered=covered,
                         error="persistence_error",
+                        diagnostic=_diagnostic(
+                            name,
+                            exc,
+                            error_code="persistence_error",
+                            parser_stage="persistence",
+                            structural_reason_code="persistence_error",
+                        ),
                     )
                     continue
                 status = "truncated" if truncated else ("no_data" if not points else "success")
@@ -494,6 +759,7 @@ class GoogleHealthSyncService:
                     start=requested_start,
                     end=requested_end,
                     covered=covered,
+                    diagnostic=_no_data_diagnostic(name) if status == "no_data" else None,
                 )
         finally:
             with suppress(Exception):
@@ -535,5 +801,148 @@ class GoogleHealthSyncService:
             weight=weight,
         )
 
+    @staticmethod
+    def _retry_category(result: GoogleHealthSyncResult) -> str | None:
+        codes = [
+            item.error_code
+            for item in (result.nutrition, result.activity_energy, result.weight)
+            if item.error_code
+        ]
+        if not codes:
+            return None
+        for code in codes:
+            if code not in RETRYABLE_CODES:
+                return code
+        return codes[0]
 
-__all__ = ["GoogleHealthDomainResult", "GoogleHealthSyncResult", "GoogleHealthSyncService"]
+    def sync(
+        self, *, user_id: UUID, requested_start: date, requested_end: date
+    ) -> GoogleHealthSyncResult:
+        if requested_start > requested_end:
+            raise ValueError("requested date range is invalid")
+        persisted_totals = {"nutrition": 0, "activity_energy": 0, "weight": 0}
+        for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
+            provider_attempted = False
+
+            def before_provider_attempt(current_attempt: int = attempt) -> None:
+                nonlocal provider_attempted
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="running",
+                    attempt=current_attempt,
+                )
+                provider_attempted = True
+            try:
+                result = self._sync_once(
+                    user_id=user_id,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                    before_provider_attempt=before_provider_attempt,
+                )
+            except _RetryStatusPersistenceError:
+                return _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="failed",
+                    error="persistence_error",
+                )
+            except Exception as exc:
+                failure_code = _safe_code(exc)
+                result = _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="reauth_required" if failure_code in _REAUTH_CODES else "failed",
+                    error=failure_code,
+                )
+            for domain_name in persisted_totals:
+                domain_result = getattr(result, domain_name)
+                persisted_totals[domain_name] += domain_result.persisted_count
+                result = replace(
+                    result,
+                    **{
+                        domain_name: replace(
+                            domain_result,
+                            persisted_count=persisted_totals[domain_name],
+                        )
+                    },
+                )
+            retry_category = self._retry_category(result)
+            if not provider_attempted and result.provider_attempted:
+                provider_attempted = True
+            if not provider_attempted or not result.provider_attempted:
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="failed",
+                        attempt=0,
+                        error_category=retry_category,
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
+                return result
+            if retry_category not in RETRYABLE_CODES:
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="completed" if result.status in {"success", "no_data"} else "failed",
+                        attempt=attempt,
+                        error_category=retry_category,
+                        success=result.status in {"success", "no_data"},
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
+                return result
+            if attempt >= MAX_SYNC_ATTEMPTS:
+                try:
+                    self._update_retry_status(
+                        user_id=user_id,
+                        state="failed",
+                        attempt=attempt,
+                        error_category=retry_category,
+                    )
+                except _RetryStatusPersistenceError:
+                    return _empty_domains(
+                        requested_start,
+                        requested_end,
+                        status="failed",
+                        error="persistence_error",
+                    )
+                return result
+            next_retry_at = datetime.now(UTC) + timedelta(
+                seconds=RETRY_BACKOFF_SECONDS[attempt - 1]
+            )
+            try:
+                self._update_retry_status(
+                    user_id=user_id,
+                    state="running",
+                    attempt=attempt,
+                    next_retry_at=next_retry_at,
+                    error_category=retry_category,
+                )
+            except _RetryStatusPersistenceError:
+                return _empty_domains(
+                    requested_start,
+                    requested_end,
+                    status="failed",
+                    error="persistence_error",
+                )
+            self._sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
+        raise AssertionError("sync retry loop did not return")
+
+
+__all__ = [
+    "GoogleHealthDomainDiagnostic",
+    "GoogleHealthDomainResult",
+    "GoogleHealthSyncResult",
+    "GoogleHealthSyncService",
+]

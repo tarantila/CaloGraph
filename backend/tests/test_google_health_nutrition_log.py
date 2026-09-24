@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import ClassVar
 
 import pytest
@@ -112,6 +113,84 @@ def test_valid_page_is_typed_and_contains_only_validated_dtos() -> None:
     assert page.page_size == 10
     assert not hasattr(page, "payload")
 
+def test_google_double_nutrition_fields_accept_more_than_twelve_decimal_places() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/double-fields-1", 1)
+    nutrition_log = value["nutritionLog"]
+    assert isinstance(nutrition_log, dict)
+    nutrition_log.update(
+        {
+            "energy": {"kcal": Decimal("1.1234567890123")},
+            "energyFromFat": {"kcal": Decimal("2.1234567890123")},
+            "totalCarbohydrate": {"grams": Decimal("3.1234567890123")},
+            "totalFat": {"grams": Decimal("4.1234567890123")},
+            "nutrients": [
+                {
+                    "nutrient": "PROTEIN",
+                    "quantity": {"grams": Decimal("5.1234567890123")},
+                }
+            ],
+            "serving": {"amount": Decimal("6.1234567890123")},
+        }
+    )
+
+    nutrition_client, _ = client({"dataPoints": [value]})
+    parsed = nutrition_client.get_nutrition_log_page(page_size=1).data_points[0].nutrition_log
+
+    assert parsed.energy is not None
+    assert parsed.energy.value == Decimal("1.123456789012")
+    assert parsed.energy.canonical_value == Decimal("1.123457")
+    assert parsed.energy_from_fat is not None
+    assert parsed.energy_from_fat.value == Decimal("2.123456789012")
+    assert parsed.energy_from_fat.canonical_value == Decimal("2.123457")
+    assert parsed.total_carbohydrate is not None
+    assert parsed.total_carbohydrate.value == Decimal("3.123456789012")
+    assert parsed.total_carbohydrate.canonical_value == Decimal("3.123457")
+    assert parsed.total_fat is not None
+    assert parsed.total_fat.value == Decimal("4.123456789012")
+    assert parsed.total_fat.canonical_value == Decimal("4.123457")
+    assert parsed.nutrients[0].quantity.value == Decimal("5.123456789012")
+    assert parsed.nutrients[0].quantity.canonical_value == Decimal("5.123457")
+    assert parsed.serving is not None
+    assert parsed.serving.amount == Decimal("6.123456789012")
+    assert parsed.serving.canonical_amount == Decimal("6.123457")
+
+def test_provider_date_only_civil_time_is_accepted() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/date-only-1", 1)
+    interval_value = value["nutritionLog"]["interval"]
+    assert isinstance(interval_value, dict)
+    interval_value["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+    }
+    interval_value["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.interval.civil_start_time == datetime(
+        2026, 1, 1
+    )
+
+def test_provider_partial_civil_time_is_not_compared_as_exact() -> None:
+    value = point("users/u/dataTypes/nutrition-log/dataPoints/partial-time-1", 1)
+    interval_value = value["nutritionLog"]["interval"]
+    assert isinstance(interval_value, dict)
+    interval_value["civilStartTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"minutes": 30},
+    }
+    interval_value["civilEndTime"] = {
+        "date": {"year": 2026, "month": 1, "day": 1},
+        "time": {"minutes": 45},
+    }
+    nutrition_client, _ = client({"dataPoints": [value]})
+
+    page = nutrition_client.get_nutrition_log_page(page_size=1)
+
+    assert page.data_points[0].nutrition_log.interval.civil_end_time == datetime(
+        2026, 1, 1, 0, 45
+    )
 
 def test_unknown_meal_type_is_retained_as_a_typed_string() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/future-meal-1", 1)
@@ -598,23 +677,12 @@ def test_utf8_oversized_optional_strings_are_rejected(mutator) -> None:
         nutrition_client.get_nutrition_log_page(page_size=1)
 
 
-def test_empty_list_response_without_optional_data_points_is_valid() -> None:
-    nutrition_client, _ = client({})
-
-    page = nutrition_client.get_nutrition_log_page(page_size=1)
-
-    assert page.data_points == ()
-    assert page.next_page_token is None
-
-
-def test_unused_page_fields_are_ignored() -> None:
-    nutrition_client, _ = client({"futurePageMetadata": {"version": 2}})
-
-    page = nutrition_client.get_nutrition_log_page(page_size=1)
-
-    assert page.data_points == ()
-    assert page.next_page_token is None
-
+def test_missing_data_points_envelope_is_invalid() -> None:
+    for payload in ({}, {"futurePageMetadata": {"version": 2}}):
+        nutrition_client, _ = client(payload)
+        with pytest.raises(GoogleHealthInvalidResponseError) as raised:
+            nutrition_client.get_nutrition_log_page(page_size=1)
+        assert raised.value.structural_reason_code == "data_points_missing"
 
 def test_future_data_source_values_are_retained_but_unknown_fields_are_ignored() -> None:
     value = point("users/u/dataTypes/nutrition-log/dataPoints/future-1", 1)

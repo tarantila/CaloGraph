@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 from uuid import UUID
@@ -18,9 +18,11 @@ from app.google_health.client import (
     GOOGLE_HEALTH_MAX_PAGE_SIZE,
     ActiveEnergyBurnedDataPoint,
     GoogleHealthActivityDataPoint,
+    GoogleHealthDailyRollupDataPoint,
     GoogleHealthDataPointPage,
     WeightDataPoint,
 )
+from app.google_health.credentials import resolve_google_health_credentials
 from app.importers.common import CanonicalSample, local_date_for, normalize_value
 from app.models import GoogleHealthConnection, ImportBatch, User
 from app.services.import_service import _persist_sample_batch, _start_batch
@@ -72,7 +74,7 @@ class _PagedClient(Protocol):
 
 SessionFactory = Callable[[], Session]
 ClientFactory = Callable[[object], _PagedClient]
-CredentialsFactory = Callable[[str], object]
+CredentialsFactory = Callable[[str, str, str], object]
 DecryptRefreshToken = Callable[[bytes], str]
 
 
@@ -106,12 +108,13 @@ def _owned_user_and_connection(
     return user, connection
 
 
-def _point_identity(point: object) -> str:
+def _point_identity(point: object) -> str | None:
     name = getattr(point, "name", None)
+    if name is None:
+        return None
     if not isinstance(name, str) or not name or len(name.encode("utf-8")) > 255:
         raise ValueError("Google Health datapoint identity is invalid")
     return name
-
 
 def _decimal(value: object) -> Decimal:
     try:
@@ -131,11 +134,39 @@ def _timezone(user: User) -> str:
 
 
 def _sample_for_activity(
-    point: GoogleHealthActivityDataPoint,
+    point: GoogleHealthActivityDataPoint | GoogleHealthDailyRollupDataPoint,
     *,
     timezone: str,
     source_identifier: str,
 ) -> CanonicalSample:
+    if isinstance(point, GoogleHealthDailyRollupDataPoint):
+        day = point.civil_date
+        if not isinstance(day, date) or isinstance(day, datetime):
+            raise ValueError("Google Health daily rollup civil date is invalid")
+        original_value = _decimal(point.value)
+        if point.unit != "kcal":
+            raise ValueError("Google Health daily rollup unit is invalid")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, point.unit, "kcal")
+        )
+        anchor = datetime.combine(day, time(hour=12), tzinfo=ZoneInfo(timezone)).astimezone(UTC)
+        return CanonicalSample(
+            metric_type=ACTIVE_ENERGY_METRIC,
+            value=canonical_value,
+            unit="kcal",
+            original_value=original_value,
+            original_unit="kcal",
+            start_at=anchor,
+            end_at=anchor,
+            timezone=timezone,
+            source_type=ACTIVITY_SOURCE_TYPE,
+            source_name=_SOURCE_NAME,
+            source_identifier=source_identifier,
+            external_sample_id=f"daily-rollup:active-energy:{day.isoformat()}",
+            local_date=day,
+        )
     if not isinstance(point, ActiveEnergyBurnedDataPoint):
         raise ValueError("activity data_points contain an invalid DTO")
     identity = _point_identity(point)
@@ -150,7 +181,11 @@ def _sample_for_activity(
     if original_unit != "kcal":
         raise ValueError("Google Health datapoint unit is invalid")
     try:
-        canonical_value = normalize_value(original_value, original_unit, "kcal")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, original_unit, "kcal")
+        )
     except Exception as exc:
         raise ValueError("Google Health datapoint unit is invalid") from exc
     return CanonicalSample(
@@ -175,9 +210,9 @@ def _sample_for_weight(
     timezone: str,
     source_identifier: str,
 ) -> CanonicalSample:
-    if not isinstance(point, WeightDataPoint):
-        raise ValueError("weight data_points contain an invalid DTO")
     identity = _point_identity(point)
+    if identity is None:
+        raise ValueError("Google Health weight datapoint identity is missing")
     if point.start_time.tzinfo is None or point.end_time.tzinfo is None:
         raise ValueError("Google Health datapoint timestamp is invalid")
     if point.start_time != point.end_time:
@@ -188,7 +223,11 @@ def _sample_for_weight(
         raise ValueError("Google Health datapoint unit is invalid")
     try:
         normalized_unit = _MASS_UNIT_ALIASES[original_unit.strip().lower()]
-        canonical_value = normalize_value(original_value, normalized_unit, "kg")
+        canonical_value = (
+            _decimal(point.canonical_value)
+            if point.canonical_value is not None
+            else normalize_value(original_value, normalized_unit, "kg")
+        )
     except Exception as exc:
         raise ValueError("Google Health datapoint unit is invalid") from exc
     return CanonicalSample(
@@ -364,12 +403,21 @@ class GoogleHealthScalarSyncService:
                 timezone = ZoneInfo(user.timezone)
             except (ValueError, ZoneInfoNotFoundError):
                 raise ValueError("user timezone is invalid") from None
+            try:
+                client_id, client_secret = resolve_google_health_credentials(connection)
+            except Exception:
+                raise ValueError("Google Health credentials are unavailable") from None
             source_instance_id = connection.id
+            if not connection.encrypted_refresh_token:
+                raise ValueError("Google Health refresh token is unavailable")
             refresh_token = self._decrypt_refresh_token(connection.encrypted_refresh_token)
         finally:
             db.close()
-        credentials = self._credentials_factory(refresh_token)
-        client = self._client_factory(credentials)
+        try:
+            credentials = self._credentials_factory(refresh_token, client_id, client_secret)
+            client = self._client_factory(credentials)
+        finally:
+            client_secret = ""
         try:
             local_start = datetime.combine(
                 requested_start, datetime.min.time(), tzinfo=timezone

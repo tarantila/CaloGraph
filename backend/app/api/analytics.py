@@ -52,6 +52,7 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.analytics.trends_canonical import run_trends_canonical_read
+from app.analytics.verification import read_activity_verification, read_nutrition_verification
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
@@ -66,7 +67,14 @@ from app.problem_types import (
     ProblemHTTPException,
 )
 from app.provider_preferences import WEIGHT_DATA_AREA
-from app.schemas import DailyPoint, MicronutrientResponse, WeightResponse
+from app.schemas import (
+    DailyPoint,
+    MicronutrientResponse,
+    VerificationActivityResponse,
+    VerificationNutritionResponse,
+    VerificationView,
+    WeightResponse,
+)
 from app.services.achievements import unlock_achievement_keys
 from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
@@ -232,6 +240,72 @@ def _read_preferred_daily_points(
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
 
+
+
+@router.get(
+    "/analytics/verification/activity",
+    response_model=VerificationActivityResponse,
+)
+def activity_verification(
+    start: date | None = None,
+    end: date | None = None,
+    view: VerificationView = Query(default="canonical"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> VerificationActivityResponse:
+    start, end = _range(start, end, user.timezone, default_days=7)
+    try:
+        return read_activity_verification(
+            db,
+            user_id=user.id,
+            start=start,
+            end=end,
+            view=view,
+        )
+    except ScalarProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except ScalarProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+@router.get(
+    "/analytics/verification/nutrition",
+    response_model=VerificationNutritionResponse,
+)
+def nutrition_verification(
+    local_date: date | None = Query(default=None, alias="date"),
+    view: VerificationView = Query(default="canonical"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> VerificationNutritionResponse:
+    resolved_date = local_date or datetime.now(ZoneInfo(user.timezone)).date()
+    try:
+        return read_nutrition_verification(
+            db,
+            user_id=user.id,
+            local_date=resolved_date,
+            view=view,
+        )
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
 
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(

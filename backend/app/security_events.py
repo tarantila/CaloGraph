@@ -83,6 +83,24 @@ EVENT_SPECS: Final[dict[str, EventSpec]] = {
     "integration.google_health.oauth_started": EventSpec("pending", logging.INFO),
     "integration.google_health.oauth_completed": EventSpec("success", logging.INFO),
     "integration.google_health.oauth_failed": EventSpec("failure", logging.WARNING),
+    "integration.google_health.connection_test_failed": EventSpec(
+        "failure",
+        logging.WARNING,
+        frozenset(
+            {
+                "domain",
+                "operation",
+                "endpoint_key",
+                "upstream_status_code",
+                "error_category",
+                "retryable",
+                "reauth_required",
+            }
+        ),
+    ),
+    "integration.google_health.credentials_updated": EventSpec("success", logging.INFO),
+    "integration.google_health.credentials_deleted": EventSpec("success", logging.WARNING),
+    "integration.google_health.connection_disconnected": EventSpec("success", logging.WARNING),
     "integration.yazio.connection_configured": EventSpec("success", logging.INFO),
     "integration.yazio.connection_disabled": EventSpec("success", logging.WARNING),
     "integration.yazio.connection_failed": EventSpec("failure", logging.WARNING),

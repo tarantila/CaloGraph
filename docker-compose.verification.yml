@@ -1,0 +1,30 @@
+services:
+  backend:
+    environment:
+      E2E_VERIFICATION_DATE: ${E2E_VERIFICATION_DATE}
+      GOOGLE_HEALTH_ENABLED: "true"
+      YAZIO_ENABLED: "true"
+      YAZIO_PROVIDER: "sdk"
+      YAZIO_SCHEDULER_ENABLED: "false"
+      INITIAL_ADMIN_SETUP_ENABLED: "false"
+  yazio-scheduler:
+    profiles: [verification-disabled]
+  e2e:
+    environment:
+      BASE_URL: http://frontend:8080
+      E2E_VERIFICATION_USERNAME: verification-e2e-user
+      E2E_VERIFICATION_OTHER_USERNAME: verification-e2e-other-user
+      E2E_VERIFICATION_PASSWORD: verification-e2e-local-passphrase
+      E2E_VERIFICATION_DATE: ${E2E_VERIFICATION_DATE}
+    command: ["npx", "playwright", "test", "tests/e2e/verification-data.spec.ts"]
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${CALOGRAPH_EDGE_SUBNET}
+          gateway: ${CALOGRAPH_EDGE_GATEWAY_IP}
+  data:
+    ipam:
+      config:
+        - subnet: ${CALOGRAPH_DATA_SUBNET}

@@ -35,6 +35,7 @@ from app.nutrition.resolution.discovery import (
 )
 from app.nutrition.resolution.metrics import canonical_unit
 from app.nutrition.resolution.period_reader import NutritionEvidenceIndex
+from app.services.credential_crypto import encrypt_credential
 
 DAY = date(2026, 9, 1)
 NEXT_DAY = date(2026, 9, 2)
@@ -56,6 +57,8 @@ def _yazio_connection(db: Session, user: User) -> YazioConnection:
 
 def _google_connection(db: Session, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="nutrition-discovery-client",
+        encrypted_client_secret=encrypt_credential("nutrition-discovery-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=["nutrition.readonly"],

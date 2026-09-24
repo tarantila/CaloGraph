@@ -17,6 +17,7 @@ from app.database import SessionLocal, engine
 from app.models import GoogleHealthConnection, User, YazioConnection
 from app.nutrition.resolution.metrics import DAILY_PROJECTION_METRICS
 from app.schemas_source_priority import NutritionPriorityUpdateRequest
+from app.services.credential_crypto import encrypt_credential
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import (
     NutritionPriorityBootstrapResult,
@@ -94,6 +95,8 @@ def _add_yazio(db, user: User) -> YazioConnection:
 
 def _add_google(db, user: User) -> GoogleHealthConnection:
     connection = GoogleHealthConnection(
+        client_id="source-priority-d2a-client",
+        encrypted_client_secret=encrypt_credential("source-priority-d2a-client-secret"),
         user_id=user.id,
         encrypted_refresh_token=b"encrypted-refresh-token",
         granted_scopes=[GOOGLE_SCOPE],

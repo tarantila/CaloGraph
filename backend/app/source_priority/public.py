@@ -10,6 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
+from app.google_health.credentials import resolve_google_health_credentials
 from app.models import GoogleHealthConnection, User
 from app.nutrition.projection.refresh import (
     DEFAULT_REFRESH_BATCH_SIZE,
@@ -95,17 +97,23 @@ def _available_provider_keys(
     available_provider_keys = set(provider_keys)
     if "google_health" not in available_provider_keys:
         return available_provider_keys
-    if not (
-        settings.google_health_enabled
-        and settings.google_health_client_id
-        and settings.google_health_client_secret
+    connection = db.scalar(
+        select(GoogleHealthConnection).where(
+            GoogleHealthConnection.user_id == user_id,
+            GoogleHealthConnection.state == "active",
+        )
+    )
+    if (
+        not settings.google_health_enabled
+        or connection is None
+        or not connection.encrypted_refresh_token
+        or not GOOGLE_HEALTH_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
     ):
         available_provider_keys.discard("google_health")
         return available_provider_keys
-    connection = db.scalar(
-        select(GoogleHealthConnection).where(GoogleHealthConnection.user_id == user_id)
-    )
-    if connection is None or connection.state != "active":
+    try:
+        resolve_google_health_credentials(connection)
+    except Exception:
         available_provider_keys.discard("google_health")
         return available_provider_keys
     evidenced_providers = {

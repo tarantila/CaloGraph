@@ -22,6 +22,7 @@ from app.nutrition.projection.refresh import (
     NutritionProjectionRefreshError,
     NutritionProjectionRefreshResult,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.bootstrap import bootstrap_nutrition_priority
 from app.source_priority.contracts import PriorityRuleSpec
@@ -56,6 +57,8 @@ def _add_yazio(db, user: User) -> None:
 def _add_google(db, user: User) -> None:
     db.add(
         GoogleHealthConnection(
+            client_id="source-priority-api-client",
+            encrypted_client_secret=encrypt_credential("source-priority-api-client-secret"),
             user_id=user.id,
             encrypted_refresh_token=b"encrypted-refresh-token",
             granted_scopes=[GOOGLE_SCOPE],
@@ -328,8 +331,6 @@ def test_source_priority_d2a_to_d2b_transition_keeps_v1_and_does_not_backfill(
     client: TestClient, user: User, db, monkeypatch
 ) -> None:
     monkeypatch.setattr("app.config.settings.google_health_enabled", True)
-    monkeypatch.setattr("app.config.settings.google_health_client_id", "client-id")
-    monkeypatch.setattr("app.config.settings.google_health_client_secret", "client-secret")
     _add_yazio(db, user)
     bootstrap_nutrition_priority(
         session_factory=lambda: db,

@@ -30,7 +30,7 @@ from app.nutrition.models import (
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
-from app.nutrition.resolution.metrics import canonical_unit
+from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS, canonical_unit
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 
 
@@ -430,9 +430,14 @@ def _source_tombstone_condition(
 
 def _valid_field_condition(source: Any, *, provider_key: str) -> Any:
     field = NutritionFieldObservation
+    metric_keys = (
+        tuple(CANONICAL_NUTRITION_METRICS)
+        if provider_key == "google_health"
+        else tuple(MICRONUTRIENT_METRIC_TYPES)
+    )
     metric_units = tuple(
         (metric_key, canonical_unit(metric_key))
-        for metric_key in MICRONUTRIENT_METRIC_TYPES
+        for metric_key in metric_keys
         if canonical_unit(metric_key) is not None
     )
     unit_matches = or_(
@@ -450,7 +455,7 @@ def _valid_field_condition(source: Any, *, provider_key: str) -> Any:
         select(1).where(
             field.user_id == source.user_id,
             field.source_observation_id == source.id,
-            field.metric_key.in_(MICRONUTRIENT_METRIC_TYPES),
+            field.metric_key.in_(metric_keys),
             field.canonical_value.is_not(None),
             unit_matches,
             field.observation_role == field_role,
