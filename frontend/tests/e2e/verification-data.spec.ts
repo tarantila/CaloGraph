@@ -159,11 +159,17 @@ test('shows Google weight and persisted provider priorities', async ({ page }) =
 
   await page.goto('/konto/datenquellen')
   await expect(page.getByRole('heading', { name: 'Priorität der Datenquellen' })).toBeVisible()
-  for (const area of ['nutrition', 'activity_energy', 'weight']) {
+  const expectedProviderOrder = {
+    nutrition: ['google_health', 'yazio', 'apple_health'],
+    activity_energy: ['google_health', 'yazio', 'apple_health', 'withings'],
+    weight: ['google_health', 'yazio', 'apple_health', 'withings'],
+  } as const
+  for (const [area, expectedProviderKeys] of Object.entries(expectedProviderOrder)) {
     const rows = page.locator(`[data-area="${area}"] .provider-priority-row`)
-    await expect(rows).toHaveCount(3)
-    await expect(rows.nth(0)).toHaveAttribute('data-provider-key', 'google_health')
-    await expect(rows.nth(1)).toHaveAttribute('data-provider-key', 'yazio')
-    await expect(rows.nth(2)).toHaveAttribute('data-provider-key', 'apple_health')
+    await expect(rows).toHaveCount(expectedProviderKeys.length)
+    const actualProviderKeys = await rows.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('data-provider-key')),
+    )
+    expect(actualProviderKeys).toEqual(expectedProviderKeys)
   }
 })
