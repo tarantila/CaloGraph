@@ -17,7 +17,7 @@ import type { User } from '../src/types'
 import { useAuthStore } from '../src/stores/auth'
 
 type DataArea = 'nutrition' | 'weight' | 'activity_energy'
-type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
+type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio' | 'withings'
 
 const availabilityByArea = {
   nutrition: [
@@ -60,9 +60,18 @@ function deferred<T>(): Deferred<T> {
 let serverPreferences: Record<DataArea, ProviderKey[]>
 let putHandler: ((area: DataArea, providerKeys: ProviderKey[]) => Promise<unknown>) | undefined
 let preferenceGetCount = 0
+let advertiseWithings = false
+let withingsWeightStatus: 'available' | 'error' | 'reauth_required' = 'available'
+let withingsActivityStatus: 'available' | 'error' | 'reauth_required' = 'available'
+let googleNutritionStatus: 'available' | 'error' = 'available'
 let advertiseGoogleScalarProviders = false
+
 function configureApi(): void {
   serverPreferences = structuredClone(initialPreferences)
+  if (advertiseWithings) {
+    serverPreferences.weight = ['withings', 'apple_health']
+    serverPreferences.activity_energy = ['withings', 'yazio']
+  }
   putHandler = undefined
   preferenceGetCount = 0
   apiMock.mockImplementation((path: string, options?: RequestInit) => {
@@ -89,7 +98,21 @@ function configureApi(): void {
       return Promise.resolve(undefined)
     }
     const area = path.split('/').at(-1) as keyof typeof availabilityByArea
-    const configuredProviders = [...availabilityByArea[area]]
+    const configuredProviders: Array<{ provider_key: ProviderKey; available: boolean; status: string }> = [
+      ...availabilityByArea[area],
+    ]
+    if (area === 'nutrition' && googleNutritionStatus === 'error') {
+      const googleProvider = configuredProviders.find(({ provider_key }) => provider_key === 'google_health')
+      if (googleProvider) googleProvider.status = googleNutritionStatus
+    }
+    if (advertiseWithings && area !== 'nutrition') {
+      const status = area === 'activity_energy' ? withingsActivityStatus : withingsWeightStatus
+      configuredProviders.push({
+        provider_key: 'withings',
+        available: status === 'available',
+        status,
+      })
+    }
     if (
       advertiseGoogleScalarProviders
       && (area === 'activity_energy' || area === 'weight')
@@ -112,6 +135,10 @@ describe('AccountDataSourcesView', () => {
     testPinia = createPinia()
     apiMock.mockReset()
     setLocale(DEFAULT_LOCALE)
+    advertiseWithings = false
+    withingsWeightStatus = 'available'
+    withingsActivityStatus = 'available'
+    googleNutritionStatus = 'available'
     advertiseGoogleScalarProviders = false
     configureApi()
   })
@@ -175,6 +202,17 @@ describe('AccountDataSourcesView', () => {
     expect(wrapper.text()).not.toContain('Withings')
     expect(wrapper.find('[data-provider-key="withings"]').exists()).toBe(false)
   })
+  it('keeps non-Withings provider availability badges unchanged', async () => {
+    googleNutritionStatus = 'error'
+    configureApi()
+    const wrapper = mountView()
+    await flushPromises()
+    const googleRow = wrapper.get('[data-area="nutrition"] [data-provider-key="google_health"]')
+    expect(googleRow.text()).toContain('Google Health')
+    expect(googleRow.find('.provider-status-badge.success').text()).toBe('verfügbar')
+    expect(googleRow.find('.provider-status-badge.inactive').exists()).toBe(false)
+  })
+
   it('shows Google for activity and weight only when backend availability advertises it', async () => {
     advertiseGoogleScalarProviders = true
     const wrapper = mountView()
@@ -191,7 +229,70 @@ describe('AccountDataSourcesView', () => {
     expect(withoutGoogle.find('[data-area="weight"] [data-provider-key="google_health"]').exists()).toBe(false)
     withoutGoogle.unmount()
   })
+  it('renders advertised Withings weight and activity priorities and persists their returned order', async () => {
+    advertiseWithings = true
+    configureApi()
+    const wrapper = mountView()
+    await flushPromises()
 
+    const nutrition = wrapper.get('[data-area="nutrition"]')
+    const weight = wrapper.get('[data-area="weight"]')
+    const activity = wrapper.get('[data-area="activity_energy"]')
+    expect(nutrition.find('[data-provider-key="withings"]').exists()).toBe(false)
+    expect(weight.findAll('.provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'withings',
+      'apple_health',
+      'yazio',
+    ])
+    expect(activity.findAll('.provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'withings',
+      'yazio',
+      'apple_health',
+    ])
+    expect(activity.get('[data-provider-key="withings"]').text()).toContain('Withings')
+    expect(activity.get('[data-provider-key="withings"] .provider-status-badge').text()).toBe('verfügbar')
+
+    await weight.get('[data-provider-key="withings"] button[aria-label*="nach unten"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/settings/provider-preferences/weight', {
+      method: 'PUT',
+      body: JSON.stringify({ provider_keys: ['apple_health', 'withings', 'yazio'] }),
+    })
+    wrapper.unmount()
+    const reloaded = mountView()
+    await flushPromises()
+    expect(reloaded.findAll('[data-area="weight"] .provider-priority-row').map((row) => row.attributes('data-provider-key'))).toEqual([
+      'apple_health',
+      'withings',
+      'yazio',
+    ])
+  })
+
+  it('distinguishes Withings activity errors without evidence from reauthorization', async () => {
+    advertiseWithings = true
+    withingsActivityStatus = 'error'
+    configureApi()
+    const errorWrapper = mountView()
+    await flushPromises()
+    const errorRow = errorWrapper.get('[data-area="activity_energy"] [data-provider-key="withings"]')
+    expect(errorRow.find('.provider-status-badge.inactive').text()).toBe('Fehler')
+    expect(errorRow.text()).not.toContain('verfügbar')
+    errorWrapper.unmount()
+
+    withingsWeightStatus = 'reauth_required'
+    withingsActivityStatus = 'reauth_required'
+    configureApi()
+    const reauthWrapper = mountView()
+    await flushPromises()
+    const reauthActivityRow = reauthWrapper.get('[data-area="activity_energy"] [data-provider-key="withings"]')
+    const reauthWeightRow = reauthWrapper.get('[data-area="weight"] [data-provider-key="withings"]')
+    expect(reauthActivityRow.find('.provider-status-badge.success').exists()).toBe(false)
+    expect(reauthActivityRow.find('.provider-status-badge.inactive').exists()).toBe(false)
+    expect(reauthWeightRow.find('.provider-status-badge.success').exists()).toBe(false)
+    expect(reauthWeightRow.find('.provider-status-badge.inactive').exists()).toBe(false)
+
+
+  })
 
   it('auto-saves a complete reordered area and exposes local saving and saved states', async () => {
     const pending = deferred<unknown>()

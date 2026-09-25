@@ -56,6 +56,21 @@ describe('account language setting', () => {
       if (path === '/yazio/status') {
         return Promise.resolve({ available: true, configured: false, sync_enabled: false, sync_interval_minutes: null, sync_days: null, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
       }
+      if (path === '/withings/status') {
+        return Promise.resolve({
+          available: false,
+          configured: false,
+          credentials_configured: false,
+          redirect_uri: 'http://localhost/api/v1/withings/oauth/callback',
+          connected: false,
+          state: 'disabled',
+          granted_scopes: [],
+          access_token_expires_at: null,
+          last_attempt_at: null,
+          last_success_at: null,
+          last_error_category: null,
+        })
+      }
       if (path === '/users' || path === '/users/invitations') return Promise.resolve([])
       return Promise.resolve({})
     })
@@ -260,6 +275,47 @@ describe('account language setting', () => {
     await flushPromises()
     expect(integrationsWrapper.get('.yazio-connection-card button[type="submit"]').classes()).toContain('compact-action')
     integrationsWrapper.unmount()
+  })
+
+  it('localizes the Withings integration card in German and English', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    const card = wrapper.get('.withings-card')
+    const metadataLabels = card.findAll('.withings-connection-panel .integration-details dt')
+
+    expect(card.get('.withings-status-badge').text()).toBe('Serverseitig deaktiviert')
+    expect(metadataLabels.map((label) => label.text())).toEqual([
+      'Access-Token gültig bis',
+      'Letzter Vorgang',
+      'Letzter erfolgreicher Vorgang',
+    ])
+    expect(card.text()).toContain('Ernährungsdaten werden nicht übertragen')
+
+    setLocale('en')
+    await flushPromises()
+    expect(card.get('.withings-status-badge').text()).toBe('Disabled on server')
+    expect(metadataLabels.map((label) => label.text())).toEqual([
+      'Access token valid until',
+      'Last operation',
+      'Last successful operation',
+    ])
+    expect(card.text()).toContain('Nutrition data is not transferred')
+
+    setLocale('de')
+    await flushPromises()
+    expect(card.get('.withings-status-badge').text()).toBe('Serverseitig deaktiviert')
+    expect(metadataLabels.map((label) => label.text())).toEqual([
+      'Access-Token gültig bis',
+      'Letzter Vorgang',
+      'Letzter erfolgreicher Vorgang',
+    ])
+  })
+  it('provides English labels for activity verification statuses', () => {
+    setLocale('en')
+
+    expect(i18n.global.t('verification.status.available')).toBe('Available')
+    expect(i18n.global.t('verification.status.no_data')).toBe('No data')
+    expect(i18n.global.t('verification.status.unavailable')).toBe('Unavailable')
   })
 
   it('previews and applies the selected portable backup before refreshing preferences', async () => {

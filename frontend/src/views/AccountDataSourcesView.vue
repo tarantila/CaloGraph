@@ -12,8 +12,8 @@ let auth: ReturnType<typeof useAuthStore> | null = null
 let stopAuthSessionWatch: (() => void) | undefined
 
 type DataArea = 'nutrition' | 'weight' | 'activity_energy'
-type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio'
-type ProviderStatus = 'available' | 'disabled' | 'not_configured' | 'reauth_required' | 'no_data'
+type ProviderKey = 'apple_health' | 'google_health' | 'health_auto_export' | 'yazio' | 'withings'
+type ProviderStatus = 'available' | 'disabled' | 'error' | 'not_configured' | 'reauth_required' | 'no_data'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface PreferenceResponse {
@@ -321,10 +321,16 @@ onUnmounted(() => {
                 <strong>{{ providerLabel(providerKey) }}</strong>
               </div>
               <span
-                v-if="availability(area.key, providerKey)?.available === true"
-                class="status-badge provider-status-badge success"
+                v-if="
+                  availability(area.key, providerKey)?.available === true
+                    || (
+                      providerKey === 'withings'
+                      && availability(area.key, providerKey)?.status === 'error'
+                    )"
+                class="status-badge provider-status-badge"
+                :class="providerKey === 'withings' && availability(area.key, providerKey)?.status === 'error' ? 'inactive' : 'success'"
               >
-                {{ statusLabel('available') }}
+                {{ statusLabel(providerKey === 'withings' && availability(area.key, providerKey)?.status === 'error' ? 'error' : 'available') }}
               </span>
             </div>
             <div class="provider-priority-actions">

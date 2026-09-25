@@ -117,6 +117,7 @@ const activityPreferenceSource = computed<ActivitySourceType | null>(() => {
     google_health: 'google_health_activity_v4',
     health_auto_export: 'health_auto_export_v2',
     yazio: 'yazio_export_v1',
+    withings: 'withings_activity_v2',
   }
   return activityProviderPreference.value ? sources[activityProviderPreference.value] ?? null : null
 })

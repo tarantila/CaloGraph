@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PhAppleLogo, PhGoogleLogo } from '@phosphor-icons/vue'
+import { PhAppleLogo, PhGoogleLogo, PhScales } from '@phosphor-icons/vue'
 import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api, ApiError, localizeApiError } from '../api'
@@ -13,6 +13,10 @@ import type {
   GoogleHealthSyncResult,
   GoogleHealthStatus,
   ImportSummary,
+  WithingsConnectionTestResponse,
+  WithingsDomainKey,
+  WithingsStatus,
+  WithingsSyncResult,
   YazioStatus,
 } from '../types'
 
@@ -35,10 +39,15 @@ const googleSyncDomains: ReadonlyArray<{ key: GoogleHealthDomainKey; labelKey: s
   { key: 'activity_energy', labelKey: 'accountIntegrations.googleDomainActivity' },
   { key: 'weight', labelKey: 'accountIntegrations.googleDomainWeight' },
 ]
+const withingsSyncDomains: ReadonlyArray<{ key: WithingsDomainKey; labelKey: string }> = [
+  { key: 'weight', labelKey: 'accountIntegrations.withingsDomainWeight' },
+  { key: 'activity_energy', labelKey: 'accountIntegrations.withingsDomainActivity' },
+]
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
 const yazio = ref<YazioStatus | null>(null)
 const google = ref<GoogleHealthStatus | null>(null)
+const withings = ref<WithingsStatus | null>(null)
 const googleClientId = ref('')
 const googleClientSecret = ref('')
 const googleSecretVisible = ref(false)
@@ -59,6 +68,18 @@ const syncingYazio = ref(false)
 const googleActionBusy = ref(false)
 const googleSyncResult = ref<GoogleHealthSyncResult | null>(null)
 const googleSyncError = ref('')
+const withingsActionBusy = ref(false)
+const withingsCredentialSaving = ref(false)
+const withingsCredentialDeleting = ref(false)
+const withingsClientId = ref('')
+const withingsClientSecret = ref('')
+const withingsSecretVisible = ref(false)
+const withingsSyncResult = ref<WithingsSyncResult | null>(null)
+const withingsWarning = ref('')
+const withingsError = ref('')
+const withingsMessage = ref('')
+const withingsSyncError = ref('')
+const withingsSyncWarning = ref('')
 const googleSyncWarning = ref('')
 const yazioMessage = ref('')
 const yazioError = ref('')
@@ -122,9 +143,161 @@ const googleCanSync = computed(() => (
   && google.value.state === 'active'
   && google.value.sync_state !== 'running'
 ))
+const withingsAvailable = computed(() => withings.value?.available === true)
+const withingsCredentialsComplete = computed(() => (
+  Boolean(withingsClientId.value.trim()) && Boolean(withingsClientSecret.value)
+))
+const withingsCanConnect = computed(() => (
+  withingsAvailable.value
+  && withings.value?.credentials_configured === true
+  && withings.value.state !== 'active'
+  && withings.value.state !== 'not_configured'
+  && withings.value.state !== 'disabled'
+))
+const withingsCanSync = computed(() => (
+  withingsAvailable.value
+  && withings.value?.credentials_configured === true
+  && (
+    withings.value.state === 'active'
+    || (withings.value.state === 'error' && withings.value.connected === true)
+  )
+))
+const withingsCanTest = computed(() => (
+  withingsAvailable.value
+  && withings.value?.credentials_configured === true
+  && withings.value.state !== 'not_connected'
+  && withings.value.state !== 'disabled'
+  && withings.value.state !== 'not_configured'
+))
+const withingsCanDisconnect = computed(() => (
+  withings.value?.state === 'active'
+  || withings.value?.state === 'reauth_required'
+  || withings.value?.state === 'error'
+))
+const withingsNeedsReauth = computed(() => withings.value?.state === 'reauth_required')
+const withingsStatusLabel = computed(() => {
+  switch (withings.value?.state) {
+    case 'disabled': return t('accountIntegrations.withingsStatusDisabled')
+    case 'not_configured': return t('accountIntegrations.withingsStatusNotConfigured')
+    case 'not_connected': return t('accountIntegrations.withingsStatusNotConnected')
+    case 'active': return t('accountIntegrations.withingsStatusActive')
+    case 'reauth_required': return t('accountIntegrations.withingsStatusReauth')
+    case 'error': return t('accountIntegrations.withingsStatusError')
+    default: return t('accountIntegrations.notAvailable')
+  }
+})
+const withingsBadgeVariant = computed(() => {
+  if (!withings.value) return 'empty'
+  if (withings.value.state === 'disabled' || !withings.value.available) return 'disabled'
+  if (withings.value.state === 'error') return 'failed'
+  return withings.value.state
+})
 
 function timestampLabel(value: string | null | undefined): string {
   return value ? formatGermanDateTime(value) : t('accountIntegrations.notAvailable')
+}
+
+function setWithingsStatus(status: WithingsStatus): void {
+  withings.value = {
+    available: status.available,
+    configured: status.configured,
+    credentials_configured: status.credentials_configured,
+    redirect_uri: status.redirect_uri,
+    connected: status.connected,
+    state: status.state,
+    granted_scopes: [...status.granted_scopes],
+    access_token_expires_at: status.access_token_expires_at,
+    last_attempt_at: status.last_attempt_at,
+    last_success_at: status.last_success_at,
+    last_error_category: status.last_error_category,
+  }
+}
+
+function markWithingsConnectionUnknown(): void {
+  if (!withings.value) return
+  withings.value = {
+    ...withings.value,
+    connected: false,
+    state: 'error',
+    granted_scopes: [],
+    access_token_expires_at: null,
+    last_error_category: null,
+  }
+}
+
+function markWithingsNotConnected(): void {
+  if (!withings.value) return
+  withings.value = {
+    ...withings.value,
+    connected: false,
+    state: 'not_connected',
+    granted_scopes: [],
+    access_token_expires_at: null,
+    last_error_category: null,
+  }
+}
+
+function isWithingsConflict(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status === 409
+}
+
+async function refreshWithingsStatusAfterConflict(): Promise<boolean> {
+  markWithingsConnectionUnknown()
+  try {
+    setWithingsStatus(await api<WithingsStatus>('/withings/status'))
+    return true
+  } catch {
+    markWithingsConnectionUnknown()
+    return false
+  }
+}
+
+function withingsSyncFailureCategory(result: WithingsSyncResult): string | null {
+  if (result.status !== 'failed' && result.status !== 'partial_failure') return null
+  for (const { key } of withingsSyncDomains) {
+    const domain = result[key]
+    if (
+      (domain.status === 'failed' || domain.status === 'partial_failure')
+      && domain.error_code
+      && domain.error_code !== 'not_connected'
+    ) return domain.error_code
+  }
+  return null
+}
+
+function clearWithingsSyncFeedback(): void {
+  withingsSyncResult.value = null
+  withingsSyncError.value = ''
+  withingsSyncWarning.value = ''
+}
+
+function withingsDomainStatusLabel(status: string): string {
+  if (status === 'success') return t('accountIntegrations.withingsDomainSuccess')
+  if (status === 'no_data') return t('accountIntegrations.withingsDomainNoData')
+  if (status === 'reauth_required') return t('accountIntegrations.withingsDomainReauth')
+  if (status === 'failed' || status === 'partial_failure') return t('accountIntegrations.withingsDomainFailed')
+  return t('accountIntegrations.notAvailable')
+}
+
+function withingsSyncStatusLabel(status: string): string {
+  if (status === 'success') return t('accountIntegrations.withingsSyncSuccess')
+  if (status === 'partial_failure') return t('accountIntegrations.withingsSyncPartialFailure')
+  if (status === 'no_data') return t('accountIntegrations.withingsSyncNoData')
+  if (status === 'reauth_required') return t('accountIntegrations.withingsStatusReauth')
+  if (status === 'failed') return t('accountIntegrations.withingsSyncFailed')
+  return t('accountIntegrations.notAvailable')
+}
+
+function withingsDomainErrorLabel(errorCode: string | null): string {
+  if (
+    errorCode === 'reauth_required'
+    || errorCode === 'scope_missing'
+    || errorCode === 'invalid_grant'
+    || errorCode === 'credential_unavailable'
+  ) {
+    return t('accountIntegrations.withingsDomainReauth')
+  }
+  return t('accountIntegrations.withingsDomainFailed')
 }
 
 
@@ -305,6 +478,15 @@ async function load(): Promise<void> {
   googleSyncResult.value = null
   googleSyncError.value = ''
   googleSyncWarning.value = ''
+  withingsError.value = ''
+  withingsWarning.value = ''
+  withingsMessage.value = ''
+  withingsSyncResult.value = null
+  withingsSyncError.value = ''
+  withingsSyncWarning.value = ''
+  withingsClientId.value = ''
+  withingsClientSecret.value = ''
+  withingsSecretVisible.value = false
   initialSetupSaved.value = false
   googleClientId.value = ''
   googleClientSecret.value = ''
@@ -315,14 +497,20 @@ async function load(): Promise<void> {
   googleConnectionTestResult.value = null
   yazio.value = null
   google.value = null
-  const callbackState = typeof window === 'undefined'
+  withings.value = null
+  const callbackParams = typeof window === 'undefined'
     ? null
-    : new URLSearchParams(window.location.search).get('google_health')
+    : new URLSearchParams(window.location.search)
+  const callbackState = callbackParams?.get('google_health')
+  const withingsCallbackState = callbackParams?.get('withings')
   if (callbackState === 'connected') googleMessage.value = t('accountIntegrations.googleConnected')
   if (callbackState === 'error') googleError.value = t('accountIntegrations.googleCallbackFailed')
-  const [yazioResult, googleResult] = await Promise.allSettled([
+  if (withingsCallbackState === 'connected') withingsMessage.value = t('accountIntegrations.withingsConnected')
+  if (withingsCallbackState === 'error') withingsError.value = t('accountIntegrations.withingsConnectFailed')
+  const [yazioResult, googleResult, withingsResult] = await Promise.allSettled([
     api<YazioStatus>('/yazio/status'),
     api<GoogleHealthStatus>('/google-health/status'),
+    api<WithingsStatus>('/withings/status'),
   ])
   if (generation !== loadGeneration) return
   if (yazioResult.status === 'fulfilled') {
@@ -340,6 +528,13 @@ async function load(): Promise<void> {
     googleError.value = googleResult.reason instanceof ApiError
       ? localizeApiError(googleResult.reason, 'accountIntegrations.googleLoadFailed')
       : t('accountIntegrations.googleLoadFailed')
+  }
+  if (withingsResult.status === 'fulfilled') {
+    setWithingsStatus(withingsResult.value)
+  } else {
+    withingsError.value = withingsResult.reason instanceof ApiError
+      ? localizeApiError(withingsResult.reason, 'accountIntegrations.withingsLoadFailed', { preserveDetail: false })
+      : t('accountIntegrations.withingsLoadFailed')
   }
   yazioMessage.value = ''
   yazioError.value = ''
@@ -499,6 +694,208 @@ async function connectGoogle(): Promise<void> {
   }
 }
 
+async function saveWithingsCredentials(): Promise<void> {
+  if (withingsActionBusy.value || !withingsAvailable.value) return
+  withingsError.value = ''
+  withingsMessage.value = ''
+  if (!withingsCredentialsComplete.value) {
+    withingsError.value = t('accountIntegrations.withingsCredentialPairRequired')
+    return
+  }
+  withingsActionBusy.value = true
+  withingsCredentialSaving.value = true
+  try {
+    setWithingsStatus(await api<WithingsStatus>('/withings/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({
+        client_id: withingsClientId.value.trim(),
+        client_secret: withingsClientSecret.value,
+      }),
+    }))
+    clearWithingsSyncFeedback()
+    withingsClientId.value = ''
+    withingsClientSecret.value = ''
+    withingsSecretVisible.value = false
+    withingsMessage.value = t('accountIntegrations.withingsCredentialsSaved')
+  } catch (cause) {
+    withingsError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.withingsCredentialsSaveFailed', { preserveDetail: false })
+      : t('accountIntegrations.withingsCredentialsSaveFailed')
+  } finally {
+    withingsCredentialSaving.value = false
+    withingsActionBusy.value = false
+  }
+}
+
+async function deleteWithingsCredentials(): Promise<void> {
+  if (
+    withingsActionBusy.value
+    || !withingsAvailable.value
+    || withings.value?.credentials_configured !== true
+    || !window.confirm(t('accountIntegrations.withingsCredentialsDeleteConfirm'))
+  ) return
+  withingsActionBusy.value = true
+  withingsCredentialDeleting.value = true
+  withingsError.value = ''
+  withingsMessage.value = ''
+  try {
+    setWithingsStatus(await api<WithingsStatus>('/withings/credentials', { method: 'DELETE' }))
+    withingsClientId.value = ''
+    withingsClientSecret.value = ''
+    withingsSecretVisible.value = false
+    clearWithingsSyncFeedback()
+    withingsMessage.value = t('accountIntegrations.withingsCredentialsDeleted')
+  } catch {
+    withingsError.value = t('accountIntegrations.withingsCredentialsDeleteFailed')
+  } finally {
+    withingsCredentialDeleting.value = false
+    withingsActionBusy.value = false
+  }
+}
+
+async function connectWithings(): Promise<void> {
+  if (withingsActionBusy.value || !withingsCanConnect.value) return
+  withingsActionBusy.value = true
+  withingsError.value = ''
+  try {
+    const result = await api<{ authorization_url: string }>('/withings/oauth/start', { method: 'POST' })
+    window.location.assign(result.authorization_url)
+  } catch (cause) {
+    withingsError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.withingsConnectFailed', { preserveDetail: false })
+      : t('accountIntegrations.withingsConnectFailed')
+  } finally {
+    withingsActionBusy.value = false
+  }
+}
+
+async function testWithings(): Promise<void> {
+  if (withingsActionBusy.value || !withingsCanTest.value) return
+  withingsActionBusy.value = true
+  withingsError.value = ''
+  withingsMessage.value = ''
+  withingsSyncWarning.value = ''
+  try {
+    const result = await api<WithingsConnectionTestResponse>('/withings/connection/test', { method: 'POST' })
+    const testStatus = result.ok
+      ? 'connected'
+      : result.state === 'reauth_required'
+        ? 'reauth_required'
+        : 'failed'
+    if (testStatus === 'connected') withingsMessage.value = t('accountIntegrations.withingsConnectionTestConnected')
+    if (testStatus === 'reauth_required') withingsError.value = t('accountIntegrations.withingsConnectionTestReauth')
+    if (testStatus === 'failed') withingsError.value = t('accountIntegrations.withingsConnectionTestFailed')
+    if (withings.value) {
+      withings.value = {
+        ...withings.value,
+        state: result.state,
+        last_error_category: result.error_category,
+      }
+    }
+    try {
+      setWithingsStatus(await api<WithingsStatus>('/withings/status'))
+    } catch {
+      withingsSyncWarning.value = t('accountIntegrations.withingsLoadFailed')
+    }
+  } catch (cause) {
+    if (isWithingsConflict(cause)) {
+      if (!(await refreshWithingsStatusAfterConflict())) {
+        withingsSyncWarning.value = t('accountIntegrations.withingsLoadFailed')
+      }
+    }
+    withingsError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.withingsConnectionTestFailedAction', { preserveDetail: false })
+      : t('accountIntegrations.withingsConnectionTestFailedAction')
+  } finally {
+    withingsActionBusy.value = false
+  }
+}
+
+async function disconnectWithings(): Promise<void> {
+  if (withingsActionBusy.value || !withingsCanDisconnect.value) return
+  withingsActionBusy.value = true
+  withingsError.value = ''
+  withingsWarning.value = ''
+  try {
+    await api('/withings/connection', { method: 'DELETE' })
+    withingsMessage.value = t('accountIntegrations.withingsDisconnected')
+    setWithingsStatus({
+      ...withings.value!,
+      connected: false,
+      state: 'not_connected',
+      granted_scopes: [],
+      access_token_expires_at: null,
+      last_error_category: null,
+    })
+    try {
+      setWithingsStatus(await api<WithingsStatus>('/withings/status'))
+    } catch {
+      withingsWarning.value = t('accountIntegrations.withingsDisconnectRefreshFailed')
+    }
+  } catch (cause) {
+    withingsError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.withingsDisconnectFailed', { preserveDetail: false })
+      : t('accountIntegrations.withingsDisconnectFailed')
+  } finally {
+    withingsActionBusy.value = false
+  }
+}
+
+async function syncWithings(): Promise<void> {
+  if (withingsActionBusy.value || !withingsCanSync.value) return
+  withingsActionBusy.value = true
+  withingsSyncResult.value = null
+  withingsSyncError.value = ''
+  withingsSyncWarning.value = ''
+  try {
+    const syncResult = await api<WithingsSyncResult>('/withings/sync', { method: 'POST' })
+    const failureCategory = withingsSyncFailureCategory(syncResult)
+    withingsSyncResult.value = syncResult
+    if (
+      withings.value
+      && syncResult.status === 'failed'
+      && syncResult.weight.error_code === 'not_connected'
+      && syncResult.activity_energy.error_code === 'not_connected'
+    ) {
+      markWithingsNotConnected()
+    } else if (
+      withings.value
+      && (
+        syncResult.status === 'reauth_required'
+        || syncResult.weight.error_code === 'reauth_required'
+        || syncResult.weight.error_code === 'scope_missing'
+        || syncResult.weight.error_code === 'invalid_grant'
+        || syncResult.weight.error_code === 'credential_unavailable'
+        || syncResult.activity_energy.error_code === 'reauth_required'
+        || syncResult.activity_energy.error_code === 'scope_missing'
+        || syncResult.activity_energy.error_code === 'invalid_grant'
+        || syncResult.activity_energy.error_code === 'credential_unavailable'
+      )
+    ) {
+      withings.value = { ...withings.value, state: 'reauth_required' }
+    } else if (withings.value && failureCategory) {
+      withings.value = {
+        ...withings.value,
+        state: 'error',
+        last_error_category: failureCategory,
+      }
+    }
+    try {
+      setWithingsStatus(await api<WithingsStatus>('/withings/status'))
+    } catch {
+      withingsSyncWarning.value = t('accountIntegrations.withingsSyncRefreshFailed')
+    }
+  } catch (cause) {
+    if (isWithingsConflict(cause) && !(await refreshWithingsStatusAfterConflict())) {
+      withingsSyncWarning.value = t('accountIntegrations.withingsSyncRefreshFailed')
+    }
+    withingsSyncError.value = cause instanceof ApiError
+      ? localizeApiError(cause, 'accountIntegrations.withingsSyncFailed', { preserveDetail: false })
+      : t('accountIntegrations.withingsSyncFailed')
+  } finally {
+    withingsActionBusy.value = false
+  }
+}
 onBeforeUnmount(() => {
   integrationsMounted = false
   ++loadGeneration
@@ -766,6 +1163,169 @@ void load()
         </section>
         <p v-if="googleSyncWarning" class="import-message warning" role="status">{{ googleSyncWarning }}</p>
         <p v-if="googleSyncError" class="import-message error google-health-sync-error" role="alert">{{ googleSyncError }}</p>
+      </section>
+
+      <section class="card form-card integration-card withings-card" :aria-busy="withingsActionBusy" aria-labelledby="withings-title">
+        <div class="integration-card-header">
+          <PhScales class="integration-card-icon" :size="20" weight="duotone" aria-hidden="true" />
+          <h2 id="withings-title">{{ t('accountIntegrations.withingsTitle') }}</h2>
+          <span class="integration-status-badge withings-status-badge" :class="`integration-status-badge--${withingsBadgeVariant}`" role="status">{{ withingsStatusLabel }}</span>
+        </div>
+        <p>{{ t('accountIntegrations.withingsDescription') }}</p>
+        <div v-if="withingsError" class="import-message error withings-error" role="alert">
+          <p>{{ withingsError }}</p>
+          <button v-if="!withings" class="button compact-action" type="button" @click="load">{{ t('common.tryAgain') }}</button>
+        </div>
+        <p v-if="withingsMessage" class="setup-notice" role="status">{{ withingsMessage }}</p>
+        <p v-if="withings && withings.last_error_category !== null" class="import-message warning withings-stored-operation-error" role="status">
+          {{ t('accountIntegrations.withingsLastOperationError', { status: withingsDomainErrorLabel(withings.last_error_category) }) }}
+        </p>
+        <p v-if="withingsWarning" class="import-message warning withings-warning" role="status">{{ withingsWarning }}</p>
+        <div v-if="withings" class="integration-panel withings-connection-panel">
+          <h3>{{ t('accountIntegrations.withingsConnectionActionsTitle') }}</h3>
+          <dl class="integration-details">
+            <div><dt>{{ t('accountIntegrations.withingsAccessTokenExpiresAt') }}</dt><dd>{{ timestampLabel(withings.access_token_expires_at) }}</dd></div>
+            <div><dt>{{ t('accountIntegrations.withingsLastAttempt') }}</dt><dd>{{ timestampLabel(withings.last_attempt_at) }}</dd></div>
+            <div><dt>{{ t('accountIntegrations.withingsLastSuccess') }}</dt><dd>{{ timestampLabel(withings.last_success_at) }}</dd></div>
+          </dl>
+          <p v-if="withingsCanSync" class="table-secondary">{{ t('accountIntegrations.withingsSyncDescription') }}</p>
+          <div class="integration-action-row">
+            <button
+              v-if="withingsCanConnect"
+              class="button compact-action withings-connect-button"
+              type="button"
+              :disabled="withingsActionBusy"
+              :aria-label="withingsNeedsReauth ? t('accountIntegrations.withingsReauthorize') : undefined"
+              @click="connectWithings"
+            >
+              {{ withingsActionBusy
+                ? t('accountIntegrations.withingsConnecting')
+                : withingsNeedsReauth
+                  ? t('accountIntegrations.withingsReauthorize')
+                  : t('accountIntegrations.withingsConnect') }}
+            </button>
+            <button
+              v-if="withingsCanTest"
+              class="button secondary compact-action withings-test-button"
+              type="button"
+              :disabled="withingsActionBusy"
+              @click="testWithings"
+            >
+              {{ withingsActionBusy ? t('accountIntegrations.withingsConnectionTesting') : t('accountIntegrations.withingsConnectionTest') }}
+            </button>
+            <button
+              v-if="withingsCanSync"
+              class="button secondary compact-action withings-sync-button"
+              type="button"
+              :disabled="withingsActionBusy"
+              @click="syncWithings"
+            >
+              {{ withingsActionBusy ? t('accountIntegrations.withingsSyncRunning') : t('accountIntegrations.withingsSyncAction') }}
+            </button>
+            <button
+              v-if="withingsCanDisconnect"
+              class="button secondary compact-action withings-disconnect-button"
+              type="button"
+              :disabled="withingsActionBusy"
+              @click="disconnectWithings"
+            >
+              {{ withingsActionBusy ? t('accountIntegrations.withingsDisconnecting') : t('accountIntegrations.withingsDisconnect') }}
+            </button>
+          </div>
+          <section v-if="withingsSyncResult" class="setup-notice withings-sync-result" role="status">
+            <p><strong>{{ withingsSyncStatusLabel(withingsSyncResult.status) }}</strong></p>
+            <ul class="withings-sync-domain-results" :aria-label="t('accountIntegrations.withingsSyncDomainsLabel')">
+              <li v-for="domain in withingsSyncDomains" :key="domain.key" :data-domain="domain.key">
+                <strong>{{ t(domain.labelKey) }}</strong>:
+                {{ withingsDomainStatusLabel(withingsSyncResult[domain.key].status) }} ·
+                {{ t('accountIntegrations.withingsSyncCounts', {
+                  fetched: withingsSyncResult[domain.key].fetched_count,
+                  persisted: withingsSyncResult[domain.key].persisted_count,
+                }) }}
+                <span v-if="withingsSyncResult[domain.key].error_code">
+                  · {{ withingsDomainErrorLabel(withingsSyncResult[domain.key].error_code) }}
+                </span>
+              </li>
+            </ul>
+          </section>
+          <p v-if="withingsSyncWarning" class="import-message warning" role="status">{{ withingsSyncWarning }}</p>
+          <p v-if="withingsSyncError" class="import-message error withings-sync-error" role="alert">{{ withingsSyncError }}</p>
+        </div>
+        <form
+          v-if="withingsAvailable"
+          class="integration-panel google-credentials-panel withings-credentials-panel"
+          @submit.prevent="saveWithingsCredentials"
+        >
+          <h3>{{ t('accountIntegrations.withingsCredentialsTitle') }}</h3>
+          <p class="table-secondary">{{ t('accountIntegrations.withingsCredentialsDescription') }}</p>
+          <div class="form-grid google-credentials-grid">
+            <label class="field">
+              <span>{{ t('accountIntegrations.withingsClientId') }}</span>
+              <input
+                v-model="withingsClientId"
+                name="withings-client-id"
+                type="text"
+                autocomplete="off"
+                :disabled="withingsActionBusy"
+                :placeholder="withings?.credentials_configured ? t('accountIntegrations.withingsStoredPlaceholder') : t('accountIntegrations.withingsClientIdPlaceholder')"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t('accountIntegrations.withingsClientSecret') }}</span>
+              <div class="secret-input-row">
+                <input
+                  v-model="withingsClientSecret"
+                  name="withings-client-secret"
+                  :type="withingsSecretVisible ? 'text' : 'password'"
+                  autocomplete="new-password"
+                  :disabled="withingsActionBusy"
+                  :placeholder="withings?.credentials_configured ? t('accountIntegrations.withingsStoredPlaceholder') : t('accountIntegrations.withingsClientSecretPlaceholder')"
+                />
+                <button
+                  v-if="withingsClientSecret"
+                  class="button secondary compact-action withings-show-secret"
+                  type="button"
+                  :aria-label="withingsSecretVisible ? t('accountIntegrations.withingsHideSecret') : t('accountIntegrations.withingsShowSecret')"
+                  @click="withingsSecretVisible = !withingsSecretVisible"
+                >
+                  {{ withingsSecretVisible ? t('accountIntegrations.withingsHideSecret') : t('accountIntegrations.withingsShowSecret') }}
+                </button>
+              </div>
+            </label>
+          </div>
+          <p v-if="withings?.redirect_uri" class="table-secondary google-redirect-uri withings-redirect-field">
+            <strong>{{ t('accountIntegrations.withingsRedirectUriLabel') }}:</strong><br />
+            <code>{{ withings.redirect_uri }}</code>
+          </p>
+          <p v-if="withings?.redirect_uri" class="table-secondary withings-redirect-help">
+            {{ t('accountIntegrations.withingsRedirectUriHelp') }}
+          </p>
+          <p class="table-secondary">{{ t('accountIntegrations.withingsCredentialPairHelp') }}</p>
+          <div class="integration-action-row">
+            <button
+              class="button compact-action withings-credentials-save"
+              type="submit"
+              :disabled="withingsActionBusy || !withingsCredentialsComplete"
+            >
+              {{ withingsCredentialSaving
+                ? t('accountIntegrations.withingsCredentialsSaving')
+                : withings?.credentials_configured
+                  ? t('accountIntegrations.withingsCredentialsReplace')
+                  : t('accountIntegrations.withingsCredentialsSave') }}
+            </button>
+            <button
+              v-if="withings?.credentials_configured"
+              class="button secondary compact-action withings-delete-credentials"
+              type="button"
+              :disabled="withingsActionBusy"
+              @click="deleteWithingsCredentials"
+            >
+              {{ withingsCredentialDeleting
+                ? t('accountIntegrations.withingsCredentialsDeleting')
+                : t('accountIntegrations.withingsCredentialsDelete') }}
+            </button>
+          </div>
+        </form>
       </section>
 
       <section class="card form-card integration-card apple-health-card" aria-labelledby="apple-health-title">

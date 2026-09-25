@@ -3,12 +3,37 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-const { apiMock, authExpiredMock } = vi.hoisted(() => ({
+const { apiMock, authExpiredMock, withingsTestStatus } = vi.hoisted(() => ({
   apiMock: vi.fn(),
   authExpiredMock: vi.fn(),
+  withingsTestStatus: {
+    available: false,
+    configured: false,
+    credentials_configured: false,
+    redirect_uri: 'https://app.example.test/withings/oauth/callback',
+    connected: false,
+    state: 'disabled',
+    granted_scopes: [],
+    access_token_expires_at: null,
+    last_attempt_at: null,
+    last_success_at: null,
+    last_error_category: null,
+  },
 }))
 vi.mock('../src/api', () => ({
-  api: apiMock,
+  api: (path: string, ...args: unknown[]) => {
+    const response = apiMock(path, ...args)
+    if (path !== '/withings/status') return response
+    return Promise.resolve(response).then((status) => {
+      if (
+        typeof status === 'object'
+        && status !== null
+        && 'granted_scopes' in status
+        && Array.isArray(status.granted_scopes)
+      ) return status
+      return withingsTestStatus
+    })
+  },
   notifyAuthenticationExpired: authExpiredMock,
   ensureCsrfToken: vi.fn().mockResolvedValue('csrf'),
   ApiError: class ApiError extends Error {},
@@ -1828,6 +1853,21 @@ describe('main views', () => {
         })
       }
       if (path === '/yazio/status') return Promise.resolve({ available: true, configured: true, sync_enabled: true, sync_interval_minutes: 360, sync_days: 7, last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null })
+      if (path === '/withings/status') {
+        return Promise.resolve({
+          available: false,
+          configured: false,
+          credentials_configured: false,
+          redirect_uri: 'http://localhost/api/v1/withings/oauth/callback',
+          connected: false,
+          state: 'disabled',
+          granted_scopes: [],
+          access_token_expires_at: null,
+          last_attempt_at: null,
+          last_success_at: null,
+          last_error_category: null,
+        })
+      }
       if (path === '/users') return Promise.resolve([user])
       if (path === '/users/invitations' && options?.method === 'POST') {
         return Promise.resolve({
@@ -2080,6 +2120,57 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('An · Google Health')
     expect(wrapper.text()).not.toContain('google_health_activity_v4')
     expect(wrapper.find('select[name="activity-source"]').exists()).toBe(false)
+  })
+  it('maps the Withings provider preference to its exact activity target source', async () => {
+    const target = {
+      id: 'withings-target',
+      valid_from: '2026-08-11',
+      valid_to: null,
+      calories_kcal: 2100,
+      maintenance_kcal: null,
+      protein_g: 140,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      target_weight_min_kg: null,
+      target_weight_max_kg: null,
+      activity_mode: 'off',
+      activity_source_type: null,
+    }
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path === '/settings/targets') return Promise.resolve([target])
+      if (path === '/settings/activity-sources') return Promise.resolve([{ source_type: 'withings_activity_v2' }])
+      if (path === '/settings/provider-preferences') {
+        return Promise.resolve({
+          preferences: [{ data_area: 'activity_energy', provider_key: 'withings' }],
+        })
+      }
+      if (path === '/settings/profile') return Promise.resolve({ ...user, preferred_weight_unit: 'kg' })
+      if (
+        path.startsWith('/settings/targets/')
+        && (options?.method === 'PUT' || options?.method === 'POST')
+      ) {
+        return Promise.resolve({ ...target, activity_mode: 'full', activity_source_type: 'withings_activity_v2' })
+      }
+      return Promise.resolve({})
+    })
+
+    const wrapper = mount(AccountTargetsView)
+    await flushPromises()
+    await wrapper.get<HTMLInputElement>('input[role="switch"]').setValue(true)
+    await wrapper.get('form.form-grid').trigger('submit')
+    await flushPromises()
+
+    const saveCall = apiMock.mock.calls.find(([path, request]) => (
+      typeof path === 'string'
+      && (path === '/settings/targets' || path.startsWith('/settings/targets/'))
+      && ['POST', 'PUT'].includes((request as RequestInit | undefined)?.method ?? '')
+    ))
+    expect(saveCall).toBeDefined()
+    expect(JSON.parse(String((saveCall?.[1] as RequestInit).body))).toMatchObject({
+      activity_mode: 'full',
+      activity_source_type: 'withings_activity_v2',
+    })
   })
   it('places macro targets, activity, and target weight before saving', async () => {
     apiMock.mockImplementation((path: string) => {

@@ -122,6 +122,13 @@ describe('ActivityView', () => {
               record_count: 2,
               source_types: ['apple_health_xml'],
             },
+            {
+              provider_key: 'withings',
+              status: 'available',
+              active_energy_kcal: 0,
+              record_count: 1,
+              source_types: ['withings_activity_v2'],
+            },
           ],
         }],
       }))
@@ -144,6 +151,9 @@ describe('ActivityView', () => {
     expect(wrapper.text()).toContain('Keine Daten')
     expect(wrapper.text()).toContain('411 kcal')
     expect(wrapper.text()).not.toContain('apple_health_xml')
+    expect(wrapper.text()).toContain('Withings')
+    expect(wrapper.text()).toContain('0 kcal')
+    expect(wrapper.text()).not.toContain('withings_activity_v2')
   })
 
   it('moves the inclusive range by exactly seven days in either direction', async () => {
