@@ -10,7 +10,7 @@ WITHINGS_TOKEN_URI: Final = WITHINGS_TOKEN_URL
 WITHINGS_MEASURE_URL: Final = f"{WITHINGS_API_BASE_URL}/measure"
 WITHINGS_ACTIVITY_URL: Final = f"{WITHINGS_API_BASE_URL}/v2/measure"
 
-# Withings OAuth requires these exact domain scopes for the two supported imports.
+# Weight and activity share one atomic grant: both scopes are required at authorization and refresh.
 WITHINGS_SCOPES: Final = ("user.metrics", "user.activity")
 WITHINGS_REQUIRED_SCOPES: Final = frozenset(WITHINGS_SCOPES)
 

@@ -189,3 +189,147 @@ async def test_import_user_lock_rejection_emits_security_event(
     assert [payload["event"] for payload in payloads] == ["import.rejected"]
     assert payloads[0]["reason"] == "http_409"
     assert payloads[0]["status_code"] == 409
+def test_withings_lifecycle_events_are_bounded_and_pseudonymous(
+    db, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.models import SecurityAuditEvent
+    from app.schemas_withings import WithingsCredentialsInput
+    from app.withings.errors import WithingsTokenExchangeError
+    from app.withings.service import (
+        complete_withings_oauth,
+        delete_withings_credentials,
+        disconnect_withings,
+        save_withings_credentials,
+        start_withings_oauth,
+    )
+
+    records = _capture_security_events(monkeypatch)
+    audits = []
+    record_audit = security_events.record_security_audit
+
+    def capture_audit(**kwargs):
+        audits.append(kwargs)
+        record_audit(**kwargs)
+
+    monkeypatch.setattr(security_events, "record_security_audit", capture_audit)
+    monkeypatch.setattr(settings, "withings_enabled", True)
+    monkeypatch.setattr(settings, "withings_redirect_uri", "https://example.test/withings/callback")
+
+    class ExchangeAdapter:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def exchange(self, **_kwargs):
+            if isinstance(self.payload, Exception):
+                raise self.payload
+            return self.payload
+
+    credentials = WithingsCredentialsInput(
+        client_id="sentinel-client-id",
+        client_secret="sentinel-client-secret",
+    )
+    save_withings_credentials(db, user, credentials)
+    save_withings_credentials(
+        db,
+        user,
+        WithingsCredentialsInput(
+            client_id="replacement-client-id",
+            client_secret="replacement-client-secret",
+        ),
+    )
+    delete_withings_credentials(db, user)
+    save_withings_credentials(db, user, credentials)
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    authorization_url = start_withings_oauth(db, user, now=now)
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    complete_withings_oauth(
+        db,
+        user,
+        state=state,
+        code="sentinel-authorization-code",
+        error=None,
+        oauth_adapter=ExchangeAdapter(
+            {
+                "userid": "sentinel-provider-user",
+                "access_token": "sentinel-access-token",
+                "refresh_token": "sentinel-refresh-token",
+                "expires_in": 3600,
+                "scope": "user.metrics user.activity",
+            }
+        ),
+        now=now,
+    )
+    failed_url = start_withings_oauth(db, user, now=now)
+    failed_state = parse_qs(urlsplit(failed_url).query)["state"][0]
+
+    class UnsafeProviderFailure(Exception):
+        status_code = 503
+
+        def __str__(self):
+            return "sentinel-upstream-detail sentinel-health-value"
+
+    with pytest.raises(WithingsTokenExchangeError) as captured:
+        complete_withings_oauth(
+            db,
+            user,
+            state=failed_state,
+            code="sentinel-failing-code",
+            error=None,
+            oauth_adapter=ExchangeAdapter(UnsafeProviderFailure()),
+            now=now,
+        )
+    assert captured.value.code == "provider_error"
+    disconnect_withings(db, user)
+
+    payloads = [json.loads(message) for _, message in records]
+    event_reasons = [
+        (payload["event"], payload["reason"])
+        for payload in payloads
+    ]
+    assert event_reasons == [
+        ("integration.withings.credentials_updated", "configured"),
+        ("integration.withings.credentials_updated", "replaced"),
+        ("integration.withings.credentials_deleted", "deleted"),
+        ("integration.withings.credentials_updated", "configured"),
+        ("integration.withings.oauth_started", "started"),
+        ("integration.withings.oauth_completed", "connected"),
+        ("integration.withings.oauth_started", "started"),
+        ("integration.withings.oauth_failed", "provider_error"),
+        ("integration.withings.connection_disconnected", "disconnected"),
+    ]
+    assert len(audits) == len(payloads)
+    assert all(record["actor_user_id"] == user.id for record in audits)
+    assert [record["reason"] for record in audits] == [reason for _, reason in event_reasons]
+    assert {
+        record["event"] for record in audits
+    } == {
+        "integration.withings.credentials_updated",
+        "integration.withings.credentials_deleted",
+        "integration.withings.oauth_started",
+        "integration.withings.oauth_completed",
+        "integration.withings.oauth_failed",
+        "integration.withings.connection_disconnected",
+    }
+    assert all(record["actor_ref"] and record["target_ref"] for record in audits)
+    assert db.query(SecurityAuditEvent).count() == 0
+    serialized = "\n".join(message for _, message in records) + repr(audits)
+    for sentinel in (
+        "sentinel-client-id",
+        "sentinel-client-secret",
+        "replacement-client-id",
+        "replacement-client-secret",
+        "sentinel-authorization-code",
+        "sentinel-failing-code",
+        "sentinel-access-token",
+        "sentinel-refresh-token",
+        "sentinel-provider-user",
+        "sentinel-upstream-detail",
+        "sentinel-health-value",
+    ):
+        assert sentinel not in serialized
+    assert state not in serialized
+    assert failed_state not in serialized
+
