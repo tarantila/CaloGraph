@@ -332,4 +332,3 @@ def test_withings_lifecycle_events_are_bounded_and_pseudonymous(
         assert sentinel not in serialized
     assert state not in serialized
     assert failed_state not in serialized
-

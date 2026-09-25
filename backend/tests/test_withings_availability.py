@@ -404,5 +404,3 @@ def test_withings_activity_wrong_connection_identifier_is_not_evidence(
     )
 
     assert _withings_status(db, user, ACTIVITY_ENERGY_DATA_AREA).status == "no_data"
-
-

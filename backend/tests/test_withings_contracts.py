@@ -70,5 +70,3 @@ def test_withings_supported_measure_types_are_exact_and_have_canonical_units() -
 def test_withings_pagination_limits_are_positive_and_bounded() -> None:
     assert 1 <= WITHINGS_MAX_PAGE_SIZE <= 100
     assert 1 <= WITHINGS_MAX_PAGES <= 31
-
-
