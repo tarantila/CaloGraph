@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ConfigDict, Field, field_validator
 from pydantic.dataclasses import dataclass
+from pydantic_core import PydanticCustomError
 
 from app.importers.errors import ImportFieldError
 from app.micronutrients import MICRONUTRIENTS
@@ -93,26 +94,33 @@ class CanonicalSample:
     @classmethod
     def canonical_value_fits_database(cls, value: Decimal) -> Decimal:
         if not value.is_finite() or value < 0 or value >= CANONICAL_VALUE_LIMIT:
-            raise ValueError("Normalisierter Messwert liegt außerhalb des erlaubten Bereichs")
+            raise PydanticCustomError(
+                "canonical_value_out_of_range",
+                "Normalisierter Messwert liegt außerhalb des erlaubten Bereichs",
+            )
         try:
             rounded = value.quantize(CANONICAL_QUANTUM, rounding=ROUND_HALF_EVEN)
         except InvalidOperation as exc:
-            raise ValueError(
-                "Normalisierter Messwert liegt außerhalb des erlaubten Bereichs"
+            raise PydanticCustomError(
+                "canonical_value_out_of_range",
+                "Normalisierter Messwert liegt außerhalb des erlaubten Bereichs",
             ) from exc
         if rounded >= CANONICAL_VALUE_LIMIT:
-            raise ValueError("Normalisierter Messwert liegt außerhalb des erlaubten Bereichs")
+            raise PydanticCustomError(
+                "canonical_value_out_of_range",
+                "Normalisierter Messwert liegt außerhalb des erlaubten Bereichs",
+            )
         return rounded
 
     @field_validator("original_value")
     @classmethod
     def original_value_fits_database(cls, value: Decimal) -> Decimal:
-        if (
-            not value.is_finite()
-            or value < 0
-            or value >= ORIGINAL_VALUE_LIMIT
-            or not is_exactly_representable_at_scale(value)
-        ):
+        if not value.is_finite() or value < 0 or value >= ORIGINAL_VALUE_LIMIT:
+            raise PydanticCustomError(
+                "original_value_out_of_range",
+                "Originalwert liegt außerhalb des erlaubten Bereichs",
+            )
+        if not is_exactly_representable_at_scale(value):
             raise ValueError("Originalwert liegt außerhalb des erlaubten Bereichs")
         return normalize_exact_decimal_scale(value)
 

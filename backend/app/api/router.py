@@ -10,6 +10,7 @@ from app.api import (
     settings,
     source_priority,
     users,
+    withings,
     yazio,
 )
 
@@ -24,3 +25,4 @@ api_router.include_router(admin.router)
 api_router.include_router(users.router)
 api_router.include_router(google_health.router)
 api_router.include_router(source_priority.router)
+api_router.include_router(withings.router)
