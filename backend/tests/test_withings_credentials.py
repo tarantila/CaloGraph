@@ -15,9 +15,9 @@ from app.withings.credentials import (
     WithingsCredentialError,
     WithingsCredentialUnavailableError,
     credential_pair_from_input,
+    encrypt_token,
     resolve_withings_credentials,
 )
-from app.withings.credentials import encrypt_token
 from app.withings.service import (
     delete_withings_credentials,
     save_withings_credentials,

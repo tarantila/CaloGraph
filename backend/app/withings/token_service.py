@@ -109,23 +109,23 @@ class _WithingsOAuthAdapter:
         try:
             response = opener.open(request, timeout=10)
         except HTTPError as exc:
-            status = exc.code
+            http_error_status = exc.code
             exc.close()
-            if status == 403:
+            if http_error_status == 403:
                 code = "scope_missing"
-            elif status == 429:
+            elif http_error_status == 429:
                 code = "rate_limited"
-            elif status >= 500:
+            elif http_error_status >= 500:
                 code = "provider_error"
             else:
                 code = "invalid_response"
             raise WithingsTokenExchangeError(code) from None
 
         try:
-            status = getattr(response, "status", None)
-            if status is None:
-                status = response.getcode()
-            if status is not None and 300 <= status < 400:
+            response_status: int | None = getattr(response, "status", None)
+            if response_status is None:
+                response_status = response.getcode()
+            if response_status is not None and 300 <= response_status < 400:
                 raise WithingsTokenExchangeError("invalid_response")
             response_body = response.read(2 * 1024 * 1024 + 1)
         finally:

@@ -420,6 +420,9 @@ def start_withings_oauth(
             .where(WithingsConnection.user_id == user.id)
             .with_for_update()
         )
+        if connection is None:
+            raise WithingsOAuthError("not_connected", status_code=409)
+
         try:
             client_id, _client_secret = resolve_withings_credentials(connection)
         except WithingsCredentialUnavailableError:

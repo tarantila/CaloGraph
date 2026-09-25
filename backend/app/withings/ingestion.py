@@ -91,9 +91,10 @@ def _sample_for_measure(
         if not isinstance(group.timezone, str) or not group.timezone:
             raise ValueError("Withings measurement timezone is invalid")
         timezone = "UTC" if group.timezone == "Z" else group.timezone
-        local_date = group.local_date
-        if local_date is None:
+        provider_local_date = group.local_date
+        if provider_local_date is None:
             raise ValueError("Withings measurement local date is unavailable")
+        local_date = provider_local_date
     return CanonicalSample(
         metric_type=metric_type,
         value=canonical_value,

@@ -13,12 +13,11 @@ from app.withings.constants import (
     WITHINGS_SCOPES,
     WITHINGS_TOKEN_URL,
 )
-
 from app.withings.oauth import validate_redirect_uri
 
 
 def test_withings_required_scopes_are_both_activity_and_metrics() -> None:
-    assert WITHINGS_REQUIRED_SCOPES == frozenset({"user.metrics", "user.activity"})
+    assert frozenset({"user.metrics", "user.activity"}) == WITHINGS_REQUIRED_SCOPES
 
 
 @pytest.mark.parametrize(

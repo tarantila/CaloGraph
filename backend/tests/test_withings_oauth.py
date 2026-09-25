@@ -16,7 +16,6 @@ from app.withings.errors import WithingsOAuthError
 from app.withings.oauth import hash_oauth_state
 from app.withings.service import (
     complete_withings_oauth,
-    save_withings_credentials,
     start_withings_oauth,
 )
 
@@ -62,6 +61,16 @@ def _payload(scopes=("user.metrics", "user.activity")):
 def _start(db, user, now):
     url = start_withings_oauth(db, user, now=now)
     return parse_qs(urlsplit(url).query)["state"][0]
+
+
+def test_oauth_start_without_connection_uses_not_connected_contract(db, user, monkeypatch):
+    _configure(monkeypatch)
+
+    with pytest.raises(WithingsOAuthError) as captured:
+        start_withings_oauth(db, user)
+
+    assert captured.value.code == "not_connected"
+    assert captured.value.status_code == 409
 
 
 def test_oauth_flow_stores_only_hashed_state_and_binds_user_connection(db, user, monkeypatch):

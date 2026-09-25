@@ -11,6 +11,7 @@ from urllib.request import BaseHandler
 
 import pytest
 import requests
+
 from app.config import settings
 from app.models import WithingsConnection
 from app.services.credential_crypto import encrypt_credential
@@ -18,7 +19,6 @@ from app.withings.constants import WITHINGS_TOKEN_URL
 from app.withings.errors import WithingsTokenExchangeError
 from app.withings.service import complete_withings_oauth, start_withings_oauth
 from app.withings.token_service import _WithingsOAuthAdapter
-
 
 _UNTRUSTED_LOCATION = "https://untrusted.example.test/collect"
 _SENTINELS = (
