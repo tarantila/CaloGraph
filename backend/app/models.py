@@ -69,6 +69,12 @@ class User(Base):
     google_health_oauth_flows: Mapped[list[GoogleHealthOAuthFlow]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    withings_connection: Mapped[WithingsConnection | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    withings_oauth_flows: Mapped[list[WithingsOAuthFlow]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
@@ -304,6 +310,74 @@ class GoogleHealthOAuthFlow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="google_health_oauth_flows")
+
+
+class WithingsConnection(Base):
+    __tablename__ = "withings_connections"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_withings_connections_user_id"),
+        CheckConstraint(
+            "state IN ('active', 'reauth_required', 'not_connected')",
+            name="ck_withings_connections_state",
+        ),
+        CheckConstraint(
+            "sync_state IN ('idle', 'running', 'completed', 'failed')",
+            name="ck_withings_connections_sync_state",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    client_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    encrypted_client_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    withings_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    encrypted_access_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_refresh_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    granted_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="not_connected")
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_state: Mapped[str] = mapped_column(String(16), nullable=False, default="idle")
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_category: Mapped[str | None] = mapped_column(String(32))
+    last_activity_error_category: Mapped[str | None] = mapped_column(String(32))
+    last_error: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    user: Mapped[User] = relationship(back_populates="withings_connection")
+
+
+class WithingsOAuthFlow(Base):
+    __tablename__ = "withings_oauth_flows"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_withings_oauth_flows_state_hash"),
+        Index("ix_withings_oauth_flows_state_hash", "state_hash"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "withings_connections.id",
+            ondelete="CASCADE",
+            name="fk_withings_oauth_flows_connection_id_withings_connections",
+        ),
+        index=True,
+        nullable=True,
+    )
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="withings_oauth_flows")
 
 
 class UserInvitation(Base):
