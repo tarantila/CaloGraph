@@ -18,7 +18,7 @@ from app.analytics.scalar_selection import (
     ScalarProviderSelection,
     resolve_scalar_provider,
 )
-from app.models import HealthSample
+from app.models import HealthSample, WithingsConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -55,6 +55,7 @@ _KNOWN_SOURCE_TYPES = tuple(
     for source_types in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS.values()
     for source_type in source_types
 )
+_WITHINGS_SOURCE_TYPES = ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["withings"]
 
 
 def _source_types_for_samples(
@@ -151,6 +152,10 @@ def _provider_record(
 
     if provider_key == "google_health":
         active_energy_kcal = samples[0].value
+    elif provider_key == "withings":
+        latest_sample = max(samples, key=lambda sample: (sample.start_at, sample.id))
+        samples = [latest_sample]
+        active_energy_kcal = latest_sample.value
     else:
         active_energy_kcal = sum((sample.value for sample in samples), Decimal())
     return VerificationActivityProviderRecord(
@@ -177,6 +182,12 @@ def read_activity_verification(
         selection, apple_source_type = _canonical_selection(db, user_id)
     else:
         apple_source_type = _resolve_apple_transport(db, user_id)
+    withings_connection = db.scalar(
+        select(WithingsConnection).where(
+            WithingsConnection.user_id == user_id,
+            WithingsConnection.state == "active",
+        )
+    )
 
     samples_by_provider_day: defaultdict[tuple[str, date], list[HealthSample]] = defaultdict(list)
     samples = db.scalars(
@@ -196,6 +207,11 @@ def read_activity_verification(
         for source_type in source_types
     }
     for sample in samples:
+        if sample.source_type in _WITHINGS_SOURCE_TYPES and (
+            withings_connection is None
+            or sample.source_identifier != str(withings_connection.id)
+        ):
+            continue
         samples_by_provider_day[(source_to_provider[sample.source_type], sample.local_date)].append(sample)
 
     days: list[VerificationActivityDayResponse] = []

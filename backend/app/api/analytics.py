@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.analytics.calendar_canonical import run_calendar_canonical_read
@@ -58,7 +58,14 @@ from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
-from app.models import GoogleHealthConnection, HealthSample, ImportBatch, User, YazioConnection
+from app.models import (
+    GoogleHealthConnection,
+    HealthSample,
+    ImportBatch,
+    User,
+    WithingsConnection,
+    YazioConnection,
+)
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -435,6 +442,14 @@ def weight(
                 GoogleHealthConnection.state == "active",
             )
         )
+    withings_connection = None
+    if any(provider_key == "withings" for provider_key, _ in provider_sources):
+        withings_connection = db.scalar(
+            select(WithingsConnection).where(
+                WithingsConnection.user_id == user.id,
+                WithingsConnection.state == "active",
+            )
+        )
     provider_by_source_type = {
         source_type: provider_key for provider_key, source_type in provider_sources
     }
@@ -449,6 +464,17 @@ def weight(
             source_filter.append(
                 HealthSample.source_identifier
                 == (str(google_connection.id) if google_connection is not None else "")
+            )
+        elif provider_key == "withings":
+            source_filter.extend(
+                (
+                    (
+                        HealthSample.source_identifier == str(withings_connection.id)
+                        if withings_connection is not None
+                        else false()
+                    ),
+                    HealthSample.value > 0,
+                )
             )
         provider_filters.append(and_(*source_filter))
     samples = list(

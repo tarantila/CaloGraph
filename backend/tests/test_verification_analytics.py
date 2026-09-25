@@ -104,6 +104,13 @@ def test_activity_contract_accepts_all_source_provider_records() -> None:
                         "record_count": 0,
                         "source_types": [],
                     },
+                    {
+                        "provider_key": "withings",
+                        "status": "available",
+                        "active_energy_kcal": Decimal("0"),
+                        "record_count": 1,
+                        "source_types": ["withings_activity_v2"],
+                    },
                 ],
             }
         ],
@@ -113,8 +120,8 @@ def test_activity_contract_accepts_all_source_provider_records() -> None:
     assert [record.provider_key for record in response.days[0].providers] == [
         "google_health",
         "apple_health",
+        "withings",
     ]
-
 
 def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
     response = VerificationNutritionResponse(
@@ -450,6 +457,13 @@ def test_activity_all_sources_keeps_provider_totals_separate(
             "active_energy_kcal": 65.0,
             "record_count": 2,
             "source_types": ["yazio_export_v1"],
+        },
+        {
+            "provider_key": "withings",
+            "status": "no_data",
+            "active_energy_kcal": None,
+            "record_count": 0,
+            "source_types": [],
         },
     ]
 
@@ -1367,3 +1381,26 @@ def test_nutrition_exposes_safe_yazio_provider_and_derived_event_metrics(
         ("Simple product", 120.0),
         ("Derived product", 140.0),
     ]
+
+
+def test_nutrition_verification_contract_rejects_withings_provider() -> None:
+    with pytest.raises(ValidationError, match="provider_key"):
+        VerificationNutritionResponse.model_validate(
+            {
+                "date": date(2026, 9, 14),
+                "view": "canonical",
+                "canonical": {
+                    "provider_key": "withings",
+                    "status": "no_data",
+                    "record_count": 0,
+                    "summary": {
+                        "calories_kcal": None,
+                        "protein_g": None,
+                        "carbohydrates_g": None,
+                        "fat_g": None,
+                    },
+                    "events": [],
+                },
+                "providers": [],
+            }
+        )

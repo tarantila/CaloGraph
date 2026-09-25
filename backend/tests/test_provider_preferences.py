@@ -25,6 +25,7 @@ from app.models import (
     User,
     UserProviderPreference,
     UserProviderPriority,
+    WithingsConnection,
     YazioConnection,
 )
 from app.nutrition.enums import (
@@ -60,6 +61,7 @@ from app.weight import (
     WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
     WEIGHT_PROVIDER_SOURCE_TYPES,
 )
+from app.withings.constants import WITHINGS_REQUIRED_SCOPES
 
 PATH = "/api/v1/settings/provider-preferences"
 WEIGHT_PATH = "/api/v1/analytics/weight"
@@ -86,6 +88,21 @@ def _add_google(db, user, *, state: str = "active") -> GoogleHealthConnection:
     db.add(connection)
     db.commit()
     db.refresh(connection)
+    return connection
+
+def _add_withings_connection(db, user) -> WithingsConnection:
+    connection = WithingsConnection(
+        user_id=user.id,
+        client_id="withings-client-id",
+        encrypted_client_secret=encrypt_credential("withings-client-secret"),
+        withings_user_id="synthetic-user",
+        encrypted_access_token=encrypt_credential("withings-access-token"),
+        encrypted_refresh_token=encrypt_credential("withings-refresh-token"),
+        granted_scopes=sorted(WITHINGS_REQUIRED_SCOPES),
+        state="active",
+    )
+    db.add(connection)
+    db.flush()
     return connection
 
 
@@ -201,17 +218,22 @@ def _add_sample(
     value: Decimal,
     local_date: date,
     source_identifier: str = "test-source",
+    start_at: datetime | None = None,
+    sample_key: str | None = None,
 ) -> None:
     batch = ImportBatch(user_id=user.id, source_type=source_type, status="completed")
     db.add(batch)
     db.flush()
-    timestamp = datetime.combine(local_date, datetime.min.time(), tzinfo=UTC)
+    timestamp = start_at or datetime.combine(local_date, datetime.min.time(), tzinfo=UTC)
+    sample_suffix = f"-{sample_key}" if sample_key is not None else ""
     db.add(
         HealthSample(
             user_id=user.id,
             import_batch_id=batch.id,
-            external_sample_id=f"{source_type}-{metric_type}-{local_date}",
-            fingerprint=f"{source_type}-{metric_type}-{local_date}-{user.id}".replace("-", "")[:64],
+            external_sample_id=f"{source_type}-{metric_type}-{local_date}{sample_suffix}",
+            fingerprint=sha256(
+                f"{source_type}:{metric_type}:{local_date}:{user.id}:{sample_key or ''}".encode()
+            ).hexdigest(),
             source_type=source_type,
             source_identifier=source_identifier,
             metric_type=metric_type,
@@ -272,6 +294,7 @@ def test_legacy_health_auto_export_preference_canonicalizes_to_apple_health() ->
         "apple_health",
         "google_health",
         "yazio",
+        "withings",
     )
     assert validate_provider_preference(
         ACTIVITY_ENERGY_DATA_AREA, "health_auto_export"
@@ -758,6 +781,7 @@ def test_provider_availability_uses_registry_order_for_weight(
         "google_health",
         "yazio",
         "apple_health",
+        "withings",
     ]
 
 
@@ -783,6 +807,7 @@ def test_weight_availability_consolidates_health_auto_export_under_apple(
         "google_health",
         "yazio",
         "apple_health",
+        "withings",
     ]
     statuses = {item["provider_key"]: item for item in response.json()["providers"]}
     assert statuses["apple_health"]["available"] is True
@@ -1351,6 +1376,7 @@ def test_activity_availability_accepts_explicit_zero_samples(client: TestClient,
         "google_health",
         "yazio",
         "apple_health",
+        "withings",
     ]
     statuses = {item["provider_key"]: item for item in response.json()["providers"]}
     assert statuses["apple_health"] == {
@@ -1800,16 +1826,18 @@ def test_new_target_captures_complete_activity_provider_priority_chain(
         (1, "yazio", "yazio_export_v1"),
         (2, "apple_health", "apple_health_xml"),
     ]
-def test_google_activity_and_weight_are_registered_as_separate_provider_families() -> None:
+def test_activity_and_weight_provider_families_are_registered_separately() -> None:
     assert SUPPORTED_PROVIDER_KEYS[ACTIVITY_ENERGY_DATA_AREA] == (
         "google_health",
         "yazio",
         "apple_health",
+        "withings",
     )
     assert SUPPORTED_PROVIDER_KEYS[WEIGHT_DATA_AREA] == (
         "google_health",
         "yazio",
         "apple_health",
+        "withings",
     )
     assert ACTIVITY_PROVIDER_SOURCE_TYPES["google_health"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
     assert ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["google_health"] == (
@@ -1929,6 +1957,29 @@ def test_activity_sources_response_accepts_google_canonical_source(
     response = client.get("/api/v1/settings/activity-sources")
     assert response.status_code == 200
     assert response.json() == [{"source_type": GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE}]
+
+
+def test_activity_sources_response_accepts_withings_source(
+    client: TestClient, user: User, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "withings_enabled", True)
+    connection = _add_withings_connection(db, user)
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["withings"][0],
+        source_identifier=str(connection.id),
+        value=Decimal("0"),
+        local_date=date(2026, 9, 20),
+    )
+    db.commit()
+    _login(client)
+
+    response = client.get("/api/v1/settings/activity-sources")
+
+    assert response.status_code == 200
+    assert response.json() == [{"source_type": "withings_activity_v2"}]
 
 
 def test_google_weight_availability_requires_full_scope_and_canonical_evidence(
@@ -2110,6 +2161,7 @@ def test_google_activity_target_is_serialized_and_snapshots_provider_chain(
         ("google_health", GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE),
         ("yazio", "yazio_export_v1"),
         ("apple_health", "apple_health_xml"),
+        ("withings", "withings_activity_v2"),
     ]
 
 
@@ -2156,3 +2208,171 @@ def test_google_activity_target_update_serializes_source(
         item["activity_source_type"] == GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
         for item in targets.json()
     )
+
+
+def test_weight_priority_selects_latest_withings_sample_without_blending_google(
+    client: TestClient, user: User, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "withings_enabled", True)
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    withings = _add_withings_connection(db, user)
+    google = _add_google(db, user)
+    day = date(2026, 9, 15)
+    _add_weight_sample(
+        db,
+        user,
+        source_type="withings_measure_v1",
+        value=Decimal("81.2"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 8, tzinfo=UTC),
+        source_identifier=str(withings.id),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type="withings_measure_v1",
+        value=Decimal("80.8"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 12, tzinfo=UTC),
+        source_identifier=str(withings.id),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type=GOOGLE_HEALTH_WEIGHT_SOURCE_TYPE,
+        value=Decimal("72.5"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 13, tzinfo=UTC),
+        source_identifier=str(google.id),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type="withings_measure_v1",
+        value=Decimal("0"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 14, tzinfo=UTC),
+        source_identifier=str(withings.id),
+    )
+    _add_weight_sample(
+        db,
+        user,
+        source_type="withings_measure_v1",
+        value=Decimal("95.0"),
+        local_date=day,
+        start_at=datetime(2026, 9, 15, 15, tzinfo=UTC),
+        source_identifier="different-withings-connection",
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "withings", 1),
+        PriorityRuleSpec(WEIGHT_DATA_AREA, None, "google_health", 2),
+    )
+    _login(client)
+
+    response = client.get(WEIGHT_PATH, params={"start": day, "end": day})
+
+    assert response.status_code == 200
+    assert response.json()["selected_provider"] == {"provider_key": "withings"}
+    assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 80.8}]
+
+
+def test_activity_verification_returns_one_withings_value_from_same_day_snapshot(
+    client: TestClient, user: User, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "withings_enabled", True)
+    monkeypatch.setattr(settings, "google_health_enabled", True)
+    withings = _add_withings_connection(db, user)
+    google = _add_google(db, user)
+    day = datetime.now(UTC).date()
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type="withings_activity_v2",
+        value=Decimal("0"),
+        local_date=day,
+        source_identifier=str(withings.id),
+        start_at=datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12),
+    )
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type="withings_activity_v2",
+        value=Decimal("500"),
+        local_date=day,
+        source_identifier=str(withings.id),
+        start_at=datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=8),
+        sample_key="owned-duplicate",
+    )
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type="withings_activity_v2",
+        value=Decimal("700"),
+        local_date=day,
+        source_identifier="different-withings-connection",
+        start_at=datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=13),
+        sample_key="other-connection",
+    )
+    _add_sample(
+        db,
+        user,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
+        value=Decimal("900"),
+        local_date=day,
+        source_identifier=str(google.id),
+    )
+    _add_priority_policy(
+        db,
+        user,
+        PriorityRuleSpec(ACTIVITY_ENERGY_DATA_AREA, None, "withings", 1),
+        PriorityRuleSpec(ACTIVITY_ENERGY_DATA_AREA, None, "google_health", 2),
+    )
+    target = db.scalar(select(NutritionTarget).where(NutritionTarget.user_id == user.id))
+    assert target is not None
+    target.activity_mode = "full"
+    target.activity_source_type = GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE
+    db.commit()
+    csrf = _login(client)
+    preference = client.put(
+        f"{PATH}/{ACTIVITY_ENERGY_DATA_AREA}",
+        headers={"X-CSRF-Token": csrf},
+        json={"provider_keys": ["withings", "google_health"]},
+    )
+
+    assert preference.status_code == 200
+    db.expire_all()
+    snapshot_target = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from <= day,
+            (NutritionTarget.valid_to.is_(None) | (NutritionTarget.valid_to > day)),
+        )
+    )
+    assert snapshot_target is not None
+    assert [
+        (row.provider_key, row.source_type)
+        for row in sorted(snapshot_target.activity_sources, key=lambda row: row.priority)
+    ][:2] == [
+        ("withings", "withings_activity_v2"),
+        ("google_health", GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE),
+    ]
+
+    response = client.get(
+        "/api/v1/analytics/verification/activity",
+        params={"start": day, "end": day, "view": "canonical"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["days"][0]["canonical"] == {
+        "provider_key": "withings",
+        "status": "available",
+        "active_energy_kcal": 0.0,
+        "record_count": 1,
+        "source_types": ["withings_activity_v2"],
+    }

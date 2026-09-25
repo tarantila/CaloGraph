@@ -707,3 +707,90 @@ def test_google_activity_daily_points_ignore_wrong_connection_evidence(
     assert point.active_energy_kcal == Decimal("250")
     assert point.activity_credit_kcal == Decimal("250")
     assert point.activity_data_status == "credited"
+
+
+def test_historical_activity_target_snapshot_keeps_withings_zero_after_priority_change(
+    db: Session, user: User
+) -> None:
+    historical = user.targets[0]
+    historical.valid_to = date(2024, 1, 2)
+    historical.activity_mode = "full"
+    historical.activity_source_type = "withings_activity_v2"
+    db.add_all(
+        [
+            NutritionTargetActivitySource(
+                target_id=historical.id,
+                user_id=user.id,
+                priority=1,
+                provider_key="withings",
+                source_type="withings_activity_v2",
+            ),
+            NutritionTargetActivitySource(
+                target_id=historical.id,
+                user_id=user.id,
+                priority=2,
+                provider_key="yazio",
+                source_type="yazio_export_v1",
+            ),
+        ]
+    )
+    current = NutritionTarget(
+        user_id=user.id,
+        valid_from=date(2024, 1, 2),
+        calories_kcal=historical.calories_kcal,
+        maintenance_kcal=historical.maintenance_kcal,
+        target_weight_min_kg=historical.target_weight_min_kg,
+        target_weight_max_kg=historical.target_weight_max_kg,
+        activity_mode="full",
+        activity_source_type="yazio_export_v1",
+        protein_g=historical.protein_g,
+        carbs_g=historical.carbs_g,
+        fat_g=historical.fat_g,
+        fiber_g=historical.fiber_g,
+        water_ml=historical.water_ml,
+    )
+    db.add(current)
+    db.flush()
+    db.add_all(
+        [
+            NutritionTargetActivitySource(
+                target_id=current.id,
+                user_id=user.id,
+                priority=1,
+                provider_key="yazio",
+                source_type="yazio_export_v1",
+            ),
+            NutritionTargetActivitySource(
+                target_id=current.id,
+                user_id=user.id,
+                priority=2,
+                provider_key="withings",
+                source_type="withings_activity_v2",
+            ),
+        ]
+    )
+    samples = [
+        metric(1, "active_energy_kcal", "0", "withings_activity_v2"),
+        metric(1, "active_energy_kcal", "400", "yazio_export_v1"),
+        metric(2, "active_energy_kcal", "250", "yazio_export_v1"),
+        metric(2, "active_energy_kcal", "0", "withings_activity_v2"),
+    ]
+    persist_import(
+        db,
+        user,
+        AdapterResult("test", samples, received=len(samples)),
+        None,
+        "x-withings-activity-target-history",
+        "test",
+    )
+
+    points = daily_points(db, user, date(2024, 1, 1), date(2024, 1, 2))
+
+    assert [point.active_energy_kcal for point in points] == [
+        Decimal("0"),
+        Decimal("250"),
+    ]
+    assert [point.activity_credit_kcal for point in points] == [
+        Decimal("0"),
+        Decimal("250"),
+    ]
