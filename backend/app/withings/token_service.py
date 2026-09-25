@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import urllib.request
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.error import HTTPError
+from urllib.parse import urlencode
 
-import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,6 +26,19 @@ from app.withings.errors import (
     WithingsOAuthError,
     WithingsTokenExchangeError,
 )
+
+
+class _NoTokenRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
 
 
 class OAuthAdapter(Protocol):
@@ -83,9 +99,44 @@ class _WithingsOAuthAdapter:
 
     @staticmethod
     def _request_token(payload: Mapping[str, str]) -> Mapping[str, Any]:
-        response = requests.post(WITHINGS_TOKEN_URL, data=payload, timeout=15)
-        response.raise_for_status()
-        result = response.json()
+        request = urllib.request.Request(
+            WITHINGS_TOKEN_URL,
+            data=urlencode(payload).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(_NoTokenRedirect())
+        try:
+            response = opener.open(request, timeout=10)
+        except HTTPError as exc:
+            status = exc.code
+            exc.close()
+            if status == 403:
+                code = "scope_missing"
+            elif status == 429:
+                code = "rate_limited"
+            elif status >= 500:
+                code = "provider_error"
+            else:
+                code = "invalid_response"
+            raise WithingsTokenExchangeError(code) from None
+
+        try:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = response.getcode()
+            if status is not None and 300 <= status < 400:
+                raise WithingsTokenExchangeError("invalid_response")
+            response_body = response.read(2 * 1024 * 1024 + 1)
+        finally:
+            response.close()
+
+        if len(response_body) > 2 * 1024 * 1024:
+            raise WithingsTokenExchangeError("invalid_response")
+        try:
+            result = json.loads(response_body)
+        except ValueError:
+            raise WithingsTokenExchangeError("invalid_response") from None
         if not isinstance(result, Mapping) or result.get("status") != 0:
             raise WithingsTokenExchangeError("provider_error")
         body = result.get("body")
