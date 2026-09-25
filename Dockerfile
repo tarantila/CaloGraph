@@ -4,7 +4,7 @@
 # Backend
 # -----------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.17@sha256:10787c682e4184e4f290de1171fd4703dc63de99221f10fe1c99002ce7fa9acc AS uv
 
 FROM python:3.14.7-alpine3.23@sha256:8caa2adfeb414dfe68d8b257f7aea9e205a400521c2b13b2d2e5e731fb8e70e5 AS backend-base
 RUN apk upgrade --no-cache
@@ -185,7 +185,7 @@ COPY frontend/ .
 
 CMD ["npx", "playwright", "test"]
 
-FROM nginxinc/nginx-unprivileged:1.31.5-alpine@sha256:2ddec616f1cb58bcac057aa388f28cb81e35137641ef4226d321714499329bd1 AS frontend-runtime
+FROM nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c965793fd271839b4ea4cdb6e99895bb19618cbc2ca152d972 AS frontend-runtime
 
 ARG APP_VERSION=development
 ARG APP_REVISION=unknown
