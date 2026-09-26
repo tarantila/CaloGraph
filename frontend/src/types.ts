@@ -26,18 +26,21 @@ export type ActivitySourceType =
   | 'apple_health_xml'
   | 'health_auto_export_v2'
   | 'google_health_activity_v4'
+  | 'withings_activity_v2'
 
 export type VerificationView = 'canonical' | 'all'
 export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health'
+export type VerificationActivityProviderKey = VerificationProviderKey | 'withings'
 export type VerificationRecordStatus = 'available' | 'no_data' | 'unavailable'
 export type VerificationActivitySourceType =
   | 'google_health_activity_v4'
   | 'yazio_export_v1'
   | 'apple_health_xml'
   | 'health_auto_export_v2'
+  | 'withings_activity_v2'
 
 export interface VerificationActivityProviderRecord {
-  provider_key: VerificationProviderKey
+  provider_key: VerificationActivityProviderKey
   status: VerificationRecordStatus
   active_energy_kcal: number | null
   record_count: number
@@ -245,6 +248,47 @@ export interface GoogleHealthSyncResult {
   nutrition: GoogleHealthDomainResult
   activity_energy: GoogleHealthDomainResult
   weight: GoogleHealthDomainResult
+}
+
+export type WithingsState = 'disabled' | 'not_configured' | 'not_connected' | 'active' | 'reauth_required' | 'error'
+export type WithingsSyncStatus = 'success' | 'partial_failure' | 'failed' | 'reauth_required' | 'no_data'
+export type WithingsDomainKey = 'weight' | 'activity_energy'
+
+export interface WithingsStatus {
+  available: boolean
+  configured: boolean
+  credentials_configured: boolean
+  redirect_uri: string
+  connected: boolean
+  state: WithingsState
+  granted_scopes: string[]
+  access_token_expires_at: string | null
+  last_attempt_at: string | null
+  last_success_at: string | null
+  last_error_category: string | null
+}
+
+export interface WithingsConnectionTestResponse {
+  ok: boolean
+  state: WithingsState
+  error_category: string | null
+}
+
+export interface WithingsDomainResult {
+  status: string
+  fetched_count: number
+  persisted_count: number
+  requested_start: string
+  requested_end: string
+  covered_start: string | null
+  covered_end: string | null
+  error_code: string | null
+}
+
+export interface WithingsSyncResult {
+  status: WithingsSyncStatus
+  weight: WithingsDomainResult
+  activity_energy: WithingsDomainResult
 }
 
 export type DecimalTransport = string | number | null

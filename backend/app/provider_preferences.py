@@ -11,8 +11,8 @@ ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"
 SUPPORTED_PROVIDER_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         NUTRITION_DATA_AREA: ("google_health", "yazio", "apple_health"),
-        WEIGHT_DATA_AREA: ("google_health", "yazio", "apple_health"),
-        ACTIVITY_ENERGY_DATA_AREA: ("google_health", "yazio", "apple_health"),
+        WEIGHT_DATA_AREA: ("google_health", "yazio", "apple_health", "withings"),
+        ACTIVITY_ENERGY_DATA_AREA: ("google_health", "yazio", "apple_health", "withings"),
     }
 )
 LEGACY_PROVIDER_KEY_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType(

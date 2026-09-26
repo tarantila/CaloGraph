@@ -123,8 +123,9 @@ class ProviderAvailabilityResponse(BaseModel):
 
     provider_key: str
     available: bool
-    status: Literal["available", "disabled", "not_configured", "reauth_required", "no_data"]
-
+    status: Literal[
+        "available", "disabled", "not_configured", "reauth_required", "no_data", "error"
+    ]
 
 class ProviderAvailabilityListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -686,19 +687,21 @@ class TargetSettingsResponse(BaseModel):
 
 VerificationView = Literal["canonical", "all"]
 VerificationProviderKey = Literal["google_health", "yazio", "apple_health"]
+VerificationActivityProviderKey = Literal["google_health", "yazio", "apple_health", "withings"]
 VerificationRecordStatus = Literal["available", "no_data", "unavailable"]
 VerificationActivitySourceType = Literal[
     "google_health_activity_v4",
     "yazio_export_v1",
     "apple_health_xml",
     "health_auto_export_v2",
+    "withings_activity_v2",
 ]
 
 
 class VerificationActivityProviderRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_key: VerificationProviderKey
+    provider_key: VerificationActivityProviderKey
     status: VerificationRecordStatus
     active_energy_kcal: float | None
     record_count: int = Field(ge=0)
@@ -771,6 +774,7 @@ class ActivitySourceResponse(BaseModel):
         "yazio_export_v1",
         "apple_health_xml",
         "health_auto_export_v2",
+        "withings_activity_v2",
     ]
 class AchievementResponse(BaseModel):
     key: str | None = None

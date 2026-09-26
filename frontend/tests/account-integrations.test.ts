@@ -5,11 +5,23 @@ const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 
 vi.mock('../src/api', () => ({
   api: apiMock,
-  ApiError: class extends Error {},
+  ApiError: class extends Error {
+    constructor(
+      message: string,
+      public status: number,
+      public requestId?: string,
+      public retryAfter?: string,
+      public problemType?: string,
+      public problemTitle?: string,
+    ) {
+      super(message)
+    }
+  },
   localizeApiError: () => 'Die Anfrage konnte nicht verarbeitet werden.',
 }))
 
 import AccountIntegrationsView from '../src/views/AccountIntegrationsView.vue'
+import { ApiError } from '../src/api'
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 
 const yazioStatus = {
@@ -79,6 +91,45 @@ const googleSyncResult = {
     error_code: null,
   },
 }
+const withingsStatus = {
+  available: true,
+  credentials_configured: true,
+  redirect_uri: 'https://app.example.test/withings/oauth/callback',
+  configured: true,
+  connected: true,
+  state: 'active',
+  granted_scopes: ['user.metrics', 'user.activity'],
+  access_token_expires_at: '2026-09-17T08:00:00Z',
+  last_attempt_at: '2026-09-18T08:00:00Z',
+  last_success_at: '2026-09-18T08:01:00Z',
+  last_error_category: null,
+}
+
+const withingsSyncResult = {
+  status: 'partial_failure',
+  weight: {
+    status: 'success',
+    fetched_count: 4,
+    persisted_count: 2,
+    requested_start: '2026-09-18',
+    requested_end: '2026-09-18',
+    covered_start: '2026-09-18',
+    covered_end: '2026-09-18',
+    error_code: null,
+  },
+  activity_energy: {
+    status: 'failed',
+    fetched_count: 3,
+    persisted_count: 0,
+    requested_start: '2026-09-18',
+    requested_end: '2026-09-18',
+    covered_start: null,
+    covered_end: null,
+    error_code: 'provider_error',
+  },
+} as const
+
+let withingsStatusCalls = 0
 
 let yazioStatusCalls = 0
 let googleStatusCalls = 0
@@ -86,7 +137,63 @@ let googleStatusCalls = 0
 function configureApi(overrides: Record<string, unknown> = {}): void {
   yazioStatusCalls = 0
   googleStatusCalls = 0
+  withingsStatusCalls = 0
   apiMock.mockImplementation((path: string, options?: RequestInit) => {
+    if (path === '/withings/status') {
+      withingsStatusCalls += 1
+      if (withingsStatusCalls > 1 && overrides.withingsStatusRefreshError) {
+        return Promise.reject(new Error('status refresh failed'))
+      }
+      const result = withingsStatusCalls > 1
+        ? overrides.withingsStatusAfterAction ?? overrides.withingsStatus ?? withingsStatus
+        : overrides.withingsStatus ?? withingsStatus
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
+    if (path === '/withings/credentials' && options?.method === 'PUT') {
+      return Promise.resolve(overrides.withingsCredentialsStatus ?? {
+        ...withingsStatus,
+        connected: false,
+        state: 'not_connected',
+      })
+    }
+    if (path === '/withings/credentials' && options?.method === 'DELETE') {
+      return Promise.resolve(overrides.withingsCredentialsDeletedStatus ?? {
+        ...withingsStatus,
+        configured: false,
+        credentials_configured: false,
+        connected: false,
+        state: 'not_configured',
+      })
+    }
+    if (path === '/withings/sync' && options?.method === 'POST') {
+      if (overrides.withingsSyncError) {
+        return Promise.reject(
+          overrides.withingsSyncError instanceof Error
+            ? overrides.withingsSyncError
+            : new Error('raw provider detail'),
+        )
+      }
+      return Promise.resolve(overrides.withingsSyncResult ?? withingsSyncResult)
+    }
+    if (path === '/withings/oauth/start' && options?.method === 'POST') {
+      if (overrides.withingsOAuthError) return Promise.reject(new Error('raw provider detail'))
+      return Promise.resolve({ authorization_url: 'https://account.withings.example/authorize?state=test' })
+    }
+    if (path === '/withings/connection/test' && options?.method === 'POST') {
+      if (overrides.withingsConnectionTestError) {
+        return Promise.reject(
+          overrides.withingsConnectionTestError instanceof Error
+            ? overrides.withingsConnectionTestError
+            : new Error('raw provider detail'),
+        )
+      }
+      return Promise.resolve(overrides.withingsConnectionTestResponse ?? {
+        ok: true,
+        state: 'active',
+        error_category: null,
+      })
+    }
+    if (path === '/withings/connection' && options?.method === 'DELETE') return Promise.resolve({})
     if (path === '/yazio/status') {
       yazioStatusCalls += 1
       if (overrides.yazioRefreshError && yazioStatusCalls > 1) return Promise.reject(new Error('status refresh failed'))
@@ -160,7 +267,7 @@ describe('AccountIntegrationsView', () => {
     expect(wrapper.get('.yazio-credentials-panel').text()).toContain('YAZIO-Zugangsdaten')
     expect(wrapper.get('.yazio-status-panel').text()).toContain('Letzte erfolgreiche Synchronisierung')
     expect(wrapper.get('.yazio-status-panel').text()).toContain('18.09.2026, 10:01')
-    expect(wrapper.text()).not.toContain('Withings')
+    expect(wrapper.get('.withings-card h2').text()).toBe('Withings')
     expect(wrapper.text()).not.toContain('Health Auto Export')
   })
 
@@ -248,7 +355,7 @@ describe('AccountIntegrationsView', () => {
     expect(googleCardText).not.toContain('Google Fit')
 
     const icons = wrapper.findAll('.integration-card-icon')
-    expect(icons).toHaveLength(3)
+    expect(icons).toHaveLength(4)
     expect(icons.every((icon) => icon.attributes('aria-hidden') === 'true')).toBe(true)
   })
 
@@ -323,18 +430,24 @@ describe('AccountIntegrationsView', () => {
     expect(card.get('.google-health-connect').attributes('aria-label')).toContain('erneut autorisieren')
   })
 
-  it('keeps loading state accessible while Google status is unavailable', async () => {
-    const { promise: pendingStatus, resolve: resolveStatus } = Promise.withResolvers<unknown>()
+  it('keeps page loading until Google and Withings statuses load', async () => {
+    const { promise: pendingGoogleStatus, resolve: resolveGoogleStatus } = Promise.withResolvers<unknown>()
+    const { promise: pendingWithingsStatus, resolve: resolveWithingsStatus } = Promise.withResolvers<unknown>()
     apiMock.mockImplementation((path: string) => {
-      if (path === '/google-health/status') return pendingStatus
+      if (path === '/google-health/status') return pendingGoogleStatus
       if (path === '/yazio/status') return Promise.resolve(yazioStatus)
+      if (path === '/withings/status') return pendingWithingsStatus
       return Promise.resolve({})
     })
     const wrapper = mount(AccountIntegrationsView)
     expect(wrapper.get('[role="status"]').text()).toContain('Wird geladen')
-    resolveStatus(googleStatus)
+    resolveGoogleStatus(googleStatus)
+    await flushPromises()
+    expect(wrapper.find('.dashboard-loading').exists()).toBe(true)
+    resolveWithingsStatus(withingsStatus)
     await flushPromises()
     expect(wrapper.find('.google-health-card .google-health-sync-button').exists()).toBe(true)
+    expect(wrapper.find('.withings-card .withings-sync-button').exists()).toBe(true)
   })
 
   it('shows a safe Google synchronization error and no provider detail', async () => {
@@ -491,5 +604,541 @@ describe('AccountIntegrationsView', () => {
     expect(appleCard.text()).toContain('Apple-Health-Export')
     expect(appleCard.find('a').exists()).toBe(true)
     expect(appleCard.find('button').exists()).toBe(false)
+  })
+  it.each([
+    ['disabled', { available: false, configured: false, credentials_configured: false, connected: false, state: 'disabled' }, 'Serverseitig deaktiviert', false, false],
+    ['not_configured', { configured: false, credentials_configured: false, connected: false, state: 'not_configured' }, 'Zugangsdaten noch nicht eingerichtet', false, false],
+    ['not_connected', { connected: false, state: 'not_connected' }, 'Nicht verbunden', true, false],
+    ['reauth_required', { connected: true, state: 'reauth_required' }, 'Erneute Autorisierung erforderlich', true, false],
+    ['active', { connected: true, state: 'active' }, 'Verbunden', false, true],
+    ['connected error', { connected: true, state: 'error' }, 'Verbindungsfehler', true, true],
+    ['unconnected error', { connected: false, state: 'error' }, 'Verbindungsfehler', true, false],
+  ] as const)('renders Withings %s state without exposing scopes', async (_state, overrides, status, canConnect, canSync) => {
+    configureApi({ withingsStatus: { ...withingsStatus, ...overrides } })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe(status)
+    expect(card.find('.withings-connect-button').exists()).toBe(canConnect)
+    expect(card.find('.withings-sync-button').exists()).toBe(canSync)
+    expect(card.text()).not.toContain('user.metrics')
+    expect(card.text()).not.toContain('user.activity')
+  })
+  it('allows a connected Withings error state to retry without clearing the stored error before status does', async () => {
+    const syncResponse = Promise.withResolvers<typeof withingsSyncResult>()
+    const statusRefresh = Promise.withResolvers<typeof withingsStatus>()
+    configureApi({
+      withingsStatus: { ...withingsStatus, state: 'error', last_error_category: 'provider_error' },
+      withingsSyncResult: syncResponse.promise,
+      withingsStatusAfterAction: statusRefresh.promise,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+
+    await card.get('.withings-sync-button').trigger('click')
+    expect(apiMock).toHaveBeenCalledWith('/withings/sync', { method: 'POST' })
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+
+    syncResponse.resolve(withingsSyncResult)
+    await flushPromises()
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+
+    statusRefresh.resolve({ ...withingsStatus, last_error_category: null })
+    await flushPromises()
+    expect(card.text()).not.toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+  })
+
+  it('reports status-load errors safely and leaves a retry action', async () => {
+    configureApi({ withingsStatus: new Error('raw provider detail') })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-error').text()).toContain('Withings-Status konnte nicht geladen werden')
+    expect(card.text()).not.toContain('raw provider detail')
+    expect(card.get('.withings-error button').text()).toContain('Erneut versuchen')
+  })
+
+  it('saves and removes only local Withings credential inputs', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    configureApi({
+      withingsStatus: {
+        ...withingsStatus,
+        configured: false,
+        credentials_configured: false,
+        connected: false,
+        state: 'not_configured',
+      },
+      withingsCredentialsStatus: {
+        ...withingsStatus,
+        connected: false,
+        state: 'not_connected',
+        client_secret: 'response-secret-sentinel',
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    const card = wrapper.get('.withings-card')
+    const clientId = card.get<HTMLInputElement>('input[name="withings-client-id"]')
+    const clientSecret = card.get<HTMLInputElement>('input[name="withings-client-secret"]')
+    expect(clientId.element.value).toBe('')
+    expect(clientSecret.element.value).toBe('')
+
+    await clientId.setValue('one-sided-client')
+    await card.get('.withings-credentials-panel').trigger('submit')
+    await flushPromises()
+    expect(card.text()).toContain('Client-ID und Client-Secret müssen gemeinsam eingegeben werden')
+    expect(apiMock.mock.calls.some(([path]) => path === '/withings/credentials')).toBe(false)
+
+    await clientSecret.setValue('submitted-secret')
+    await card.get('.withings-credentials-panel').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/credentials', {
+      method: 'PUT',
+      body: JSON.stringify({ client_id: 'one-sided-client', client_secret: 'submitted-secret' }),
+    })
+    expect(clientId.element.value).toBe('')
+    expect(clientSecret.element.value).toBe('')
+    expect(card.html()).not.toContain('submitted-secret')
+    expect(card.html()).not.toContain('response-secret-sentinel')
+
+    await card.get('.withings-delete-credentials').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/credentials', { method: 'DELETE' })
+    expect(card.get('.withings-status-badge').text()).toBe('Zugangsdaten noch nicht eingerichtet')
+    expect(card.find('.withings-connect-button').exists()).toBe(false)
+  })
+
+  it('starts OAuth from the callback-aware connection card with safe failures', async () => {
+    window.history.replaceState({}, '', '/konto/integrationen?withings=error')
+    configureApi({
+      withingsStatus: { ...withingsStatus, connected: false, state: 'not_connected' },
+      withingsOAuthError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    const card = wrapper.get('.withings-card')
+
+    expect(card.text()).toContain('Withings konnte nicht verbunden werden')
+    await card.get('.withings-connect-button').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/oauth/start', { method: 'POST' })
+    expect(card.get('.withings-error').text()).toContain('Withings konnte nicht verbunden werden')
+    expect(card.text()).not.toContain('raw provider detail')
+  })
+
+  it('tests connection success and reauthorization while hiding provider errors', async () => {
+    configureApi({
+      withingsStatusAfterAction: {
+        ...withingsStatus,
+        last_attempt_at: '2026-09-19T08:01:00Z',
+        last_success_at: '2026-09-19T08:02:00Z',
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/connection/test', { method: 'POST' })
+    expect(wrapper.get('.withings-card').text()).toContain('Verbindung ist aktiv.')
+    const metadataRows = wrapper.findAll('.withings-connection-panel .integration-details > div')
+    expect(metadataRows.map((row) => row.get('dt').text())).toEqual([
+      'Access-Token gültig bis',
+      'Letzter Vorgang',
+      'Letzter erfolgreicher Vorgang',
+    ])
+    expect(metadataRows[1].get('dd').text()).toBe('19.09.2026, 10:01')
+    expect(metadataRows[2].get('dd').text()).toBe('19.09.2026, 10:02')
+
+    wrapper.unmount()
+    configureApi({
+      withingsConnectionTestResponse: { ok: false, state: 'reauth_required', error_category: 'invalid_grant' },
+      withingsStatusAfterAction: { ...withingsStatus, state: 'reauth_required' },
+    })
+    const reauthWrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    await reauthWrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+    const reauthCard = reauthWrapper.get('.withings-card')
+    expect(reauthCard.get('.withings-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(reauthCard.get('.withings-connect-button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(reauthCard.text()).not.toContain('invalid_grant')
+
+    reauthWrapper.unmount()
+    configureApi({ withingsConnectionTestError: true })
+    const failedWrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    await failedWrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+    expect(failedWrapper.get('.withings-error').text()).toContain('Withings-Verbindungstest ist fehlgeschlagen')
+    expect(failedWrapper.text()).not.toContain('raw provider detail')
+  })
+
+  it('shows reauthorization after a connection test even when status refresh fails', async () => {
+    configureApi({
+      withingsConnectionTestResponse: { ok: false, state: 'reauth_required', error_category: 'invalid_grant' },
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(card.get('.withings-connect-button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.text()).not.toContain('Verbindung ist aktiv.')
+    wrapper.unmount()
+  })
+  it('fails closed to an unknown error state after an untyped 409 when status refresh fails', async () => {
+    configureApi({
+      withingsConnectionTestError: new ApiError('not connected', 409, undefined, undefined, 'about:blank'),
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(withingsStatusCalls).toBe(2)
+    expect(card.get('.withings-status-badge').text()).toBe('Verbindungsfehler')
+    expect(card.find('.withings-connect-button').exists()).toBe(true)
+    expect(card.find('.withings-test-button').exists()).toBe(true)
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(true)
+    expect(card.get('.withings-connection-panel').text()).toContain('18.09.2026, 10:01')
+    expect(card.get('.withings-connection-panel').text()).toContain('Nicht verfügbar')
+    expect(card.text()).not.toContain('Fehler beim letzten Vorgang:')
+    expect(card.text()).toContain('Withings-Status konnte nicht geladen werden')
+    wrapper.unmount()
+  })
+
+  it('uses refreshed active status after an untyped 409 from the Withings connection test', async () => {
+    configureApi({
+      withingsConnectionTestError: new ApiError('operation busy', 409),
+      withingsStatusAfterAction: withingsStatus,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(withingsStatusCalls).toBe(2)
+    expect(card.get('.withings-status-badge').text()).toBe('Verbunden')
+    expect(card.find('.withings-test-button').exists()).toBe(true)
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('uses refreshed status after a typed 409 from the Withings connection test', async () => {
+    configureApi({
+      withingsConnectionTestError: new ApiError(
+        'operation busy',
+        409,
+        undefined,
+        undefined,
+        'urn:calograph:problem:user-operation-busy',
+      ),
+      withingsStatusAfterAction: withingsStatus,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(withingsStatusCalls).toBe(2)
+    expect(card.get('.withings-status-badge').text()).toBe('Verbunden')
+    expect(card.find('.withings-connect-button').exists()).toBe(false)
+    expect(card.find('.withings-test-button').exists()).toBe(true)
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps a failed connection-test state and safe error category when status refresh fails', async () => {
+    configureApi({
+      withingsConnectionTestResponse: { ok: false, state: 'error', error_category: 'provider_error' },
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-test-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Verbindungsfehler')
+    expect(card.find('.withings-connect-button').exists()).toBe(true)
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(true)
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+    expect(card.text()).not.toContain('provider_error')
+    expect(card.text()).not.toContain('Verbindung ist aktiv.')
+    wrapper.unmount()
+  })
+
+  it('shows reauthorization after a sync even when status refresh fails', async () => {
+    configureApi({
+      withingsSyncResult: { ...withingsSyncResult, status: 'reauth_required' },
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(card.get('.withings-connect-button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('applies a provider error from a partial Withings sync before a failed status refresh', async () => {
+    configureApi({ withingsStatusRefreshError: true })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Verbindungsfehler')
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+    expect(card.text()).not.toContain('provider_error')
+    expect(card.text()).toContain('Der Withings-Status konnte nach der Synchronisierung nicht aktualisiert werden.')
+    wrapper.unmount()
+  })
+
+  it('fails closed to an unknown error state after an untyped 409 from Withings sync when status refresh fails', async () => {
+    configureApi({
+      withingsSyncError: new ApiError('not configured', 409, undefined, undefined, 'about:blank'),
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(withingsStatusCalls).toBe(2)
+    expect(card.get('.withings-status-badge').text()).toBe('Verbindungsfehler')
+    expect(card.find('.withings-connect-button').exists()).toBe(true)
+    expect(card.find('.withings-test-button').exists()).toBe(true)
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(true)
+    expect(card.get('.withings-connection-panel').text()).toContain('18.09.2026, 10:01')
+    expect(card.get('.withings-connection-panel').text()).toContain('Nicht verfügbar')
+    expect(card.text()).not.toContain('Fehler beim letzten Vorgang:')
+    expect(card.text()).toContain('Der Withings-Status konnte nach der Synchronisierung nicht aktualisiert werden.')
+    expect(card.text()).not.toContain('user.metrics')
+    expect(card.text()).not.toContain('user.activity')
+    wrapper.unmount()
+  })
+
+  it('uses refreshed active status after an untyped 409 from Withings sync', async () => {
+    configureApi({
+      withingsSyncError: new ApiError('operation busy', 409),
+      withingsStatusAfterAction: withingsStatus,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(withingsStatusCalls).toBe(2)
+    expect(card.get('.withings-status-badge').text()).toBe('Verbunden')
+    expect(card.find('.withings-sync-button').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['failed', 'reauth_required'],
+    ['failed', 'scope_missing'],
+    ['failed', 'invalid_grant'],
+    ['partial_failure', 'reauth_required'],
+    ['partial_failure', 'scope_missing'],
+    ['partial_failure', 'invalid_grant'],
+  ] as const)('shows reauthorization for a %s aggregate and %s domain error when status refresh fails', async (aggregateStatus, errorCode) => {
+    const reauthSyncResult = {
+      status: aggregateStatus,
+      weight: aggregateStatus === 'failed'
+        ? { ...withingsSyncResult.weight, status: 'failed', error_code: errorCode }
+        : { ...withingsSyncResult.weight, status: 'success', error_code: null },
+      activity_energy: { ...withingsSyncResult.activity_energy, status: 'failed', error_code: errorCode },
+    } as const
+    configureApi({
+      withingsSyncResult: reauthSyncResult,
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(card.get('.withings-connect-button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.get('.withings-sync-result').text()).toContain('Erneute Autorisierung erforderlich')
+    expect(card.get('.import-message.warning').text()).toBe('Der Withings-Status konnte nach der Synchronisierung nicht aktualisiert werden.')
+    expect(card.get('.import-message.warning').text()).not.toContain('erfolgreich')
+    expect(card.text()).not.toContain(errorCode)
+    wrapper.unmount()
+  })
+
+  it('shows credential reauthorization after a failed sync when status refresh fails', async () => {
+    const credentialUnavailableSyncResult = {
+      status: 'failed',
+      weight: { ...withingsSyncResult.weight, status: 'failed', error_code: 'credential_unavailable' },
+      activity_energy: { ...withingsSyncResult.activity_energy, status: 'failed', error_code: 'credential_unavailable' },
+    } as const
+    configureApi({
+      withingsSyncResult: credentialUnavailableSyncResult,
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Erneute Autorisierung erforderlich')
+    expect(card.get('.withings-connect-button').attributes('aria-label')).toContain('erneut autorisieren')
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.get('.withings-sync-result').text()).toContain('Erneute Autorisierung erforderlich')
+    expect(card.text()).not.toContain('credential_unavailable')
+    expect(card.get('.import-message.warning').text()).toBe('Der Withings-Status konnte nach der Synchronisierung nicht aktualisiert werden.')
+    wrapper.unmount()
+  })
+
+  it('fails closed as disconnected after a not-connected sync when status refresh fails', async () => {
+    const notConnectedSyncResult = {
+      status: 'failed',
+      weight: { ...withingsSyncResult.weight, status: 'failed', error_code: 'not_connected' },
+      activity_energy: { ...withingsSyncResult.activity_energy, status: 'failed', error_code: 'not_connected' },
+    } as const
+    configureApi({
+      withingsSyncResult: notConnectedSyncResult,
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('.withings-card')
+    expect(card.get('.withings-status-badge').text()).toBe('Nicht verbunden')
+    expect(card.find('.withings-connect-button').exists()).toBe(true)
+    expect(card.get('.withings-connect-button').text()).toBe('Mit Withings verbinden')
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.find('.withings-test-button').exists()).toBe(false)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(false)
+    expect(card.get('.withings-connection-panel').text()).toContain('18.09.2026, 10:01')
+    expect(card.get('.withings-connection-panel').text()).not.toContain('17.09.2026, 10:00')
+    expect(card.text()).not.toContain('user.metrics')
+    expect(card.text()).not.toContain('user.activity')
+    expect(card.text()).not.toContain('not_connected')
+    expect(card.get('.import-message.warning').text()).toBe('Der Withings-Status konnte nach der Synchronisierung nicht aktualisiert werden.')
+    wrapper.unmount()
+  })
+
+  it('shows stored Withings provider errors as a safe localized status', async () => {
+    configureApi({
+      withingsStatus: { ...withingsStatus, last_error_category: 'provider_error' },
+    })
+    const wrapper = mount(AccountIntegrationsView, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+
+    const card = wrapper.get('.withings-card')
+    expect(card.text()).toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+    expect(card.text()).not.toContain('Synchronisierungsfehler')
+    expect(card.text()).not.toContain('provider_error')
+  })
+
+  it('keeps Withings disconnected when status refresh fails after a successful disconnect', async () => {
+    configureApi({
+      withingsStatus: { ...withingsStatus, last_error_category: 'provider_error' },
+      withingsStatusRefreshError: true,
+    })
+    const wrapper = mount(AccountIntegrationsView, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+
+    const card = wrapper.get('.withings-card')
+    await card.get('.withings-disconnect-button').trigger('click')
+    await flushPromises()
+
+    expect(card.get('.withings-status-badge').text()).toBe('Nicht verbunden')
+    expect(card.text()).toContain('Withings-Verbindung wurde getrennt.')
+    expect(card.text()).toContain('Withings-Verbindung wurde getrennt, aber der Status konnte nicht aktualisiert werden')
+    expect(card.find('.withings-connect-button').exists()).toBe(true)
+    expect(card.find('.withings-disconnect-button').exists()).toBe(false)
+    expect(card.find('.withings-sync-button').exists()).toBe(false)
+    expect(card.get('.withings-connection-panel').text()).toContain('18.09.2026, 10:01')
+    expect(card.get('.withings-connection-panel').text()).not.toContain('17.09.2026, 10:00')
+    expect(card.text()).not.toContain('Fehler beim letzten Vorgang: Fehlgeschlagen')
+    expect(card.text()).not.toContain('Withings-Verbindung konnte nicht getrennt werden')
+  })
+
+  it('disconnects Withings without losing the last successful operation indication', async () => {
+    configureApi({
+      withingsStatusAfterAction: {
+        ...withingsStatus,
+        connected: false,
+        state: 'not_connected',
+      },
+    })
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-disconnect-button').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/connection', { method: 'DELETE' })
+    expect(wrapper.get('.withings-status-badge').text()).toBe('Nicht verbunden')
+    expect(wrapper.get('.withings-connection-panel').text()).toContain('18.09.2026, 10:01')
+  })
+
+  it('renders partial Withings sync results safely and hides provider failure details', async () => {
+    const wrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+
+    await wrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/withings/sync', { method: 'POST' })
+    expect(wrapper.get('.withings-sync-result').text()).toContain('Teilweise fehlgeschlagen')
+    expect(wrapper.get('.withings-sync-result').text()).toContain('4')
+    expect(wrapper.get('.withings-sync-result').text()).toContain('2')
+    expect(wrapper.text()).not.toContain('provider_error')
+
+    wrapper.unmount()
+    configureApi({ withingsSyncError: true })
+    const failedWrapper = mount(AccountIntegrationsView)
+    await flushPromises()
+    await failedWrapper.get('.withings-sync-button').trigger('click')
+    await flushPromises()
+    expect(failedWrapper.get('.withings-sync-error').text()).toContain('Withings-Synchronisierung ist fehlgeschlagen')
+    expect(failedWrapper.text()).not.toContain('raw provider detail')
   })
 })

@@ -10,6 +10,7 @@ from defusedxml.common import DefusedXmlException
 from hypothesis import given
 from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from app.config import settings
 from app.importers import apple_xml, json_adapter
@@ -88,6 +89,44 @@ def test_exact_decimal_representability_at_numeric_scale(
 ) -> None:
     assert is_exactly_representable_at_scale(value, scale=12) is expected
 
+
+
+def _canonical_range_sample(
+    *, value: Decimal = Decimal("1.123456"), original_value: Decimal = Decimal("1.123456789012")
+) -> CanonicalSample:
+    return CanonicalSample(
+        metric_type="active_energy_kcal",
+        value=value,
+        unit="kcal",
+        original_value=original_value,
+        original_unit="kcal",
+        start_at=datetime(2026, 9, 20, tzinfo=UTC),
+        end_at=datetime(2026, 9, 20, tzinfo=UTC),
+        timezone="UTC",
+        source_type="test",
+        source_name="Test",
+        source_identifier="synthetic-source",
+        external_sample_id="synthetic-sample",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "sample_value", "error_type"),
+    [
+        ("original_value", Decimal("1000000000000"), "original_value_out_of_range"),
+        ("value", Decimal("100000000000000"), "canonical_value_out_of_range"),
+    ],
+)
+def test_canonical_sample_reports_numeric_ranges_without_values(
+    field: str, sample_value: Decimal, error_type: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _canonical_range_sample(**{field: sample_value})
+
+    errors = exc_info.value.errors(include_input=False, include_context=False, include_url=False)
+    assert errors[0]["loc"] == (field,)
+    assert errors[0]["type"] == error_type
+    assert str(sample_value) not in errors[0]["msg"]
 
 def test_decimal_value_normalizes_exact_trailing_zero_scale_without_rounding() -> None:
     assert decimal_value("1.2300000000000") == Decimal("1.230000000000")

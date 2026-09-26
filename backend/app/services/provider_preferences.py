@@ -21,6 +21,7 @@ from app.models import (
     NutritionTarget,
     NutritionTargetActivitySource,
     User,
+    WithingsConnection,
     YazioConnection,
 )
 from app.nutrition.resolution.discovery import discover_nutrition_providers
@@ -34,6 +35,13 @@ from app.provider_preferences import (
     normalize_provider_key,
 )
 from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
+from app.withings.constants import WITHINGS_REQUIRED_SCOPES
+from app.withings.credentials import (
+    CredentialEncryptionError,
+    WithingsCredentialUnavailableError,
+    decrypt_token,
+    resolve_withings_credentials,
+)
 
 
 def _availability(
@@ -239,6 +247,62 @@ def _google_scalar_status(
     return "available" if evidence is not None else "no_data"
 
 
+def _withings_scalar_status(
+    db: Session,
+    *,
+    user_id: UUID,
+    data_area: str,
+    metric_type: str,
+    source_type: str,
+    include_zero: bool,
+) -> str:
+    if not settings.withings_enabled:
+        return "disabled"
+    connection = db.scalar(
+        select(WithingsConnection).where(WithingsConnection.user_id == user_id)
+    )
+    if connection is None:
+        return "not_configured"
+    if connection.state == "reauth_required":
+        return "reauth_required"
+    if connection.state != "active":
+        return "not_configured"
+    try:
+        resolve_withings_credentials(connection)
+    except WithingsCredentialUnavailableError:
+        return "not_configured"
+    if (
+        not connection.encrypted_access_token
+        or not connection.encrypted_refresh_token
+        or not WITHINGS_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
+    ):
+        return "reauth_required"
+    try:
+        access_token = decrypt_token(connection.encrypted_access_token)
+        refresh_token = decrypt_token(connection.encrypted_refresh_token)
+    except CredentialEncryptionError:
+        return "reauth_required"
+    if not access_token or not refresh_token:
+        return "reauth_required"
+    value_filter = HealthSample.value >= 0 if include_zero else HealthSample.value > 0
+    evidence = db.scalar(
+        select(HealthSample.id)
+        .where(
+            HealthSample.user_id == user_id,
+            HealthSample.source_type == source_type,
+            HealthSample.source_identifier == str(connection.id),
+            HealthSample.metric_type == metric_type,
+            value_filter,
+        )
+        .limit(1)
+    )
+    if evidence is not None:
+        return "available"
+    if data_area == ACTIVITY_ENERGY_DATA_AREA and connection.last_activity_error_category is not None:
+        return "error"
+    return "no_data"
+
+
 def _weight_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
     statuses = _sample_provider_statuses(
         db,
@@ -254,6 +318,14 @@ def _weight_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabili
         include_zero=False,
     )
     statuses["yazio"] = _yazio_status(db, user_id)
+    statuses["withings"] = _withings_scalar_status(
+        db,
+        user_id=user_id,
+        data_area=WEIGHT_DATA_AREA,
+        metric_type=WEIGHT_METRIC,
+        source_type=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS["withings"][0],
+        include_zero=False,
+    )
     return _availability(WEIGHT_DATA_AREA, statuses)
 
 
@@ -270,6 +342,14 @@ def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabi
         user_id=user_id,
         metric_type=ACTIVE_ENERGY_METRIC,
         source_type=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["google_health"][0],
+        include_zero=True,
+    )
+    statuses["withings"] = _withings_scalar_status(
+        db,
+        user_id=user_id,
+        data_area=ACTIVITY_ENERGY_DATA_AREA,
+        metric_type=ACTIVE_ENERGY_METRIC,
+        source_type=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["withings"][0],
         include_zero=True,
     )
     return _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)

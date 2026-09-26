@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     initial_admin_setup_enabled: bool = False
     calograph_public_url: str = "http://localhost:8180"
     google_health_enabled: bool = False
+    withings_enabled: bool = False
+    withings_redirect_uri: str | None = Field(
+        default=None,
+        max_length=2048,
+        exclude=True,
+        repr=False,
+    )
     cookie_secure: bool = False
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_origins: str = "http://localhost:8180,http://127.0.0.1:8180"
@@ -376,6 +383,16 @@ class Settings(BaseSettings):
             return normalized or None
         return value
 
+    @field_validator("withings_redirect_uri", mode="before")
+    @classmethod
+    def normalize_withings_redirect_uri(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
     @field_validator("yazio_sdk_client_id", mode="before")
     @classmethod
     def default_blank_yazio_sdk_client_id(cls, value: object) -> object:
@@ -426,6 +443,36 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "CALOGRAPH_PUBLIC_URL must be an absolute HTTP(S) origin without a path"
+            )
+        return normalized
+
+    @field_validator("withings_redirect_uri")
+    @classmethod
+    def valid_withings_redirect_uri(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname.lower() if parsed.hostname else None
+        loopback = hostname == "localhost"
+        if hostname is not None and not loopback:
+            try:
+                loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = False
+        if (
+            parsed.scheme not in {"http", "https"}
+            or (parsed.scheme == "http" and not loopback)
+            or not parsed.hostname
+            or not parsed.path
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "WITHINGS_REDIRECT_URI must be an absolute HTTPS URL or a "
+                "loopback HTTP URL without credentials, query, or fragment"
             )
         return normalized
 
