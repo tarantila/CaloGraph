@@ -161,6 +161,43 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .account-content--wide { max-width: none; }
 .account-content .form-card { max-width: none; }
 
+.analysis-layout,
+.analysis-content { min-width: 0; }
+.analysis-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem;
+  margin: 0 0 1.2rem;
+  padding: 0 0 .65rem;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-navigation a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.35rem;
+  border-radius: .55rem;
+  padding: .5rem .72rem;
+  color: var(--muted-strong);
+  text-decoration: none;
+  font-size: .9rem;
+  font-weight: 500;
+}
+.analysis-navigation a:hover { background: var(--surface); color: var(--ink); }
+.analysis-navigation a.active { background: var(--accent-soft); color: var(--ink); }
+.analysis-mobile-navigation { display: none; }
+.analysis-mobile-navigation label { display: grid; gap: .4rem; }
+.analysis-mobile-navigation select {
+  width: 100%;
+  min-height: var(--control-height);
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  padding: .5rem .65rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+.analysis-content { overflow-wrap: anywhere; }
+.analysis-content h1.analysis-heading-focus:focus { outline: none; }
+
 .account-content h1.account-heading-focus:focus { outline: none; }
 .account-page-stack {
   display: grid;
@@ -2516,6 +2553,12 @@ td strong { color: #f0f4f9; font-weight: 600; }
     max-width: none;
   }
   .account-navigation { display: none; }
+  .analysis-navigation { display: none; }
+  .analysis-mobile-navigation {
+    display: block;
+    width: 100%;
+    margin-bottom: 1.15rem;
+  }
   .account-mobile-navigation {
     display: block;
     width: 100%;

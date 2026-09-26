@@ -59,6 +59,36 @@ export interface VerificationActivityResponse {
   view: VerificationView
   days: VerificationActivityDayResponse[]
 }
+export interface AnalysisMicronutrientContributor {
+  provider_key: string
+  days_with_data: number
+}
+
+export interface AnalysisMicronutrientMetric {
+  metric_key: string
+  label: string
+  category: 'vitamin' | 'mineral'
+  unit: 'mg' | 'ug'
+  eu_nrv: number | null
+  total: number | null
+  days_with_data: number
+  contributors: AnalysisMicronutrientContributor[]
+}
+
+export interface AnalysisMicronutrientDay {
+  date: string
+  provider_key: string
+  value: number | null
+}
+
+export interface AnalysisMicronutrientResponse {
+  start_date: string
+  end_date: string
+  selected_provider: { provider_key: string }
+  period_days: number
+  metrics: AnalysisMicronutrientMetric[]
+  series: AnalysisMicronutrientDay[]
+}
 
 export interface VerificationNutritionSummary {
   calories_kcal: number | null

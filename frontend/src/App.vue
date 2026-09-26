@@ -3,8 +3,6 @@ import {
   PhCalendarBlank,
   PhChartBar,
   PhChartLineUp,
-  PhFire,
-  PhForkKnife,
   PhInfo,
   PhList,
   PhListBullets,
@@ -33,14 +31,10 @@ const usesFocusedLayout = computed(
 const primaryNavigation = [
   { to: { name: 'overview' }, label: 'navigation.overview', icon: PhSquaresFour },
   { to: { name: 'daily' }, label: 'navigation.daily', icon: PhListBullets },
-  { to: { name: 'nutrition' }, label: 'navigation.nutrition', icon: PhForkKnife },
-  { to: { name: 'activity' }, label: 'navigation.activity', icon: PhFire },
-  { to: { name: 'weight' }, label: 'navigation.weight', icon: PhChartLineUp },
+  { to: { name: 'analysis-overview' }, label: 'navigation.analysis', icon: PhChartLineUp },
   { to: { name: 'weekly' }, label: 'navigation.weekly', icon: PhChartBar },
   { to: { name: 'weekdays' }, label: 'navigation.weekdays', icon: PhCalendarBlank },
   { to: { name: 'calendar' }, label: 'navigation.calendar', icon: PhCalendarBlank },
-  { to: { name: 'trends' }, label: 'navigation.trends', icon: PhChartLineUp },
-  { to: { name: 'micronutrients' }, label: 'navigation.micronutrients', icon: PhChartBar },
   { to: { name: 'achievements' }, label: 'navigation.achievements', icon: PhTrophy },
 ]
 
@@ -59,6 +53,9 @@ const adminConsoleNavigation = {
 type NavigationItem = (typeof primaryNavigation)[number]
 
 function isNavActive(item: NavigationItem) {
+  if (item.to.name === 'analysis-overview') {
+    return route.path === '/analyse' || route.path.startsWith('/analyse/')
+  }
   return item.to.name === route.name
 }
 

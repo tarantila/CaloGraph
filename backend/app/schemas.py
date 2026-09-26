@@ -3,7 +3,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 class ProblemDetail(BaseModel):
@@ -677,6 +685,49 @@ class MicronutrientResponse(BaseModel):
     definition: MicronutrientDefinitionResponse
     selected_provider: MicronutrientSelectedProviderResponse | None = None
     providers: list[MicronutrientProviderMetadataResponse] | None = None
+
+
+class AnalysisSelectedProviderResponse(BaseModel):
+    provider_key: str
+
+
+class AnalysisMicronutrientContributorResponse(BaseModel):
+    provider_key: str
+    days_with_data: int
+
+
+class AnalysisMicronutrientMetricResponse(BaseModel):
+    metric_key: str
+    label: str
+    category: Literal["vitamin", "mineral"]
+    unit: Literal["mg", "ug"]
+    eu_nrv: Decimal | None
+    total: Decimal | None
+    days_with_data: int
+    contributors: list[AnalysisMicronutrientContributorResponse]
+
+    @field_serializer("eu_nrv", "total", when_used="json")
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisMicronutrientDayResponse(BaseModel):
+    date: date
+    provider_key: str
+    value: Decimal | None
+
+    @field_serializer("value", when_used="json")
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisMicronutrientResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: AnalysisSelectedProviderResponse
+    period_days: int
+    metrics: list[AnalysisMicronutrientMetricResponse]
+    series: list[AnalysisMicronutrientDayResponse]
 
 
 class TargetSettingsResponse(BaseModel):

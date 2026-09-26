@@ -20,6 +20,13 @@ follows [Semantic Versioning](https://semver.org/).
   during the migration period.
 
 
+### Analysis
+
+- Added a protected six-route Analyse workspace for nutrition trends,
+  micronutrients, activity, and weight while preserving existing routes.
+- Added the authenticated canonical micronutrient period and daily-series API,
+  with per-day provider provenance and null-versus-zero coverage semantics.
+
 ## [0.6.5] - 2026-09-07
 
 ### YAZIO synchronization

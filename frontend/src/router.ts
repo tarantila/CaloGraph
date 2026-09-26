@@ -27,6 +27,18 @@ const router = createRouter({
     { path: '/erfolge', name: 'achievements', component: () => import('./views/AchievementsView.vue') },
     { path: '/kalender', name: 'calendar', component: () => import('./views/CalendarView.vue') },
     {
+      path: '/analyse',
+      component: () => import('./views/AnalysisLayout.vue'),
+      children: [
+        { path: '', name: 'analysis-overview', component: () => import('./views/AnalysisOverviewView.vue') },
+        { path: 'ernaehrung', name: 'analysis-nutrition', component: () => import('./views/AnalysisNutritionView.vue') },
+        { path: 'mikronaehrstoffe', name: 'analysis-micronutrients', component: () => import('./views/AnalysisMicronutrientsView.vue') },
+        { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: () => import('./views/AnalysisMicronutrientDetailView.vue') },
+        { path: 'aktivitaet', name: 'analysis-activity', component: () => import('./views/AnalysisActivityView.vue') },
+        { path: 'koerper', name: 'analysis-body', component: () => import('./views/AnalysisBodyView.vue') },
+      ],
+    },
+    {
       path: '/konto',
       name: 'account',
       component: () => import('./views/AccountLayout.vue'),

@@ -95,4 +95,46 @@ describe('responsive analytics period filter', () => {
     const today = isoDateInTimeZone('Europe/Berlin')
     expect(wrapper.emitted('update:start')?.at(-1)).toEqual([shiftIsoDate(today, -3659)])
   })
+
+  it('offers 7- and 60-day desktop presets when explicitly enabled', async () => {
+    const wrapper = mount(AnalyticsPeriodFilter, {
+      props: {
+        start: '2026-08-25',
+        end: '2026-08-31',
+        initialPreset: '7',
+        desktopPresets: ['custom', '7', '30', '60', '90'],
+        compactPresets: ['7', '30', '60', '90'],
+      },
+    })
+    const select = wrapper.get<HTMLSelectElement>('.analytics-period-filter-desktop select')
+
+    expect(Array.from(select.element.options, (option) => option.value)).toEqual([
+      'custom', '7', '30', '60', '90',
+    ])
+    await select.setValue('60')
+
+    const today = isoDateInTimeZone('Europe/Berlin')
+    expect(wrapper.emitted('update:start')?.at(-1)).toEqual([shiftIsoDate(today, -59)])
+    expect(wrapper.emitted('update:end')?.at(-1)).toEqual([today])
+    expect(wrapper.emitted('apply')).toHaveLength(1)
+  })
+
+  it('restricts micronutrient desktop and compact presets to 7 and 30 days', () => {
+    const wrapper = mount(AnalyticsPeriodFilter, {
+      props: {
+        start: '2026-08-02',
+        end: '2026-08-31',
+        desktopPresets: ['custom', '7', '30'],
+        compactPresets: ['7', '30'],
+      },
+    })
+
+    expect(Array.from(
+      wrapper.get<HTMLSelectElement>('.analytics-period-filter-desktop select').element.options,
+      (option) => option.value,
+    )).toEqual(['custom', '7', '30'])
+    expect(wrapper.findAll('.analytics-period-button').map((button) => button.text())).toEqual([
+      '7 Tage', '30 Tage', 'Individuell',
+    ])
+  })
 })

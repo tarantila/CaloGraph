@@ -275,4 +275,27 @@ describe('first-run target routing', () => {
       expect(router.currentRoute.value.path).toBe('/')
     }
   })
+  it('registers all protected analysis destinations and retains the legacy bookmarks', () => {
+    for (const [path, name] of [
+      ['/analyse', 'analysis-overview'],
+      ['/analyse/ernaehrung', 'analysis-nutrition'],
+      ['/analyse/mikronaehrstoffe', 'analysis-micronutrients'],
+      ['/analyse/mikronaehrstoffe/vitamin_a_ug', 'analysis-micronutrient-detail'],
+      ['/analyse/aktivitaet', 'analysis-activity'],
+      ['/analyse/koerper', 'analysis-body'],
+    ] as const) {
+      const resolved = router.resolve(path)
+      expect(resolved.name).toBe(name)
+      expect(resolved.meta.public).not.toBe(true)
+    }
+    for (const [path, name] of [
+      ['/ernaehrung?date=2026-03-01', 'nutrition'],
+      ['/aktivitaet?view=all', 'activity'],
+      ['/gewicht?start=2026-03-01', 'weight'],
+      ['/trends?start=2026-03-01', 'trends'],
+      ['/mikronaehrstoffe?source=apple_health_xml', 'micronutrients'],
+    ] as const) {
+      expect(router.resolve(path).name).toBe(name)
+    }
+  })
 })

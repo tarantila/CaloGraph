@@ -115,6 +115,34 @@ recorded days, and status are calculated once for the complete requested range.
 HTTP 422. Explicit legacy `source` requests retain their existing range and
 aggregation semantics.
 
+The existing `GET /api/v1/analytics/micronutrients` endpoint keeps its established
+legacy-source selection, aggregation, coverage, and reference-status behavior.
+The Analyse workspace uses the separate canonical-only
+`GET /api/v1/analytics/nutrition/micronutrients` endpoint instead.
+
+### Canonical Analyse series
+
+The Analyse endpoint requires an authenticated account with a readable,
+user-scoped nutrition-provider selection. A missing, unavailable, or unreadable
+selection returns HTTP 503; it is not represented as an empty catalog. A
+readable provider chain with no nutrient evidence returns HTTP 200 with the
+catalog entries and null totals/series values.
+
+Ranges use inclusive account-local dates and are limited to 31 days. For each
+date, the endpoint selects one whole provider matrix: the first provider with
+complete, resolved evidence for the seven primary daily nutrition metrics and
+at least one usable primary value wins. If no provider meets that rule, the
+first provider's matrix is retained. Nutrients are never filled individually
+from a lower-priority provider.
+
+The top-level `selected_provider` is the head of the configured preference
+chain, not a claim that it supplied every date. Each detailed series point names
+its actual daily winner in `provider_key`. Metric totals, `days_with_data`, and
+contributor counts derive from those same winning matrices. Explicit zero is
+evidence and contributes to totals and coverage; missing or unusable values
+remain `null`. The optional EU reference value is secondary context only; this
+endpoint does not calculate percentages or assign a health-status label.
+
 ## Micronutrient provider metadata
 
 The micronutrient response keeps the legacy `source`, `available_sources`, and

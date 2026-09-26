@@ -24,6 +24,13 @@ export function validAnalyticsRange(start: unknown, end: unknown): boolean {
     && start <= end
 }
 
+export function analysisRangeWithinDays(start: unknown, end: unknown, maxDays: number): boolean {
+  if (!validAnalyticsRange(start, end) || !Number.isInteger(maxDays) || maxDays < 1) return false
+  const startOrdinal = Date.parse(`${start as string}T00:00:00Z`) / 86_400_000
+  const endOrdinal = Date.parse(`${end as string}T00:00:00Z`) / 86_400_000
+  return endOrdinal - startOrdinal + 1 <= maxDays
+}
+
 export function resolveAnalyticsRange(
   start: unknown,
   end: unknown,

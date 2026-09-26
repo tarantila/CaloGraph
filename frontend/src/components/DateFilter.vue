@@ -6,7 +6,15 @@ import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import DateInput from './DateInput.vue'
 
-const props = defineProps<{ start: string; end: string; initialPreset?: string }>()
+const props = withDefaults(defineProps<{
+  start: string
+  end: string
+  initialPreset?: string
+  allowedPresets?: readonly string[]
+}>(), {
+  initialPreset: 'custom',
+  allowedPresets: () => ['custom', 'week', 'last-week', 'month', '30', '90', '180', 'year'],
+})
 const emit = defineEmits<{ 'update:start': [value: string]; 'update:end': [value: string]; apply: [] }>()
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
@@ -26,6 +34,22 @@ function apply() {
   emit('apply')
 }
 
+function presetLabel(value: string): string {
+  switch (value) {
+    case 'custom': return t('dateFilter.custom')
+    case 'week': return t('dateFilter.week')
+    case 'last-week': return t('dateFilter.lastWeek')
+    case 'month': return t('dateFilter.month')
+    case '7': return t('dateFilter.last7')
+    case '30': return t('dateFilter.last30')
+    case '60': return t('dateFilter.last60')
+    case '90': return t('dateFilter.last90')
+    case '180': return t('dateFilter.last180')
+    case 'year': return t('dateFilter.year')
+    default: return value
+  }
+}
+
 async function applyPreset() {
   const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
   const weekday = isoWeekday(today) ?? 1
@@ -36,7 +60,9 @@ async function applyPreset() {
     to = shiftIsoDate(today, -((weekday + 6) % 7) - 1)
     from = shiftIsoDate(to, -6)
   } else if (preset.value === 'month') from = `${today.slice(0, 8)}01`
+  else if (preset.value === '7') from = shiftIsoDate(today, -6)
   else if (preset.value === '30') from = shiftIsoDate(today, -29)
+  else if (preset.value === '60') from = shiftIsoDate(today, -59)
   else if (preset.value === '90') from = shiftIsoDate(today, -89)
   else if (preset.value === '180') from = shiftIsoDate(today, -179)
   else if (preset.value === 'year') from = `${today.slice(0, 4)}-01-01`
@@ -53,14 +79,9 @@ async function applyPreset() {
     <label class="field">
       {{ t('dateFilter.range') }}
       <select v-model="preset" @change="applyPreset">
-        <option value="custom">{{ t('dateFilter.custom') }}</option>
-        <option value="week">{{ t('dateFilter.week') }}</option>
-        <option value="last-week">{{ t('dateFilter.lastWeek') }}</option>
-        <option value="month">{{ t('dateFilter.month') }}</option>
-        <option value="30">{{ t('dateFilter.last30') }}</option>
-        <option value="90">{{ t('dateFilter.last90') }}</option>
-        <option value="180">{{ t('dateFilter.last180') }}</option>
-        <option value="year">{{ t('dateFilter.year') }}</option>
+        <option v-for="value in allowedPresets" :key="value" :value="value">
+          {{ presetLabel(value) }}
+        </option>
       </select>
     </label>
     <label class="field">{{ t('common.from') }} <DateInput ref="startInput" v-model="startModel" /></label>

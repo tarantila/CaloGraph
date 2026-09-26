@@ -15,10 +15,12 @@ const props = withDefaults(defineProps<{
   initialPreset?: string
   compactPreset?: AnalyticsCompactPreset | null
   compactPresets?: AnalyticsCompactPreset[]
+  desktopPresets?: readonly string[]
 }>(), {
   initialPreset: 'custom',
   compactPreset: null,
   compactPresets: () => ['7', '30', '60', 'all'],
+  desktopPresets: () => ['custom', 'week', 'last-week', 'month', '30', '90', '180', 'year'],
 })
 
 const emit = defineEmits<{
@@ -130,6 +132,7 @@ function applyDesktop() {
         :start="start"
         :end="end"
         :initial-preset="initialPreset"
+        :allowed-presets="desktopPresets"
         @update:start="emit('update:start', $event)"
         @update:end="emit('update:end', $event)"
         @apply="applyDesktop"

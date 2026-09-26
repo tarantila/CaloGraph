@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,10 @@ from app.analytics.micronutrient_shadow import (
     read_legacy_micronutrient_period,
     run_micronutrient_canonical_read,
     run_micronutrient_shadow,
+)
+from app.analytics.nutrition_micronutrients import (
+    AnalysisMicronutrientReadError,
+    read_analysis_micronutrients,
 )
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
 from app.analytics.provider_selection import (
@@ -58,6 +62,7 @@ from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
+from app.micronutrients import MICRONUTRIENT_BY_METRIC
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -66,6 +71,7 @@ from app.models import (
     WithingsConnection,
     YazioConnection,
 )
+from app.nutrition.resolution import MAX_PROVIDER_PERIOD_DAYS
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -75,6 +81,7 @@ from app.problem_types import (
 )
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
+    AnalysisMicronutrientResponse,
     DailyPoint,
     MicronutrientResponse,
     VerificationActivityResponse,
@@ -313,6 +320,61 @@ def nutrition_verification(
             detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
+
+@router.get(
+    "/analytics/nutrition/micronutrients",
+    response_model=AnalysisMicronutrientResponse,
+)
+def analysis_nutrition_micronutrients(
+    start: date | None = None,
+    end: date | None = None,
+    metric_key: str | None = Query(default=None, min_length=1, max_length=64),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisMicronutrientResponse:
+    start, end = _range(start, end, user.timezone, default_days=30)
+    if (end - start).days >= MAX_PROVIDER_PERIOD_DAYS:
+        raise HTTPException(status_code=422, detail="Datumsbereich darf höchstens 31 Tage umfassen")
+    if metric_key is not None and metric_key not in MICRONUTRIENT_BY_METRIC:
+        raise HTTPException(status_code=422, detail="Unbekannter Mikronährstoff")
+
+    try:
+        selection = resolve_nutrition_provider(db, user_id=user.id)
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+    if selection is None:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Kein konfigurierter Nutrition-Provider ist verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        )
+
+    try:
+        return read_analysis_micronutrients(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+            metric_key=metric_key,
+        )
+    except AnalysisMicronutrientReadError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
 
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(
