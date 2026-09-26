@@ -127,6 +127,52 @@ describe('Analysis nutrition and overview', () => {
       vi.useRealTimers()
     }
   })
+  it('aligns Overview and Nutrition coverage for decimal-string canonical trends', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-31T12:00:00Z'))
+    const today = isoDateInTimeZone('Europe/Berlin')
+    const start = shiftIsoDate(today, -29)
+    const points = Array.from({ length: 30 }, (_, index) => ({
+      date: shiftIsoDate(start, index),
+      calories_kcal: index === 29 ? '123.45' : null,
+      protein_g: index === 29 ? '12.5' : null,
+      carbs_g: index === 29 ? '0' : null,
+      fat_g: null,
+    }))
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/analytics/nutrition/micronutrients')) {
+        return Promise.resolve({ ...emptyMicronutrients, selected_provider: { provider_key: 'yazio' } })
+      }
+      if (path.startsWith('/analytics/trends')) return Promise.resolve({ points })
+      return Promise.resolve({})
+    })
+
+    const overview = await mountAnalysis('/analyse')
+    expect(overview.wrapper.get('a[href="/analyse/ernaehrung"] strong').text())
+      .toBe('1 von 30 Tagen mit Werten')
+    const overviewTrendCall = apiMock.mock.calls
+      .map(([path]) => path as string)
+      .find((path) => path.startsWith('/analytics/trends'))
+    overview.wrapper.unmount()
+    apiMock.mockClear()
+
+    const nutrition = await mountAnalysis('/analyse/ernaehrung')
+    const nutritionTrendCall = apiMock.mock.calls
+      .map(([path]) => path as string)
+      .find((path) => path.startsWith('/analytics/trends'))
+    expect(nutritionTrendCall).toBe(overviewTrendCall)
+    expect(nutrition.wrapper.text()).toContain('1 von 30 Tagen mit Einträgen')
+    expect(nutrition.wrapper.get('.analysis-summary-card strong').text()).toBe('123,5 kcal')
+    const chart = nutrition.wrapper.findComponent(ChartPanel)
+    const option = chart.props('option') as { series: { data: (number | null)[] }[] }
+    expect(option.series[0].data).toHaveLength(30)
+    expect(option.series[0].data[29]).toBe(123.45)
+    expect(option.series[1].data[29]).toBe(12.5)
+    expect(option.series[2].data[29]).toBe(0)
+    expect(option.series[3].data[29]).toBeNull()
+    nutrition.wrapper.unmount()
+  })
+
 
   it('shows a retryable provider error instead of empty data and does not call legacy-capable trends', async () => {
     apiMock.mockRejectedValueOnce(new Error('provider unavailable'))

@@ -71,6 +71,9 @@ Days without measurements remain `null`. They are not interpreted as zero
 calories or automatically treated as complete fasting days. Rolling 7-, 14-,
 and 28-calendar-day averages use only recorded days with a status of `complete`
 or `probably_complete` by default.
+Analysis Nutrition trends may serialize macro measurements as JSON numbers or
+decimal strings. `null` remains missing data; numeric zero is a present value.
+
 
 A user without a nutrition target still receives ordinary analytics data, but
 target, maintenance, deviation, and budget values remain `null`; calendar

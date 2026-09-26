@@ -17,7 +17,17 @@ import ChartPanel from '../components/ChartPanel.vue'
 import { createNumberFormatter, i18n } from '../i18n'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { useAuthStore } from '../stores/auth'
-import type { AnalysisMicronutrientResponse, DailyPoint } from '../types'
+import type { AnalysisMicronutrientResponse, DailyPoint, DecimalTransport } from '../types'
+
+type AnalysisNutritionPoint = Omit<
+  DailyPoint,
+  'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'
+> & {
+  calories_kcal: DecimalTransport
+  protein_g: DecimalTransport
+  carbs_g: DecimalTransport
+  fat_g: DecimalTransport
+}
 
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
@@ -47,7 +57,7 @@ const period = ref<AnalyticsCompactPreset>(
     ? queryPeriod ?? periodForRange(initialRange.start, initialRange.end)
     : periodForRange(initialRange.start, initialRange.end),
 )
-const points = ref<DailyPoint[]>([])
+const points = ref<AnalysisNutritionPoint[]>([])
 const loading = ref(true)
 const error = ref('')
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
@@ -96,7 +106,7 @@ async function load(): Promise<void> {
     )
     if (loadId !== latestLoadId) return
     const params = new URLSearchParams({ start: start.value, end: end.value })
-    const result = await api<{ points: DailyPoint[] }>(`/analytics/trends?${params.toString()}`)
+    const result = await api<{ points: AnalysisNutritionPoint[] }>(`/analytics/trends?${params.toString()}`)
     if (loadId === latestLoadId) points.value = result.points
   } catch (cause) {
     if (loadId === latestLoadId) {
@@ -117,11 +127,14 @@ const metricDefinitions = [
   { key: 'fat_g', label: 'charts.fat', unit: 'g' },
 ] as const
 
+function finiteNumber(value: DecimalTransport): number | null {
+  if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 function metricValues(key: typeof metricDefinitions[number]['key']): (number | null)[] {
-  return points.value.map((point) => {
-    const value = point[key]
-    return typeof value === 'number' && Number.isFinite(value) ? value : null
-  })
+  return points.value.map((point) => finiteNumber(point[key]))
 }
 
 function metricTotal(key: typeof metricDefinitions[number]['key']): number | null {
