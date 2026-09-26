@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from app.micronutrients import MICRONUTRIENTS
 from app.models import YazioConnection
 from app.nutrition.enums import (
     ConsumptionEventKind,
@@ -574,13 +575,25 @@ def test_verified_micronutrients_are_canonicalized_across_yazio_scopes(db, user)
             NutritionFieldObservation.metric_key.in_(("vitamin_a_ug", "iron_mg"))
         )
     ).all()
-    assert len(fields) == 6
-    assert {(field.metric_key, field.canonical_unit, field.canonical_value) for field in fields} == {
+    assert len(fields) == 8
+    provider_fields = [
+        field for field in fields if field.observation_role == ObservationRole.PROVIDER.value
+    ]
+    derived_fields = [
+        field for field in fields if field.observation_role == ObservationRole.DERIVED.value
+    ]
+    assert {
+        (field.metric_key, field.canonical_unit, field.canonical_value) for field in fields
+    } == {
         ("vitamin_a_ug", "ug", Decimal("800.0")),
         ("iron_mg", "mg", Decimal("14.000")),
+        ("vitamin_a_ug", "ug", Decimal("2000.00")),
+        ("iron_mg", "mg", Decimal("35.000")),
     }
-    assert all(field.provider_raw_unit == "g" for field in fields)
-    assert all(field.observation_role == ObservationRole.PROVIDER.value for field in fields)
+    assert len(provider_fields) == 6
+    assert len(derived_fields) == 2
+    assert all(field.provider_raw_unit == "g" for field in provider_fields)
+    assert all(field.derived_from_field_observation_id is not None for field in derived_fields)
 
 
 def test_civil_datetime_is_naive_and_timezone_is_metadata(db, user):
@@ -848,6 +861,78 @@ def test_cross_user_source_instance_is_rejected(db, user):
             diary=_diary(),
         )
 
+@pytest.mark.parametrize("nutrient", MICRONUTRIENTS, ids=lambda item: item.yazio_id)
+def test_product_profile_micronutrients_are_derived_to_canonical_event_fields(
+    db, user, nutrient
+):
+    diary = _diary(simple=False, summary=False)
+    profile = replace(
+        diary.product_profiles[0],
+        nutrients=replace(
+            diary.product_profiles[0].nutrients,
+            additional={nutrient.yazio_id: Decimal("0.000001")},
+        ),
+    )
+    _ingest(db, user, replace(diary, product_profiles=(profile,)))
+
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event is not None
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == event.source_observation_id,
+            NutritionFieldObservation.metric_key == nutrient.metric_type,
+        )
+    )
+
+    assert field is not None
+    assert field.provider_field_path == f"nutrients.{nutrient.yazio_id}"
+    assert field.canonical_unit == nutrient.unit
+    assert field.observation_role == ObservationRole.DERIVED.value
+    expected_profile_value = (
+        Decimal("0.001") if nutrient.unit == "mg" else Decimal("1")
+    )
+    assert field.canonical_value == expected_profile_value * Decimal("2.5")
+
+
+def test_missing_profile_micronutrient_is_not_fabricated_as_zero(db, user):
+    _ingest(db, user, _diary(simple=False, summary=False))
+
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event is not None
+    assert (
+        db.scalar(
+            select(NutritionFieldObservation.id).where(
+                NutritionFieldObservation.source_observation_id == event.source_observation_id,
+                NutritionFieldObservation.metric_key == "vitamin_c_mg",
+            )
+        )
+        is None
+    )
+
+
+def test_explicit_zero_profile_micronutrient_remains_explicit_on_event(db, user):
+    diary = _diary(simple=False, summary=False)
+    profile = replace(
+        diary.product_profiles[0],
+        nutrients=replace(
+            diary.product_profiles[0].nutrients,
+            additional={"vitamin.c": Decimal("0")},
+        ),
+    )
+    _ingest(db, user, replace(diary, product_profiles=(profile,)))
+
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event is not None
+    field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == event.source_observation_id,
+            NutritionFieldObservation.metric_key == "vitamin_c_mg",
+        )
+    )
+
+    assert field is not None
+    assert field.canonical_value == Decimal("0")
+    assert field.presence_state == PresenceState.EXPLICIT_ZERO.value
 
 def test_caller_owned_transaction_flushes_and_rollback_removes_domain_rows(db, user):
     connection = _connection(db, user)
