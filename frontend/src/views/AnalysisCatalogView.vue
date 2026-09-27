@@ -3,18 +3,19 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisCategories, analysisHref, analysisHubQuery, analysisIconSymbol, localizedAnalysisPresentation, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import AnalysisCatalogEntryGrid from '../components/AnalysisCatalogEntryGrid.vue'
+import { analysisCategories, analysisHubQuery, localizedAnalysisPresentation, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
 import { useAnalysisPreferences } from '../composables/useAnalysisPreferences'
 import { isoDateInTimeZone } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
+import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
-import type { AnalysisMicronutrientResponse, AnalysisRegistryResponse } from '../types'
+import type { AnalysisCategoryKey, AnalysisMicronutrientResponse, AnalysisRegistryResponse } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
+const props = defineProps<{ categoryKey?: AnalysisCategoryKey }>()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const number = createNumberFormatter({ maximumFractionDigits: 1 })
 const preferences = useAnalysisPreferences()
 const selectedKeys = preferences.selectedKeys
 const saving = preferences.saving
@@ -30,21 +31,44 @@ const micronutrients = ref<AnalysisMicronutrientResponse | null>(null)
 let micronutrientLoadId = 0
 const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 const range = computed(() => analysisRangeForDays(today, Number(period.value)))
-const groupedEntries = computed(() => analysisCategories.map((category) => ({
-  ...category,
-  entries: registry.value.flatMap((entry) => {
-    if (entry.category_key !== category.key) return []
-    const presentation = localizedAnalysisPresentation(entry.analysis_key)
-    return presentation ? [{ entry, presentation }] : []
-  }),
+const groupedEntries = computed(() => analysisCategories
+  .filter((category) => !props.categoryKey || category.key === props.categoryKey)
+  .map((category) => ({
+    ...category,
+    entries: registry.value.flatMap((entry) => {
+      if (entry.category_key !== category.key) return []
+      const presentation = localizedAnalysisPresentation(entry.analysis_key)
+      return presentation ? [{ entry, presentation }] : []
+    }),
+  })))
+const activeCategory = computed(() => analysisCategories.find((category) => category.key === props.categoryKey) ?? null)
+const pageTitle = computed(() => activeCategory.value ? t(activeCategory.value.labelKey) : t('analysisV2.catalog'))
+const categoryPath: Record<AnalysisCategoryKey, string> = {
+  body: '/analyse/koerper',
+  activity: '/analyse/aktivitaet',
+  nutrition: '/analyse/ernaehrung',
+  micronutrients: '/analyse/mikronaehrstoffe',
+  fluid: '/analyse',
+}
+const micronutrientTypeGroups = computed(() => ([
+  { key: 'vitamin' as const, labelKey: 'analysisV2.micronutrientTypes.vitamins' },
+  { key: 'mineral' as const, labelKey: 'analysisV2.micronutrientTypes.minerals' },
+]).map((type) => ({
+  ...type,
+  entries: groupedEntries.value.flatMap((group) => group.entries.filter(({ entry }) => (
+    group.key === 'micronutrients'
+      && micronutrients.value?.metrics.find((metric) => metric.metric_key === entry.analysis_key)?.category === type.key
+  ))),
 })))
 
 async function syncPeriodQuery(): Promise<void> {
   if (route.query.period === period.value) return
-  await router.replace({ query: { ...route.query, period: period.value } })
+  await router.replace({ query: { ...route.query, period: period.value }, hash: route.hash })
 }
 
 async function loadMicronutrients(): Promise<void> {
+  const displaysMicronutrients = props.categoryKey === undefined || props.categoryKey === 'micronutrients'
+  if (!displaysMicronutrients) return
   const hasCanonicalMicronutrients = registry.value.some((entry) => (
     entry.category_key === 'micronutrients' && entry.status === 'available'
       && entry.reader_key === 'analytics.nutrition.micronutrients'
@@ -90,30 +114,13 @@ async function loadWorkspace(): Promise<void> {
 async function changePeriod(value: AnalysisHubPeriod): Promise<void> {
   period.value = value
   await syncPeriodQuery()
-  if (!workspaceLoading.value) await loadMicronutrients()
 }
 
-async function toggleAnalysis(key: string): Promise<void> {
-  if (saving.value) return
-  const nextKeys = selectedKeys.value.includes(key)
-    ? selectedKeys.value.filter((item) => item !== key)
-    : [...selectedKeys.value, key]
-  await preferences.replace(nextKeys)
+async function addAnalysis(key: string): Promise<void> {
+  if (saving.value || selectedKeys.value.includes(key)) return
+  await preferences.replace([...selectedKeys.value, key])
 }
 
-function isSelected(key: string): boolean {
-  return selectedKeys.value.includes(key)
-}
-
-function micronutrientMetric(key: string) {
-  return micronutrients.value?.metrics.find((metric) => metric.metric_key === key) ?? null
-}
-
-function metricTotal(key: string): string | null {
-  const metric = micronutrientMetric(key)
-  if (!metric || metric.days_with_data === 0 || metric.total === null) return null
-  return `${number.format(metric.total)} ${metric.unit}`
-}
 
 async function scrollToCategoryHash(): Promise<void> {
   const id = route.hash.slice(1)
@@ -122,11 +129,20 @@ async function scrollToCategoryHash(): Promise<void> {
   document.getElementById(id)?.scrollIntoView?.({ block: 'start' })
 }
 
-watch(() => route.query.period, (value) => {
-  const next = parseAnalysisHubPeriod(value)
-  if (next !== period.value) void changePeriod(next)
-})
-watch(() => route.hash, () => { void scrollToCategoryHash() })
+watch(
+  () => [route.query.period, props.categoryKey] as const,
+  ([queryPeriod, categoryKey]) => {
+    period.value = parseAnalysisHubPeriod(queryPeriod)
+    if (categoryKey === undefined || categoryKey === 'micronutrients') {
+      if (!workspaceLoading.value && registry.value.length) void loadMicronutrients()
+      return
+    }
+    micronutrientLoadId += 1
+    micronutrientLoading.value = false
+    micronutrientError.value = ''
+    micronutrients.value = null
+  },
+)
 
 
 onMounted(async () => {
@@ -140,33 +156,28 @@ onMounted(async () => {
   <div class="analysis-catalog-page">
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
       <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
-      <span aria-current="page">{{ t('analysisV2.breadcrumbCatalog') }}</span>
+      <span aria-hidden="true">›</span>
+      <span aria-current="page">{{ pageTitle }}</span>
     </nav>
-    <div class="page-heading">
-      <div>
-        <h1>{{ t('analysisV2.catalog') }}</h1>
-        <p>{{ t('analysisV2.catalogDescription') }}</p>
-      </div>
-      <RouterLink class="button secondary" :to="{ path: '/analyse', query: analysisHubQuery(period) }">
-        {{ t('analysisV2.returnHub') }}
-      </RouterLink>
-    </div>
 
-    <section class="analysis-period card" :aria-label="t('analysisV2.period')">
-      <span>{{ t('analysisV2.period') }}</span>
-      <div role="group" :aria-label="t('analysisV2.period')">
+    <div class="page-heading analysis-heading">
+      <div>
+        <h1>{{ pageTitle }}</h1>
+        <p v-if="!props.categoryKey">{{ t('analysisV2.catalogDescription') }}</p>
+      </div>
+      <div class="period-control" role="group" :aria-label="t('analysisV2.period')">
         <button
           v-for="choice in hubPeriods"
           :key="choice"
-          class="button secondary"
           type="button"
+          :class="{ active: period === choice }"
           :aria-pressed="period === choice"
           @click="changePeriod(choice)"
         >
           {{ t(`analysisV2.period${choice}`) }}
         </button>
       </div>
-    </section>
+    </div>
 
     <div v-if="workspaceLoading" class="dashboard-loading" role="status" aria-live="polite">
       {{ t('analysisV2.loading') }}
@@ -177,10 +188,10 @@ onMounted(async () => {
     </section>
     <template v-else>
       <section v-if="saveError" class="card error" role="alert" aria-live="assertive">{{ saveError }}</section>
-      <section v-if="micronutrientLoading" class="card" role="status" aria-live="polite">
+      <section v-if="(!props.categoryKey || props.categoryKey === 'micronutrients') && micronutrientLoading" class="card" role="status" aria-live="polite">
         {{ t('analysisV2.loading') }}
       </section>
-      <section v-else-if="micronutrientError" class="card error" role="alert">
+      <section v-else-if="(!props.categoryKey || props.categoryKey === 'micronutrients') && micronutrientError" class="card error" role="alert">
         <p>{{ micronutrientError }}</p>
         <button class="button secondary" type="button" @click="loadMicronutrients">{{ t('analysisV2.retry') }}</button>
       </section>
@@ -191,85 +202,53 @@ onMounted(async () => {
         :key="group.key"
         class="analysis-catalog-category"
       >
-        <h2>{{ t(group.labelKey) }}</h2>
+        <h2 v-if="!props.categoryKey" class="analysis-catalog-category-heading">
+          <RouterLink :to="{ path: categoryPath[group.key], query: analysisHubQuery(period), hash: group.key === 'fluid' ? '#analysis-category-fluid' : undefined }">{{ t(group.labelKey) }}</RouterLink>
+        </h2>
         <p v-if="!group.entries.length" class="card empty">{{ t('analysisV2.catalogEmpty') }}</p>
-        <div v-else class="analysis-catalog-grid">
-          <article
-            v-for="({ entry, presentation }) in group.entries"
-            :key="entry.analysis_key"
-            class="card analysis-catalog-entry"
-            :data-analysis-key="entry.analysis_key"
-            :aria-disabled="entry.status === 'coming_soon' ? 'true' : undefined"
-          >
-            <span class="analysis-catalog-icon" aria-hidden="true">{{ analysisIconSymbol(presentation.icon) }}</span>
-            <div class="analysis-catalog-copy">
-              <h3 class="analysis-catalog-title">
-                <RouterLink
-                  v-if="entry.status === 'available' && entry.detail_capable"
-                  :to="{ path: analysisHref(entry.analysis_key), query: analysisHubQuery(period) }"
-                >
-                  {{ presentation.label }}
-                </RouterLink>
-                <span v-else>{{ presentation.label }}</span>
-              </h3>
-              <p>{{ presentation.description }}</p>
-              <p v-if="entry.status === 'coming_soon'" class="analysis-catalog-status">
-                {{ t('analysisV2.comingSoon') }}
-              </p>
-              <p
-                v-else-if="entry.category_key === 'micronutrients' && micronutrients && (micronutrientMetric(entry.analysis_key)?.days_with_data ?? 0) === 0"
-                class="analysis-catalog-status"
-              >
-                {{ t('analysisV2.noDataPeriod') }}
-              </p>
-              <p
-                v-else-if="entry.category_key === 'micronutrients' && micronutrients && micronutrientMetric(entry.analysis_key)?.days_with_data"
-                class="analysis-catalog-status"
-              >
-                {{ t('analysisV2.daysCoverage', { count: micronutrientMetric(entry.analysis_key)?.days_with_data, total: Number(period) }) }}
-                <span v-if="metricTotal(entry.analysis_key)"> · {{ metricTotal(entry.analysis_key) }}</span>
-              </p>
-            </div>
-            <button
-              v-if="entry.status === 'available' && entry.card_capable"
-              class="button secondary analysis-catalog-action"
-              type="button"
-              :data-analysis-add="entry.analysis_key"
-              :aria-label="t(isSelected(entry.analysis_key) ? 'analysisV2.removeCard' : 'analysisV2.addCard', { label: presentation.label })"
-              :disabled="saving"
-              @click="toggleAnalysis(entry.analysis_key)"
-            >
-              {{ isSelected(entry.analysis_key) ? t('analysisV2.remove') : t('analysisV2.add') }}
-            </button>
-          </article>
-        </div>
+        <template v-else-if="group.key === 'micronutrients' && micronutrients">
+          <section v-for="type in micronutrientTypeGroups" :key="type.key" class="analysis-catalog-subcategory">
+            <h3>{{ t(type.labelKey) }}</h3>
+            <AnalysisCatalogEntryGrid
+              :entries="type.entries"
+              :selected-keys="selectedKeys"
+              :saving="saving"
+              :period="period"
+              :micronutrients="micronutrients"
+              @add="addAnalysis"
+            />
+          </section>
+        </template>
+        <AnalysisCatalogEntryGrid
+          v-else
+          :entries="group.entries"
+          :selected-keys="selectedKeys"
+          :saving="saving"
+          :period="period"
+          :micronutrients="micronutrients"
+          @add="addAnalysis"
+        />
       </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-.analysis-catalog-page { display: grid; gap: 1rem; }
-.analysis-breadcrumbs { display: flex; flex-wrap: wrap; gap: .5rem; color: var(--muted); font-size: .9rem; }
+.analysis-catalog-page { display: grid; gap: 1.15rem; }
+.analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; min-width: 0; color: var(--muted); font-size: .86rem; }
 .analysis-breadcrumbs a { color: inherit; }
-.analysis-period { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .75rem; }
-.analysis-period [role="group"] { display: flex; flex-wrap: wrap; gap: .5rem; }
-.analysis-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.analysis-catalog-category { display: grid; gap: .7rem; scroll-margin-top: 1rem; }
-.analysis-catalog-category h2 { margin: 0; font-size: 1.2rem; }
-.analysis-catalog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
-.analysis-catalog-entry { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr) auto; align-items: start; gap: .7rem; min-width: 0; }
-.analysis-catalog-entry[aria-disabled="true"] { opacity: .72; }
-.analysis-catalog-icon { display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: .75rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.analysis-catalog-copy { min-width: 0; }
-.analysis-catalog-title { margin: 0; color: inherit; font-size: 1rem; font-weight: 700; overflow-wrap: anywhere; }
-.analysis-catalog-title a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.analysis-catalog-copy p { margin: .25rem 0 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
-.analysis-catalog-copy .analysis-catalog-status { color: var(--muted-strong); font-weight: 600; }
-.analysis-catalog-action { grid-column: 2 / -1; justify-self: start; }
-@media (max-width: 720px) { .analysis-catalog-grid { grid-template-columns: 1fr; } }
-@media (max-width: 520px) {
-  .analysis-catalog-entry { grid-template-columns: 2.5rem minmax(0, 1fr); }
-  .analysis-catalog-action { grid-column: 2; }
+.analysis-heading { align-items: center; margin: 0; }
+.analysis-heading > div:first-child { min-width: 0; }
+.analysis-heading p { max-width: 42rem; }
+.analysis-catalog-category { display: grid; gap: .8rem; min-width: 0; scroll-margin-top: 1rem; }
+.analysis-catalog-category-heading { margin: 0; font-size: 1.1rem; }
+.analysis-catalog-category-heading a { color: inherit; text-decoration: none; }
+.analysis-catalog-category-heading a:hover { color: var(--accent-hover); }
+.analysis-catalog-subcategory { display: grid; gap: .65rem; }
+.analysis-catalog-subcategory h3 { margin: 0; color: var(--muted-strong); font-size: .92rem; }
+@media (max-width: 560px) {
+  .analysis-heading { align-items: flex-start; flex-wrap: wrap; gap: .7rem; }
+  .analysis-heading .period-control { max-width: 100%; }
+  .analysis-catalog-category { gap: .65rem; }
 }
 </style>

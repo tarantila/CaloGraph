@@ -117,7 +117,7 @@ onMounted(() => { void load() })
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
       <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
       <span aria-hidden="true">›</span>
-      <RouterLink :to="{ path: '/analyse/katalog', query: analysisHubQuery(period), hash: '#analysis-category-activity' }">{{ t('analysisV2.categories.activity') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse/aktivitaet', query: analysisHubQuery(period) }">{{ t('analysisV2.categories.activity') }}</RouterLink>
       <span aria-hidden="true">›</span>
       <span aria-current="page">{{ t('analysisV2.activeEnergyTitle') }}</span>
     </nav>

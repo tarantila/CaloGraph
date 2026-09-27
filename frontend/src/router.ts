@@ -32,6 +32,10 @@ const router = createRouter({
       children: [
         { path: '', name: 'analysis-overview', component: () => import('./views/AnalysisOverviewView.vue') },
         { path: 'katalog', name: 'analysis-catalog', component: () => import('./views/AnalysisCatalogView.vue') },
+        { path: 'koerper', name: 'analysis-category-body', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'body' } },
+        { path: 'aktivitaet', name: 'analysis-category-activity', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'activity' } },
+        { path: 'ernaehrung', name: 'analysis-category-nutrition', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'nutrition' } },
+        { path: 'mikronaehrstoffe', name: 'analysis-category-micronutrients', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'micronutrients' } },
         { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: () => import('./views/AnalysisWeightDetailView.vue') },
         { path: 'aktivitaet/aktive-energie', name: 'analysis-active-energy', component: () => import('./views/AnalysisActivityView.vue') },
         { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: () => import('./views/AnalysisMicronutrientDetailView.vue') },

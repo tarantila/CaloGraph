@@ -23,8 +23,19 @@ const registry = [
   { analysis_key: 'weight_kg', category_key: 'body', domain_key: 'weight_kg', status: 'available', card_capable: true, detail_capable: true, reader_key: 'analytics.weight', period_capability: { min_days: 1, max_days: 3661, custom_range: true } },
   { analysis_key: 'active_energy_kcal', category_key: 'activity', domain_key: 'active_energy_kcal', status: 'available', card_capable: true, detail_capable: true, reader_key: 'analytics.verification.activity', period_capability: { min_days: 1, max_days: 3661, custom_range: true } },
   { analysis_key: 'vitamin_a_ug', category_key: 'micronutrients', domain_key: 'vitamin_a_ug', status: 'available', card_capable: true, detail_capable: true, reader_key: 'analytics.nutrition.micronutrients', period_capability: { min_days: 1, max_days: 31, custom_range: true } },
-  { analysis_key: 'protein_g', category_key: 'nutrition', domain_key: 'protein_g', status: 'coming_soon', card_capable: false, detail_capable: false, reader_key: null, period_capability: null },
-  { analysis_key: 'water_intake_ml', category_key: 'fluid', domain_key: 'water_intake_ml', status: 'coming_soon', card_capable: false, detail_capable: false, reader_key: null, period_capability: null },
+  { analysis_key: 'calcium_mg', category_key: 'micronutrients', domain_key: 'calcium_mg', status: 'available', card_capable: true, detail_capable: true, reader_key: 'analytics.nutrition.micronutrients', period_capability: { min_days: 1, max_days: 31, custom_range: true } },
+  ...([
+    ['fat_ratio_pct', 'body'], ['bmi', 'body'], ['fat_mass_kg', 'body'], ['muscle_mass_kg', 'body'],
+    ['fat_free_mass_kg', 'body'], ['hydration_kg', 'body'], ['bone_mass_kg', 'body'],
+    ['waist_circumference_cm', 'body'], ['hip_circumference_cm', 'body'],
+    ['steps', 'activity'], ['distance_m', 'activity'], ['training', 'activity'],
+    ['dietary_energy_kcal', 'nutrition'], ['protein_g', 'nutrition'], ['carbohydrates_g', 'nutrition'],
+    ['fat_g', 'nutrition'], ['fiber_g', 'nutrition'], ['sugar_g', 'nutrition'], ['saturated_fat_g', 'nutrition'],
+    ['water_intake_ml', 'fluid'],
+  ] as const).map(([analysis_key, category_key]) => ({
+    analysis_key, category_key, domain_key: analysis_key, status: 'coming_soon',
+    card_capable: false, detail_capable: false, reader_key: null, period_capability: null,
+  })),
 ]
 
 let selectedKeys: string[]
@@ -55,6 +66,10 @@ async function mountAnalysis(path: string, initialSelection: string[] = []) {
         children: [
           { path: '', name: 'analysis-overview', component: AnalysisOverviewView },
           { path: 'katalog', name: 'analysis-catalog', component: AnalysisCatalogView },
+          { path: 'koerper', name: 'analysis-category-body', component: AnalysisCatalogView, props: { categoryKey: 'body' } },
+          { path: 'aktivitaet', name: 'analysis-category-activity', component: AnalysisCatalogView, props: { categoryKey: 'activity' } },
+          { path: 'ernaehrung', name: 'analysis-category-nutrition', component: AnalysisCatalogView, props: { categoryKey: 'nutrition' } },
+          { path: 'mikronaehrstoffe', name: 'analysis-category-micronutrients', component: AnalysisCatalogView, props: { categoryKey: 'micronutrients' } },
           { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: AnalysisWeightDetailView },
           { path: 'aktivitaet/aktive-energie', name: 'analysis-active-energy', component: AnalysisActivityView },
           { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: AnalysisMicronutrientDetailView },
@@ -110,7 +125,10 @@ beforeEach(() => {
     }
     if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
     if (path.startsWith('/analytics/nutrition/micronutrients')) {
-      return Promise.resolve({ start_date: '2026-03-25', end_date: '2026-03-31', selected_provider: { provider_key: 'yazio' }, period_days: 7, metrics: [{ metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] }], series: [] })
+      return Promise.resolve({ start_date: '2026-03-25', end_date: '2026-03-31', selected_provider: { provider_key: 'yazio' }, period_days: 7, metrics: [
+        { metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] },
+        { metric_key: 'calcium_mg', label: 'Calcium', category: 'mineral', unit: 'mg', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] },
+      ], series: [] })
     }
     if (path.startsWith('/analytics/weight')) {
       return Promise.resolve({ start_date: '2026-03-25', end_date: '2026-03-31', selected_provider: null, points: [], summary: { measurement_count: 0, latest: null, change_kg: null, average_kg: null, minimum_kg: null, maximum_kg: null } })
@@ -144,10 +162,76 @@ describe('Analysis V2 hub and catalogue', () => {
       && JSON.stringify(JSON.parse(String((options as RequestInit).body))) === JSON.stringify({ analysis_keys: ['weight_kg'] }))).toBe(true)
     wrapper.unmount()
   })
-  it('localizes analysis card labels, descriptions, and actions for English users', async () => {
+
+  it('renders selected analyses and addable categories directly on the hub', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse', ['weight_kg'])
+    const hubText = wrapper.text()
+
+    expect(hubText.indexOf('Meine Analysen')).toBeGreaterThanOrEqual(0)
+    expect(hubText.indexOf('Alle Analysen')).toBeGreaterThan(hubText.indexOf('Meine Analysen'))
+    expect(wrapper.find('a[href="/analyse/katalog"]').exists()).toBe(false)
+    expect(wrapper.find('.analysis-legacy-links').exists()).toBe(false)
+    expect(wrapper.find('[data-analysis-add="active_energy_kcal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-analysis-add="weight_kg"]').exists()).toBe(false)
+    expect(wrapper.find('[data-analysis-selected="weight_kg"]').text()).toContain('In Meine Analysen')
+    expect(wrapper.text()).toContain('Bald verfügbar')
+    await wrapper.get('[data-analysis-add="active_energy_kcal"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/analyse')
+    expect(selectedKeys).toContain('active_energy_kcal')
+    wrapper.unmount()
+  })
+  it('renders each requested category and separates micronutrient types', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse/koerper')
+    expect(apiMock.mock.calls.some(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients'))).toBe(false)
+
+    for (const label of [
+      'Gewicht', 'Körperfett', 'BMI', 'Muskelmasse', 'Fettfreie Masse',
+      'Körperwasser', 'Knochenmasse', 'Taillenumfang', 'Hüftumfang',
+    ]) expect(wrapper.text()).toContain(label)
+
+    await router.push('/analyse/aktivitaet')
+    await flushPromises()
+    for (const label of ['Aktive Energie', 'Schritte', 'Distanz', 'Training']) expect(wrapper.text()).toContain(label)
+
+    await router.push('/analyse/ernaehrung')
+    await flushPromises()
+    for (const label of ['Energie', 'Protein', 'Kohlenhydrate', 'Fett', 'Ballaststoffe', 'Zucker', 'Gesättigte Fettsäuren']) {
+      expect(wrapper.text()).toContain(label)
+    }
+
+    await router.push('/analyse/mikronaehrstoffe')
+    await flushPromises()
+    expect(apiMock.mock.calls.some(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients'))).toBe(true)
+    expect(wrapper.text()).toContain('Vitamine')
+    expect(wrapper.text()).toContain('Mineralstoffe')
+    expect(wrapper.text()).toContain('Vitamin A')
+    expect(wrapper.text()).toContain('Calcium')
+    wrapper.unmount()
+  })
+
+  it('does not duplicate a micronutrient read when category and period change together', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse/koerper?period=30')
+    apiMock.mockClear()
+
+    await router.push('/analyse/mikronaehrstoffe?period=7')
+    await flushPromises()
+
+    const requests = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/nutrition/micronutrients?'))
+    expect(requests).toHaveLength(1)
+    const params = new URLSearchParams(requests[0]!.split('?')[1])
+    const rangeMs = Date.parse(`${params.get('end')}T00:00:00Z`) - Date.parse(`${params.get('start')}T00:00:00Z`)
+    expect(rangeMs).toBe(6 * 86_400_000)
+    wrapper.unmount()
+  })
+
+  it('localizes analysis card labels and actions for English users', async () => {
     setLocale('en')
     const { router, wrapper } = await mountAnalysis('/analyse', ['weight_kg'])
-    expect(wrapper.get('#analysis-existing-views-title').text()).toBe('Other existing analyses')
+    expect(wrapper.text()).toContain('My analyses')
+    expect(wrapper.text()).toContain('All analyses')
 
     const weightCard = wrapper.get('[data-analysis-key="weight_kg"]')
     expect(weightCard.get('.analysis-card-heading').text()).toBe('Weight')
@@ -157,23 +241,8 @@ describe('Analysis V2 hub and catalogue', () => {
     await router.push('/analyse/katalog')
     await flushPromises()
     expect(wrapper.get('[data-analysis-key="weight_kg"]').text()).toContain('Weight')
-    expect(wrapper.get('[data-analysis-key="weight_kg"]').text()).toContain('Actual weight measurements in the selected period.')
-    expect(wrapper.get('[data-analysis-add="weight_kg"]').attributes('aria-label')).toBe('Remove Weight from analyses')
-    wrapper.unmount()
-  })
-  it('keeps direct links to existing analyses visible when workspace loading fails', async () => {
-    registryFailuresRemaining = 1
-    const { wrapper } = await mountAnalysis('/analyse')
-
-    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
-    expect(wrapper.find('[aria-labelledby="analysis-existing-views-title"]').exists()).toBe(true)
-    expect(wrapper.findAll('.analysis-legacy-links a').map((link) => link.attributes('href'))).toEqual([
-      '/ernaehrung',
-      '/aktivitaet',
-      '/gewicht',
-      '/trends',
-      '/mikronaehrstoffe',
-    ])
+    expect(wrapper.get('[data-analysis-selected="weight_kg"]').text()).toContain('In My analyses')
+    expect(wrapper.get('[data-analysis-key="weight_kg"]').find('[data-analysis-add="weight_kg"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -211,6 +280,76 @@ describe('Analysis V2 hub and catalogue', () => {
     wrapper.unmount()
   })
 
+  it('does not persist a reorder when the pointer is released outside the card grid', async () => {
+    const { wrapper } = await mountAnalysis('/analyse', ['active_energy_kcal', 'weight_kg'])
+    const source = wrapper.get('[data-analysis-card="weight_kg"] .analysis-drag-handle')
+    const target = wrapper.get('[data-analysis-card="active_energy_kcal"]').element
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(document, 'elementFromPoint')
+    let pointedElement: Element = target
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: () => pointedElement,
+    })
+    const dispatchPointer = (type: string, clientX: number) => {
+      const event = new Event(type)
+      Object.defineProperties(event, {
+        pointerId: { value: 17 },
+        clientX: { value: clientX },
+        clientY: { value: 0 },
+      })
+      window.dispatchEvent(event)
+    }
+
+    await source.trigger('pointerdown', { pointerId: 17, isPrimary: true })
+    dispatchPointer('pointermove', -1)
+    await flushPromises()
+    expect(wrapper.findAll('.analysis-card').map((card) => card.attributes('data-analysis-key')))
+      .toEqual(['weight_kg', 'active_energy_kcal'])
+
+    pointedElement = document.body
+    dispatchPointer('pointerup', 0)
+    await flushPromises()
+    expect(selectedKeys).toEqual(['active_energy_kcal', 'weight_kg'])
+    expect(apiMock.mock.calls.some(([path, options]) => (
+      path === '/settings/analysis-preferences' && (options as RequestInit | undefined)?.method === 'PUT'
+    ))).toBe(false)
+    if (originalElementFromPoint) Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint)
+    else Reflect.deleteProperty(document, 'elementFromPoint')
+    wrapper.unmount()
+  })
+  it('persists a pointer reorder released on a card', async () => {
+    const { wrapper } = await mountAnalysis('/analyse', ['active_energy_kcal', 'weight_kg'])
+    const source = wrapper.get('[data-analysis-card="weight_kg"] .analysis-drag-handle')
+    const target = wrapper.get('[data-analysis-card="active_energy_kcal"]').element
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(document, 'elementFromPoint')
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: () => target,
+    })
+    const dispatchPointer = (type: string) => {
+      const event = new Event(type)
+      Object.defineProperties(event, {
+        pointerId: { value: 19 },
+        clientX: { value: -1 },
+        clientY: { value: 0 },
+      })
+      window.dispatchEvent(event)
+    }
+
+    await source.trigger('pointerdown', { pointerId: 19, isPrimary: true })
+    dispatchPointer('pointermove')
+    await flushPromises()
+    dispatchPointer('pointerup')
+    await flushPromises()
+
+    expect(selectedKeys).toEqual(['weight_kg', 'active_energy_kcal'])
+    expect(apiMock.mock.calls.some(([path, options]) => (
+      path === '/settings/analysis-preferences' && (options as RequestInit | undefined)?.method === 'PUT'
+    ))).toBe(true)
+    if (originalElementFromPoint) Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint)
+    else Reflect.deleteProperty(document, 'elementFromPoint')
+    wrapper.unmount()
+  })
   it('uses explicit keyboard controls to persist order and removal as a full ordered list', async () => {
     const { wrapper } = await mountAnalysis('/analyse', ['active_energy_kcal', 'weight_kg'])
     expect(wrapper.findAll('.analysis-card').map((card) => card.attributes('data-analysis-key')))
@@ -245,6 +384,86 @@ describe('Analysis V2 hub and catalogue', () => {
     await sevenDay!.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.query.period).toBe('7')
+    wrapper.unmount()
+  })
+  it('keeps the fluid category hash when adding the default period query', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse#analysis-category-fluid')
+    await flushPromises()
+    expect(router.currentRoute.value.hash).toBe('#analysis-category-fluid')
+    expect(router.currentRoute.value.query.period).toBe('30')
+    expect(wrapper.find('#analysis-category-fluid').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  it('loads only selected micronutrient series and shows their daily average with gaps', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/nutrition/micronutrients')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const metricKey = params.get('metric_key')
+        const start = params.get('start') ?? '2026-03-25'
+        const dateAtOffset = (days: number) => new Date(Date.parse(`${start}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+        const metrics = metricKey === 'vitamin_a_ug'
+          ? [{ metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: 30, days_with_data: 3, contributors: [] }]
+          : [
+            { metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] },
+            { metric_key: 'calcium_mg', label: 'Calcium', category: 'mineral', unit: 'mg', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] },
+          ]
+        return Promise.resolve({
+          start_date: start, end_date: params.get('end') ?? dateAtOffset(6),
+          selected_provider: { provider_key: 'yazio' }, period_days: 7, metrics,
+          series: metricKey === 'vitamin_a_ug'
+            ? [
+              { date: dateAtOffset(0), provider_key: 'yazio', value: 10 },
+              { date: dateAtOffset(1), provider_key: 'yazio', value: null },
+              { date: dateAtOffset(2), provider_key: 'yazio', value: 20 },
+            ]
+            : [],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=7', ['vitamin_a_ug'])
+    const card = wrapper.get('[data-analysis-card="vitamin_a_ug"]')
+    expect(card.get('.analysis-metric-value').text()).toBe('10 ug')
+    expect(card.text()).toContain('3 von 7 Tagen')
+    expect(card.text()).toContain('Durchschnitt pro Tag')
+    expect(card.findAll('.analysis-mini-chart polyline')).toHaveLength(0)
+    expect(card.findAll('.analysis-mini-chart circle')).toHaveLength(2)
+    const circles = card.findAll('.analysis-mini-chart circle')
+    expect(circles).toHaveLength(2)
+    expect(Number(circles[1].attributes('cx')) - Number(circles[0].attributes('cx'))).toBeCloseTo(40)
+    const seriesRequests = apiMock.mock.calls.flatMap(([path]) => {
+      if (!String(path).startsWith('/analytics/nutrition/micronutrients')) return []
+      const key = new URLSearchParams(String(path).split('?')[1] ?? '').get('metric_key')
+      return key ? [key] : []
+    })
+    expect(seriesRequests).toEqual(['vitamin_a_ug'])
+    wrapper.unmount()
+  })
+  it('positions sparse weight card points using their dates across the selected range', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/weight')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-01-01'
+        const nextDate = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+        const end = params.get('end') ?? nextDate
+        return Promise.resolve({
+          start_date: start, end_date: end, selected_provider: { provider_key: 'apple_health' },
+          points: [{ date: start, weight_kg: 71 }, { date: nextDate, weight_kg: 72 }],
+          summary: { measurement_count: 2, latest: { date: nextDate, weight_kg: 72 }, change_kg: 1, average_kg: 71.5, minimum_kg: 71, maximum_kg: 72 },
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=30', ['weight_kg'])
+    const points = wrapper.get('[data-analysis-card="weight_kg"] .analysis-mini-chart polyline').attributes('points')?.split(' ') ?? []
+    expect(points).toHaveLength(2)
+    const xDelta = Number(points[1]!.split(',')[0]) - Number(points[0]!.split(',')[0])
+    expect(xDelta).toBeGreaterThan(0)
+    expect(xDelta).toBeLessThan(10)
     wrapper.unmount()
   })
 })
@@ -290,6 +509,59 @@ describe('Analysis V2 detail views', () => {
     const { wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie')
     expect(wrapper.text()).toContain('1 von 7 Tagen')
     expect(wrapper.text()).not.toContain('Google Health')
+    wrapper.unmount()
+  })
+  it('uses the canonical available-day mean for the Active Energy card preview', async () => {
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path.startsWith('/analytics/verification/activity')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        const dateAtOffset = (days: number) => new Date(Date.parse(`${start}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+        return Promise.resolve({
+          start_date: start, end_date: params.get('end') ?? dateAtOffset(6), view: 'canonical',
+          days: [
+            { date: dateAtOffset(0), canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: 200, record_count: 1, source_types: [] }, providers: [] },
+            { date: dateAtOffset(1), canonical: null, providers: [] },
+            { date: dateAtOffset(2), canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: 100, record_count: 1, source_types: [] }, providers: [] },
+          ],
+        })
+      }
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences' && options?.method === 'PUT') {
+        const nextKeys = JSON.parse(String(options.body)).analysis_keys as string[]
+        selectedKeys = nextKeys
+        return Promise.resolve({ analysis_keys: nextKeys })
+      }
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=7', ['active_energy_kcal'])
+
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"] .analysis-metric-value').text()).toBe('150 kcal')
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"]').text()).toContain('2 von 7 Tagen')
+    const bars = wrapper.get('[data-analysis-card="active_energy_kcal"]').findAll('.analysis-mini-chart rect')
+    expect(bars).toHaveLength(2)
+    expect(Number(bars[1].attributes('x')) - Number(bars[0].attributes('x'))).toBeCloseTo(240 / 7)
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"]').text()).toContain('Durchschnitt pro Tag')
+    wrapper.unmount()
+  })
+  it('keeps an exact-zero canonical value in the Active Energy card preview', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/verification/activity')) {
+        return Promise.resolve({
+          start_date: '2026-03-25', end_date: '2026-03-31', view: 'canonical',
+          days: [{ date: '2026-03-25', canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: 0, record_count: 1, source_types: [] }, providers: [] }],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=7', ['active_energy_kcal'])
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"] .analysis-metric-value').text()).toBe('0 kcal')
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"]').text()).toContain('1 von 7 Tagen')
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"]').text()).toContain('Durchschnitt pro Tag')
+    expect(wrapper.get('[data-analysis-card="active_energy_kcal"]').findAll('.analysis-mini-chart circle')).toHaveLength(1)
     wrapper.unmount()
   })
 })
