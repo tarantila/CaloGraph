@@ -8,6 +8,9 @@
   functional data area (`nutrition`, `weight`, or `activity_energy`). The
   composite primary key is `(user_id, data_area)`; the table stores provider
   identity only, never source-instance identifiers.
+- `user_analysis_preferences`: ordered per-user Analysis card keys; composite
+  primary key `(user_id, analysis_key)`, unique `(user_id, position)`, and
+  cascade deletion with the user. No rows means an explicitly empty selection.
 - `user_profiles`: optional one-to-one personal information for a user:
   display name, gender, birth date, height, diet, voluntary health notes, and
   intolerances. All content fields are nullable; the user foreign key is the

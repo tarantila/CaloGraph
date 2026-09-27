@@ -146,6 +146,23 @@ evidence and contributes to totals and coverage; missing or unusable values
 remain `null`. The optional EU reference value is secondary context only; this
 endpoint does not calculate percentages or assign a health-status label.
 
+
+## Analysis registry and sparse weight summary
+
+The authenticated `GET /api/v1/analytics/registry` response lists canonical
+analysis keys, domain/category identifiers, availability, and reader
+capabilities; UI labels, icons, and routes are frontend presentation metadata.
+The authenticated `GET /api/v1/settings/analysis-preferences` returns a user's
+ordered card keys. `PUT` replaces that complete ordered list. An empty list is
+valid, and unknown, duplicate, or unavailable keys are rejected.
+
+`GET /api/v1/analytics/weight` retains its sparse daily `points` and adds a
+summary over those same selected daily readings. `measurement_count` counts
+returned points; `latest` is the last actual point; `change_kg` is the newest
+minus oldest actual value and is null with fewer than two readings. Average,
+minimum, and maximum use actual points only. No value is interpolated for an
+unmeasured day.
+
 ## Micronutrient provider metadata
 
 The micronutrient response keeps the legacy `source`, `available_sources`, and

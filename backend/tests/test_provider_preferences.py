@@ -1172,6 +1172,14 @@ def test_weight_priority_prefers_yazio_over_apple(
     assert response.status_code == 200
     assert response.json()["selected_provider"] == {"provider_key": "yazio"}
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 72.5}]
+    assert response.json()["summary"] == {
+        "measurement_count": 1,
+        "latest": {"date": day.isoformat(), "weight_kg": 72.5},
+        "change_kg": None,
+        "average_kg": 72.5,
+        "minimum_kg": 72.5,
+        "maximum_kg": 72.5,
+    }
 
 
 def test_weight_priority_prefers_apple_over_yazio(
@@ -1212,6 +1220,14 @@ def test_weight_priority_prefers_apple_over_yazio(
     assert response.status_code == 200
     assert response.json()["selected_provider"] == {"provider_key": "apple_health"}
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
+    assert response.json()["summary"] == {
+        "measurement_count": 1,
+        "latest": {"date": day.isoformat(), "weight_kg": 71.5},
+        "change_kg": None,
+        "average_kg": 71.5,
+        "minimum_kg": 71.5,
+        "maximum_kg": 71.5,
+    }
 
 
 def test_weight_priority_does_not_fallback_to_unlisted_provider(
@@ -1320,6 +1336,14 @@ def test_weight_priority_uses_latest_actual_sample_within_provider_day(
 
     assert response.status_code == 200
     assert response.json()["points"] == [{"date": day.isoformat(), "weight_kg": 71.5}]
+    assert response.json()["summary"] == {
+        "measurement_count": 1,
+        "latest": {"date": day.isoformat(), "weight_kg": 71.5},
+        "change_kg": None,
+        "average_kg": 71.5,
+        "minimum_kg": 71.5,
+        "maximum_kg": 71.5,
+    }
 
 
 def test_weight_api_uses_effective_registry_without_persisted_preference(

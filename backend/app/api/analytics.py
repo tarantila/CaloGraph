@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.analysis_registry import analysis_registry_entries
 from app.analytics.calendar_canonical import run_calendar_canonical_read
 from app.analytics.daily_canonical import (
     DailyCanonicalState,
@@ -82,6 +83,9 @@ from app.problem_types import (
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
     AnalysisMicronutrientResponse,
+    AnalysisPeriodCapability,
+    AnalysisRegistryEntryResponse,
+    AnalysisRegistryResponse,
     DailyPoint,
     MicronutrientResponse,
     VerificationActivityResponse,
@@ -93,6 +97,36 @@ from app.services.achievements import unlock_achievement_keys
 from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 router = APIRouter(tags=["Analytics"])
+@router.get("/analytics/registry", response_model=AnalysisRegistryResponse)
+def analysis_registry(
+    user: User = Depends(current_user),
+) -> AnalysisRegistryResponse:
+    del user
+    entries = []
+    for definition in analysis_registry_entries():
+        max_days = definition["max_days"]
+        entries.append(
+            AnalysisRegistryEntryResponse(
+                analysis_key=definition["analysis_key"],
+                category_key=definition["category_key"],
+                domain_key=definition["domain_key"],
+                status=definition["status"],
+                card_capable=definition["card_capable"],
+                detail_capable=definition["detail_capable"],
+                reader_key=definition["reader_key"],
+                period_capability=(
+                    AnalysisPeriodCapability(
+                        min_days=1,
+                        max_days=max_days,
+                        custom_range=True,
+                    )
+                    if max_days is not None
+                    else None
+                ),
+            )
+        )
+    return AnalysisRegistryResponse(analyses=entries)
+
 _DEFAULT_RESOLVE_NUTRITION_PROVIDER = resolve_nutrition_provider
 
 
@@ -483,6 +517,14 @@ def weight(
             "end_date": end,
             "selected_provider": None,
             "points": [],
+            "summary": {
+                "measurement_count": 0,
+                "latest": None,
+                "change_kg": None,
+                "average_kg": None,
+                "minimum_kg": None,
+                "maximum_kg": None,
+            },
         }
     provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
     source_identifier: str | None = None
@@ -567,14 +609,35 @@ def weight(
         for (sample_provider, sample_day), sample in latest_by_provider_day.items():
             if sample_provider == provider_key and sample_day not in latest_by_day:
                 latest_by_day[sample_day] = sample
+    ordered_points = sorted(latest_by_day.items())
+    weights = [sample.value for _, sample in ordered_points]
+    point_payload = [
+        {"date": day, "weight_kg": float(sample.value)}
+        for day, sample in ordered_points
+    ]
+    latest_point = point_payload[-1] if point_payload else None
+    summary = {
+        "measurement_count": len(point_payload),
+        "latest": latest_point,
+        "change_kg": (
+            float(weights[-1] - weights[0])
+            if len(weights) >= 2
+            else None
+        ),
+        "average_kg": (
+            float(sum(weights, Decimal("0")) / len(weights))
+            if weights
+            else None
+        ),
+        "minimum_kg": float(min(weights)) if weights else None,
+        "maximum_kg": float(max(weights)) if weights else None,
+    }
     return {
         "start_date": start,
         "end_date": end,
         "selected_provider": {"provider_key": selection.provider_key},
-        "points": [
-            {"date": day, "weight_kg": float(sample.value)}
-            for day, sample in sorted(latest_by_day.items())
-        ],
+        "points": point_payload,
+        "summary": summary,
     }
 
 @router.get(

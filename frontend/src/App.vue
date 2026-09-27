@@ -37,6 +37,14 @@ const primaryNavigation = [
   { to: { name: 'calendar' }, label: 'navigation.calendar', icon: PhCalendarBlank },
   { to: { name: 'achievements' }, label: 'navigation.achievements', icon: PhTrophy },
 ]
+const legacyAnalysisPaths = new Set([
+  '/ernaehrung',
+  '/aktivitaet',
+  '/gewicht',
+  '/trends',
+  '/mikronaehrstoffe',
+])
+
 
 const accountNavigation = {
   to: { name: 'account-personal' },
@@ -55,6 +63,7 @@ type NavigationItem = (typeof primaryNavigation)[number]
 function isNavActive(item: NavigationItem) {
   if (item.to.name === 'analysis-overview') {
     return route.path === '/analyse' || route.path.startsWith('/analyse/')
+      || legacyAnalysisPaths.has(route.path)
   }
   return item.to.name === route.name
 }

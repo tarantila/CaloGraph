@@ -125,3 +125,20 @@ silently replaced by an unconfigured Legacy aggregate. If no configured
 provider can safely resolve a requested day, the endpoint returns a safe
 not-ready or unavailable problem response. Missing preferences retain the
 temporary Legacy YAZIO behavior during migration.
+
+## Analysis catalogue and cards
+
+`GET /api/v1/analytics/registry` publishes backend-owned analysis keys and
+reader capabilities without UI presentation data. The frontend keeps labels,
+icons, and routes in its presentation map; a backend test checks that every
+registry key has frontend metadata.
+
+`GET` and full-replacement `PUT /api/v1/settings/analysis-preferences` expose
+each user's ordered card selection. An absent selection is empty, not a
+default dashboard. The relational preference rows are scoped by `user_id`;
+unsupported or coming-soon keys are rejected on write.
+
+Analysis cards and details use the existing canonical weight, activity, and
+micronutrient readers. Weight summaries derive only from the endpoint's sparse
+daily points. Missing days remain missing, and source-comparison views remain
+separate from Analysis.

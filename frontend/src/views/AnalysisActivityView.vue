@@ -1,111 +1,193 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import type { EChartsOption } from 'echarts'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
+import { analysisHubQuery, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import ChartPanel from '../components/ChartPanel.vue'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { VerificationActivityResponse } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
+const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
-const end = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-const start = shiftIsoDate(end, -29)
+const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
+const period = ref<AnalysisHubPeriod>(route.query.period === '30' ? '30' : '7')
+const hubPeriods: readonly AnalysisHubPeriod[] = ['7', '30']
+const range = computed(() => analysisRangeForDays(today, Number(period.value)))
 const response = ref<VerificationActivityResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
+let latestLoadId = 0
 
-const selectedDays = computed(() => response.value?.days.flatMap((day) => {
-  const record = day.canonical
-  if (record?.status !== 'available' || record.active_energy_kcal === null
-    || !Number.isFinite(record.active_energy_kcal)) return []
-  return [{ date: day.date, providerKey: record.provider_key, energy: record.active_energy_kcal }]
-}).sort((left, right) => left.date.localeCompare(right.date)) ?? [])
-const coverage = computed(() => t('analysisOverview.daysCovered', {
-  count: selectedDays.value.length,
-  total: 30,
+const readings = computed(() => (response.value?.days ?? []).flatMap((day) => {
+  const canonical = day.canonical
+  if (canonical?.status !== 'available' || typeof canonical.active_energy_kcal !== 'number'
+    || !Number.isFinite(canonical.active_energy_kcal)) return []
+  return [{ date: day.date, value: canonical.active_energy_kcal }]
+}).sort((left, right) => left.date.localeCompare(right.date)))
+const coverage = computed(() => t('analysisV2.activityCoverage', {
+  count: number.format(readings.value.length),
+  total: number.format(Number(period.value)),
+}))
+const average = computed(() => readings.value.length
+  ? readings.value.reduce((sum, reading) => sum + reading.value, 0) / readings.value.length
+  : null)
+const chartDates = computed(() => Array.from(
+  { length: Number(period.value) },
+  (_, index) => shiftIsoDate(range.value.start, index),
+))
+const readingsByDate = computed(() => new Map(readings.value.map((reading) => [reading.date, reading.value])))
+const chartOption = computed<EChartsOption>(() => ({
+  tooltip: { trigger: 'axis' },
+  xAxis: { type: 'category', data: chartDates.value, axisLabel: { hideOverlap: true, formatter: (value: string | number) => formatGermanDate(String(value).slice(0, 10)) } },
+  yAxis: { type: 'value', name: 'kcal', scale: true },
+  series: [{
+    name: t('analysisV2.activeEnergyTitle'),
+    type: 'line',
+    showSymbol: true,
+    symbol: 'circle',
+    connectNulls: false,
+    data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
+  }],
 }))
 
+async function syncQuery(): Promise<void> {
+  await router.replace({
+    query: {
+      ...route.query,
+      start: range.value.start,
+      end: range.value.end,
+      period: period.value,
+    },
+  })
+}
+
 async function load(): Promise<void> {
+  const requestId = ++latestLoadId
   loading.value = true
   error.value = ''
   response.value = null
-  const params = new URLSearchParams({ start, end, view: 'canonical' })
+  await syncQuery()
+  if (requestId !== latestLoadId) return
+  const params = new URLSearchParams({
+    start: range.value.start,
+    end: range.value.end,
+    view: 'canonical',
+  })
   try {
-    response.value = await api<VerificationActivityResponse>(
+    const result = await api<VerificationActivityResponse>(
       `/analytics/verification/activity?${params.toString()}`,
     )
+    if (requestId === latestLoadId) response.value = result
   } catch (cause) {
-    error.value = localizeApiError(cause, 'analysisActivity.loadFailed')
+    if (requestId === latestLoadId) error.value = localizeApiError(cause, 'analysisV2.loadFailed')
   } finally {
-    loading.value = false
+    if (requestId === latestLoadId) loading.value = false
   }
 }
 
-function providerLabel(providerKey: string): string {
-  const key = `providerPreferencesUi.providers.${providerKey}`
-  const label = t(key)
-  return label === key ? providerKey : label
+function choosePeriod(value: AnalysisHubPeriod): void {
+  if (period.value === value) return
+  period.value = value
+  void load()
 }
+
+watch(
+  () => route.query.period,
+  (value) => {
+    const next = parseAnalysisHubPeriod(value)
+    if (next !== period.value) {
+      period.value = next
+      void load()
+    }
+  },
+)
 
 onMounted(() => { void load() })
 </script>
 
 <template>
-  <div class="page-heading">
-    <div>
-      <h1>{{ t('analysisActivity.title') }}</h1>
-      <p>{{ t('analysisActivity.description') }}</p>
+  <div class="analysis-detail-page">
+    <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
+      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
+      <span aria-hidden="true">›</span>
+      <RouterLink :to="{ path: '/analyse/katalog', query: analysisHubQuery(period), hash: '#analysis-category-activity' }">{{ t('analysisV2.categories.activity') }}</RouterLink>
+      <span aria-hidden="true">›</span>
+      <span aria-current="page">{{ t('analysisV2.activeEnergyTitle') }}</span>
+    </nav>
+    <div class="page-heading">
+      <div>
+        <h1>{{ t('analysisV2.activeEnergyTitle') }}</h1>
+        <p>{{ t('analysisV2.activeEnergyDescription') }}</p>
+      </div>
     </div>
-    <RouterLink class="button secondary analysis-legacy-link" to="/aktivitaet">
-      {{ t('analysisActivity.fullHistory') }}
-    </RouterLink>
-  </div>
 
-  <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">
-    {{ t('common.loading') }}
+    <section class="activity-period card" :aria-label="t('analysisV2.period')">
+      <span>{{ t('analysisV2.period') }}</span>
+      <div role="group" :aria-label="t('analysisV2.period')">
+        <button
+          v-for="choice in hubPeriods"
+          :key="choice"
+          class="button secondary"
+          type="button"
+          :aria-pressed="period === choice"
+          @click="choosePeriod(choice)"
+        >
+          {{ t(`analysisV2.period${choice}`) }}
+        </button>
+      </div>
+    </section>
+
+    <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
+    <section v-else-if="error" class="card error" role="alert" aria-live="assertive">
+      <p>{{ error }}</p>
+      <button class="button secondary" type="button" @click="load">{{ t('analysisV2.retry') }}</button>
+    </section>
+    <template v-else-if="response">
+      <section class="card activity-summary">
+        <div>
+          <h2>{{ t('analysisV2.activeEnergyTitle') }}</h2>
+          <strong>{{ average === null ? '–' : `${number.format(average)} kcal` }}</strong>
+          <span>{{ coverage }}</span>
+        </div>
+        <span class="activity-range">{{ formatGermanDate(range.start) }} – {{ formatGermanDate(range.end) }}</span>
+      </section>
+      <p v-if="!readings.length" class="card empty" role="status">{{ t('analysisV2.activeEnergyEmpty') }}</p>
+      <template v-else>
+        <ChartPanel :title="t('analysisV2.activeEnergyChart')" :option="chartOption" :empty="false" />
+        <section class="card activity-reading-list">
+          <h2>{{ t('analysisV2.activeEnergyDaily') }}</h2>
+          <ul :aria-label="t('analysisV2.activeEnergyDaily')">
+            <li v-for="reading in readings" :key="reading.date">
+              <time :datetime="reading.date">{{ formatGermanDate(reading.date) }}</time>
+              <strong>{{ number.format(reading.value) }} kcal</strong>
+            </li>
+          </ul>
+        </section>
+      </template>
+    </template>
   </div>
-  <section v-else-if="error" class="card error" role="alert" aria-live="assertive">
-    <p>{{ error }}</p>
-    <button class="button secondary analysis-retry" type="button" @click="load">
-      {{ t('common.tryAgain') }}
-    </button>
-  </section>
-  <template v-else-if="response">
-    <section class="card analysis-domain-summary">
-      <h2>{{ t('analysisActivity.coverage') }}</h2>
-      <strong>{{ coverage }}</strong>
-    </section>
-    <p v-if="!selectedDays.length" class="card empty" role="status">
-      {{ t('analysisActivity.empty') }}
-    </p>
-    <section v-else class="card analysis-data-list">
-      <h2>{{ t('analysisActivity.dailyValues') }}</h2>
-      <ul :aria-label="t('analysisActivity.dailyValues')">
-        <li v-for="day in selectedDays" :key="day.date">
-          <time :datetime="day.date">{{ formatGermanDate(day.date) }}</time>
-          <span class="analysis-provider-label">{{ providerLabel(day.providerKey) }}</span>
-          <strong>{{ number.format(day.energy) }} kcal</strong>
-        </li>
-      </ul>
-    </section>
-  </template>
 </template>
 
 <style scoped>
-.analysis-legacy-link { align-self: start; white-space: normal; }
-.analysis-domain-summary { margin-bottom: .8rem; }
-.analysis-domain-summary h2, .analysis-data-list h2 { margin-top: 0; font-size: 1.05rem; }
-.analysis-domain-summary strong { font-size: 1.15rem; }
-.analysis-data-list ul { list-style: none; margin: 0; padding: 0; }
-.analysis-data-list li { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, 1fr) minmax(5rem, auto); gap: .5rem; padding: .65rem 0; border-top: 1px solid var(--border); }
-.analysis-provider-label { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
-.analysis-data-list li strong { text-align: right; }
-@media (max-width: 600px) {
-  .analysis-data-list li { grid-template-columns: minmax(0, 1fr) minmax(5rem, auto); }
-  .analysis-data-list li time, .analysis-data-list li .analysis-provider-label { grid-column: 1; }
-  .analysis-data-list li strong { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
-}
+.analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
+.analysis-breadcrumbs a { color: inherit; }
+.activity-period { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .75rem; }
+.activity-period [role="group"] { display: flex; flex-wrap: wrap; gap: .5rem; }
+.activity-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.activity-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 1rem; }
+.activity-summary div { display: grid; gap: .3rem; }
+.activity-summary h2 { margin: 0; color: var(--muted); font-size: .95rem; }
+.activity-summary strong { font-size: 1.5rem; }
+.activity-summary span, .activity-range { color: var(--muted); }
+.activity-reading-list h2 { margin-top: 0; font-size: 1.05rem; }
+.activity-reading-list ul { list-style: none; margin: 0; padding: 0; }
+.activity-reading-list li { display: flex; justify-content: space-between; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--border); }
 </style>

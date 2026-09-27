@@ -45,11 +45,10 @@ async function mountApp(path = '/tage', isAdmin = false) {
         component: { template: '<RouterView />' },
         children: [
           { path: '', name: 'analysis-overview', component: { template: '<h1>Analyse</h1>' } },
-          { path: 'ernaehrung', name: 'analysis-nutrition', component: { template: '<h1>Ernährung</h1>' } },
-          { path: 'mikronaehrstoffe', name: 'analysis-micronutrients', component: { template: '<h1>Mikronährstoffe</h1>' } },
+          { path: 'katalog', name: 'analysis-catalog', component: { template: '<h1>Katalog</h1>' } },
+          { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: { template: '<h1>Gewicht</h1>' } },
+          { path: 'aktivitaet/aktive-energie', name: 'analysis-active-energy', component: { template: '<h1>Aktive Energie</h1>' } },
           { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: { template: '<h1>Details</h1>' } },
-          { path: 'aktivitaet', name: 'analysis-activity', component: { template: '<h1>Aktivität</h1>' } },
-          { path: 'koerper', name: 'analysis-body', component: { template: '<h1>Körper</h1>' } },
         ],
       },
       {
@@ -153,22 +152,23 @@ describe('App-Sidebar-Navigation', () => {
     wrapper.unmount()
   })
 
-  it('keeps one analysis navigation item active across every nested area and closes mobile navigation', async () => {
+  it('keeps one analysis navigation item active across the hub and existing analysis pages', async () => {
     for (const path of [
       '/analyse',
-      '/analyse/ernaehrung',
-      '/analyse/mikronaehrstoffe',
+      '/analyse/katalog',
+      '/analyse/koerper/gewicht',
       '/analyse/mikronaehrstoffe/vitamin_a_ug',
-      '/analyse/aktivitaet',
-      '/analyse/koerper',
+      '/analyse/aktivitaet/aktive-energie',
+      '/ernaehrung',
+      '/aktivitaet',
+      '/gewicht',
+      '/trends',
+      '/mikronaehrstoffe',
     ]) {
       const { wrapper } = await mountApp(path)
       const primaryLinks = wrapper.findAll('.sidebar-primary-navigation a')
       expect(primaryLinks.filter((link) => link.classes('active'))).toHaveLength(1)
       expect(wrapper.find('.sidebar-primary-navigation a[href=\"/analyse\"]').classes()).toContain('active')
-      for (const legacyPath of ['/ernaehrung', '/aktivitaet', '/gewicht', '/trends', '/mikronaehrstoffe']) {
-        expect(wrapper.find(`.sidebar-primary-navigation a[href=\"${legacyPath}\"]`).exists()).toBe(false)
-      }
       wrapper.unmount()
     }
 

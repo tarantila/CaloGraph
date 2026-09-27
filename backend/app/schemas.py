@@ -630,11 +630,21 @@ class WeightSelectedProviderResponse(BaseModel):
     provider_key: str
 
 
+class WeightSummaryResponse(BaseModel):
+    measurement_count: int
+    latest: WeightPoint | None
+    change_kg: float | None
+    average_kg: float | None
+    minimum_kg: float | None
+    maximum_kg: float | None
+
+
 class WeightResponse(BaseModel):
     start_date: date
     end_date: date
     selected_provider: WeightSelectedProviderResponse | None
     points: list[WeightPoint]
+    summary: WeightSummaryResponse
 
 
 class MicronutrientSelectedProviderResponse(BaseModel):
@@ -728,6 +738,35 @@ class AnalysisMicronutrientResponse(BaseModel):
     period_days: int
     metrics: list[AnalysisMicronutrientMetricResponse]
     series: list[AnalysisMicronutrientDayResponse]
+
+
+class AnalysisPeriodCapability(BaseModel):
+    min_days: int
+    max_days: int
+    custom_range: bool
+
+
+class AnalysisRegistryEntryResponse(BaseModel):
+    analysis_key: str
+    category_key: str
+    domain_key: str
+    status: Literal["available", "coming_soon"]
+    card_capable: bool
+    detail_capable: bool
+    reader_key: str | None
+    period_capability: AnalysisPeriodCapability | None
+
+
+class AnalysisRegistryResponse(BaseModel):
+    analyses: list[AnalysisRegistryEntryResponse]
+
+
+class AnalysisPreferencesUpdate(BaseModel):
+    analysis_keys: list[str] = Field(max_length=64)
+
+
+class AnalysisPreferencesResponse(BaseModel):
+    analysis_keys: list[str]
 
 
 class TargetSettingsResponse(BaseModel):

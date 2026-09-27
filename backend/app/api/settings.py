@@ -4,7 +4,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
@@ -17,6 +17,7 @@ from app.activity import (
     ACTIVITY_SOURCE_TYPES,
     GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
+from app.analysis_registry import ANALYSIS_REGISTRY
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -38,6 +39,7 @@ from app.models import (
     TrackingOverride,
     TrackingQualitySettings,
     User,
+    UserAnalysisPreference,
     UserOnboarding,
     UserProfile,
     UserSession,
@@ -62,6 +64,8 @@ from app.provider_preferences import (
 )
 from app.schemas import (
     ActivitySourceResponse,
+    AnalysisPreferencesResponse,
+    AnalysisPreferencesUpdate,
     MfaCodeRequest,
     MfaManagementRequest,
     MfaStatusResponse,
@@ -140,6 +144,58 @@ from app.source_priority.compatibility import (
 )
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
+
+@router.get(
+    "/analysis-preferences",
+    response_model=AnalysisPreferencesResponse,
+)
+def get_analysis_preferences(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisPreferencesResponse:
+    rows = db.scalars(
+        select(UserAnalysisPreference)
+        .where(UserAnalysisPreference.user_id == user.id)
+        .order_by(UserAnalysisPreference.position, UserAnalysisPreference.analysis_key)
+    ).all()
+    return AnalysisPreferencesResponse(analysis_keys=[row.analysis_key for row in rows])
+
+
+@router.put(
+    "/analysis-preferences",
+    response_model=AnalysisPreferencesResponse,
+)
+def put_analysis_preferences(
+    payload: AnalysisPreferencesUpdate,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> AnalysisPreferencesResponse:
+    analysis_keys = payload.analysis_keys
+    if len(analysis_keys) != len(set(analysis_keys)):
+        raise HTTPException(status_code=422, detail="Analyse-Schlüssel dürfen nicht doppelt sein")
+    for key in analysis_keys:
+        definition = ANALYSIS_REGISTRY.get(key)
+        if (
+            definition is None
+            or definition["status"] != "available"
+            or not definition["card_capable"]
+        ):
+            raise HTTPException(status_code=422, detail="Analyse ist nicht verfügbar")
+
+    db.scalar(select(User.id).where(User.id == user.id).with_for_update())
+    db.execute(
+        delete(UserAnalysisPreference).where(UserAnalysisPreference.user_id == user.id)
+    )
+    db.add_all(
+        UserAnalysisPreference(
+            user_id=user.id,
+            analysis_key=key,
+            position=position,
+        )
+        for position, key in enumerate(analysis_keys)
+    )
+    db.commit()
+    return AnalysisPreferencesResponse(analysis_keys=analysis_keys)
 
 
 class ExportStreamingResponse(StreamingResponse):

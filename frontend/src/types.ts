@@ -59,6 +59,37 @@ export interface VerificationActivityResponse {
   view: VerificationView
   days: VerificationActivityDayResponse[]
 }
+export type AnalysisCategoryKey = 'body' | 'activity' | 'nutrition' | 'micronutrients' | 'fluid'
+export type AnalysisRegistryStatus = 'available' | 'coming_soon'
+
+export interface AnalysisRegistryEntry {
+  analysis_key: string
+  category_key: AnalysisCategoryKey
+  domain_key: string
+  status: AnalysisRegistryStatus
+  card_capable: boolean
+  detail_capable: boolean
+  reader_key: string | null
+  period_capability: { min_days: number; max_days: number; custom_range: boolean } | null
+}
+
+export interface AnalysisRegistryResponse {
+  analyses: AnalysisRegistryEntry[]
+}
+
+export interface AnalysisPreferencesResponse {
+  analysis_keys: string[]
+}
+
+export interface AnalysisWeightSummary {
+  measurement_count: number
+  latest: WeightPoint | null
+  change_kg: number | null
+  average_kg: number | null
+  minimum_kg: number | null
+  maximum_kg: number | null
+}
+
 export interface AnalysisMicronutrientContributor {
   provider_key: string
   days_with_data: number
@@ -159,6 +190,7 @@ export interface WeightResponse {
   end_date: string
   selected_provider: { provider_key: string } | null
   points: WeightPoint[]
+  summary: AnalysisWeightSummary
 }
 
 

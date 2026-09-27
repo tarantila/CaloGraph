@@ -275,18 +275,22 @@ describe('first-run target routing', () => {
       expect(router.currentRoute.value.path).toBe('/')
     }
   })
-  it('registers all protected analysis destinations and retains the legacy bookmarks', () => {
+  it('registers protected Analysis V2 destinations and retains the legacy bookmarks', () => {
     for (const [path, name] of [
       ['/analyse', 'analysis-overview'],
-      ['/analyse/ernaehrung', 'analysis-nutrition'],
-      ['/analyse/mikronaehrstoffe', 'analysis-micronutrients'],
+      ['/analyse/katalog', 'analysis-catalog'],
+      ['/analyse/koerper/gewicht', 'analysis-weight-detail'],
+      ['/analyse/aktivitaet/aktive-energie', 'analysis-active-energy'],
       ['/analyse/mikronaehrstoffe/vitamin_a_ug', 'analysis-micronutrient-detail'],
-      ['/analyse/aktivitaet', 'analysis-activity'],
-      ['/analyse/koerper', 'analysis-body'],
     ] as const) {
       const resolved = router.resolve(path)
       expect(resolved.name).toBe(name)
       expect(resolved.meta.public).not.toBe(true)
+    }
+    for (const path of ['/analyse/ernaehrung', '/analyse/aktivitaet', '/analyse/koerper']) {
+      expect(router.resolve(path).name).not.toBe('analysis-nutrition')
+      expect(router.resolve(path).name).not.toBe('analysis-activity')
+      expect(router.resolve(path).name).not.toBe('analysis-body')
     }
     for (const [path, name] of [
       ['/ernaehrung?date=2026-03-01', 'nutrition'],
