@@ -39,6 +39,7 @@ const coverage = computed(() => t('analysisV2.activityCoverage', {
 const average = computed(() => readings.value.length
   ? readings.value.reduce((sum, reading) => sum + reading.value, 0) / readings.value.length
   : null)
+const coverageIsComplete = computed(() => readings.value.length === Number(period.value))
 const chartDates = computed(() => Array.from(
   { length: Number(period.value) },
   (_, index) => shiftIsoDate(range.value.start, index),
@@ -62,22 +63,20 @@ const chartOption = computed<EChartsOption>(() => {
     },
     yAxis: {
       type: 'value',
+      min: 0,
+      scale: false,
       axisLine: { lineStyle: { color: palette.axis } },
       name: 'kcal',
-      scale: true,
       nameTextStyle: { color: palette.label },
       axisLabel: { color: palette.label },
       splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
     },
     series: [{
       name: t('analysisV2.activeEnergyTitle'),
-      type: 'line',
-      showSymbol: true,
-      symbol: 'circle',
-      connectNulls: false,
+      type: 'bar',
+      barMaxWidth: 32,
       data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
-      lineStyle: { color: palette.active, width: 2 },
-      itemStyle: { color: palette.active },
+      itemStyle: { color: palette.violet },
     }],
   }
 })
@@ -151,23 +150,19 @@ onMounted(() => { void load() })
         <h1>{{ t('analysisV2.activeEnergyTitle') }}</h1>
         <p>{{ t('analysisV2.activeEnergyDescription') }}</p>
       </div>
-    </div>
-
-    <section class="activity-period card" :aria-label="t('analysisV2.period')">
-      <span>{{ t('analysisV2.period') }}</span>
-      <div role="group" :aria-label="t('analysisV2.period')">
+      <div class="period-control activity-period" role="group" :aria-label="t('analysisV2.period')">
         <button
           v-for="choice in hubPeriods"
           :key="choice"
-          class="button secondary"
           type="button"
+          :class="{ active: period === choice }"
           :aria-pressed="period === choice"
           @click="choosePeriod(choice)"
         >
           {{ t(`analysisV2.period${choice}`) }}
         </button>
       </div>
-    </section>
+    </div>
 
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
     <section v-else-if="error" class="card error" role="alert" aria-live="assertive">
@@ -176,10 +171,17 @@ onMounted(() => { void load() })
     </section>
     <template v-else-if="response">
       <section class="card activity-summary">
-        <div>
+        <div class="activity-summary-primary">
           <h2>{{ t('analysisV2.activeEnergyTitle') }}</h2>
           <strong>{{ average === null ? '–' : `${number.format(average)} kcal` }}</strong>
-          <span>{{ coverage }}</span>
+          <span
+            class="activity-coverage"
+            :class="coverageIsComplete ? 'activity-coverage--complete' : 'activity-coverage--incomplete'"
+            :data-coverage-status="coverageIsComplete ? 'complete' : 'incomplete'"
+          >
+            <span class="activity-coverage-icon" aria-hidden="true">{{ coverageIsComplete ? '✓' : '!' }}</span>
+            {{ coverage }}
+          </span>
         </div>
         <span class="activity-range">{{ formatGermanDate(range.start) }} – {{ formatGermanDate(range.end) }}</span>
       </section>
@@ -202,16 +204,19 @@ onMounted(() => { void load() })
 
 <style scoped>
 .analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-detail-page > .page-heading { margin-bottom: 0; }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
-.activity-period { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .75rem; }
-.activity-period [role="group"] { display: flex; flex-wrap: wrap; gap: .5rem; }
-.activity-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .activity-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 1rem; }
-.activity-summary div { display: grid; gap: .3rem; }
+.activity-summary, .activity-reading-list { padding: .9rem; }
+.activity-summary-primary { display: grid; gap: .3rem; }
 .activity-summary h2 { margin: 0; color: var(--muted); font-size: .95rem; }
 .activity-summary strong { font-size: 1.5rem; }
-.activity-summary span, .activity-range { color: var(--muted); }
+.activity-coverage { display: inline-flex; align-items: center; gap: .35rem; font-size: .9rem; }
+.activity-coverage--complete { color: var(--success); }
+.activity-coverage--incomplete { color: var(--warning); }
+.activity-coverage-icon { font-weight: 750; }
+.activity-range { color: var(--muted); }
 .activity-reading-list h2 { margin-top: 0; font-size: 1.05rem; }
 .activity-reading-list ul { list-style: none; margin: 0; padding: 0; }
 .activity-reading-list li { display: flex; justify-content: space-between; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--border); }

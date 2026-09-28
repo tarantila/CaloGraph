@@ -58,6 +58,9 @@ const actualReadings = computed(() => (response.value?.series ?? []).filter(
   (point) => point.value !== null && Number.isFinite(point.value),
 ))
 const hasSeriesValues = computed(() => actualReadings.value.length > 0)
+const coverageIsComplete = computed(() => metric.value !== null
+  && response.value !== null
+  && metric.value.days_with_data === response.value.period_days)
 const chartOption = computed<EChartsOption>(() => {
   const palette = chartColors.value
   return {
@@ -208,28 +211,26 @@ onMounted(() => { void load() })
         <h1>{{ detailPresentation?.label ?? t('analysisV2.micronutrientDetailTitle') }}</h1>
         <p>{{ detailPresentation?.description ?? t('analysisV2.micronutrientDescription') }}</p>
       </div>
+      <AnalyticsPeriodFilter
+        :start="start"
+        :end="end"
+        :initial-preset="period"
+        :compact-preset="period === 'custom' ? 'custom' : period"
+        :compact-presets="compactPresets"
+        :desktop-presets="desktopPresets"
+        @update:start="start = $event"
+        @update:end="end = $event"
+        @preset="selectPeriod"
+        @apply="load"
+      />
     </div>
-
-    <AnalyticsPeriodFilter
-      :start="start"
-      :end="end"
-      :initial-preset="period"
-      :compact-preset="period === 'custom' ? 'custom' : period"
-      :compact-presets="compactPresets"
-      :desktop-presets="desktopPresets"
-      @update:start="start = $event"
-      @update:end="end = $event"
-      @preset="selectPeriod"
-      @apply="load"
-    />
-
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
     <section v-else-if="error" class="card error" role="alert" aria-live="assertive">
       <p>{{ error }}</p>
       <button class="button secondary" type="button" @click="load">{{ t('analysisV2.retry') }}</button>
     </section>
     <template v-else-if="response && metric">
-      <p v-if="!hasSeriesValues" class="card empty" role="status">{{ t('analysisV2.micronutrientEmpty') }}</p>
+      <p v-if="!hasSeriesValues" class="card empty micronutrient-empty" role="status">{{ t('analysisV2.micronutrientEmpty') }}</p>
       <template v-else>
         <section class="micronutrient-summary">
           <article class="card">
@@ -238,7 +239,14 @@ onMounted(() => { void load() })
           </article>
           <article class="card">
             <h2>{{ t('analysisV2.micronutrientCoverage') }}</h2>
-            <strong>{{ t('analysisV2.daysCoverage', { count: metric.days_with_data, total: response.period_days }) }}</strong>
+            <strong
+              class="micronutrient-coverage"
+              :class="coverageIsComplete ? 'micronutrient-coverage--complete' : 'micronutrient-coverage--incomplete'"
+              :data-coverage-status="coverageIsComplete ? 'complete' : 'incomplete'"
+            >
+              <span class="micronutrient-coverage-icon" aria-hidden="true">{{ coverageIsComplete ? '✓' : '!' }}</span>
+              {{ t('analysisV2.daysCoverage', { count: metric.days_with_data, total: response.period_days }) }}
+            </strong>
           </article>
         </section>
         <p v-if="contributors()" class="micronutrient-provenance">
@@ -262,18 +270,29 @@ onMounted(() => { void load() })
 
 <style scoped>
 .analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-detail-page > .page-heading { margin-bottom: 0; }
+.page-heading > .analytics-period-filter { flex: 0 1 820px; width: min(100%, 820px); }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
 .micronutrient-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
-.micronutrient-summary article { display: grid; gap: .35rem; min-width: 0; }
+.micronutrient-summary article { display: grid; gap: .35rem; min-width: 0; padding: .9rem; }
 .micronutrient-summary h2 { margin: 0; color: var(--muted); font-size: .92rem; }
 .micronutrient-summary strong { font-size: 1.2rem; overflow-wrap: anywhere; }
+.micronutrient-coverage { display: flex; align-items: baseline; gap: .4rem; }
+.micronutrient-coverage--complete { color: var(--success); }
+.micronutrient-coverage--incomplete { color: var(--warning); }
+.micronutrient-coverage-icon { flex: 0 0 auto; font-size: 1rem; }
+.micronutrient-empty { margin: 0; padding: .75rem 1rem; }
 .micronutrient-provenance { margin: 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.micronutrient-daily-card { padding: .9rem; }
 .micronutrient-daily-card h2 { margin-top: 0; font-size: 1.05rem; }
 .micronutrient-daily-card ul { list-style: none; margin: 0; padding: 0; }
 .micronutrient-daily-card li { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, 1fr) minmax(5rem, auto); gap: .5rem; padding: .65rem 0; border-top: 1px solid var(--border); }
 .micronutrient-day-provider { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
 .micronutrient-daily-card li strong { text-align: right; }
+@media (max-width: 620px) {
+  .page-heading > .analytics-period-filter { flex-basis: auto; }
+}
 @media (max-width: 600px) {
   .micronutrient-summary { grid-template-columns: 1fr; }
   .micronutrient-daily-card li { grid-template-columns: minmax(0, 1fr) minmax(5rem, auto); }

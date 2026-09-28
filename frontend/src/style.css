@@ -46,8 +46,8 @@
   --chart-series-violet: #8b5cf6;
   --chart-series-teal: #2dd4bf;
   --chart-series-blue: #5b8ff9;
+  --chart-series-amber: #f6c445;
   --chart-series-budget: #fb923c;
-  --chart-series-active: #f6c445;
   --chart-series-baseline: #64748b;
   --chart-series-lilac: #d19bff;
   --control-height: 2.5rem;
@@ -92,8 +92,8 @@
   --chart-series-violet: #7c3aed;
   --chart-series-teal: #278979;
   --chart-series-blue: #2563eb;
+  --chart-series-amber: #d97706;
   --chart-series-budget: #d97706;
-  --chart-series-active: #d97706;
   --chart-series-baseline: #64748b;
   --chart-series-lilac: #a855f7;
 }
@@ -138,8 +138,8 @@
     --chart-series-violet: #7c3aed;
     --chart-series-teal: #278979;
     --chart-series-blue: #2563eb;
+    --chart-series-amber: #d97706;
     --chart-series-budget: #d97706;
-    --chart-series-active: #d97706;
     --chart-series-baseline: #64748b;
     --chart-series-lilac: #a855f7;
   }
@@ -548,6 +548,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .metric-card-label.purple { color: var(--accent-hover); }
 .metric-card-label.teal { color: var(--teal); }
 .metric-card-label.blue { color: var(--blue); }
+.metric-card-label.violet { color: var(--chart-series-violet); }
 .metric-card-value {
   margin-top: .6rem;
   color: var(--ink);

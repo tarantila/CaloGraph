@@ -12,7 +12,7 @@ const { disconnectMock, disposeMock, initMock, observeMock, setOptionMock, useMo
   useMock: vi.fn(),
 }))
 
-vi.mock('echarts/charts', () => ({ BarChart: {}, LineChart: {} }))
+vi.mock('echarts/charts', () => ({ BarChart: {}, LineChart: {}, ScatterChart: {} }))
 vi.mock('echarts/components', () => ({ GridComponent: {}, LegendComponent: {}, TooltipComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 vi.mock('echarts/core', () => ({

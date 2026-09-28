@@ -643,7 +643,7 @@ const macroChart = computed<EChartsOption>(() => {
         stack: 'macros',
         barMaxWidth: 26,
         data: trends.value.map((item) => item.fat_g),
-        itemStyle: { color: palette.lilac, borderRadius: [4, 4, 0, 0] },
+        itemStyle: { color: palette.amber, borderRadius: [4, 4, 0, 0] },
       },
     ],
   }
@@ -684,7 +684,7 @@ const macroChart = computed<EChartsOption>(() => {
   <template v-else-if="summary">
     <section class="dashboard-stats" :aria-label="t('overview.stats')">
       <article class="card metric-card">
-        <div class="metric-card-label"><PhFire :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.today') }}</span></div>
+        <div class="metric-card-label violet"><PhFire :size="22" weight="duotone" aria-hidden="true" /><span>{{ t('overview.today') }}</span></div>
         <div class="metric-card-value">
           {{ todayCalories == null ? '–' : kcal.format(todayCalories) }}
           <small>{{ t('common.kcal') }}</small>

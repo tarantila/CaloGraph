@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+type AnalysisMiniChartColorRole = 'violet' | 'teal' | 'blue' | 'amber' | 'lilac'
+
 const props = defineProps<{
   values: readonly (number | null)[]
   dates?: readonly (string | null)[]
   dateRange?: { start: string; end: string }
   label: string
   variant: 'line' | 'bars'
+  colorRole: AnalysisMiniChartColorRole
 }>()
 
+const chartColor = computed(() => `var(--chart-series-${props.colorRole})`)
 const values = computed(() => props.values.map((value) => (
   typeof value === 'number' && Number.isFinite(value) ? value : null
 )))
@@ -77,6 +81,8 @@ const bars = computed(() => {
   <svg
     v-if="numericValues.length"
     class="analysis-mini-chart"
+    :class="`analysis-mini-chart--${colorRole}`"
+    :style="{ '--analysis-mini-chart-color': chartColor }"
     viewBox="0 0 120 38"
     preserveAspectRatio="none"
     role="img"
@@ -119,8 +125,8 @@ const bars = computed(() => {
 
 <style scoped>
 .analysis-mini-chart { display: block; width: 100%; height: 2.4rem; overflow: visible; }
-.analysis-mini-chart polyline { fill: none; stroke: var(--accent-hover); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.analysis-mini-chart circle { fill: var(--accent-hover); }
-.analysis-mini-chart rect { fill: color-mix(in srgb, var(--teal) 74%, var(--surface)); }
+.analysis-mini-chart polyline { fill: none; stroke: var(--analysis-mini-chart-color); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.analysis-mini-chart circle { fill: var(--analysis-mini-chart-color); }
+.analysis-mini-chart rect { fill: color-mix(in srgb, var(--analysis-mini-chart-color) 74%, var(--surface)); }
 </style>
 

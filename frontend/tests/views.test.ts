@@ -80,13 +80,13 @@ const chartThemeValues: Record<string, readonly [string, string]> = {
   '--chart-tooltip-bg': ['#111d30', '#ffffff'],
   '--chart-tooltip-border': ['#324157', '#bac5d5'],
   '--chart-tooltip-ink': ['#f3f6fb', '#182132'],
-  '--chart-series-violet': ['#8b5cf6', '#6d28d9'],
-  '--chart-series-teal': ['#2dd4bf', '#08776f'],
-  '--chart-series-blue': ['#5b8ff9', '#315fc3'],
-  '--chart-series-budget': ['#fb923c', '#a7500a'],
-  '--chart-series-active': ['#f6c445', '#855d00'],
-  '--chart-series-baseline': ['#64748b', '#526071'],
-  '--chart-series-lilac': ['#d19bff', '#7446af'],
+  '--chart-series-violet': ['#8b5cf6', '#7c3aed'],
+  '--chart-series-teal': ['#2dd4bf', '#278979'],
+  '--chart-series-blue': ['#5b8ff9', '#2563eb'],
+  '--chart-series-amber': ['#f6c445', '#d97706'],
+  '--chart-series-budget': ['#fb923c', '#d97706'],
+  '--chart-series-baseline': ['#64748b', '#64748b'],
+  '--chart-series-lilac': ['#d19bff', '#a855f7'],
 }
 
 function installChartThemeStyles() {
@@ -196,8 +196,8 @@ describe('main views', () => {
     expect(after.map((option) => option.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
     expect(after.map((option) => option.series.map((series) => series.data)))
       .toEqual(before.map((option) => option.series.map((series) => series.data)))
-    expect(after[0].series[0].itemStyle?.color).toBe('#6d28d9')
-    expect(after[1].series[0].itemStyle?.color).toBe('#08776f')
+    expect(after[0].series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(after[1].series[0].itemStyle?.color).toBe('#278979')
     expect(apiMock.mock.calls).toHaveLength(apiCallCount)
     wrapper.unmount()
   })
@@ -522,6 +522,11 @@ describe('main views', () => {
     expect(dailyBudgetSeries?.step).toBe('middle')
     expect(dailyBudgetSeries?.lineStyle).toEqual({ color: '#fb923c', width: 2, type: 'dashed' })
     expect(dailyBudgetSeries?.itemStyle).toEqual({ color: '#fb923c' })
+    const macroOption = wrapper.findAllComponents(ChartPanel)[1]!.props('option') as {
+      series: Array<{ name: string; itemStyle?: { color?: string } }>
+    }
+    expect(macroOption.series.find((series) => series.name === 'Fett')?.itemStyle?.color).toBe('#f6c445')
+    expect(wrapper.find('.metric-card-label.violet').exists()).toBe(true)
     expect(option.series.find((series) => series.name === 'Basisbudget')).toBeUndefined()
     expect(option.series.find((series) => series.name === 'Effektives Budget')).toBeUndefined()
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
@@ -944,8 +949,8 @@ describe('main views', () => {
     const activitySeries = option.series.find((series) => series.name === 'Aktivitätsgutschrift')
     expect(activitySeries?.data).toEqual([310, null, null, null])
     expect(activitySeries?.itemStyle).toMatchObject({
-      color: '#f6c445',
-      borderColor: '#f6c445',
+      color: '#8b5cf6',
+      borderColor: '#8b5cf6',
       borderWidth: 1,
     })
     expect(activitySeries?.itemStyle?.color).not.toBe('#fb923c')
@@ -991,9 +996,9 @@ describe('main views', () => {
     expect(after.map((chart) => chart.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
     expect(after.map((chart) => chart.series.map((series) => series.data)))
       .toEqual(before.map((chart) => chart.series.map((series) => series.data)))
-    expect(after[0].series[0].itemStyle?.color).toBe('#6d28d9')
-    expect(after[0].series[1].itemStyle?.color).toBe('#855d00')
-    expect(after[1].series[0].lineStyle?.color).toBe('#08776f')
+    expect(after[0].series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(after[0].series[1].itemStyle?.color).toBe('#7c3aed')
+    expect(after[1].series[0].lineStyle?.color).toBe('#278979')
     expect(apiMock.mock.calls).toHaveLength(apiCallCount)
     wrapper.unmount()
   })
@@ -1084,7 +1089,7 @@ describe('main views', () => {
     const after = chart.props('option') as { backgroundColor: string; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
     expect(after.backgroundColor).toBe('#ffffff')
     expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
-    expect(after.series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(after.series[0].itemStyle?.color).toBe('#7c3aed')
     expect(apiMock.mock.calls).toHaveLength(apiCallCount)
     wrapper.unmount()
   })
@@ -1693,7 +1698,7 @@ describe('main views', () => {
     expect(after.backgroundColor).toBe('#ffffff')
     expect(after.tooltip.backgroundColor).toBe('#ffffff')
     expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
-    expect(after.series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(after.series[0].itemStyle?.color).toBe('#7c3aed')
     expect(apiMock.mock.calls).toHaveLength(apiCallCount)
     wrapper.unmount()
   })

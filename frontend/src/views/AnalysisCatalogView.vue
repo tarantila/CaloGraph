@@ -200,7 +200,7 @@ onMounted(async () => {
         v-for="group in groupedEntries"
         :id="`analysis-category-${group.key}`"
         :key="group.key"
-        class="analysis-catalog-category"
+        class="card analysis-catalog-category"
       >
         <h2 v-if="!props.categoryKey" class="analysis-catalog-category-heading">
           <RouterLink :to="{ path: categoryPath[group.key], query: analysisHubQuery(period), hash: group.key === 'fluid' ? '#analysis-category-fluid' : undefined }">{{ t(group.labelKey) }}</RouterLink>
@@ -240,7 +240,7 @@ onMounted(async () => {
 .analysis-heading { align-items: center; margin: 0; }
 .analysis-heading > div:first-child { min-width: 0; }
 .analysis-heading p { max-width: 42rem; }
-.analysis-catalog-category { display: grid; gap: .8rem; min-width: 0; scroll-margin-top: 1rem; }
+.analysis-catalog-category { display: grid; gap: .8rem; min-width: 0; padding: .95rem; scroll-margin-top: 1rem; }
 .analysis-catalog-category-heading { margin: 0; font-size: 1.1rem; }
 .analysis-catalog-category-heading a { color: inherit; text-decoration: none; }
 .analysis-catalog-category-heading a:hover { color: var(--accent-hover); }

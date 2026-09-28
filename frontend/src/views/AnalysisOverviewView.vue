@@ -52,9 +52,16 @@ const readerErrors = reactive<Record<PreviewReader, string>>({
 const micronutrientStates = reactive<Record<string, ReaderState>>({})
 const micronutrientErrors = reactive<Record<string, string>>({})
 const pointerDragKey = ref<string | null>(null)
+const pointerDragLift = 6
+let pointerDragOffset = { x: 0, y: -pointerDragLift }
+let pointerDragPointer = { x: 0, y: 0 }
+let pointerDragGrabOffset = { x: 0, y: 0 }
 const pointerDragId = ref<number | null>(null)
 const previewOrder = ref<string[] | null>(null)
 const insertionTarget = ref<{ key: string; side: 'before' | 'after' } | null>(null)
+const dropFeedback = ref<{ key: string; phase: 'dropped' | 'settled' } | null>(null)
+let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null
+let pointerDragAnimationFrame: number | null = null
 const range = computed(() => analysisRangeForDays(
   isoDateInTimeZone(auth.user?.timezone ?? 'UTC'),
   Number(period.value),
@@ -256,27 +263,91 @@ function addKey(key: string): void {
 
 function pointerDown(key: string, event: PointerEvent): void {
   if (!event.isPrimary || saving.value) return
+  if (dropFeedbackTimer !== null) clearTimeout(dropFeedbackTimer)
+  dropFeedbackTimer = null
+  dropFeedback.value = null
+  const card = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.analysis-card')
+  const rect = card?.getBoundingClientRect()
+  if (!rect) return
   pointerDragKey.value = key
   pointerDragId.value = event.pointerId
+  pointerDragPointer = { x: event.clientX, y: event.clientY }
+  pointerDragGrabOffset = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  pointerDragOffset = { x: 0, y: -pointerDragLift }
   previewOrder.value = [...selectedKeys.value]
   insertionTarget.value = null
+  if (pointerDragAnimationFrame !== null) cancelAnimationFrame(pointerDragAnimationFrame)
+  pointerDragAnimationFrame = requestAnimationFrame(trackPointerDrag)
+}
+
+function syncPointerDragOffset(): void {
+  if (pointerDragKey.value === null) return
+  const card = document.querySelector<HTMLElement>('.analysis-card.is-dragging')
+  if (!card) return
+  const rect = card.getBoundingClientRect()
+  const baseLeft = rect.left - pointerDragOffset.x
+  const baseTop = rect.top - pointerDragOffset.y
+  const nextOffset = {
+    x: pointerDragPointer.x - pointerDragGrabOffset.x - baseLeft,
+    y: pointerDragPointer.y - pointerDragGrabOffset.y - pointerDragLift - baseTop,
+  }
+  if (Math.abs(nextOffset.x - pointerDragOffset.x) < .25
+    && Math.abs(nextOffset.y - pointerDragOffset.y) < .25) return
+  pointerDragOffset = nextOffset
+  card.style.setProperty('--drag-x', `${nextOffset.x}px`)
+  card.style.setProperty('--drag-y', `${nextOffset.y}px`)
+
+}
+function trackPointerDrag(): void {
+  if (pointerDragKey.value === null) {
+    pointerDragAnimationFrame = null
+    return
+  }
+  syncPointerDragOffset()
+  pointerDragAnimationFrame = requestAnimationFrame(trackPointerDrag)
+}
+
+function stopPointerDragTracking(): void {
+  if (pointerDragAnimationFrame === null) return
+  cancelAnimationFrame(pointerDragAnimationFrame)
+  pointerDragAnimationFrame = null
+}
+
+function dragStyle(key: string): Record<string, string> | undefined {
+  if (pointerDragKey.value !== key) return undefined
+  return {
+    '--drag-x': `${pointerDragOffset.x}px`,
+    '--drag-y': `${pointerDragOffset.y}px`,
+  }
 }
 
 function updatePointerPreview(event: PointerEvent): void {
   if (pointerDragKey.value === null || pointerDragId.value !== event.pointerId
     || typeof document.elementFromPoint !== 'function') return
-  const target = document.elementFromPoint(event.clientX, event.clientY)
-    ?.closest<HTMLElement>('.analysis-card[data-analysis-key]')
+  pointerDragPointer = { x: event.clientX, y: event.clientY }
+  const hit = document.elementFromPoint(event.clientX, event.clientY)
+  const target = hit?.closest<HTMLElement>('.analysis-card[data-analysis-key]')
   const key = target?.dataset.analysisKey
   if (!previewOrder.value) return
   if (!target || !key) {
-    insertionTarget.value = null
+    // Keep the last target while the pointer rests over the pointer-transparent dragged card.
+    if (!hit?.closest('.analysis-card-list')) insertionTarget.value = null
+    void nextTick(syncPointerDragOffset)
     return
   }
-  if (key === pointerDragKey.value) return
+  if (key === pointerDragKey.value) {
+    void nextTick(syncPointerDragOffset)
+    return
+  }
   const rect = target.getBoundingClientRect()
-  const mobile = window.matchMedia?.('(max-width: 600px)').matches ?? window.innerWidth <= 600
-  const after = mobile
+  const grid = target.closest<HTMLElement>('.analysis-card-list')
+  const tracks = grid
+    ? window.getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).filter((track) => track && track !== 'none')
+    : []
+  const singleColumn = tracks.length
+    ? tracks.length === 1
+    : (window.matchMedia?.('(max-width: 600px)').matches ?? window.innerWidth <= 600)
+  const after = singleColumn
     ? event.clientY >= rect.top + rect.height / 2
     : event.clientX >= rect.left + rect.width / 2
   const side = after ? 'after' : 'before'
@@ -289,25 +360,32 @@ function updatePointerPreview(event: PointerEvent): void {
   next.splice(destination + (side === 'after' ? 1 : 0), 0, pointerDragKey.value)
   previewOrder.value = next
   insertionTarget.value = { key, side }
+  void nextTick(syncPointerDragOffset)
 }
 
-function finishPointerDrag(event: PointerEvent): void {
+
+async function finishPointerDrag(event: PointerEvent): Promise<void> {
   if (pointerDragKey.value === null || pointerDragId.value !== event.pointerId) return
   updatePointerPreview(event)
+  const draggedKey = pointerDragKey.value
   const next = previewOrder.value
   const shouldSave = insertionTarget.value !== null
     && next !== null
     && next.some((key, index) => key !== selectedKeys.value[index])
     && !saving.value
+  stopPointerDragTracking()
   pointerDragKey.value = null
   pointerDragId.value = null
   previewOrder.value = null
   insertionTarget.value = null
-  if (shouldSave && next) void preferences.replace(next)
+  if (shouldSave && next && await preferences.replace(next)) {
+    showDropFeedback(draggedKey)
+  }
 }
 
 function cancelPointerDrag(event: PointerEvent): void {
   if (pointerDragId.value !== null && pointerDragId.value !== event.pointerId) return
+  stopPointerDragTracking()
   pointerDragKey.value = null
   pointerDragId.value = null
   previewOrder.value = null
@@ -367,6 +445,23 @@ function cardCoverage(key: string): string {
     : t('analysisV2.noReadings')
 }
 
+function cardCoverageState(key: string): 'complete' | 'incomplete' | null {
+  if (key === 'weight_kg') return null
+  const count = key === 'active_energy_kcal'
+    ? readingsByActivity.value.length
+    : cardMetric(key)?.days_with_data ?? null
+  return count === null ? null : count === periodDays.value ? 'complete' : 'incomplete'
+}
+
+function miniChartColorRole(key: string): 'violet' | 'teal' | 'blue' | 'amber' | 'lilac' {
+  if (key === 'weight_kg' || key === 'active_energy_kcal'
+    || key === 'dietary_energy_kcal' || key === 'calories_kcal') return 'violet'
+  if (key === 'protein_g') return 'teal'
+  if (key === 'carbohydrates_g') return 'blue'
+  if (key === 'fat_g') return 'amber'
+  return 'lilac'
+}
+
 function cardValue(key: string): string | null {
   if (key === 'weight_kg') {
     const latest = weightResponse.value?.summary.latest
@@ -414,9 +509,23 @@ function chartLabel(key: string, label: string): string {
   return `${label} · ${t('analysisV2.micronutrientDaily')}`
 }
 
+function showDropFeedback(key: string): void {
+  if (dropFeedbackTimer !== null) clearTimeout(dropFeedbackTimer)
+  dropFeedback.value = { key, phase: 'dropped' }
+  dropFeedbackTimer = setTimeout(() => {
+    if (dropFeedback.value?.key !== key) return
+    dropFeedback.value = { key, phase: 'settled' }
+    dropFeedbackTimer = setTimeout(() => {
+      if (dropFeedback.value?.key === key) dropFeedback.value = null
+      dropFeedbackTimer = null
+    }, 600)
+  }, 160)
+}
+
 function insertionClass(key: string): string | null {
   if (pointerDragKey.value === key) return 'is-dragging'
   if (insertionTarget.value?.key === key) return `is-drop-${insertionTarget.value.side}`
+  if (dropFeedback.value?.key === key) return `is-${dropFeedback.value.phase}`
   return null
 }
 async function scrollToCategoryHash(): Promise<void> {
@@ -456,12 +565,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', updatePointerPreview)
   window.removeEventListener('pointerup', finishPointerDrag)
   window.removeEventListener('pointercancel', cancelPointerDrag)
+  if (dropFeedbackTimer !== null) clearTimeout(dropFeedbackTimer)
+  stopPointerDragTracking()
 })
 </script>
 
 <template>
   <div class="analysis-hub">
-    <section class="card analysis-header">
+    <section class="card analysis-header page-heading">
       <div class="analysis-heading-copy">
         <h1>{{ t('analysisV2.title') }}</h1>
         <p>{{ t('analysisV2.description') }}</p>
@@ -502,7 +613,7 @@ onBeforeUnmount(() => {
           <p>{{ t('analysisV2.emptySelectionHelp') }}</p>
         </div>
 
-        <ol v-else class="analysis-card-list" :aria-label="t('analysisV2.myAnalyses')">
+        <TransitionGroup v-else tag="ol" name="analysis-card-reorder" class="analysis-card-list" :aria-label="t('analysisV2.myAnalyses')">
           <li
             v-for="({ entry, presentation }) in displayedCardEntries"
             :key="entry.analysis_key"
@@ -510,7 +621,18 @@ onBeforeUnmount(() => {
             :class="insertionClass(entry.analysis_key)"
             :data-analysis-key="entry.analysis_key"
             :data-analysis-card="entry.analysis_key"
+            :style="dragStyle(entry.analysis_key)"
+            :data-drop-state="dropFeedback?.key === entry.analysis_key ? dropFeedback.phase : undefined"
           >
+            <button
+              class="analysis-drag-handle"
+              type="button"
+              :aria-label="t('analysisV2.dragHandle', { label: presentation.label })"
+              :disabled="saving"
+              @pointerdown="pointerDown(entry.analysis_key, $event)"
+            >
+              <span aria-hidden="true">⋮⋮</span>
+            </button>
             <RouterLink class="analysis-card-content" :to="entryRoute(entry.analysis_key)">
               <span class="analysis-card-icon" aria-hidden="true">
                 {{ analysisIconSymbol(presentation.icon) }}
@@ -525,7 +647,24 @@ onBeforeUnmount(() => {
                   {{ cardError(entry.analysis_key) }}
                 </span>
                 <span v-else-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key)" class="analysis-card-state">
-                  {{ entry.category_key === 'micronutrients' ? t('analysisV2.noDataPeriod') : t('analysisV2.noReadings') }}
+                  <span
+                    v-if="entry.analysis_key === 'weight_kg'"
+                    class="analysis-card-extra"
+                  >
+                    {{ t('analysisV2.noReadings') }}
+                  </span>
+                  <template v-else>
+                    <span class="analysis-card-extra">
+                      {{ entry.category_key === 'micronutrients' ? t('analysisV2.noDataPeriod') : t('analysisV2.noReadings') }}
+                    </span>
+                    <span
+                      class="analysis-card-extra analysis-card-coverage analysis-card-coverage--incomplete"
+                      data-coverage-status="incomplete"
+                    >
+                      <span class="analysis-card-coverage-icon" aria-hidden="true">!</span>
+                      {{ cardCoverage(entry.analysis_key) }}
+                    </span>
+                  </template>
                 </span>
                 <span v-else-if="cardState(entry.analysis_key) === 'ready'" class="analysis-card-state">
                   <span class="analysis-card-kpi">
@@ -538,7 +677,23 @@ onBeforeUnmount(() => {
                     {{ t('analysisV2.change') }}:
                     {{ weightChange() ?? t('analysisV2.changeUnavailable') }}
                   </span>
-                  <span class="analysis-card-extra">{{ cardCoverage(entry.analysis_key) }}</span>
+                  <span
+                    v-if="entry.analysis_key === 'weight_kg'"
+                    class="analysis-card-extra"
+                  >
+                    {{ cardCoverage(entry.analysis_key) }}
+                  </span>
+                  <span
+                    v-else
+                    class="analysis-card-extra analysis-card-coverage"
+                    :class="cardCoverageState(entry.analysis_key) === 'complete' ? 'analysis-card-coverage--complete' : 'analysis-card-coverage--incomplete'"
+                    :data-coverage-status="cardCoverageState(entry.analysis_key)"
+                  >
+                    <span class="analysis-card-coverage-icon" aria-hidden="true">
+                      {{ cardCoverageState(entry.analysis_key) === 'complete' ? '✓' : '!' }}
+                    </span>
+                    {{ cardCoverage(entry.analysis_key) }}
+                  </span>
                   <time
                     v-if="entry.analysis_key === 'weight_kg' && weightResponse?.summary.latest"
                     :datetime="weightResponse.summary.latest.date"
@@ -553,21 +708,13 @@ onBeforeUnmount(() => {
                     :date-range="range"
                     :label="chartLabel(entry.analysis_key, presentation.label)"
                     :variant="entry.analysis_key === 'active_energy_kcal' ? 'bars' : 'line'"
+                    :color-role="miniChartColorRole(entry.analysis_key)"
                   />
                 </span>
               </span>
             </RouterLink>
 
             <div class="analysis-card-tools">
-              <button
-                class="analysis-drag-handle"
-                type="button"
-                :aria-label="t('analysisV2.dragHandle', { label: presentation.label })"
-                :disabled="saving"
-                @pointerdown="pointerDown(entry.analysis_key, $event)"
-              >
-                <span aria-hidden="true">⋮⋮</span>
-              </button>
               <details class="analysis-overflow">
                 <summary :aria-label="t('analysisV2.cardActions', { label: presentation.label })">
                   <span aria-hidden="true">⋯</span>
@@ -601,7 +748,7 @@ onBeforeUnmount(() => {
               </details>
             </div>
           </li>
-        </ol>
+        </TransitionGroup>
       </section>
 
       <section class="analysis-section" aria-labelledby="analysis-catalog-title">
@@ -634,10 +781,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .analysis-hub { display: grid; gap: 1rem; }
-.analysis-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; }
+.analysis-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 1.05rem; margin-bottom: 0; }
 .analysis-heading-copy h1, .analysis-heading-copy p { margin: 0; }
 .analysis-heading-copy p { margin-top: .35rem; color: var(--muted); }
-.analysis-period { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
 .analysis-period [role="group"] { display: flex; flex-wrap: wrap; gap: .5rem; }
 .analysis-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .analysis-section { display: grid; gap: .75rem; min-width: 0; }
@@ -646,23 +792,29 @@ onBeforeUnmount(() => {
 .analysis-empty-state h3, .analysis-empty-state p { margin: 0; }
 .analysis-empty-state h3 { font-size: 1rem; }
 .analysis-card-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .85rem; list-style: none; margin: 0; padding: 0; }
-.analysis-card { position: relative; display: grid; min-width: 0; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
-.analysis-card-content { display: grid; grid-template-columns: 2.8rem minmax(0, 1fr); align-content: start; align-items: start; gap: .75rem; min-width: 0; height: 100%; padding: 1rem; padding-right: 4rem; color: inherit; text-decoration: none; }
+.analysis-card { position: relative; display: grid; min-width: 0; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background-color .16s ease; }
+.analysis-card-reorder-move { transition: transform .22s cubic-bezier(.2, .7, .2, 1); }
+.analysis-card-content { display: grid; grid-template-columns: 2.8rem minmax(0, 1fr); align-content: start; align-items: start; gap: .75rem; min-width: 0; height: 100%; padding: 1rem 4rem 1rem 4rem; color: inherit; text-decoration: none; }
 .analysis-card-content:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: .5rem; }
 .analysis-card-icon { display: grid; place-items: center; width: 2.8rem; height: 2.8rem; border-radius: .8rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 1.35rem; }
 .analysis-card-copy { display: grid; gap: .3rem; min-width: 0; }
 .analysis-card-heading { margin: 0; font-weight: 700; font-size: 1.05rem; }
 .analysis-card-description, .analysis-card-state { color: var(--muted); overflow-wrap: anywhere; }
 .analysis-card-state { display: grid; gap: .28rem; }
-.analysis-card-kpi { display: grid; gap: .08rem; }
+.analysis-card-kpi { display: grid; gap: .12rem; }
 .analysis-card-kpi-label, .analysis-card-extra, .analysis-card-state time { font-size: .84rem; color: var(--muted); }
-.analysis-card-kpi strong { color: var(--ink); font-size: 1.15rem; }
+.analysis-card-kpi strong { color: var(--ink); font-size: 1.3rem; line-height: 1.15; }
 .analysis-card-state time { display: block; margin-top: .05rem; }
 .analysis-card-chart { margin-top: .25rem; }
 .analysis-card-error { color: var(--danger); }
+.analysis-card-coverage { display: inline-flex; align-items: center; gap: .32rem; }
+.analysis-card-coverage--complete { color: var(--success); }
+.analysis-card-coverage--incomplete { color: var(--warning); }
+.analysis-card-coverage-icon { flex: 0 0 auto; font-weight: 750; }
 .analysis-card-tools { position: absolute; z-index: 3; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .35rem; }
 .analysis-drag-handle, .analysis-overflow summary { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: var(--ink); }
-.analysis-drag-handle { cursor: grab; touch-action: none; user-select: none; font-size: 1.35rem; }
+.analysis-drag-handle { position: absolute; z-index: 3; top: .5rem; left: .5rem; cursor: grab; touch-action: none; user-select: none; font-size: 1.35rem; }
+.analysis-drag-handle:hover, .analysis-drag-handle:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-hover); }
 .analysis-drag-handle:active { cursor: grabbing; }
 .analysis-drag-handle:disabled { cursor: not-allowed; }
 .analysis-overflow { position: relative; }
@@ -672,10 +824,13 @@ onBeforeUnmount(() => {
 .analysis-overflow-menu button { min-height: 2.75rem; padding: .5rem .65rem; border: 0; border-radius: .35rem; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
 .analysis-overflow-menu button:hover, .analysis-overflow-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .analysis-overflow-menu button:disabled { color: var(--muted); cursor: not-allowed; }
-.analysis-card.is-dragging { z-index: 2; transform: translateY(-4px); border-color: var(--accent); box-shadow: var(--shadow-popover); }
-.analysis-card.is-drop-before::before, .analysis-card.is-drop-after::before { content: ''; position: absolute; z-index: 4; top: .55rem; bottom: .55rem; width: .22rem; border-radius: .2rem; background: var(--accent); pointer-events: none; }
-.analysis-card.is-drop-before::before { left: -.52rem; }
-.analysis-card.is-drop-after::before { right: -.52rem; }
+.analysis-card.is-dragging { z-index: 4; translate: var(--drag-x, 0px) var(--drag-y, 0px); scale: 1.025; border-color: var(--accent); box-shadow: var(--shadow-popover); pointer-events: none; }
+.analysis-card.is-drop-before, .analysis-card.is-drop-after { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.analysis-card.is-drop-before::before, .analysis-card.is-drop-after::before { content: ''; position: absolute; z-index: 4; top: .55rem; bottom: .55rem; width: calc(50% - .85rem); border: 2px dashed var(--accent); border-radius: .55rem; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
+.analysis-card.is-drop-before::before { left: .55rem; }
+.analysis-card.is-drop-after::before { right: .55rem; }
+.analysis-card.is-dropped { border-color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 24%, transparent); }
+.analysis-card.is-settled { border-color: var(--success); }
 .analysis-category-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
 .analysis-category { display: grid; align-content: start; gap: .65rem; min-width: 0; padding: .85rem; scroll-margin-top: 1rem; }
 .analysis-category-title { margin: 0; font-size: 1rem; }
@@ -683,12 +838,17 @@ onBeforeUnmount(() => {
 .analysis-category-title a:hover { color: var(--accent-hover); }
 .analysis-category-title span { color: var(--accent-hover); }
 .analysis-save-error { margin: 0; }
-@media (max-width: 950px) {
+@media (max-width: 1200px) {
   .analysis-card-list, .analysis-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 600px) {
   .analysis-card-list, .analysis-category-grid { grid-template-columns: minmax(0, 1fr); }
-  .analysis-card-content { padding-right: 4rem; }
   .analysis-header { align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .analysis-card-reorder-move { transition: none; }
+  .analysis-card.is-dragging { scale: 1; }
+  .analysis-card { transition: none; }
+  .analysis-card.is-dragging { transform: none; }
 }
 </style>

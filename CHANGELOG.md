@@ -30,6 +30,7 @@ follows [Semantic Versioning](https://semver.org/).
   micronutrients, activity, and weight while preserving existing routes.
 - Added the authenticated canonical micronutrient period and daily-series API,
   with per-day provider provenance and null-versus-zero coverage semantics.
+- Analysis V2 cards and detail surfaces now use semantic energy/fat and coverage colors, discrete measured weight points, and responsive drag/keyboard interactions.
 
 ## [0.6.5] - 2026-09-07
 

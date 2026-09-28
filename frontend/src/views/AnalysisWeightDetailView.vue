@@ -82,13 +82,10 @@ const chartOption = computed<EChartsOption>(() => {
     },
     series: [{
       name: t('analysisV2.weightTitle'),
-      type: 'line',
-      showSymbol: true,
+      type: 'scatter',
       symbol: 'circle',
       symbolSize: 8,
-      connectNulls: false,
       data: points.value.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
-      lineStyle: { color: palette.violet, width: 2 },
       itemStyle: { color: palette.violet },
     }],
   }
@@ -181,33 +178,32 @@ onMounted(() => { void load() })
         <h1>{{ t('analysisV2.weightTitle') }}</h1>
         <p>{{ t('analysisV2.weightDescription') }}</p>
       </div>
+      <section class="weight-period card" :aria-label="t('analysisV2.range')">
+        <div class="weight-period-presets" role="group" :aria-label="t('analysisV2.range')">
+          <button
+            v-for="choice in presets"
+            :key="choice"
+            class="button secondary"
+            type="button"
+            :aria-pressed="period === choice"
+            @click="choosePreset(choice)"
+          >
+            {{ t(choice === 'custom' ? 'analysisV2.customRange' : `analysisV2.range${choice}`) }}
+          </button>
+        </div>
+        <form v-if="period === 'custom'" class="weight-custom-range" @submit.prevent="applyCustomRange">
+          <label>
+            {{ t('analysisV2.startDate') }}
+            <input v-model="start" type="date" :max="today" required>
+          </label>
+          <label>
+            {{ t('analysisV2.endDate') }}
+            <input v-model="end" type="date" :max="today" required>
+          </label>
+          <button class="button secondary" type="submit">{{ t('analysisV2.applyRange') }}</button>
+        </form>
+      </section>
     </div>
-
-    <section class="weight-period card" :aria-label="t('analysisV2.range')">
-      <div class="weight-period-presets" role="group" :aria-label="t('analysisV2.range')">
-        <button
-          v-for="choice in presets"
-          :key="choice"
-          class="button secondary"
-          type="button"
-          :aria-pressed="period === choice"
-          @click="choosePreset(choice)"
-        >
-          {{ t(choice === 'custom' ? 'analysisV2.customRange' : `analysisV2.range${choice}`) }}
-        </button>
-      </div>
-      <form v-if="period === 'custom'" class="weight-custom-range" @submit.prevent="applyCustomRange">
-        <label>
-          {{ t('analysisV2.startDate') }}
-          <input v-model="start" type="date" :max="today" required>
-        </label>
-        <label>
-          {{ t('analysisV2.endDate') }}
-          <input v-model="end" type="date" :max="today" required>
-        </label>
-        <button class="button secondary" type="submit">{{ t('analysisV2.applyRange') }}</button>
-      </form>
-    </section>
 
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
     <section v-else-if="error" class="card error" role="alert" aria-live="assertive">
@@ -216,30 +212,43 @@ onMounted(() => { void load() })
     </section>
     <template v-else-if="response && summary">
       <section class="weight-summary-grid" :aria-label="t('analysisV2.weightHistory')">
-        <article class="card">
-          <h2>{{ t('analysisV2.measurementCount', { count: number.format(summary.measurement_count) }) }}</h2>
-          <span>{{ formatGermanDate(start) }} – {{ formatGermanDate(end) }}</span>
-        </article>
-        <article class="card">
+        <article class="card weight-summary-primary">
           <h2>{{ t('analysisV2.latestMeasurement') }}</h2>
           <strong>{{ formatWeight(summary.latest?.weight_kg) }}</strong>
           <time v-if="summary.latest" :datetime="summary.latest.date">{{ formatGermanDate(summary.latest.date) }}</time>
+          <div class="weight-summary-meta">
+            <span>
+              <span class="weight-summary-meta-label">{{ t('analysisV2.change') }}</span>
+              <strong>{{ change === null ? '–' : formatWeight(change) }}</strong>
+              <span v-if="points.length < 2">{{ t('analysisV2.changeUnavailable') }}</span>
+            </span>
+            <span>
+              <span class="weight-summary-meta-label">{{ t('analysisV2.measurementCount', { count: number.format(summary.measurement_count) }) }}</span>
+              <span class="weight-period-range">{{ formatGermanDate(start) }} – {{ formatGermanDate(end) }}</span>
+            </span>
+          </div>
         </article>
-        <article class="card">
-          <h2>{{ t('analysisV2.change') }}</h2>
-          <strong>{{ change === null ? '–' : formatWeight(change) }}</strong>
-          <span v-if="points.length < 2">{{ t('analysisV2.changeUnavailable') }}</span>
-        </article>
-        <article class="card"><h2>{{ t('analysisV2.average') }}</h2><strong>{{ formatWeight(summary.average_kg) }}</strong></article>
-        <article class="card"><h2>{{ t('analysisV2.minimum') }}</h2><strong>{{ formatWeight(summary.minimum_kg) }}</strong></article>
-        <article class="card"><h2>{{ t('analysisV2.maximum') }}</h2><strong>{{ formatWeight(summary.maximum_kg) }}</strong></article>
+        <div class="weight-summary-secondary">
+          <article class="card">
+            <h2>{{ t('analysisV2.average') }}</h2>
+            <strong>{{ formatWeight(summary.average_kg) }}</strong>
+          </article>
+          <article class="card">
+            <h2>{{ t('analysisV2.minimum') }}</h2>
+            <strong>{{ formatWeight(summary.minimum_kg) }}</strong>
+          </article>
+          <article class="card">
+            <h2>{{ t('analysisV2.maximum') }}</h2>
+            <strong>{{ formatWeight(summary.maximum_kg) }}</strong>
+          </article>
+        </div>
       </section>
       <p v-if="!points.length" class="card empty" role="status">{{ t('analysisV2.weightEmpty') }}</p>
       <template v-else>
         <ChartPanel :title="t('analysisV2.weightHistory')" :option="chartOption" :empty="false" />
         <section class="card weight-reading-list">
-          <h2>{{ t('analysisV2.weightHistory') }}</h2>
-          <ul :aria-label="t('analysisV2.weightHistory')">
+          <h2>{{ t('analysisV2.weightReadings') }}</h2>
+          <ul :aria-label="t('analysisV2.weightReadings')">
             <li v-for="point in points" :key="point.date">
               <time :datetime="point.date">{{ formatGermanDate(point.date) }}</time>
               <strong>{{ formatWeight(point.weight_kg) }}</strong>
@@ -253,22 +262,38 @@ onMounted(() => { void load() })
 
 <style scoped>
 .analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-detail-page > .page-heading { margin-bottom: 0; }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
-.weight-period { display: grid; gap: .8rem; }
-.weight-period-presets { display: flex; flex-wrap: wrap; gap: .5rem; }
+.weight-period { display: grid; gap: .65rem; max-width: 100%; padding: .45rem; }
+.weight-period-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
 .weight-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .weight-custom-range { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
 .weight-custom-range label { display: grid; gap: .3rem; }
 .weight-custom-range input { min-height: 2.5rem; }
-.weight-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
-.weight-summary-grid article { display: grid; align-content: start; gap: .3rem; min-width: 0; }
+.weight-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: .8rem; }
+.weight-summary-grid article { display: grid; align-content: start; gap: .35rem; min-width: 0; }
+.weight-summary-primary, .weight-reading-list { padding: .9rem; }
 .weight-summary-grid h2 { margin: 0; color: var(--muted); font-size: .92rem; }
-.weight-summary-grid strong { font-size: 1.25rem; overflow-wrap: anywhere; }
-.weight-summary-grid time, .weight-summary-grid span { color: var(--muted); font-size: .9rem; }
+.weight-summary-primary > strong { font-size: 1.5rem; overflow-wrap: anywhere; }
+.weight-summary-grid time, .weight-summary-grid article > span, .weight-summary-meta-label, .weight-period-range { color: var(--muted); font-size: .9rem; }
+.weight-summary-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .35rem; padding-top: .65rem; border-top: 1px solid var(--border); }
+.weight-summary-meta > span { display: grid; gap: .15rem; min-width: 0; }
+.weight-summary-meta strong { font-size: 1.05rem; }
+.weight-summary-secondary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
+.weight-summary-secondary article { padding: .9rem; }
+.weight-summary-secondary strong { font-size: 1.15rem; overflow-wrap: anywhere; }
 .weight-reading-list h2 { margin-top: 0; font-size: 1.05rem; }
 .weight-reading-list ul { list-style: none; margin: 0; padding: 0; }
 .weight-reading-list li { display: flex; justify-content: space-between; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--border); }
-@media (max-width: 680px) { .weight-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 440px) { .weight-summary-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .weight-summary-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .weight-period { width: 100%; }
+  .weight-summary-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 440px) {
+  .weight-summary-secondary { grid-template-columns: 1fr; }
+}
 </style>

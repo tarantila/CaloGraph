@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BarChart, LineChart } from 'echarts/charts'
+import { BarChart, LineChart, ScatterChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import { init, use, type ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -14,7 +14,7 @@ const props = withDefaults(
 )
 const t = i18n.global.t.bind(i18n.global)
 const element = ref<HTMLDivElement>()
-use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
+use([BarChart, LineChart, ScatterChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 let chart: ECharts | null = null
 let observer: ResizeObserver | null = null

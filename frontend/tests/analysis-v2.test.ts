@@ -158,6 +158,7 @@ describe('Analysis V2 hub and catalogue', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Vitamin A')
     expect(wrapper.text()).toContain('Noch keine Werte im Zeitraum')
+    expect(wrapper.get('[data-analysis-catalog-key="vitamin_a_ug"] [data-coverage-status="incomplete"] .analysis-catalog-status-icon').text()).toBe('!')
     expect(wrapper.get('[data-analysis-add="vitamin_a_ug"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-analysis-key="protein_g"]').attributes('aria-disabled')).toBe('true')
     expect(wrapper.get('[data-analysis-key="water_intake_ml"]').attributes('aria-disabled')).toBe('true')
@@ -169,6 +170,34 @@ describe('Analysis V2 hub and catalogue', () => {
       && JSON.stringify(JSON.parse(String((options as RequestInit).body))) === JSON.stringify({ analysis_keys: ['weight_kg'] }))).toBe(true)
     wrapper.unmount()
   })
+  it('marks micronutrient catalog coverage complete only for every selected-period day', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/nutrition/micronutrients')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        return Promise.resolve({
+          start_date: params.get('start'),
+          end_date: params.get('end'),
+          selected_provider: null,
+          period_days: 7,
+          metrics: [
+            { metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: 35, days_with_data: 7, contributors: [] },
+            { metric_key: 'calcium_mg', label: 'Calcium', category: 'mineral', unit: 'mg', eu_nrv: 800, total: null, days_with_data: 0, contributors: [] },
+          ],
+          series: [],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe?period=7')
+    const coverage = wrapper.get('[data-analysis-catalog-key="vitamin_a_ug"] [data-coverage-status="complete"]')
+
+    expect(coverage.text()).toContain('7 von 7 Tagen')
+    expect(coverage.get('.analysis-catalog-status-icon').text()).toBe('✓')
+    wrapper.unmount()
+  })
+
 
   it('renders selected analyses and addable categories directly on the hub', async () => {
     const { router, wrapper } = await mountAnalysis('/analyse', ['weight_kg'])
@@ -344,15 +373,16 @@ describe('Analysis V2 hub and catalogue', () => {
     }
 
     await source.trigger('pointerdown', { pointerId: 19, isPrimary: true })
+    expect(wrapper.findAll('.analysis-card.is-dragging')).toHaveLength(1)
     dispatchPointer('pointermove')
     await flushPromises()
     dispatchPointer('pointerup')
     await flushPromises()
 
-    expect(selectedKeys).toEqual(['weight_kg', 'active_energy_kcal'])
     expect(apiMock.mock.calls.some(([path, options]) => (
       path === '/settings/analysis-preferences' && (options as RequestInit | undefined)?.method === 'PUT'
     ))).toBe(true)
+    expect(selectedKeys).toEqual(['weight_kg', 'active_energy_kcal'])
     if (originalElementFromPoint) Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint)
     else Reflect.deleteProperty(document, 'elementFromPoint')
     wrapper.unmount()
@@ -473,6 +503,118 @@ describe('Analysis V2 hub and catalogue', () => {
     expect(xDelta).toBeLessThan(10)
     wrapper.unmount()
   })
+  it('marks daily card coverage incomplete with an amber status marker', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/verification/activity')) {
+        const start = new URLSearchParams(path.split('?')[1] ?? '').get('start') ?? '2026-03-25'
+        return Promise.resolve({
+          start_date: start,
+          end_date: start,
+          view: 'canonical',
+          days: [{ date: start, canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: 100, record_count: 1, source_types: [] }, providers: [] }],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=7', ['active_energy_kcal'])
+    const card = wrapper.get('[data-analysis-card="active_energy_kcal"]')
+
+    expect(card.get('[data-coverage-status="incomplete"]').text()).toContain('1 von 7 Tagen')
+    expect(card.get('.analysis-card-coverage-icon').text()).toBe('!')
+    expect(card.find('.analysis-mini-chart--violet').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('marks complete daily coverage only when every selected-period day has a value', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/verification/activity')) {
+        const start = new URLSearchParams(path.split('?')[1] ?? '').get('start') ?? '2026-03-25'
+        const days = Array.from({ length: 7 }, (_, index) => {
+          const date = new Date(Date.parse(`${start}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10)
+          return { date, canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: index, record_count: 1, source_types: [] }, providers: [] }
+        })
+        return Promise.resolve({ start_date: start, end_date: days[6]!.date, view: 'canonical', days })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=7', ['active_energy_kcal'])
+    const coverage = wrapper.get('[data-analysis-card="active_energy_kcal"] [data-coverage-status="complete"]')
+
+    expect(coverage.text()).toContain('7 von 7 Tagen')
+    expect(coverage.get('.analysis-card-coverage-icon').text()).toBe('✓')
+    wrapper.unmount()
+  })
+
+  it('uses a single-column grid direction for pointer reorder semantics', async () => {
+    const { wrapper } = await mountAnalysis('/analyse', ['active_energy_kcal', 'weight_kg'])
+    const grid = wrapper.get('.analysis-card-list').element as HTMLElement
+    grid.style.gridTemplateColumns = '100px'
+    const source = wrapper.get('[data-analysis-card="weight_kg"] .analysis-drag-handle')
+    const target = wrapper.get('[data-analysis-card="active_energy_kcal"]').element
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(document, 'elementFromPoint')
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => target })
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+    const dispatchPointer = (type: string) => {
+      const event = new Event(type)
+      Object.defineProperties(event, {
+        pointerId: { value: 23 },
+        clientX: { value: 90 },
+        clientY: { value: 10 },
+      })
+      window.dispatchEvent(event)
+    }
+
+    await source.trigger('pointerdown', { pointerId: 23, isPrimary: true })
+    dispatchPointer('pointerup')
+    await flushPromises()
+
+    expect(wrapper.findAll('.analysis-card').map((card) => card.attributes('data-analysis-key')))
+      .toEqual(['weight_kg', 'active_energy_kcal'])
+    expect(wrapper.get('[data-analysis-card="weight_kg"]').attributes('data-drop-state')).toBe('dropped')
+    if (originalElementFromPoint) Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint)
+    else Reflect.deleteProperty(document, 'elementFromPoint')
+    wrapper.unmount()
+  })
+  it('does not show success feedback when a pointer reorder save fails', async () => {
+    saveFailure = true
+    const { wrapper } = await mountAnalysis('/analyse', ['active_energy_kcal', 'weight_kg'])
+    const target = wrapper.get('[data-analysis-card="active_energy_kcal"]').element
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(document, 'elementFromPoint')
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => target })
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+
+    await wrapper.get('[data-analysis-card="weight_kg"] .analysis-drag-handle').trigger('pointerdown', { pointerId: 24, isPrimary: true })
+    const pointerUp = new Event('pointerup')
+    Object.defineProperty(pointerUp, 'pointerId', { value: 24 })
+    window.dispatchEvent(pointerUp)
+    await flushPromises()
+
+    expect(wrapper.findAll('.analysis-card').map((card) => card.attributes('data-analysis-key')))
+      .toEqual(['active_energy_kcal', 'weight_kg'])
+    expect(wrapper.findAll('[data-drop-state="dropped"]')).toHaveLength(0)
+    expect(wrapper.get('.analysis-save-error').text()).toContain('Die Analyse konnte nicht gespeichert werden.')
+
+    if (originalElementFromPoint) Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint)
+    else Reflect.deleteProperty(document, 'elementFromPoint')
+    wrapper.unmount()
+  })
+
+  it('keeps the drag handle before card content and the overflow control on the right', async () => {
+    const { wrapper } = await mountAnalysis('/analyse', ['weight_kg'])
+    const card = wrapper.get('[data-analysis-card="weight_kg"]')
+
+    expect(Array.from(card.element.children).map((element) => element.className)).toEqual([
+      'analysis-drag-handle',
+      'analysis-card-content',
+      'analysis-card-tools',
+    ])
+    wrapper.unmount()
+  })
+
 })
 
 describe('Analysis V2 detail views', () => {
@@ -488,8 +630,7 @@ describe('Analysis V2 detail views', () => {
       '--chart-series-violet': ['#8b5cf6', '#6d28d9'],
       '--chart-series-teal': ['#2dd4bf', '#08776f'],
       '--chart-series-blue': ['#5b8ff9', '#315fc3'],
-      '--chart-series-budget': ['#fb923c', '#a7500a'],
-      '--chart-series-active': ['#f6c445', '#855d00'],
+      '--chart-series-amber': ['#f6c445', '#905400'],
       '--chart-series-baseline': ['#64748b', '#526071'],
       '--chart-series-lilac': ['#d19bff', '#7446af'],
     }
@@ -535,7 +676,7 @@ describe('Analysis V2 detail views', () => {
     setThemePreference('dark')
 
     const cases = [
-      { path: '/analyse/aktivitaet/aktive-energie', key: 'active_energy_kcal', seriesColor: '#855d00' },
+      { path: '/analyse/aktivitaet/aktive-energie', key: 'active_energy_kcal', seriesColor: '#6d28d9' },
       { path: '/analyse/koerper/gewicht', key: 'weight_kg', seriesColor: '#6d28d9' },
       { path: '/analyse/mikronaehrstoffe/vitamin_a_ug', key: 'vitamin_a_ug', seriesColor: '#7446af' },
     ]
@@ -543,12 +684,16 @@ describe('Analysis V2 detail views', () => {
       const { wrapper } = await mountAnalysis(chartCase.path, [chartCase.key])
       const chart = wrapper.findComponent({ name: 'ChartPanel' })
       expect(chart.exists()).toBe(true)
+      if (chartCase.key === 'vitamin_a_ug') {
+        const coverage = wrapper.get('.micronutrient-coverage[data-coverage-status="incomplete"]')
+        expect(coverage.get('.micronutrient-coverage-icon').text()).toBe('!')
+      }
       type ThemeOption = {
         backgroundColor: string
         tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
         xAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string } }
         yAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string }; splitLine: { lineStyle: { color: string } } }
-        series: Array<{ name: string; type: string; connectNulls?: boolean; data: unknown[]; lineStyle: { color: string } }>
+        series: Array<{ name: string; type: string; connectNulls?: boolean; data: unknown[]; lineStyle?: { color: string }; itemStyle?: { color: string } }>
       }
       const before = chart.props('option') as ThemeOption
       expect(before.series[0]!.data.length).toBeGreaterThan(0)
@@ -567,7 +712,10 @@ describe('Analysis V2 detail views', () => {
       expect(after.yAxis.splitLine.lineStyle.color).toBe('#d6deea')
       expect(after.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
         .toEqual(before.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
-      expect(after.series[0]!.lineStyle.color).toBe(chartCase.seriesColor)
+      const seriesColor = after.series[0]!.type === 'line'
+        ? after.series[0]!.lineStyle?.color
+        : after.series[0]!.itemStyle?.color
+      expect(seriesColor).toBe(chartCase.seriesColor)
       expect(apiMock.mock.calls).toHaveLength(apiCallCount)
       wrapper.unmount()
       setThemePreference('dark')
@@ -584,37 +732,114 @@ describe('Analysis V2 detail views', () => {
     const { wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
     expect(wrapper.text()).toContain('2 Messungen')
     expect(wrapper.text()).toContain('69,5 kg')
+    expect(wrapper.get('.page-heading').find('.weight-period').exists()).toBe(true)
+    expect(wrapper.get('.weight-summary-primary h2').text()).toBe('Letzte Messung')
+    const primaryMeta = wrapper.get('.weight-summary-meta').text()
+    expect(primaryMeta.indexOf('Veränderung')).toBeLessThan(primaryMeta.indexOf('2 Messungen'))
+    expect(wrapper.get('.weight-summary-secondary').text()).toContain('Durchschnitt')
+    expect(wrapper.get('.weight-reading-list h2').text()).toBe('Messwerte')
+    expect(wrapper.find('[data-coverage-status]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('69,5 kg am 2. März')
     const chart = wrapper.findComponent({ name: 'ChartPanel' })
-    if (chart.exists()) {
-      const option = chart.props('option') as { series: { data: unknown[] }[] }
-      expect(option.series[0].data).toHaveLength(2)
+    expect(chart.exists()).toBe(true)
+
+    const option = chart.props('option') as {
+      xAxis: { type: string }
+      series: Array<{ type: string; data: Array<[number, number]>; lineStyle?: object }>
     }
+    expect(option.xAxis.type).toBe('time')
+    expect(option.series).toHaveLength(1)
+    expect(option.series[0]!.type).toBe('scatter')
+    expect(option.series[0]!.lineStyle).toBeUndefined()
+    expect(option.series[0]!.data).toEqual([
+      [Date.parse('2026-03-01T00:00:00Z'), 70],
+      [Date.parse('2026-03-29T00:00:00Z'), 69.5],
+    ])
     wrapper.unmount()
   })
 
   it('shows an explicit no-data state for a canonical micronutrient detail', async () => {
     const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe/vitamin_a_ug')
-    expect(wrapper.text()).toContain('Für diesen Zeitraum liegen keine Werte vor')
-    expect(wrapper.text()).not.toContain('0 µg')
-    wrapper.unmount()
+    expect(wrapper.findAll('.page-heading .analytics-period-filter')).toHaveLength(1)
+    expect(wrapper.findAll('.micronutrient-empty')).toHaveLength(1)
+    expect(wrapper.findAll('.micronutrient-summary')).toHaveLength(0)
+    expect(wrapper.findComponent({ name: 'ChartPanel' }).exists()).toBe(false)
   })
 
   it('reads active energy only from canonical days and leaves missing values as gaps', async () => {
-    apiMock.mockImplementation((path: string) => path.startsWith('/analytics/verification/activity')
-      ? Promise.resolve({
-        start_date: '2026-03-25', end_date: '2026-03-31', view: 'canonical',
-        days: [
-          { date: '2026-03-25', canonical: { provider_key: 'google_health', status: 'available', active_energy_kcal: 0, record_count: 1, source_types: [] }, providers: [] },
-          { date: '2026-03-26', canonical: null, providers: [] },
-        ],
-      })
-      : Promise.resolve({ analyses: registry, analysis_keys: [] }))
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/analytics/verification/activity')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        const nextDate = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+        return Promise.resolve({
+          start_date: start,
+          end_date: params.get('end') ?? nextDate,
+          view: 'canonical',
+          days: [
+            { date: start, canonical: { provider_key: 'google_health', status: 'available', active_energy_kcal: 0, record_count: 1, source_types: [] }, providers: [] },
+            { date: nextDate, canonical: null, providers: [] },
+          ],
+        })
+      }
+      return Promise.resolve({ analyses: registry, analysis_keys: [] })
+    })
     const { wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie')
     expect(wrapper.text()).toContain('1 von 7 Tagen')
     expect(wrapper.text()).not.toContain('Google Health')
+    expect(wrapper.get('.page-heading').find('.activity-period').exists()).toBe(true)
+    expect(wrapper.get('.activity-coverage[data-coverage-status="incomplete"] .activity-coverage-icon').text()).toBe('!')
+    const chart = wrapper.findComponent({ name: 'ChartPanel' })
+    const option = chart.props('option') as {
+      xAxis: { data: string[] }
+      yAxis: { min: number; scale: boolean }
+      series: Array<{ type: string; data: Array<number | null> }>
+    }
+    expect(option.series[0]!.type).toBe('bar')
+    expect(option.yAxis).toMatchObject({ min: 0, scale: false })
+    expect(option.xAxis.data).toHaveLength(7)
+    expect(option.series[0]!.data[0]).toBe(0)
+    expect(option.series[0]!.data[1]).toBeNull()
+    expect(option.series[0]!.data).toHaveLength(7)
+    expect(wrapper.get('.activity-reading-list h2').text()).toBe('Tageswerte')
     wrapper.unmount()
   })
+  it('does not mutate the canonical Active Energy response while deriving chart values', async () => {
+    let activityResponse: {
+      start_date: string
+      end_date: string
+      view: 'canonical'
+      days: Array<{ date: string; canonical: { provider_key: string; status: string; active_energy_kcal: number; record_count: number; source_types: string[] } | null; providers: unknown[] }>
+    } | null = null
+    let originalResponse: unknown = null
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/analytics/verification/activity')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        const nextDate = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+        activityResponse = {
+          start_date: start,
+          end_date: nextDate,
+          view: 'canonical',
+          days: [
+            { date: start, canonical: { provider_key: 'google_health', status: 'available', active_energy_kcal: 0, record_count: 1, source_types: [] }, providers: [] },
+            { date: nextDate, canonical: null, providers: [] },
+          ],
+        }
+        originalResponse = structuredClone(activityResponse)
+        return Promise.resolve(activityResponse)
+      }
+      return Promise.resolve({ analyses: registry, analysis_keys: [] })
+    })
+
+    const { wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie')
+    expect(activityResponse).not.toBeNull()
+    expect(activityResponse).toEqual(originalResponse)
+    expect(wrapper.findComponent({ name: 'ChartPanel' }).props('option').series[0].data.slice(0, 2)).toEqual([0, null])
+    wrapper.unmount()
+  })
+
+
   it('uses the canonical available-day mean for the Active Energy card preview', async () => {
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
       if (path.startsWith('/analytics/verification/activity')) {

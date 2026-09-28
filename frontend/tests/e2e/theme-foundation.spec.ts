@@ -81,7 +81,10 @@ test('shared palette provides readable light and dark surfaces', async ({ page }
 test('uses the prescribed light chart palette and keeps dark roles unchanged', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' })
   await page.addInitScript(() => {
+    const seedKey = 'calograph.theme-foundation-seeded'
+    if (sessionStorage.getItem(seedKey) !== null) return
     if (localStorage.getItem('calograph.theme') === null) localStorage.setItem('calograph.theme', 'light')
+    sessionStorage.setItem(seedKey, '1')
   })
   await page.route('**/api/**', (route) => route.fulfill({
     status: 401,
@@ -96,54 +99,72 @@ test('uses the prescribed light chart palette and keeps dark roles unchanged', a
     const color = (name: string) => style.getPropertyValue(name).trim()
     return {
       violet: color('--chart-series-violet'),
-      blue: color('--chart-series-blue'),
       teal: color('--chart-series-teal'),
+      blue: color('--chart-series-blue'),
+      amber: color('--chart-series-amber'),
       budget: color('--chart-series-budget'),
-      active: color('--chart-series-active'),
       baseline: color('--chart-series-baseline'),
       lilac: color('--chart-series-lilac'),
     }
   })
   const light = {
     violet: '#7c3aed',
-    blue: '#2563eb',
     teal: '#278979',
+    blue: '#2563eb',
+    amber: '#d97706',
     budget: '#d97706',
-    active: '#d97706',
     baseline: '#64748b',
     lilac: '#a855f7',
   }
+  const readTodayAccent = () => page.evaluate(() => {
+    const swatch = document.createElement('div')
+    swatch.className = 'metric-card-label violet'
+    document.body.append(swatch)
+    const color = getComputedStyle(swatch).color
+    swatch.remove()
+    return color
+  })
   expect(await readSeriesColors()).toEqual(light)
+  expect(await readTodayAccent()).toBe('rgb(124, 58, 237)')
 
   await page.evaluate(() => localStorage.setItem('calograph.theme', 'dark'))
   await page.reload()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   expect(await readSeriesColors()).toEqual({
     violet: '#8b5cf6',
-    blue: '#5b8ff9',
     teal: '#2dd4bf',
+    blue: '#5b8ff9',
+    amber: '#f6c445',
     budget: '#fb923c',
-    active: '#f6c445',
     baseline: '#64748b',
     lilac: '#d19bff',
   })
+  expect(await readTodayAccent()).toBe('rgb(139, 92, 246)')
 
+  await page.evaluate(() => localStorage.removeItem('calograph.theme'))
   await page.emulateMedia({ colorScheme: 'light' })
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-preference', 'system')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  expect(await readSeriesColors()).toEqual(light)
+  expect(await readTodayAccent()).toBe('rgb(124, 58, 237)')
+
   const fallback = await page.evaluate(() => {
     document.documentElement.removeAttribute('data-theme')
     const style = getComputedStyle(document.documentElement)
     const color = (name: string) => style.getPropertyValue(name).trim()
     return {
       violet: color('--chart-series-violet'),
-      blue: color('--chart-series-blue'),
       teal: color('--chart-series-teal'),
+      blue: color('--chart-series-blue'),
+      amber: color('--chart-series-amber'),
       budget: color('--chart-series-budget'),
-      active: color('--chart-series-active'),
       baseline: color('--chart-series-baseline'),
       lilac: color('--chart-series-lilac'),
     }
   })
   expect(fallback).toEqual(light)
+  expect(await readTodayAccent()).toBe('rgb(124, 58, 237)')
 })
 
 test('shared controls, status surfaces, and calendar follow the selected theme', async ({ page }) => {

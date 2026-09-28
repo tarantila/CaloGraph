@@ -293,8 +293,8 @@ const calorieOption = computed<EChartsOption>(() => {
             barMaxWidth: 24,
             data: activityCreditData.value,
             itemStyle: {
-              color: palette.active,
-              borderColor: palette.active,
+              color: palette.violet,
+              borderColor: palette.violet,
               borderWidth: 1,
               borderRadius: [3, 3, 0, 0],
             },
@@ -380,7 +380,7 @@ const nutritionOption = computed<EChartsOption>(() => {
         type: 'line',
         showSymbol: false,
         data: points.value.map((item) => item.fat_g),
-        lineStyle: { color: palette.lilac, width: 2 },
+        lineStyle: { color: palette.amber, width: 2 },
       },
     ],
   }

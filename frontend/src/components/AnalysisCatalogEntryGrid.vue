@@ -40,19 +40,27 @@ function entryPath({ entry, presentation }: CatalogEntry): string {
     : analysisHref(entry.analysis_key)
 }
 
-function micronutrientMetric(key: string) {
-  return props.micronutrients?.metrics.find((metric) => metric.metric_key === key)
-}
+type CoverageStatus = { text: string; status: 'complete' | 'incomplete' }
 
-function micronutrientStatus(key: string): string | null {
-  const metric = micronutrientMetric(key)
-  if (!metric) return null
-  if (metric.days_with_data === 0) return t('analysisV2.noDataPeriod')
-  return t('analysisV2.daysCoverage', {
-    count: number.format(metric.days_with_data),
-    total: number.format(Number(props.period)),
-  })
-}
+const micronutrientCoverage = computed(() => {
+  const byKey = new Map<string, CoverageStatus>()
+  const metrics = props.micronutrients?.metrics ?? []
+  for (const { entry } of shownEntries.value) {
+    if (entry.category_key !== 'micronutrients') continue
+    const metric = metrics.find((item) => item.metric_key === entry.analysis_key)
+    if (!metric) continue
+    byKey.set(entry.analysis_key, {
+      text: metric.days_with_data === 0
+        ? t('analysisV2.noDataPeriod')
+        : t('analysisV2.daysCoverage', {
+          count: number.format(metric.days_with_data),
+          total: number.format(Number(props.period)),
+        }),
+      status: metric.days_with_data === Number(props.period) ? 'complete' : 'incomplete',
+    })
+  }
+  return byKey
+})
 </script>
 
 <template>
@@ -83,10 +91,15 @@ function micronutrientStatus(key: string): string | null {
           <span aria-hidden="true">✓</span> {{ t('analysisV2.inMyAnalyses') }}
         </span>
         <span
-          v-else-if="entry.category_key === 'micronutrients' && micronutrientStatus(entry.analysis_key)"
+          v-else-if="entry.category_key === 'micronutrients' && micronutrientCoverage.has(entry.analysis_key)"
           class="analysis-catalog-status"
+          :class="`analysis-catalog-status--${micronutrientCoverage.get(entry.analysis_key)?.status}`"
+          :data-coverage-status="micronutrientCoverage.get(entry.analysis_key)?.status"
         >
-          {{ micronutrientStatus(entry.analysis_key) }}
+          <span class="analysis-catalog-status-icon" aria-hidden="true">
+            {{ micronutrientCoverage.get(entry.analysis_key)?.status === 'complete' ? '✓' : '!' }}
+          </span>
+          {{ micronutrientCoverage.get(entry.analysis_key)?.text }}
         </span>
       </div>
       <button
@@ -134,9 +147,10 @@ function micronutrientStatus(key: string): string | null {
 .analysis-catalog-title { margin: 0; font-size: .92rem; font-weight: 650; overflow-wrap: anywhere; }
 .analysis-catalog-title a { color: inherit; text-decoration: none; }
 .analysis-catalog-title a:hover { color: var(--accent-hover); }
-.analysis-catalog-status, .analysis-catalog-selected { color: var(--muted); font-size: .78rem; line-height: 1.25; overflow-wrap: anywhere; }
-.analysis-catalog-selected { color: var(--teal); font-weight: 600; }
-.analysis-catalog-action { min-height: 2.35rem; padding: .42rem .6rem; white-space: nowrap; font-size: .78rem; }
+.analysis-catalog-status--complete { color: var(--success); }
+.analysis-catalog-status--incomplete { color: var(--warning); }
+.analysis-catalog-status-icon { margin-right: .25rem; font-weight: 750; }
+.analysis-catalog-action { min-height: 2.75rem; padding: .42rem .6rem; white-space: nowrap; font-size: .78rem; }
 .analysis-catalog-action > span { font-size: 1.05rem; }
 @media (max-width: 440px) {
   .analysis-catalog-grid { grid-template-columns: 1fr; }

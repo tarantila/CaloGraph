@@ -14,8 +14,8 @@ const roleNames = [
   '--chart-series-violet',
   '--chart-series-teal',
   '--chart-series-blue',
+  '--chart-series-amber',
   '--chart-series-budget',
-  '--chart-series-active',
   '--chart-series-baseline',
   '--chart-series-lilac',
 ] as const
@@ -60,8 +60,8 @@ describe('chart theme palette', () => {
       violet: 'dark-series-violet',
       teal: 'dark-series-teal',
       blue: 'dark-series-blue',
+      amber: 'dark-series-amber',
       budget: 'dark-series-budget',
-      active: 'dark-series-active',
       baseline: 'dark-series-baseline',
       lilac: 'dark-series-lilac',
     })
@@ -78,5 +78,27 @@ describe('chart theme palette', () => {
     expect(light).not.toBe(dark)
     expect(readStyles).toHaveBeenCalledTimes(2)
     expect(Object.values(light).every((value) => !value.startsWith('var('))).toBe(true)
+  })
+  it('uses the effective light system theme for semantic roles', () => {
+    installChartStyleReader()
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: false,
+      media: '(prefers-color-scheme: dark)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList)))
+
+    setThemePreference('system')
+
+    expect(document.documentElement.dataset.themePreference).toBe('system')
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(chartColors.value).toMatchObject({
+      violet: 'light-series-violet',
+      teal: 'light-series-teal',
+      blue: 'light-series-blue',
+      amber: 'light-series-amber',
+      baseline: 'light-series-baseline',
+      lilac: 'light-series-lilac',
+    })
   })
 })
