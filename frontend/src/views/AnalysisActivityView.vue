@@ -6,6 +6,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, localizeApiError } from '../api'
 import { analysisHubQuery, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -43,19 +44,43 @@ const chartDates = computed(() => Array.from(
   (_, index) => shiftIsoDate(range.value.start, index),
 ))
 const readingsByDate = computed(() => new Map(readings.value.map((reading) => [reading.date, reading.value])))
-const chartOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis' },
-  xAxis: { type: 'category', data: chartDates.value, axisLabel: { hideOverlap: true, formatter: (value: string | number) => formatGermanDate(String(value).slice(0, 10)) } },
-  yAxis: { type: 'value', name: 'kcal', scale: true },
-  series: [{
-    name: t('analysisV2.activeEnergyTitle'),
-    type: 'line',
-    showSymbol: true,
-    symbol: 'circle',
-    connectNulls: false,
-    data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
-  }],
-}))
+const chartOption = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  return {
+    backgroundColor: palette.background,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
+    },
+    xAxis: {
+      type: 'category',
+      data: chartDates.value,
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisLabel: { color: palette.label, hideOverlap: true, formatter: (value: string | number) => formatGermanDate(String(value).slice(0, 10)) },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      name: 'kcal',
+      scale: true,
+      nameTextStyle: { color: palette.label },
+      axisLabel: { color: palette.label },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    series: [{
+      name: t('analysisV2.activeEnergyTitle'),
+      type: 'line',
+      showSymbol: true,
+      symbol: 'circle',
+      connectNulls: false,
+      data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
+      lineStyle: { color: palette.active, width: 2 },
+      itemStyle: { color: palette.active },
+    }],
+  }
+})
 
 async function syncQuery(): Promise<void> {
   await router.replace({

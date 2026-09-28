@@ -6,6 +6,7 @@ import { computed, onMounted, ref } from 'vue'
 import { hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { formatDate, formatDayMonth, shiftIsoDate } from '../date-format'
 import { createKcalFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -73,6 +74,7 @@ const weeksWithinBudget = computed(() =>
 )
 
 const option = computed<EChartsOption>(() => {
+  const palette = chartColors.value
   const budgetSeries: LineSeriesOption[] = activityRelevant.value
     ? [
         {
@@ -80,8 +82,8 @@ const option = computed<EChartsOption>(() => {
           type: 'line' as const,
           showSymbol: false,
           data: weeks.value.map((week) => week.budget_kcal),
-          lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: palette.baseline, width: 2, type: 'dashed' },
+          itemStyle: { color: palette.baseline },
         },
         {
           name: t('activity.effectiveBudget'),
@@ -90,8 +92,8 @@ const option = computed<EChartsOption>(() => {
           data: weeks.value.map((week) =>
             weekHasActivityCredit(week) ? week.effective_budget_kcal : null,
           ),
-          lineStyle: { color: '#fb923c', width: 2 },
-          itemStyle: { color: '#fb923c' },
+          lineStyle: { color: palette.budget, width: 2 },
+          itemStyle: { color: palette.budget },
         },
       ]
     : [
@@ -100,38 +102,41 @@ const option = computed<EChartsOption>(() => {
           type: 'line' as const,
           showSymbol: false,
           data: weeks.value.map((week) => week.budget_kcal),
-          lineStyle: { color: '#64748b', width: 2 },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: palette.baseline, width: 2 },
+          itemStyle: { color: palette.baseline },
         },
       ]
   return {
     animationDuration: 500,
+    backgroundColor: palette.background,
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#111d30',
-      borderColor: '#324157',
-      textStyle: { color: '#f3f6fb' },
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
       valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
     },
     legend: {
       top: 0,
       right: 0,
       data: [t('charts.intake'), ...budgetSeries.map((series) => String(series.name))],
+      textStyle: { color: palette.label, fontFamily: 'Inter' },
     },
     grid: { left: 58, right: 18, top: 48, bottom: 40 },
     xAxis: {
       type: 'category',
       data: weeks.value.map((week) => formatDayMonth(week.week_start)),
-      axisLine: { lineStyle: { color: '#263449' } },
+      axisLine: { lineStyle: { color: palette.axis } },
       axisTick: { show: false },
-      axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
+      axisLabel: { color: palette.label, fontFamily: 'Inter' },
     },
     yAxis: {
       type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
       name: t('common.kcal'),
-      nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-      axisLabel: { color: '#98a5b9', fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
-      splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
+      nameTextStyle: { color: palette.label, fontFamily: 'Inter' },
+      axisLabel: { color: palette.label, fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
     },
     series: [
       {
@@ -143,7 +148,7 @@ const option = computed<EChartsOption>(() => {
             ? { value: week.consumed_kcal, itemStyle: { color: '#fb7185' } }
             : week.consumed_kcal,
         ),
-        itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+        itemStyle: { color: palette.violet, borderRadius: [5, 5, 0, 0] },
       },
       ...budgetSeries,
     ],

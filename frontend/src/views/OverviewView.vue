@@ -18,6 +18,7 @@ import { computed, onMounted, ref } from 'vue'
 import { hasActivityCredit, hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { useAuthStore } from '../stores/auth'
 import {
   formatGermanDate,
@@ -430,13 +431,6 @@ const gapDescription = computed(() =>
       : t('overviewUi.allRecorded'),
 )
 
-const chartText = '#98a5b9'
-const chartGrid = '#263449'
-const tooltip = {
-  backgroundColor: '#111d30',
-  borderColor: '#324157',
-  textStyle: { color: '#f3f6fb' },
-}
 type CalorieTooltipEntry = {
   axisValueLabel: string
   dataIndex: number
@@ -487,6 +481,14 @@ const calorieBarData = computed(() =>
 )
 
 const calorieChart = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  const chartText = palette.label
+  const chartGrid = palette.grid
+  const tooltip = {
+    backgroundColor: palette.tooltipBackground,
+    borderColor: palette.tooltipBorder,
+    textStyle: { color: palette.tooltipInk },
+  }
   const budgetSeries: LineSeriesOption[] = visibleActivityCredit.value
     ? [
         {
@@ -496,8 +498,8 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#64748b', width: 2, type: 'dashed' },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: palette.baseline, width: 2, type: 'dashed' },
+          itemStyle: { color: palette.baseline },
         },
         {
           name: t('activity.effectiveBudget'),
@@ -508,8 +510,8 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
-          itemStyle: { color: '#fb923c' },
+          lineStyle: { color: palette.budget, width: 2, type: 'dashed' },
+          itemStyle: { color: palette.budget },
         },
       ]
     : [
@@ -520,12 +522,12 @@ const calorieChart = computed<EChartsOption>(() => {
           step: 'middle' as const,
           connectNulls: false,
           showSymbol: false,
-          lineStyle: { color: '#fb923c', width: 2, type: 'dashed' },
-          itemStyle: { color: '#fb923c' },
+          lineStyle: { color: palette.budget, width: 2, type: 'dashed' },
+          itemStyle: { color: palette.budget },
         },
       ]
   return {
-    animationDuration: 500,
+    backgroundColor: palette.background,
     tooltip: { ...tooltip, trigger: 'axis', formatter: formatCalorieTooltip },
     legend: {
       top: 0,
@@ -533,12 +535,13 @@ const calorieChart = computed<EChartsOption>(() => {
       data: [t('overviewUi.intake'), ...budgetSeries.map((series) => String(series.name))],
       itemWidth: 14,
       itemHeight: 8,
+      textStyle: { color: chartText, fontFamily: 'Inter' },
     },
     grid: { left: 54, right: 18, top: 46, bottom: 40 },
     xAxis: {
       type: 'category',
       data: trends.value.map((item) => formatGermanDayMonth(item.date)),
-      axisLine: { lineStyle: { color: chartGrid } },
+      axisLine: { lineStyle: { color: palette.axis } },
       axisTick: { show: false },
       axisLabel: {
         color: chartText,
@@ -550,6 +553,7 @@ const calorieChart = computed<EChartsOption>(() => {
     },
     yAxis: {
       type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
       name: 'kcal',
       nameTextStyle: { color: chartText, fontFamily: 'Inter', padding: [0, 0, 0, -34] },
       axisLabel: { color: chartText, fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
@@ -561,77 +565,89 @@ const calorieChart = computed<EChartsOption>(() => {
         type: 'bar',
         barMaxWidth: 26,
         data: calorieBarData.value,
-        itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
-        emphasis: { itemStyle: { color: '#a78bfa' } },
+        itemStyle: { color: palette.violet, borderRadius: [5, 5, 0, 0] },
+        emphasis: { itemStyle: { color: palette.violet } },
       },
       ...budgetSeries,
     ],
   }
 })
 
-const macroChart = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: {
-    ...tooltip,
-    trigger: 'axis',
-    order: 'seriesDesc',
-    valueFormatter: (value) => `${decimal.format(Number(value))} g`,
-  },
-  legend: {
-    bottom: 0,
-    data: [t('overviewUi.protein'), t('overviewUi.carbs'), t('overviewUi.fat')],
-    textStyle: { color: chartText, fontFamily: 'Inter' },
-    itemWidth: 12,
-    itemHeight: 8,
-  },
-  grid: { left: 48, right: 16, top: 20, bottom: 50 },
-  xAxis: {
-    type: 'category',
-    data: trends.value.map((item) => formatGermanDayMonth(item.date)),
-    axisLine: { lineStyle: { color: chartGrid } },
-    axisTick: { show: false },
-    axisLabel: {
-      color: chartText,
-      fontFamily: 'Inter',
-      fontSize: 9,
-      interval: chartLabelInterval.value,
-      hideOverlap: true,
+const macroChart = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  const chartText = palette.label
+  const chartGrid = palette.grid
+  const tooltip = {
+    backgroundColor: palette.tooltipBackground,
+    borderColor: palette.tooltipBorder,
+    textStyle: { color: palette.tooltipInk },
+  }
+  return {
+    animationDuration: 500,
+    backgroundColor: palette.background,
+    tooltip: {
+      ...tooltip,
+      trigger: 'axis',
+      order: 'seriesDesc',
+      valueFormatter: (value) => `${decimal.format(Number(value))} g`,
     },
-  },
-  yAxis: {
-    type: 'value',
-    name: 'g',
-    nameTextStyle: { color: chartText, fontFamily: 'Inter' },
-    axisLabel: { color: chartText, fontFamily: 'Inter' },
-    splitLine: { lineStyle: { color: chartGrid, type: 'dashed' } },
-  },
-  series: [
-    {
-      name: t('overviewUi.protein'),
-      type: 'bar',
-      stack: 'macros',
-      barMaxWidth: 26,
-      data: trends.value.map((item) => item.protein_g),
-      itemStyle: { color: '#2dd4bf' },
+    legend: {
+      bottom: 0,
+      data: [t('overviewUi.protein'), t('overviewUi.carbs'), t('overviewUi.fat')],
+      textStyle: { color: chartText, fontFamily: 'Inter' },
+      itemWidth: 12,
+      itemHeight: 8,
     },
-    {
-      name: t('overviewUi.carbs'),
-      type: 'bar',
-      stack: 'macros',
-      barMaxWidth: 26,
-      data: trends.value.map((item) => item.carbs_g),
-      itemStyle: { color: '#4f8cff' },
+    grid: { left: 48, right: 16, top: 20, bottom: 50 },
+    xAxis: {
+      type: 'category',
+      data: trends.value.map((item) => formatGermanDayMonth(item.date)),
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: chartText,
+        fontFamily: 'Inter',
+        fontSize: 9,
+        interval: chartLabelInterval.value,
+        hideOverlap: true,
+      },
     },
-    {
-      name: t('overviewUi.fat'),
-      type: 'bar',
-      stack: 'macros',
-      barMaxWidth: 26,
-      data: trends.value.map((item) => item.fat_g),
-      itemStyle: { color: '#f7b928', borderRadius: [4, 4, 0, 0] },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      name: 'g',
+      nameTextStyle: { color: chartText, fontFamily: 'Inter' },
+      axisLabel: { color: chartText, fontFamily: 'Inter' },
+      splitLine: { lineStyle: { color: chartGrid, type: 'dashed' } },
     },
-  ],
-}))
+    series: [
+      {
+        name: t('overviewUi.protein'),
+        type: 'bar',
+        stack: 'macros',
+        barMaxWidth: 26,
+        data: trends.value.map((item) => item.protein_g),
+        itemStyle: { color: palette.teal },
+      },
+      {
+        name: t('overviewUi.carbs'),
+        type: 'bar',
+        stack: 'macros',
+        barMaxWidth: 26,
+        data: trends.value.map((item) => item.carbs_g),
+        itemStyle: { color: palette.blue },
+      },
+      {
+        name: t('overviewUi.fat'),
+        type: 'bar',
+        stack: 'macros',
+        barMaxWidth: 26,
+        data: trends.value.map((item) => item.fat_g),
+        itemStyle: { color: palette.lilac, borderRadius: [4, 4, 0, 0] },
+      },
+    ],
+  }
+})
 </script>
 
 <template>

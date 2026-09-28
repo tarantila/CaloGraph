@@ -14,6 +14,7 @@ import {
 } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 
 interface Weekday {
@@ -114,55 +115,60 @@ const proteinDay = computed(() =>
 )
 const totalDays = computed(() => recorded.value.reduce((sum, item) => sum + item.count, 0))
 
-const option = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: {
-    trigger: 'axis',
-    backgroundColor: '#111d30',
-    borderColor: '#324157',
-    textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
-  },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [t('weekdays.mean'), t('weekdays.median')],
-    textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  grid: { left: 58, right: 18, top: 48, bottom: 38 },
-  xAxis: {
-    type: 'category',
-    data: weekdays.value.map((item) => weekdayLabel(item.weekday).slice(0, 2)),
-    axisLine: { lineStyle: { color: '#263449' } },
-    axisTick: { show: false },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  yAxis: {
-    type: 'value',
-    name: t('common.kcal'),
-    nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
-    splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
-  },
-  series: [
-    {
-      name: t('weekdays.mean'),
-      type: 'bar',
-      barMaxWidth: 42,
-      data: weekdays.value.map((item) => item.mean_kcal),
-      itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+const option = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  return {
+    backgroundColor: palette.background,
+    animationDuration: 500,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
+      valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
     },
-    {
-      name: t('weekdays.median'),
-      type: 'line',
-      showSymbol: true,
-      symbolSize: 7,
-      data: weekdays.value.map((item) => item.median_kcal),
-      lineStyle: { color: '#2dd4bf', width: 2 },
-      itemStyle: { color: '#2dd4bf' },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [t('weekdays.mean'), t('weekdays.median')],
+      textStyle: { color: palette.label, fontFamily: 'Inter' },
     },
-  ],
-}))
+    grid: { left: 58, right: 18, top: 48, bottom: 38 },
+    xAxis: {
+      type: 'category',
+      data: weekdays.value.map((item) => weekdayLabel(item.weekday).slice(0, 2)),
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisTick: { show: false },
+      axisLabel: { color: palette.label, fontFamily: 'Inter' },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      name: t('common.kcal'),
+      nameTextStyle: { color: palette.label, fontFamily: 'Inter' },
+      axisLabel: { color: palette.label, fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    series: [
+      {
+        name: t('weekdays.mean'),
+        type: 'bar',
+        barMaxWidth: 42,
+        data: weekdays.value.map((item) => item.mean_kcal),
+        itemStyle: { color: palette.violet, borderRadius: [5, 5, 0, 0] },
+      },
+      {
+        name: t('weekdays.median'),
+        type: 'line',
+        showSymbol: true,
+        symbolSize: 7,
+        data: weekdays.value.map((item) => item.median_kcal),
+        lineStyle: { color: palette.teal, width: 2 },
+        itemStyle: { color: palette.teal },
+      },
+    ],
+  }
+})
 
 </script>
 

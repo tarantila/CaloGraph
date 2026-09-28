@@ -5,6 +5,10 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Theme
+
+- Globale Darstellung: System, Hell und Dunkel in Konto → Allgemeine Einstellungen; die Auswahl wird lokal im Browser gespeichert und Diagramme wechseln ohne Neuladen mit.
+
 ### YAZIO synchronization
 
 - Restored the versioned YAZIO SDK mobile-client credential defaults. Normal

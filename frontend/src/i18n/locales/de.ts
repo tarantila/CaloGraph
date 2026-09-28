@@ -514,6 +514,14 @@ const de = {
   accountGeneral: {
     title: 'Allgemeine Einstellungen',
     description: 'Lege Sprache, Zeitzone, Wochenbeginn und Einheitensystem für dein Konto fest.',
+    appearance: {
+      title: 'Darstellung',
+      mode: 'Darstellungsmodus',
+      system: 'System',
+      light: 'Hell',
+      dark: 'Dunkel',
+      help: 'Aktuelle Darstellung: {mode}.',
+    },
     loading: 'Allgemeine Einstellungen werden geladen …',
     retry: 'Erneut versuchen',
     formTitle: 'Einstellungen',

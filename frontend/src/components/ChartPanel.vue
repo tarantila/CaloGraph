@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { i18n } from '../i18n'
+import { effectiveTheme } from '../theme'
 
 const props = withDefaults(
   defineProps<{ title: string; option: EChartsOption; empty?: boolean; height?: number }>(),
@@ -47,8 +48,8 @@ watch(
 )
 
 watch(
-  () => props.option,
-  (option) => chart?.setOption(option, true),
+  [() => props.option, effectiveTheme],
+  () => chart?.setOption(props.option, true),
   { deep: true },
 )
 

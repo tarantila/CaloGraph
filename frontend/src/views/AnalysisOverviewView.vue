@@ -656,23 +656,23 @@ onBeforeUnmount(() => {
 .analysis-card-state { display: grid; gap: .28rem; }
 .analysis-card-kpi { display: grid; gap: .08rem; }
 .analysis-card-kpi-label, .analysis-card-extra, .analysis-card-state time { font-size: .84rem; color: var(--muted); }
-.analysis-card-kpi strong { color: var(--text); font-size: 1.15rem; }
+.analysis-card-kpi strong { color: var(--ink); font-size: 1.15rem; }
 .analysis-card-state time { display: block; margin-top: .05rem; }
 .analysis-card-chart { margin-top: .25rem; }
-.analysis-card-error { color: var(--danger, #a12622); }
+.analysis-card-error { color: var(--danger); }
 .analysis-card-tools { position: absolute; z-index: 3; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .35rem; }
-.analysis-drag-handle, .analysis-overflow summary { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: var(--text); }
+.analysis-drag-handle, .analysis-overflow summary { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: var(--ink); }
 .analysis-drag-handle { cursor: grab; touch-action: none; user-select: none; font-size: 1.35rem; }
 .analysis-drag-handle:active { cursor: grabbing; }
 .analysis-drag-handle:disabled { cursor: not-allowed; }
 .analysis-overflow { position: relative; }
 .analysis-overflow summary { cursor: pointer; list-style: none; }
 .analysis-overflow summary::-webkit-details-marker { display: none; }
-.analysis-overflow-menu { position: absolute; top: calc(100% + .25rem); right: 0; display: grid; min-width: 13rem; padding: .3rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); box-shadow: 0 .6rem 1.5rem rgb(0 0 0 / 18%); }
-.analysis-overflow-menu button { min-height: 2.75rem; padding: .5rem .65rem; border: 0; border-radius: .35rem; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.analysis-overflow-menu { position: absolute; top: calc(100% + .25rem); right: 0; display: grid; min-width: 13rem; padding: .3rem; border: 1px solid var(--border); border-radius: .55rem; }
+.analysis-overflow-menu button { min-height: 2.75rem; padding: .5rem .65rem; border: 0; border-radius: .35rem; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
 .analysis-overflow-menu button:hover, .analysis-overflow-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .analysis-overflow-menu button:disabled { color: var(--muted); cursor: not-allowed; }
-.analysis-card.is-dragging { z-index: 2; transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 .8rem 1.8rem rgb(0 0 0 / 22%); }
+.analysis-card.is-dragging { z-index: 2; transform: translateY(-4px); border-color: var(--accent); box-shadow: var(--shadow-popover); }
 .analysis-card.is-drop-before::before, .analysis-card.is-drop-after::before { content: ''; position: absolute; z-index: 4; top: .55rem; bottom: .55rem; width: .22rem; border-radius: .2rem; background: var(--accent); pointer-events: none; }
 .analysis-card.is-drop-before::before { left: -.52rem; }
 .analysis-card.is-drop-after::before { right: -.52rem; }

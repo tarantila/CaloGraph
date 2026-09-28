@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({
@@ -18,6 +18,7 @@ import AnalysisOverviewView from '../src/views/AnalysisOverviewView.vue'
 import AnalysisWeightDetailView from '../src/views/AnalysisWeightDetailView.vue'
 import { setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
+import { setThemePreference } from '../src/theme'
 
 const registry = [
   { analysis_key: 'weight_kg', category_key: 'body', domain_key: 'weight_kg', status: 'available', card_capable: true, detail_capable: true, reader_key: 'analytics.weight', period_capability: { min_days: 1, max_days: 3661, custom_range: true } },
@@ -139,6 +140,12 @@ beforeEach(() => {
     if (path.startsWith('/analytics/trends')) return Promise.resolve({ points: [], budget_balance: null })
     return Promise.resolve({})
   })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  setThemePreference('system')
+  setLocale('de')
 })
 
 describe('Analysis V2 hub and catalogue', () => {
@@ -469,6 +476,103 @@ describe('Analysis V2 hub and catalogue', () => {
 })
 
 describe('Analysis V2 detail views', () => {
+  it('retokens populated detail charts on theme changes without rereading data', async () => {
+    const colors: Record<string, readonly [string, string]> = {
+      '--chart-background': ['#111d2f', '#ffffff'],
+      '--chart-grid': ['#263449', '#d6deea'],
+      '--chart-axis': ['#60738d', '#64748b'],
+      '--chart-label': ['#bac5d3', '#475569'],
+      '--chart-tooltip-bg': ['#111d30', '#ffffff'],
+      '--chart-tooltip-border': ['#324157', '#bac5d5'],
+      '--chart-tooltip-ink': ['#f3f6fb', '#182132'],
+      '--chart-series-violet': ['#8b5cf6', '#6d28d9'],
+      '--chart-series-teal': ['#2dd4bf', '#08776f'],
+      '--chart-series-blue': ['#5b8ff9', '#315fc3'],
+      '--chart-series-budget': ['#fb923c', '#a7500a'],
+      '--chart-series-active': ['#f6c445', '#855d00'],
+      '--chart-series-baseline': ['#64748b', '#526071'],
+      '--chart-series-lilac': ['#d19bff', '#7446af'],
+    }
+    vi.stubGlobal('getComputedStyle', (element: Element) => ({
+      getPropertyValue: (name: string) => {
+        const values = colors[name]
+        return values?.[element.getAttribute('data-theme') === 'light' ? 1 : 0] ?? ''
+      },
+    }) as CSSStyleDeclaration)
+    apiMock.mockImplementation((path: string) => {
+      if (path === '/analytics/registry') return Promise.resolve({ analyses: registry })
+      if (path === '/settings/analysis-preferences') return Promise.resolve({ analysis_keys: selectedKeys })
+      if (path.startsWith('/analytics/weight')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        const nextDate = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+        return Promise.resolve({
+          start_date: start, end_date: params.get('end') ?? nextDate, selected_provider: null,
+          points: [{ date: start, weight_kg: 71 }, { date: nextDate, weight_kg: 72 }],
+          summary: { measurement_count: 2, latest: { date: nextDate, weight_kg: 72 }, change_kg: 1, average_kg: 71.5, minimum_kg: 71, maximum_kg: 72 },
+        })
+      }
+      if (path.startsWith('/analytics/verification/activity')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        return Promise.resolve({
+          start_date: start, end_date: params.get('end') ?? start, view: 'canonical',
+          days: [{ date: start, canonical: { provider_key: 'yazio', status: 'available', active_energy_kcal: 200, record_count: 1, source_types: [] }, providers: [] }],
+        })
+      }
+      if (path.startsWith('/analytics/nutrition/micronutrients')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start') ?? '2026-03-25'
+        const nextDate = new Date(Date.parse(`${start}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+        return Promise.resolve({
+          start_date: start, end_date: params.get('end') ?? nextDate, selected_provider: null, period_days: 7,
+          metrics: [{ metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin', unit: 'ug', eu_nrv: 800, total: 30, days_with_data: 2, contributors: [] }],
+          series: [{ date: start, provider_key: 'yazio', value: 10 }, { date: nextDate, provider_key: 'yazio', value: 20 }],
+        })
+      }
+      return Promise.resolve({})
+    })
+    setThemePreference('dark')
+
+    const cases = [
+      { path: '/analyse/aktivitaet/aktive-energie', key: 'active_energy_kcal', seriesColor: '#855d00' },
+      { path: '/analyse/koerper/gewicht', key: 'weight_kg', seriesColor: '#6d28d9' },
+      { path: '/analyse/mikronaehrstoffe/vitamin_a_ug', key: 'vitamin_a_ug', seriesColor: '#7446af' },
+    ]
+    for (const chartCase of cases) {
+      const { wrapper } = await mountAnalysis(chartCase.path, [chartCase.key])
+      const chart = wrapper.findComponent({ name: 'ChartPanel' })
+      expect(chart.exists()).toBe(true)
+      type ThemeOption = {
+        backgroundColor: string
+        tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
+        xAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string } }
+        yAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string }; splitLine: { lineStyle: { color: string } } }
+        series: Array<{ name: string; type: string; connectNulls?: boolean; data: unknown[]; lineStyle: { color: string } }>
+      }
+      const before = chart.props('option') as ThemeOption
+      expect(before.series[0]!.data.length).toBeGreaterThan(0)
+      const apiCallCount = apiMock.mock.calls.length
+
+      setThemePreference('light')
+      await flushPromises()
+      const after = chart.props('option') as ThemeOption
+
+      expect(after.backgroundColor).toBe('#ffffff')
+      expect(after.tooltip).toMatchObject({ backgroundColor: '#ffffff', borderColor: '#bac5d5', textStyle: { color: '#182132' } })
+      expect(after.xAxis.axisLine.lineStyle.color).toBe('#64748b')
+      expect(after.xAxis.axisLabel.color).toBe('#475569')
+      expect(after.yAxis.axisLine.lineStyle.color).toBe('#64748b')
+      expect(after.yAxis.axisLabel.color).toBe('#475569')
+      expect(after.yAxis.splitLine.lineStyle.color).toBe('#d6deea')
+      expect(after.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
+        .toEqual(before.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
+      expect(after.series[0]!.lineStyle.color).toBe(chartCase.seriesColor)
+      expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+      wrapper.unmount()
+      setThemePreference('dark')
+    }
+  })
   it('renders sparse weight points and reports summary fields from the weight reader', async () => {
     apiMock.mockImplementation((path: string) => path.startsWith('/analytics/weight')
       ? Promise.resolve({

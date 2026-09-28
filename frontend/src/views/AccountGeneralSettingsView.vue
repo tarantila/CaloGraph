@@ -12,6 +12,13 @@ import {
   weightUnitToUnitSystem,
   type UnitSystem,
 } from '../units'
+import {
+  effectiveTheme,
+  setThemePreference,
+  themePreference,
+  type ThemePreference,
+} from '../theme'
+
 const t = i18n.global.t.bind(i18n.global)
 const { profile, loaded, load, save, invalidate } = useProfilePreferences()
 const unitSystem = computed<UnitSystem>({
@@ -118,6 +125,23 @@ const unitSystems: readonly UnitSystem[] = ['metric', 'imperial']
       <p>{{ t('accountGeneral.description') }}</p>
     </div>
   </div>
+
+  <section class="card form-card account-appearance-card">
+    <h2>{{ t('accountGeneral.appearance.title') }}</h2>
+    <label class="field">
+      <span>{{ t('accountGeneral.appearance.mode') }}</span>
+      <select
+        name="theme_preference"
+        :value="themePreference"
+        @change="setThemePreference(($event.target as HTMLSelectElement).value as ThemePreference)"
+      >
+        <option value="system">{{ t('accountGeneral.appearance.system') }}</option>
+        <option value="light">{{ t('accountGeneral.appearance.light') }}</option>
+        <option value="dark">{{ t('accountGeneral.appearance.dark') }}</option>
+      </select>
+    </label>
+    <p>{{ t('accountGeneral.appearance.help', { mode: t(`accountGeneral.appearance.${effectiveTheme}`) }) }}</p>
+  </section>
 
   <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">
     {{ t('accountGeneral.loading') }}

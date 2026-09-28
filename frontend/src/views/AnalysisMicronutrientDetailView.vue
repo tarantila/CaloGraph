@@ -8,6 +8,7 @@ import { analysisHubQuery, localizedAnalysisPresentation, parseAnalysisHubPeriod
 import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -57,18 +58,43 @@ const actualReadings = computed(() => (response.value?.series ?? []).filter(
   (point) => point.value !== null && Number.isFinite(point.value),
 ))
 const hasSeriesValues = computed(() => actualReadings.value.length > 0)
-const chartOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: 'axis' },
-  xAxis: { type: 'category', data: response.value?.series.map((point) => point.date) ?? [], axisLabel: { formatter: (value: string | number) => formatGermanDate(String(value).slice(0, 10)) } },
-  yAxis: { type: 'value' },
-  series: [{
-    name: detailPresentation.value?.label ?? t('analysisV2.micronutrientDetailTitle'),
-    type: 'line',
-    connectNulls: false,
-    showSymbol: true,
-    data: response.value?.series.map((point) => point.value) ?? [],
-  }],
-}))
+const chartOption = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  return {
+    backgroundColor: palette.background,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
+    },
+    xAxis: {
+      type: 'category',
+      data: response.value?.series.map((point) => point.date) ?? [],
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisLabel: {
+        color: palette.label,
+        formatter: (value: string | number) => formatGermanDate(String(value).slice(0, 10)),
+      },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisLabel: { color: palette.label },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    series: [{
+      name: detailPresentation.value?.label ?? t('analysisV2.micronutrientDetailTitle'),
+      type: 'line',
+      connectNulls: false,
+      showSymbol: true,
+      data: response.value?.series.map((point) => point.value) ?? [],
+      lineStyle: { color: palette.lilac, width: 2 },
+      itemStyle: { color: palette.lilac },
+    }],
+  }
+})
 
 function contributors(): string {
   return metric.value?.contributors.map((item) => t(

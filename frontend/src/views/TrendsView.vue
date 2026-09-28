@@ -17,6 +17,7 @@ import { api, localizeApiError } from '../api'
 import { parseAnalyticsCompactPreset, type AnalyticsCompactPreset } from '../analytics-period'
 import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { formatGermanDate, formatGermanDayMonth, isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -203,19 +204,20 @@ function formatCalorieTooltip(params: unknown) {
   return [`<strong>${entries[0].axisValueLabel}</strong>`, ...rows].join('<br/>')
 }
 
-const tooltip = {
-  trigger: 'axis' as const,
-  backgroundColor: '#111d30',
-  borderColor: '#324157',
-  textStyle: { color: '#f3f6fb' },
-}
-const legendText = { color: '#98a5b9', fontFamily: 'Inter' }
-const axisLine = { lineStyle: { color: '#263449' } }
-const axisLabel = { color: '#98a5b9', fontFamily: 'Inter' }
-const calorieAxisLabel = { ...axisLabel, formatter: (value: number) => kcal.format(value) }
-const splitLine = { lineStyle: { color: '#263449', type: 'dashed' as const } }
 
 const calorieOption = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  const tooltip = {
+    trigger: 'axis' as const,
+    backgroundColor: palette.tooltipBackground,
+    borderColor: palette.tooltipBorder,
+    textStyle: { color: palette.tooltipInk },
+  }
+  const legendText = { color: palette.label, fontFamily: 'Inter' }
+  const axisLine = { lineStyle: { color: palette.axis } }
+  const axisLabel = { color: palette.label, fontFamily: 'Inter' }
+  const calorieAxisLabel = { ...axisLabel, formatter: (value: number) => kcal.format(value) }
+  const splitLine = { lineStyle: { color: palette.grid, type: 'dashed' as const } }
   const budgetSeries: LineSeriesOption[] = activityRelevant.value
     ? [
         {
@@ -223,8 +225,8 @@ const calorieOption = computed<EChartsOption>(() => {
           type: 'line' as const,
           showSymbol: false,
           data: points.value.map((item) => item.target_kcal),
-          lineStyle: { color: '#64748b', type: 'dashed', width: 2 },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: palette.baseline, type: 'dashed', width: 2 },
+          itemStyle: { color: palette.baseline },
         },
         {
           name: t('charts.effectiveDailyBudget'),
@@ -233,8 +235,8 @@ const calorieOption = computed<EChartsOption>(() => {
           data: points.value.map((item) =>
             hasActivityCredit(item) ? item.effective_budget_kcal : null,
           ),
-          lineStyle: { color: '#fb923c', type: 'dashed', width: 2 },
-          itemStyle: { color: '#fb923c' },
+          lineStyle: { color: palette.budget, type: 'dashed', width: 2 },
+          itemStyle: { color: palette.budget },
         },
       ]
     : [
@@ -243,12 +245,12 @@ const calorieOption = computed<EChartsOption>(() => {
           type: 'line' as const,
           showSymbol: false,
           data: points.value.map((item) => item.target_kcal),
-          lineStyle: { color: '#64748b', type: 'dashed', width: 2 },
-          itemStyle: { color: '#64748b' },
+          lineStyle: { color: palette.baseline, type: 'dashed', width: 2 },
+          itemStyle: { color: palette.baseline },
         },
       ]
   return {
-    animationDuration: 500,
+    backgroundColor: palette.background,
     tooltip: { ...tooltip, formatter: formatCalorieTooltip },
     legend: {
       top: 0,
@@ -273,7 +275,7 @@ const calorieOption = computed<EChartsOption>(() => {
       axisTick: { show: false },
       axisLabel: { ...axisLabel, hideOverlap: true },
     },
-    yAxis: { type: 'value', name: t('common.kcal'), nameTextStyle: axisLabel, axisLabel: calorieAxisLabel, splitLine },
+    yAxis: { type: 'value', name: t('common.kcal'), axisLine: { lineStyle: { color: palette.axis } }, nameTextStyle: axisLabel, axisLabel: calorieAxisLabel, splitLine },
     series: [
       {
         name: t('charts.calories'),
@@ -281,7 +283,7 @@ const calorieOption = computed<EChartsOption>(() => {
         stack: 'calories',
         barMaxWidth: 24,
         data: points.value.map((item) => item.calories_kcal),
-        itemStyle: { color: '#8b5cf6', borderRadius: [4, 4, 0, 0] },
+        itemStyle: { color: palette.violet, borderRadius: [4, 4, 0, 0] },
       },
       ...(activityRelevant.value
         ? [{
@@ -291,8 +293,8 @@ const calorieOption = computed<EChartsOption>(() => {
             barMaxWidth: 24,
             data: activityCreditData.value,
             itemStyle: {
-              color: '#f6c445',
-              borderColor: '#ffe08a',
+              color: palette.active,
+              borderColor: palette.active,
               borderWidth: 1,
               borderRadius: [3, 3, 0, 0],
             },
@@ -303,73 +305,86 @@ const calorieOption = computed<EChartsOption>(() => {
         type: 'line',
         showSymbol: false,
         data: points.value.map((item) => item.average_7d),
-        lineStyle: { color: '#2dd4bf', width: 3 },
+        lineStyle: { color: palette.teal, width: 3 },
       },
       {
         name: t('trends.average14'),
         type: 'line',
         showSymbol: false,
         data: points.value.map((item) => item.average_14d),
-        lineStyle: { color: '#5b8ff9', width: 2 },
+        lineStyle: { color: palette.blue, width: 2 },
       },
       {
         name: t('trends.average28'),
         type: 'line',
         showSymbol: false,
         data: points.value.map((item) => item.average_28d),
-        lineStyle: { color: '#d19bff', width: 2 },
+        lineStyle: { color: palette.lilac, width: 2 },
       },
       ...budgetSeries,
     ],
   }
 })
 
-const nutritionOption = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: {
-    ...tooltip,
-    trigger: 'axis',
-    valueFormatter: (value) => `${decimal.format(Number(value))} ${t('common.grams')}`,
-  },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [t('charts.protein'), t('charts.carbs'), t('charts.fat')],
-    textStyle: legendText,
-  },
-  grid: { left: 58, right: 18, top: 48, bottom: 38 },
-  xAxis: {
-    type: 'category',
-    data: points.value.map((item) => formatGermanDayMonth(item.date)),
-    axisLine,
-    axisTick: { show: false },
-    axisLabel: { ...axisLabel, hideOverlap: true },
-  },
-  yAxis: { type: 'value', name: t('common.grams'), nameTextStyle: axisLabel, axisLabel, splitLine },
-  series: [
-    {
-      name: t('charts.protein'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.protein_g),
-      lineStyle: { color: '#2dd4bf', width: 2 },
+const nutritionOption = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  const tooltip = {
+    trigger: 'axis' as const,
+    backgroundColor: palette.tooltipBackground,
+    borderColor: palette.tooltipBorder,
+    textStyle: { color: palette.tooltipInk },
+  }
+  const legendText = { color: palette.label, fontFamily: 'Inter' }
+  const axisLine = { lineStyle: { color: palette.axis } }
+  const axisLabel = { color: palette.label, fontFamily: 'Inter' }
+  const splitLine = { lineStyle: { color: palette.grid, type: 'dashed' as const } }
+  return {
+    animationDuration: 500,
+    backgroundColor: palette.background,
+    tooltip: {
+      ...tooltip,
+      valueFormatter: (value) => `${decimal.format(Number(value))} ${t('common.grams')}`,
     },
-    {
-      name: t('charts.carbs'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.carbs_g),
-      lineStyle: { color: '#f6ad35', width: 2 },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [t('charts.protein'), t('charts.carbs'), t('charts.fat')],
+      textStyle: legendText,
     },
-    {
-      name: t('charts.fat'),
-      type: 'line',
-      showSymbol: false,
-      data: points.value.map((item) => item.fat_g),
-      lineStyle: { color: '#a78bfa', width: 2 },
+    grid: { left: 58, right: 18, top: 48, bottom: 38 },
+    xAxis: {
+      type: 'category',
+      data: points.value.map((item) => formatGermanDayMonth(item.date)),
+      axisLine,
+      axisTick: { show: false },
+      axisLabel: { ...axisLabel, hideOverlap: true },
     },
-  ],
-}))
+    yAxis: { type: 'value', name: t('common.grams'), axisLine: { lineStyle: { color: palette.axis } }, nameTextStyle: axisLabel, axisLabel, splitLine },
+    series: [
+      {
+        name: t('charts.protein'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.protein_g),
+        lineStyle: { color: palette.teal, width: 2 },
+      },
+      {
+        name: t('charts.carbs'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.carbs_g),
+        lineStyle: { color: palette.blue, width: 2 },
+      },
+      {
+        name: t('charts.fat'),
+        type: 'line',
+        showSymbol: false,
+        data: points.value.map((item) => item.fat_g),
+        lineStyle: { color: palette.lilac, width: 2 },
+      },
+    ],
+  }
+})
 </script>
 
 <template>

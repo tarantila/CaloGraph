@@ -429,6 +429,14 @@ const en = {
   accountGeneral: {
     title: 'General settings',
     description: 'Choose the language, time zone, week start and unit system for your account.',
+    appearance: {
+      title: 'Appearance',
+      mode: 'Appearance mode',
+      system: 'System',
+      light: 'Light',
+      dark: 'Dark',
+      help: 'Current appearance: {mode}.',
+    },
     loading: 'Loading general settings …',
     retry: 'Try again',
     formTitle: 'Preferences',

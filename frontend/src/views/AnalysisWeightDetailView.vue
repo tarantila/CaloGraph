@@ -7,6 +7,7 @@ import { api, localizeApiError } from '../api'
 import { analysisHubQuery, analysisRangeForDays, type AnalysisHubPeriod } from '../analysis-v2'
 import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -50,25 +51,48 @@ const period = ref<WeightPreset>(queryRangeIsValid
 const points = computed(() => [...(response.value?.points ?? [])].sort((left, right) => left.date.localeCompare(right.date)))
 const summary = computed(() => response.value?.summary ?? null)
 const change = computed(() => points.value.length >= 2 ? summary.value?.change_kg ?? null : null)
-const chartOption = computed<EChartsOption>(() => ({
-  xAxis: {
-    type: 'time',
-    axisLabel: {
-      hideOverlap: true,
-      formatter: (value: string | number) => formatGermanDate(new Date(value).toISOString().slice(0, 10)),
+const chartOption = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  return {
+    backgroundColor: palette.background,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
     },
-  },
-  yAxis: { type: 'value', name: 'kg', scale: true },
-  series: [{
-    name: t('analysisV2.weightTitle'),
-    type: 'line',
-    showSymbol: true,
-    symbol: 'circle',
-    symbolSize: 8,
-    connectNulls: false,
-    data: points.value.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
-  }],
-}))
+    xAxis: {
+      type: 'time',
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisLabel: {
+        color: palette.label,
+        hideOverlap: true,
+        formatter: (value: string | number) => formatGermanDate(new Date(value).toISOString().slice(0, 10)),
+      },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      name: 'kg',
+      scale: true,
+      nameTextStyle: { color: palette.label },
+      axisLabel: { color: palette.label },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    series: [{
+      name: t('analysisV2.weightTitle'),
+      type: 'line',
+      showSymbol: true,
+      symbol: 'circle',
+      symbolSize: 8,
+      connectNulls: false,
+      data: points.value.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
+      lineStyle: { color: palette.violet, width: 2 },
+      itemStyle: { color: palette.violet },
+    }],
+  }
+})
 
 function formatWeight(value: number | null | undefined): string {
   return value === null || value === undefined ? '–' : `${number.format(value)} kg`

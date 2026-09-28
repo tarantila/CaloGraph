@@ -57,6 +57,7 @@ import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
+import { setThemePreference } from '../src/theme'
 
 const user = {
   id: 'user-1',
@@ -71,6 +72,33 @@ const user = {
   highlight_over_budget: false,
 }
 
+const chartThemeValues: Record<string, readonly [string, string]> = {
+  '--chart-background': ['#111d2f', '#ffffff'],
+  '--chart-grid': ['#263449', '#d6deea'],
+  '--chart-axis': ['#60738d', '#64748b'],
+  '--chart-label': ['#bac5d3', '#475569'],
+  '--chart-tooltip-bg': ['#111d30', '#ffffff'],
+  '--chart-tooltip-border': ['#324157', '#bac5d5'],
+  '--chart-tooltip-ink': ['#f3f6fb', '#182132'],
+  '--chart-series-violet': ['#8b5cf6', '#6d28d9'],
+  '--chart-series-teal': ['#2dd4bf', '#08776f'],
+  '--chart-series-blue': ['#5b8ff9', '#315fc3'],
+  '--chart-series-budget': ['#fb923c', '#a7500a'],
+  '--chart-series-active': ['#f6c445', '#855d00'],
+  '--chart-series-baseline': ['#64748b', '#526071'],
+  '--chart-series-lilac': ['#d19bff', '#7446af'],
+}
+
+function installChartThemeStyles() {
+  vi.stubGlobal('getComputedStyle', (element: Element) => ({
+    getPropertyValue: (name: string) => {
+      const colors = chartThemeValues[name]
+      if (!colors) return ''
+      return colors[element.getAttribute('data-theme') === 'light' ? 1 : 0]
+    },
+  }) as CSSStyleDeclaration)
+}
+
 describe('main views', () => {
   beforeEach(() => {
     apiMock.mockReset()
@@ -80,8 +108,12 @@ describe('main views', () => {
     config.global.stubs = {
       RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
     }
+    installChartThemeStyles()
+    setThemePreference('dark')
   })
   afterEach(() => {
+    vi.unstubAllGlobals()
+    setThemePreference('system')
     setLocale(DEFAULT_LOCALE)
   })
 
@@ -114,6 +146,8 @@ describe('main views', () => {
       }
       return Promise.resolve({ points: [] })
     })
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Ernährungsüberblick')
@@ -141,6 +175,31 @@ describe('main views', () => {
     expect(apiMock).toHaveBeenCalledWith(
       '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true&period=all',
     )
+
+    type ChartOption = {
+      backgroundColor: string
+      tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
+      series: Array<{ data: unknown[]; itemStyle?: { color?: string }; lineStyle?: { color?: string } }>
+    }
+    const charts = wrapper.findAllComponents(ChartPanel)
+    expect(charts).toHaveLength(2)
+    const before = charts.map((chart) => chart.props('option') as ChartOption)
+    const apiCallCount = apiMock.mock.calls.length
+
+    setThemePreference('light')
+    await flushPromises()
+
+    const after = charts.map((chart) => chart.props('option') as ChartOption)
+    expect(after.map((option) => option.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((option) => option.tooltip.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((option) => option.tooltip.borderColor)).toEqual(['#bac5d5', '#bac5d5'])
+    expect(after.map((option) => option.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
+    expect(after.map((option) => option.series.map((series) => series.data)))
+      .toEqual(before.map((option) => option.series.map((series) => series.data)))
+    expect(after[0].series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(after[1].series[0].itemStyle?.color).toBe('#08776f')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
   it('zeigt bei dauerhaftem Dashboard-Transportfehler einen lokalisierten Retry-Zustand', async () => {
     const auth = useAuthStore()
@@ -859,6 +918,8 @@ describe('main views', () => {
       ],
     })
 
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(TrendsView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
 
@@ -872,7 +933,7 @@ describe('main views', () => {
         barMaxWidth?: number
         itemStyle?: { color?: string; borderColor?: string; borderWidth?: number }
       }>
-      tooltip: { formatter: (params: unknown) => string }
+      tooltip: { formatter: (params: unknown) => string; backgroundColor: string; borderColor: string }
     }
     expect(option.legend.data).toContain('Aktivitätsgutschrift')
     const barSeries = option.series.filter((series) => series.type === 'bar')
@@ -884,7 +945,7 @@ describe('main views', () => {
     expect(activitySeries?.data).toEqual([310, null, null, null])
     expect(activitySeries?.itemStyle).toMatchObject({
       color: '#f6c445',
-      borderColor: '#ffe08a',
+      borderColor: '#f6c445',
       borderWidth: 1,
     })
     expect(activitySeries?.itemStyle?.color).not.toBe('#fb923c')
@@ -912,6 +973,29 @@ describe('main views', () => {
     }])
     expect(missingActivityTooltip).toContain('Tagesbudget: 1.580 kcal')
     expect(missingActivityTooltip).not.toContain('Aktivitätsgutschrift')
+
+    type ThemeOption = {
+      backgroundColor: string
+      tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
+      series: Array<{ data: unknown[]; itemStyle?: { color?: string }; lineStyle?: { color?: string } }>
+    }
+    const charts = wrapper.findAllComponents(ChartPanel)
+    const before = charts.map((chart) => chart.props('option') as ThemeOption)
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
+    await flushPromises()
+    const after = charts.map((chart) => chart.props('option') as ThemeOption)
+
+    expect(after.map((chart) => chart.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((chart) => chart.tooltip.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((chart) => chart.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
+    expect(after.map((chart) => chart.series.map((series) => series.data)))
+      .toEqual(before.map((chart) => chart.series.map((series) => series.data)))
+    expect(after[0].series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(after[0].series[1].itemStyle?.color).toBe('#855d00')
+    expect(after[1].series[0].lineStyle?.color).toBe('#08776f')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
 
   it('does not backfill historical days with the current calorie target', async () => {
@@ -983,12 +1067,26 @@ describe('main views', () => {
   })
 
   it('renders an empty weekly budget without converting missing data to zero days', async () => {
+    installChartThemeStyles()
+    setThemePreference('dark')
     apiMock.mockResolvedValue({ weeks: [] })
     const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Wochenbudget')
     expect(wrapper.text()).toContain('Noch keine Wochenwerte vorhanden.')
     expect(wrapper.text()).not.toContain('0 kcal')
+
+    const chart = wrapper.findComponent(ChartPanel)
+    const before = chart.props('option') as { backgroundColor: string; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
+    await flushPromises()
+    const after = chart.props('option') as { backgroundColor: string; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    expect(after.backgroundColor).toBe('#ffffff')
+    expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
+    expect(after.series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
   it('uses the configured Sunday week start in weekly range labels', async () => {
     apiMock.mockResolvedValue({
@@ -1566,6 +1664,8 @@ describe('main views', () => {
     await router.push('/')
     await router.isReady()
 
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(WeekdaysView, {
       global: { plugins: [router], stubs: { ChartPanel: true } },
     })
@@ -1582,6 +1682,20 @@ describe('main views', () => {
     await flushPromises()
     expect(apiMock).toHaveBeenCalledTimes(2)
     expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
+
+    type WeekdayOption = { backgroundColor: string; tooltip: { backgroundColor: string }; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    const chart = wrapper.findComponent(ChartPanel)
+    const before = chart.props('option') as WeekdayOption
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
+    await flushPromises()
+    const after = chart.props('option') as WeekdayOption
+    expect(after.backgroundColor).toBe('#ffffff')
+    expect(after.tooltip.backgroundColor).toBe('#ffffff')
+    expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
+    expect(after.series[0].itemStyle?.color).toBe('#6d28d9')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
 
   it('renders import batch errors and status counts', async () => {
