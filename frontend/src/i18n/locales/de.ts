@@ -520,7 +520,7 @@ const de = {
       system: 'System',
       light: 'Hell',
       dark: 'Dunkel',
-      help: 'Aktuelle Darstellung: {mode}.',
+      help: 'Aktuelle Darstellung: {mode}',
     },
     loading: 'Allgemeine Einstellungen werden geladen …',
     retry: 'Erneut versuchen',

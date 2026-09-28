@@ -89,13 +89,13 @@
   --chart-tooltip-bg: #fff;
   --chart-tooltip-border: #bac5d5;
   --chart-tooltip-ink: #182132;
-  --chart-series-violet: #6d28d9;
-  --chart-series-teal: #08776f;
-  --chart-series-blue: #315fc3;
-  --chart-series-budget: #a7500a;
-  --chart-series-active: #855d00;
-  --chart-series-baseline: #526071;
-  --chart-series-lilac: #7446af;
+  --chart-series-violet: #7c3aed;
+  --chart-series-teal: #278979;
+  --chart-series-blue: #2563eb;
+  --chart-series-budget: #d97706;
+  --chart-series-active: #d97706;
+  --chart-series-baseline: #64748b;
+  --chart-series-lilac: #a855f7;
 }
 
 
@@ -135,13 +135,13 @@
     --chart-tooltip-bg: #fff;
     --chart-tooltip-border: #bac5d5;
     --chart-tooltip-ink: #182132;
-    --chart-series-violet: #6d28d9;
-    --chart-series-teal: #08776f;
-    --chart-series-blue: #315fc3;
-    --chart-series-budget: #a7500a;
-    --chart-series-active: #855d00;
-    --chart-series-baseline: #526071;
-    --chart-series-lilac: #7446af;
+    --chart-series-violet: #7c3aed;
+    --chart-series-teal: #278979;
+    --chart-series-blue: #2563eb;
+    --chart-series-budget: #d97706;
+    --chart-series-active: #d97706;
+    --chart-series-baseline: #64748b;
+    --chart-series-lilac: #a855f7;
   }
 }
 

@@ -78,6 +78,74 @@ test('shared palette provides readable light and dark surfaces', async ({ page }
   expect(light.focusColor).not.toBe('rgba(0, 0, 0, 0)')
   expect(light.popoverBackground).not.toBe('rgba(0, 0, 0, 0)')
 })
+test('uses the prescribed light chart palette and keeps dark roles unchanged', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.addInitScript(() => {
+    if (localStorage.getItem('calograph.theme') === null) localStorage.setItem('calograph.theme', 'light')
+  })
+  await page.route('**/api/**', (route) => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: JSON.stringify({ detail: 'Synthetic unauthenticated session' }),
+  }))
+  await page.goto('/')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+
+  const readSeriesColors = () => page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement)
+    const color = (name: string) => style.getPropertyValue(name).trim()
+    return {
+      violet: color('--chart-series-violet'),
+      blue: color('--chart-series-blue'),
+      teal: color('--chart-series-teal'),
+      budget: color('--chart-series-budget'),
+      active: color('--chart-series-active'),
+      baseline: color('--chart-series-baseline'),
+      lilac: color('--chart-series-lilac'),
+    }
+  })
+  const light = {
+    violet: '#7c3aed',
+    blue: '#2563eb',
+    teal: '#278979',
+    budget: '#d97706',
+    active: '#d97706',
+    baseline: '#64748b',
+    lilac: '#a855f7',
+  }
+  expect(await readSeriesColors()).toEqual(light)
+
+  await page.evaluate(() => localStorage.setItem('calograph.theme', 'dark'))
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  expect(await readSeriesColors()).toEqual({
+    violet: '#8b5cf6',
+    blue: '#5b8ff9',
+    teal: '#2dd4bf',
+    budget: '#fb923c',
+    active: '#f6c445',
+    baseline: '#64748b',
+    lilac: '#d19bff',
+  })
+
+  await page.emulateMedia({ colorScheme: 'light' })
+  const fallback = await page.evaluate(() => {
+    document.documentElement.removeAttribute('data-theme')
+    const style = getComputedStyle(document.documentElement)
+    const color = (name: string) => style.getPropertyValue(name).trim()
+    return {
+      violet: color('--chart-series-violet'),
+      blue: color('--chart-series-blue'),
+      teal: color('--chart-series-teal'),
+      budget: color('--chart-series-budget'),
+      active: color('--chart-series-active'),
+      baseline: color('--chart-series-baseline'),
+      lilac: color('--chart-series-lilac'),
+    }
+  })
+  expect(fallback).toEqual(light)
+})
+
 test('shared controls, status surfaces, and calendar follow the selected theme', async ({ page }) => {
   await page.goto('/')
   await page.evaluate(() => {
@@ -324,6 +392,28 @@ test('keeps the local appearance selector usable across delayed and failed profi
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   expect(profileWrites).toBe(0)
   await expect(page.locator('select[name="language"]')).toBeVisible()
+  const accountStack = page.locator('.account-page-stack')
+  await expect(accountStack).toHaveCount(1)
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    const layout = await accountStack.evaluate((element) => ({
+      rowGap: getComputedStyle(element).rowGap,
+      cardOrder: Array.from(element.children).map((child) => ({
+        settings: child.classList.contains('account-form-card'),
+        appearance: child.classList.contains('account-appearance-card'),
+      })),
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }))
+    expect(layout.rowGap).toBe('16px')
+    expect(layout.cardOrder).toEqual([
+      { settings: true, appearance: false },
+      { settings: false, appearance: true },
+    ])
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+
   await page.reload()
   await expect(page.getByRole('alert')).toContainText('Allgemeine Einstellungen konnten nicht geladen werden.')
   await expect(appearance).toHaveValue('light')

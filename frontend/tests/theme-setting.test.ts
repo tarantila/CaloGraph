@@ -140,29 +140,16 @@ describe('account appearance preference', () => {
     wrapper.unmount()
   })
 
-  it('localizes all appearance labels and the effective-theme help text', async () => {
+  it('places general settings before appearance in the shared account stack', async () => {
     const wrapper = mount(AccountGeneralSettingsView)
     await flushPromises()
-    const select = wrapper.get<HTMLSelectElement>('select[name="theme_preference"]')
 
-    expect(wrapper.text()).toContain('Darstellung')
-    expect(wrapper.text()).toContain('Darstellungsmodus')
-    expect(select.findAll('option').map((option) => option.text())).toEqual(['System', 'Hell', 'Dunkel'])
-    expect(wrapper.text()).toContain('Aktuelle Darstellung: Hell.')
+    expect(wrapper.findAll('.account-page-stack')).toHaveLength(1)
+    const stack = wrapper.get('.account-page-stack')
+    const settingsCard = wrapper.get('.account-form-card').element
+    const appearanceCard = wrapper.get('.account-appearance-card').element
 
-    setLocale('en')
-    setThemePreference('dark')
-    await flushPromises()
-    expect(wrapper.text()).toContain('Appearance')
-    expect(wrapper.text()).toContain('Appearance mode')
-    expect(select.findAll('option').map((option) => option.text())).toEqual(['System', 'Light', 'Dark'])
-    expect(select.element.value).toBe('dark')
-    expect(wrapper.text()).toContain('Current appearance: Dark.')
-
-    setThemePreference('system')
-    await flushPromises()
-    expect(select.element.value).toBe('system')
-    expect(wrapper.text()).toContain('Current appearance: Light.')
+    expect([...stack.element.children]).toEqual([settingsCard, appearanceCard])
     wrapper.unmount()
   })
 })
