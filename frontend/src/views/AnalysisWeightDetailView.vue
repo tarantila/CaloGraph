@@ -4,8 +4,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisHubQuery, analysisRangeForDays, type AnalysisHubPeriod } from '../analysis-v2'
 import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
+import { analysisHubQuery, analysisRangeForDays } from '../analysis-v2'
+import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone } from '../date-format'
@@ -13,8 +14,8 @@ import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { WeightResponse } from '../types'
 
-type WeightPreset = AnalysisHubPeriod | '90' | '180' | '365' | 'custom'
-const presets: readonly WeightPreset[] = ['7', '30', '90', '180', '365', 'custom']
+type WeightPreset = '7' | '30' | '90' | '365' | 'custom'
+const presets: readonly Exclude<WeightPreset, 'custom'>[] = ['7', '30', '90', '365']
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
@@ -39,14 +40,14 @@ const queryStart = queryString(route.query.start)
 const queryEnd = queryString(route.query.end)
 const queryRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
 const queryPeriod = queryString(route.query.period)
-const initialPreset = presets.find((value): value is Exclude<WeightPreset, 'custom'> => value !== 'custom' && value === queryPeriod)
+const initialPreset = presets.find((value) => value === queryPeriod)
 const initialRange = queryRangeIsValid
   ? { start: queryStart as string, end: queryEnd as string }
   : rangeForPreset(initialPreset ?? '30')
 const start = ref(initialRange.start)
 const end = ref(initialRange.end)
 const period = ref<WeightPreset>(queryRangeIsValid
-  ? (presets.find((value) => value !== 'custom' && start.value === rangeForPreset(value).start && end.value === rangeForPreset(value).end) ?? 'custom')
+  ? (presets.find((value) => start.value === rangeForPreset(value).start && end.value === rangeForPreset(value).end) ?? 'custom')
   : initialPreset ?? '30')
 const points = computed(() => [...(response.value?.points ?? [])].sort((left, right) => left.date.localeCompare(right.date)))
 const summary = computed(() => response.value?.summary ?? null)
@@ -82,10 +83,13 @@ const chartOption = computed<EChartsOption>(() => {
     },
     series: [{
       name: t('analysisV2.weightTitle'),
-      type: 'scatter',
+      type: 'line',
+      smooth: false,
+      showSymbol: true,
       symbol: 'circle',
       symbolSize: 8,
       data: points.value.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
+      lineStyle: { color: palette.violet, width: 2 },
       itemStyle: { color: palette.violet },
     }],
   }
@@ -125,18 +129,11 @@ async function load(): Promise<void> {
   }
 }
 
-async function choosePreset(value: WeightPreset): Promise<void> {
-  period.value = value
-  if (value === 'custom') return
-  const range = rangeForPreset(value)
-  start.value = range.start
-  end.value = range.end
-  await load()
-}
-
-async function applyCustomRange(): Promise<void> {
-  period.value = 'custom'
-  await load()
+function applyPeriod(value: { start: string; end: string; period: WeightPreset }): void {
+  period.value = value.period
+  start.value = value.start
+  end.value = value.end
+  void load()
 }
 
 watch(
@@ -178,31 +175,16 @@ onMounted(() => { void load() })
         <h1>{{ t('analysisV2.weightTitle') }}</h1>
         <p>{{ t('analysisV2.weightDescription') }}</p>
       </div>
-      <section class="weight-period card" :aria-label="t('analysisV2.range')">
-        <div class="weight-period-presets" role="group" :aria-label="t('analysisV2.range')">
-          <button
-            v-for="choice in presets"
-            :key="choice"
-            class="button secondary"
-            type="button"
-            :aria-pressed="period === choice"
-            @click="choosePreset(choice)"
-          >
-            {{ t(choice === 'custom' ? 'analysisV2.customRange' : `analysisV2.range${choice}`) }}
-          </button>
-        </div>
-        <form v-if="period === 'custom'" class="weight-custom-range" @submit.prevent="applyCustomRange">
-          <label>
-            {{ t('analysisV2.startDate') }}
-            <input v-model="start" type="date" :max="today" required>
-          </label>
-          <label>
-            {{ t('analysisV2.endDate') }}
-            <input v-model="end" type="date" :max="today" required>
-          </label>
-          <button class="button secondary" type="submit">{{ t('analysisV2.applyRange') }}</button>
-        </form>
-      </section>
+      <AnalysisPeriodPicker
+        :start="start"
+        :end="end"
+        :today="today"
+        :period="period"
+        :presets="presets"
+        :custom-range="true"
+        :max-days="3661"
+        @apply="applyPeriod"
+      />
     </div>
 
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
@@ -265,12 +247,6 @@ onMounted(() => { void load() })
 .analysis-detail-page > .page-heading { margin-bottom: 0; }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
-.weight-period { display: grid; gap: .65rem; max-width: 100%; padding: .45rem; }
-.weight-period-presets { display: flex; flex-wrap: wrap; gap: .4rem; }
-.weight-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.weight-custom-range { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
-.weight-custom-range label { display: grid; gap: .3rem; }
-.weight-custom-range input { min-height: 2.5rem; }
 .weight-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: .8rem; }
 .weight-summary-grid article { display: grid; align-content: start; gap: .35rem; min-width: 0; }
 .weight-summary-primary, .weight-reading-list { padding: .9rem; }
@@ -290,7 +266,6 @@ onMounted(() => { void load() })
   .weight-summary-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 680px) {
-  .weight-period { width: 100%; }
   .weight-summary-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 440px) {

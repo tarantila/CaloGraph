@@ -90,7 +90,7 @@ const de = {
   analysisV2: {
     title: 'Analyse', description: 'Stelle deine Auswertungen zusammen und erkunde Messwerte im gewählten Zeitraum.',
     catalog: 'Analyse-Katalog', catalogDescription: 'Alle Messwerte in ihren Kategorien.',
-    period: 'Zeitraum', period7: '7 Tage', period30: '30 Tage', daysCoverage: '{count} von {total} Tagen mit Werten',
+    period: 'Zeitraum', period7: '7 Tage', period30: '30 Tage', period90: '90 Tage', periodYear: '1 Jahr', quickPeriods: 'Zeitraum auswählen', customRangeSummary: 'Benutzerdefiniert: {start} bis {end}', periodRangeError: 'Der Zeitraum darf höchstens {days} Tage umfassen.', daysCoverage: '{count} von {total} Tagen mit Werten',
     emptySelection: 'Noch keine Analysen ausgewählt', emptySelectionHelp: 'Füge unter Alle Analysen passende Messwerte hinzu.',
     myAnalyses: 'Meine Analysen', allAnalyses: 'Alle Analysen', inMyAnalyses: 'In Meine Analysen',
     micronutrientTypes: { vitamins: 'Vitamine', minerals: 'Mineralstoffe' },
@@ -109,7 +109,7 @@ const de = {
     measurementCount: '{count} Messungen', latestDate: 'Zuletzt am {date}', changeUnavailable: 'Mit weniger als zwei Messungen nicht verfügbar.',
     weightHistory: 'Gewichtsverlauf', weightReadings: 'Messwerte', weightEmpty: 'Für diesen Zeitraum liegen keine Gewichtswerte vor.',
     range: 'Zeitraum', range7: '7 Tage', range30: '30 Tage', range90: '90 Tage', range180: '180 Tage', range365: '365 Tage',
-    customRange: 'Eigener Zeitraum', invalidRange: 'Der Zeitraum muss gültig sein und darf höchstens 3661 Tage umfassen.', micronutrientRangeInvalid: 'Der Zeitraum darf höchstens 31 Tage umfassen.',
+    customRange: 'Benutzerdefiniert', invalidRange: 'Der Zeitraum muss gültig sein und darf höchstens 3661 Tage umfassen.', micronutrientRangeInvalid: 'Der Zeitraum darf höchstens 31 Tage umfassen.',
     applyRange: 'Zeitraum anwenden', startDate: 'Von', endDate: 'Bis',
     activityCoverage: '{count} von {total} Tagen mit Messwerten', activeEnergyChart: 'Aktive Energie pro Tag',
     activeEnergyDaily: 'Tageswerte', activeEnergyEmpty: 'Für diesen Zeitraum liegen keine Aktivitätswerte vor.',

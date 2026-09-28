@@ -95,7 +95,7 @@ async function dispatchPointer(
   }, { type, pointerId, pointerType, x, y })
 }
 
-test('Analysis hub has the shared heading inset and pointer drag previews and persists its destination', async ({ page }) => {
+test('Analysis hub uses a card-free shared heading and pointer drag persists its destination', async ({ page }) => {
   const { persistedOrders } = await installSyntheticAnalysisApi(page)
   await openHub(page)
 
@@ -105,15 +105,12 @@ test('Analysis hub has the shared heading inset and pointer drag previews and pe
   const headingStyles = await heading.evaluate((element) => ({
     fontSize: getComputedStyle(element).fontSize,
     lineHeight: getComputedStyle(element).lineHeight,
-    paddingTop: Number.parseFloat(getComputedStyle(element.parentElement!.parentElement!).paddingTop),
-    paddingLeft: Number.parseFloat(getComputedStyle(element.parentElement!.parentElement!).paddingLeft),
   }))
   expect(Number.parseFloat(headingStyles.fontSize)).toBeGreaterThanOrEqual(25)
   expect(Number.parseFloat(headingStyles.lineHeight))
     .toBeCloseTo(Number.parseFloat(headingStyles.fontSize) * 1.15, 1)
-  expect(headingStyles.paddingTop).toBeGreaterThanOrEqual(12)
-  expect(headingStyles.paddingLeft).toBeGreaterThanOrEqual(12)
-  expect(await header.evaluate((element) => element.classList.contains('page-heading'))).toBe(true)
+  expect(await header.evaluate((element) => element.classList.contains('card'))).toBe(false)
+  expect(await header.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
 
   const weightCard = page.locator('.analysis-card[data-analysis-key="weight_kg"]')
   const targetCard = page.locator('.analysis-card[data-analysis-key="active_energy_kcal"]')
@@ -124,6 +121,19 @@ test('Analysis hub has the shared heading inset and pointer drag previews and pe
   expect(sourceBox).not.toBeNull()
   expect(handleBox).not.toBeNull()
   expect(targetBox).not.toBeNull()
+  const railIcon = await weightCard.locator('.analysis-card-icon').boundingBox()
+  const railHandle = await handle.boundingBox()
+  const content = await weightCard.locator('.analysis-card-content').boundingBox()
+  const tools = await weightCard.locator('.analysis-card-tools').boundingBox()
+  expect(railIcon).not.toBeNull()
+  expect(railHandle).not.toBeNull()
+  expect(content).not.toBeNull()
+  expect(tools).not.toBeNull()
+  expect(railIcon!.y + railIcon!.height).toBeLessThanOrEqual(railHandle!.y)
+  expect(sourceBox!.x + sourceBox!.width - tools!.x - tools!.width).toBeGreaterThan(0)
+  expect(sourceBox!.x + sourceBox!.width - tools!.x - tools!.width).toBeLessThan(12)
+  expect(tools!.y - sourceBox!.y).toBeLessThan(12)
+  expect(content!.width).toBeGreaterThan(0)
   const startX = handleBox!.x + handleBox!.width / 2
   const startY = handleBox!.y + handleBox!.height / 2
   const grabOffsetX = startX - sourceBox!.x
@@ -151,12 +161,17 @@ test('Analysis hub has the shared heading inset and pointer drag previews and pe
   expect(dragFeedback.translate).not.toBe('none')
   expect(dragFeedback.scale).toBe('1.025')
   expect(dragFeedback.pointerEvents).toBe('none')
-  const slotSize = await targetCard.evaluate((card) => {
-    const slot = getComputedStyle(card, '::before')
-    return { width: Number.parseFloat(slot.width), height: Number.parseFloat(slot.height) }
+  const insertionMarker = await targetCard.evaluate((card) => {
+    const marker = getComputedStyle(card, '::after')
+    return {
+      width: Number.parseFloat(marker.width),
+      height: Number.parseFloat(marker.height),
+      borderStyle: marker.borderTopStyle,
+    }
   })
-  expect(slotSize.width).toBeGreaterThanOrEqual(targetBox!.width * 0.4)
-  expect(slotSize.height).toBeGreaterThanOrEqual(targetBox!.height * 0.8)
+  expect(insertionMarker.width).toBeGreaterThan(targetBox!.width * 0.7)
+  expect(insertionMarker.height).toBeCloseTo(3, 0)
+  expect(insertionMarker.borderStyle).not.toBe('dashed')
   await page.mouse.up()
 
   await expect.poll(() => persistedOrders.length).toBe(1)

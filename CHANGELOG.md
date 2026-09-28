@@ -31,6 +31,9 @@ follows [Semantic Versioning](https://semver.org/).
 - Added the authenticated canonical micronutrient period and daily-series API,
   with per-day provider provenance and null-versus-zero coverage semantics.
 - Analysis V2 cards and detail surfaces now use semantic energy/fat and coverage colors, discrete measured weight points, and responsive drag/keyboard interactions.
+- Analysis V2 card visuals now use domain-specific weight violet, active-energy amber, and micronutrient emerald roles. Reordered card content emphasizes the current KPI and trend chart, with a compact metric rail and subtle drag insertion marker.
+- A shared responsive period picker now exposes only reader-supported rolling presets, including a rolling 365-day year, and keeps validated custom ranges inside the same popover; weight accepts up to 3661 inclusive days and micronutrients up to 31.
+- Weight details use discrete, date-spaced violet line points; activity retains amber zero-based bars and missing-day gaps; micronutrients use emerald lines with subtle area fills and actual series gaps.
 
 ## [0.6.5] - 2026-09-07
 

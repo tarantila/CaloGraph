@@ -84,6 +84,7 @@ const chartThemeValues: Record<string, readonly [string, string]> = {
   '--chart-series-teal': ['#2dd4bf', '#278979'],
   '--chart-series-blue': ['#5b8ff9', '#2563eb'],
   '--chart-series-amber': ['#f6c445', '#d97706'],
+  '--chart-series-emerald': ['#34d399', '#047857'],
   '--chart-series-budget': ['#fb923c', '#d97706'],
   '--chart-series-baseline': ['#64748b', '#64748b'],
   '--chart-series-lilac': ['#d19bff', '#a855f7'],

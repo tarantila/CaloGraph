@@ -14,6 +14,7 @@ export interface ChartColors {
   teal: string
   blue: string
   amber: string
+  emerald: string
   budget: string
   baseline: string
   lilac: string
@@ -37,6 +38,7 @@ export const chartColors = computed<ChartColors>(() => {
     blue: role('--chart-series-blue'),
     amber: role('--chart-series-amber'),
     budget: role('--chart-series-budget'),
+    emerald: role('--chart-series-emerald'),
     baseline: role('--chart-series-baseline'),
     lilac: role('--chart-series-lilac'),
   }

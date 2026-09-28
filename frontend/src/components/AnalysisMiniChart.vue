@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-type AnalysisMiniChartColorRole = 'violet' | 'teal' | 'blue' | 'amber' | 'lilac'
+type AnalysisMiniChartColorRole = 'violet' | 'teal' | 'blue' | 'amber' | 'emerald' | 'lilac'
 
 const props = defineProps<{
   values: readonly (number | null)[]
@@ -124,7 +124,7 @@ const bars = computed(() => {
 </template>
 
 <style scoped>
-.analysis-mini-chart { display: block; width: 100%; height: 2.4rem; overflow: visible; }
+.analysis-mini-chart { display: block; width: 100%; height: 3rem; overflow: visible; }
 .analysis-mini-chart polyline { fill: none; stroke: var(--analysis-mini-chart-color); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .analysis-mini-chart circle { fill: var(--analysis-mini-chart-color); }
 .analysis-mini-chart rect { fill: color-mix(in srgb, var(--analysis-mini-chart-color) 74%, var(--surface)); }

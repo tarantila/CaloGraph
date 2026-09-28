@@ -6,7 +6,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, localizeApiError } from '../api'
 import { analysisHubQuery, localizedAnalysisPresentation, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
 import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
-import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
+import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
@@ -20,8 +20,6 @@ const router = useRouter()
 const auth = useAuthStore()
 const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 const number = createNumberFormatter({ maximumSignificantDigits: 4 })
-const compactPresets: AnalysisHubPeriod[] = ['7', '30']
-const desktopPresets = ['custom', '7', '30']
 
 function queryString(value: unknown): string | null {
   if (typeof value === 'string') return value
@@ -93,8 +91,9 @@ const chartOption = computed<EChartsOption>(() => {
       connectNulls: false,
       showSymbol: true,
       data: response.value?.series.map((point) => point.value) ?? [],
-      lineStyle: { color: palette.lilac, width: 2 },
-      itemStyle: { color: palette.lilac },
+      lineStyle: { color: palette.emerald, width: 2 },
+      itemStyle: { color: palette.emerald },
+      areaStyle: { color: palette.emerald, opacity: 0.12 },
     }],
   }
 })
@@ -158,15 +157,11 @@ async function load(): Promise<void> {
   }
 }
 
-function selectPeriod(value: string): void {
-  if (value === 'custom') {
-    period.value = 'custom'
-    return
-  }
-  const nextPeriod = parseAnalysisHubPeriod(value)
-  period.value = nextPeriod
-  start.value = shiftIsoDate(today, -(Number(nextPeriod) - 1))
-  end.value = today
+function applyPeriod(value: { start: string; end: string; period: string }): void {
+  period.value = value.period === 'custom' ? 'custom' : parseAnalysisHubPeriod(value.period)
+  start.value = value.start
+  end.value = value.end
+  void load()
 }
 
 watch(
@@ -211,17 +206,15 @@ onMounted(() => { void load() })
         <h1>{{ detailPresentation?.label ?? t('analysisV2.micronutrientDetailTitle') }}</h1>
         <p>{{ detailPresentation?.description ?? t('analysisV2.micronutrientDescription') }}</p>
       </div>
-      <AnalyticsPeriodFilter
+      <AnalysisPeriodPicker
         :start="start"
         :end="end"
-        :initial-preset="period"
-        :compact-preset="period === 'custom' ? 'custom' : period"
-        :compact-presets="compactPresets"
-        :desktop-presets="desktopPresets"
-        @update:start="start = $event"
-        @update:end="end = $event"
-        @preset="selectPeriod"
-        @apply="load"
+        :today="today"
+        :period="period"
+        :presets="['7', '30']"
+        :custom-range="true"
+        :max-days="31"
+        @apply="applyPeriod"
       />
     </div>
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
@@ -290,9 +283,6 @@ onMounted(() => { void load() })
 .micronutrient-daily-card li { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, 1fr) minmax(5rem, auto); gap: .5rem; padding: .65rem 0; border-top: 1px solid var(--border); }
 .micronutrient-day-provider { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
 .micronutrient-daily-card li strong { text-align: right; }
-@media (max-width: 620px) {
-  .page-heading > .analytics-period-filter { flex-basis: auto; }
-}
 @media (max-width: 600px) {
   .micronutrient-summary { grid-template-columns: 1fr; }
   .micronutrient-daily-card li { grid-template-columns: minmax(0, 1fr) minmax(5rem, auto); }

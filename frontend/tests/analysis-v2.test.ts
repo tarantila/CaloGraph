@@ -16,6 +16,7 @@ import AnalysisLayout from '../src/views/AnalysisLayout.vue'
 import AnalysisMicronutrientDetailView from '../src/views/AnalysisMicronutrientDetailView.vue'
 import AnalysisOverviewView from '../src/views/AnalysisOverviewView.vue'
 import AnalysisWeightDetailView from '../src/views/AnalysisWeightDetailView.vue'
+import { formatGermanDate, shiftIsoDate } from '../src/date-format'
 import { setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 import { setThemePreference } from '../src/theme'
@@ -416,11 +417,26 @@ describe('Analysis V2 hub and catalogue', () => {
 
   it('keeps the shared 7/30-day period in the hub query string', async () => {
     const { router, wrapper } = await mountAnalysis('/analyse?period=30')
-    const sevenDay = wrapper.findAll('button').find((button) => button.text() === '7 Tage')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    const sevenDay = wrapper.findAll('.analysis-period-option').find((button) => button.text() === '7 Tage')
     expect(sevenDay).toBeDefined()
     await sevenDay!.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.query.period).toBe('7')
+    wrapper.unmount()
+  })
+  it('limits the shared hub picker to its safe 7/30-day range contract', async () => {
+    const { wrapper } = await mountAnalysis('/analyse?period=30')
+    const trigger = wrapper.get('.analysis-period-trigger')
+    expect(trigger.text()).toContain('30 Tage')
+    await trigger.trigger('click')
+
+    const picker = wrapper.get('.analysis-period-picker')
+    expect(picker.text()).toContain('7 Tage')
+    expect(picker.text()).toContain('30 Tage')
+    expect(picker.text()).not.toContain('90 Tage')
+    expect(picker.text()).not.toContain('1 Jahr')
+    expect(picker.text()).not.toContain('Eigener Zeitraum')
     wrapper.unmount()
   })
   it('keeps the fluid category hash when adding the default period query', async () => {
@@ -523,7 +539,7 @@ describe('Analysis V2 hub and catalogue', () => {
 
     expect(card.get('[data-coverage-status="incomplete"]').text()).toContain('1 von 7 Tagen')
     expect(card.get('.analysis-card-coverage-icon').text()).toBe('!')
-    expect(card.find('.analysis-mini-chart--violet').exists()).toBe(true)
+    expect(card.find('.analysis-mini-chart--amber').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -608,10 +624,13 @@ describe('Analysis V2 hub and catalogue', () => {
     const card = wrapper.get('[data-analysis-card="weight_kg"]')
 
     expect(Array.from(card.element.children).map((element) => element.className)).toEqual([
-      'analysis-drag-handle',
+      'analysis-card-rail',
       'analysis-card-content',
       'analysis-card-tools',
     ])
+    const rail = card.get('.analysis-card-rail')
+    expect(Array.from(rail.element.children).map((element) => element.className))
+      .toEqual(['analysis-card-icon analysis-card-icon--weight', 'analysis-drag-handle'])
     wrapper.unmount()
   })
 
@@ -631,6 +650,7 @@ describe('Analysis V2 detail views', () => {
       '--chart-series-teal': ['#2dd4bf', '#08776f'],
       '--chart-series-blue': ['#5b8ff9', '#315fc3'],
       '--chart-series-amber': ['#f6c445', '#905400'],
+      '--chart-series-emerald': ['#34d399', '#047857'],
       '--chart-series-baseline': ['#64748b', '#526071'],
       '--chart-series-lilac': ['#d19bff', '#7446af'],
     }
@@ -676,9 +696,9 @@ describe('Analysis V2 detail views', () => {
     setThemePreference('dark')
 
     const cases = [
-      { path: '/analyse/aktivitaet/aktive-energie', key: 'active_energy_kcal', seriesColor: '#6d28d9' },
+      { path: '/analyse/aktivitaet/aktive-energie', key: 'active_energy_kcal', seriesColor: '#905400' },
       { path: '/analyse/koerper/gewicht', key: 'weight_kg', seriesColor: '#6d28d9' },
-      { path: '/analyse/mikronaehrstoffe/vitamin_a_ug', key: 'vitamin_a_ug', seriesColor: '#7446af' },
+      { path: '/analyse/mikronaehrstoffe/vitamin_a_ug', key: 'vitamin_a_ug', seriesColor: '#047857' },
     ]
     for (const chartCase of cases) {
       const { wrapper } = await mountAnalysis(chartCase.path, [chartCase.key])
@@ -693,7 +713,17 @@ describe('Analysis V2 detail views', () => {
         tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
         xAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string } }
         yAxis: { axisLine: { lineStyle: { color: string } }; axisLabel: { color: string }; splitLine: { lineStyle: { color: string } } }
-        series: Array<{ name: string; type: string; connectNulls?: boolean; data: unknown[]; lineStyle?: { color: string }; itemStyle?: { color: string } }>
+        series: Array<{
+          name: string
+          type: string
+          connectNulls?: boolean
+          smooth?: boolean
+          showSymbol?: boolean
+          areaStyle?: { opacity?: number }
+          data: unknown[]
+          lineStyle?: { color: string }
+          itemStyle?: { color: string }
+        }>
       }
       const before = chart.props('option') as ThemeOption
       expect(before.series[0]!.data.length).toBeGreaterThan(0)
@@ -711,15 +741,126 @@ describe('Analysis V2 detail views', () => {
       expect(after.yAxis.axisLabel.color).toBe('#475569')
       expect(after.yAxis.splitLine.lineStyle.color).toBe('#d6deea')
       expect(after.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
-        .toEqual(before.series.map((series) => ({ name: series.name, type: series.type, connectNulls: series.connectNulls, data: series.data })))
-      const seriesColor = after.series[0]!.type === 'line'
-        ? after.series[0]!.lineStyle?.color
-        : after.series[0]!.itemStyle?.color
-      expect(seriesColor).toBe(chartCase.seriesColor)
+      if (chartCase.key === 'active_energy_kcal') expect(after.series[0]!.type).toBe('bar')
+      if (chartCase.key === 'weight_kg') {
+        expect(after.series[0]!.smooth).toBe(false)
+        expect(after.series[0]!.showSymbol).toBe(true)
+      }
+      if (chartCase.key === 'vitamin_a_ug') {
+        expect(after.series[0]!.connectNulls).toBe(false)
+        expect(after.series[0]!.areaStyle?.opacity).toBeCloseTo(0.12)
+      }
       expect(apiMock.mock.calls).toHaveLength(apiCallCount)
       wrapper.unmount()
       setThemePreference('dark')
     }
+  })
+  it('limits the shared period picker to each analysis reader capability', async () => {
+    const cases = [
+      {
+        path: '/analyse/koerper/gewicht?period=365',
+        labels: ['7 Tage', '30 Tage', '90 Tage', '1 Jahr'],
+        custom: true,
+      },
+      {
+        path: '/analyse/aktivitaet/aktive-energie',
+        labels: ['7 Tage', '30 Tage'],
+        custom: false,
+      },
+      {
+        path: '/analyse/mikronaehrstoffe/vitamin_a_ug',
+        labels: ['7 Tage', '30 Tage'],
+        custom: true,
+      },
+    ]
+    for (const pickerCase of cases) {
+      const { wrapper } = await mountAnalysis(pickerCase.path)
+      await wrapper.get('.analysis-period-trigger').trigger('click')
+      expect(wrapper.findAll('.analysis-period-option').map((option) => option.text()))
+        .toEqual(pickerCase.labels)
+      expect(wrapper.findAll('.analysis-period-option').some((option) => option.text().includes('180'))).toBe(false)
+      expect(wrapper.find('.analysis-period-custom-choice').exists()).toBe(pickerCase.custom)
+      const trigger = wrapper.get('.analysis-period-trigger')
+      await trigger.trigger('keydown', { key: 'Escape' })
+      expect(trigger.attributes('aria-expanded')).toBe('false')
+      await trigger.trigger('click')
+      document.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+      await flushPromises()
+      expect(trigger.attributes('aria-expanded')).toBe('false')
+      wrapper.unmount()
+    }
+  })
+  it('keeps the activity response when the current period is selected again', async () => {
+    const { wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie?period=7')
+    const activityCalls = () => apiMock.mock.calls
+      .filter(([path]) => String(path).startsWith('/analytics/verification/activity'))
+    expect(activityCalls()).toHaveLength(1)
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    await wrapper.get('.analysis-period-option[aria-pressed="true"]').trigger('click')
+    await flushPromises()
+    expect(activityCalls()).toHaveLength(1)
+    expect(wrapper.find('.dashboard-loading').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('applies the one-year preset as the latest 365 rolling days', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    const yearPreset = wrapper.findAll('.analysis-period-option').find((option) => option.text() === '1 Jahr')
+    expect(yearPreset).toBeDefined()
+    await yearPreset!.trigger('click')
+    await flushPromises()
+    const calls = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/weight'))
+    expect(calls).toHaveLength(2)
+    const params = new URLSearchParams(calls[1]!.split('?')[1])
+    expect(params.get('start')).toBe(shiftIsoDate(params.get('end')!, -364))
+    expect(router.currentRoute.value.query.period).toBe('365')
+    expect(wrapper.get('.analysis-period-trigger').text()).toContain('1 Jahr')
+    wrapper.unmount()
+  })
+
+  it('applies an inclusive 31-day micronutrient custom range only after validation', async () => {
+    const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe/vitamin_a_ug')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    await wrapper.get('.analysis-period-custom-choice').trigger('click')
+    const dates = wrapper.findAll('.analysis-period-custom-form input[type="text"]')
+    await dates[0]!.setValue('01.03.2020')
+    await dates[1]!.setValue('01.04.2020')
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    expect(wrapper.get('.analysis-period-error').text()).toContain('31')
+    expect(apiMock.mock.calls.filter(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients')))
+      .toHaveLength(1)
+
+    await dates[1]!.setValue('31.03.2020')
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    await flushPromises()
+    const calls = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/nutrition/micronutrients'))
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain('start=2020-03-01')
+    expect(calls[1]).toContain('end=2020-03-31')
+    wrapper.unmount()
+  })
+  it('allows at most 3661 inclusive days for a weight custom range', async () => {
+    const { wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    await wrapper.get('.analysis-period-custom-choice').trigger('click')
+    const dates = wrapper.findAll('.analysis-period-custom-form input[type="text"]')
+    const today = wrapper.find('.analysis-period-custom-form input[type="date"]').attributes('max')!
+    await dates[0]!.setValue(formatGermanDate(shiftIsoDate(today, -3661)))
+    await dates[1]!.setValue(formatGermanDate(today))
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    expect(wrapper.get('.analysis-period-error').text()).toContain('3661')
+    await dates[0]!.setValue(formatGermanDate(shiftIsoDate(today, -3660)))
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    await flushPromises()
+    const calls = apiMock.mock.calls.map(([path]) => String(path)).filter((path) => path.startsWith('/analytics/weight'))
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain(`start=${shiftIsoDate(today, -3660)}`)
+    expect(calls[1]).toContain(`end=${today}`)
+    wrapper.unmount()
   })
   it('renders sparse weight points and reports summary fields from the weight reader', async () => {
     apiMock.mockImplementation((path: string) => path.startsWith('/analytics/weight')
@@ -732,7 +873,7 @@ describe('Analysis V2 detail views', () => {
     const { wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
     expect(wrapper.text()).toContain('2 Messungen')
     expect(wrapper.text()).toContain('69,5 kg')
-    expect(wrapper.get('.page-heading').find('.weight-period').exists()).toBe(true)
+    expect(wrapper.get('.page-heading').find('.analysis-period-picker').exists()).toBe(true)
     expect(wrapper.get('.weight-summary-primary h2').text()).toBe('Letzte Messung')
     const primaryMeta = wrapper.get('.weight-summary-meta').text()
     expect(primaryMeta.indexOf('Veränderung')).toBeLessThan(primaryMeta.indexOf('2 Messungen'))
@@ -745,12 +886,14 @@ describe('Analysis V2 detail views', () => {
 
     const option = chart.props('option') as {
       xAxis: { type: string }
-      series: Array<{ type: string; data: Array<[number, number]>; lineStyle?: object }>
+      series: Array<{ type: string; smooth?: boolean; showSymbol?: boolean; data: Array<[number, number]>; lineStyle?: object }>
     }
     expect(option.xAxis.type).toBe('time')
     expect(option.series).toHaveLength(1)
-    expect(option.series[0]!.type).toBe('scatter')
-    expect(option.series[0]!.lineStyle).toBeUndefined()
+    expect(option.series[0]!.type).toBe('line')
+    expect(option.series[0]!.smooth).toBe(false)
+    expect(option.series[0]!.showSymbol).toBe(true)
+    expect(option.series[0]!.lineStyle).toBeDefined()
     expect(option.series[0]!.data).toEqual([
       [Date.parse('2026-03-01T00:00:00Z'), 70],
       [Date.parse('2026-03-29T00:00:00Z'), 69.5],
@@ -760,7 +903,7 @@ describe('Analysis V2 detail views', () => {
 
   it('shows an explicit no-data state for a canonical micronutrient detail', async () => {
     const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe/vitamin_a_ug')
-    expect(wrapper.findAll('.page-heading .analytics-period-filter')).toHaveLength(1)
+    expect(wrapper.findAll('.page-heading .analysis-period-picker')).toHaveLength(1)
     expect(wrapper.findAll('.micronutrient-empty')).toHaveLength(1)
     expect(wrapper.findAll('.micronutrient-summary')).toHaveLength(0)
     expect(wrapper.findComponent({ name: 'ChartPanel' }).exists()).toBe(false)
@@ -787,7 +930,7 @@ describe('Analysis V2 detail views', () => {
     const { wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie')
     expect(wrapper.text()).toContain('1 von 7 Tagen')
     expect(wrapper.text()).not.toContain('Google Health')
-    expect(wrapper.get('.page-heading').find('.activity-period').exists()).toBe(true)
+    expect(wrapper.get('.page-heading').find('.analysis-period-picker').exists()).toBe(true)
     expect(wrapper.get('.activity-coverage[data-coverage-status="incomplete"] .activity-coverage-icon').text()).toBe('!')
     const chart = wrapper.findComponent({ name: 'ChartPanel' })
     const option = chart.props('option') as {

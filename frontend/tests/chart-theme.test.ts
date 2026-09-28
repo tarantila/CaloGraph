@@ -15,6 +15,7 @@ const roleNames = [
   '--chart-series-teal',
   '--chart-series-blue',
   '--chart-series-amber',
+  '--chart-series-emerald',
   '--chart-series-budget',
   '--chart-series-baseline',
   '--chart-series-lilac',
@@ -61,6 +62,7 @@ describe('chart theme palette', () => {
       teal: 'dark-series-teal',
       blue: 'dark-series-blue',
       amber: 'dark-series-amber',
+      emerald: 'dark-series-emerald',
       budget: 'dark-series-budget',
       baseline: 'dark-series-baseline',
       lilac: 'dark-series-lilac',
@@ -97,6 +99,7 @@ describe('chart theme palette', () => {
       teal: 'light-series-teal',
       blue: 'light-series-blue',
       amber: 'light-series-amber',
+      emerald: 'light-series-emerald',
       baseline: 'light-series-baseline',
       lilac: 'light-series-lilac',
     })

@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
 import AnalysisCatalogEntryGrid from '../components/AnalysisCatalogEntryGrid.vue'
+import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import AnalysisMiniChart from '../components/AnalysisMiniChart.vue'
 import { analysisCategories, analysisHref, analysisHubQuery, analysisIconSymbol, localizedAnalysisPresentation, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
 import { useAnalysisPreferences } from '../composables/useAnalysisPreferences'
@@ -35,7 +36,6 @@ const selectedKeys = preferences.selectedKeys
 const saving = preferences.saving
 const saveError = preferences.saveError
 const period = ref<AnalysisHubPeriod>(parseAnalysisHubPeriod(route.query.period))
-const hubPeriods: readonly AnalysisHubPeriod[] = ['7', '30']
 const registry = ref<AnalysisRegistryResponse['analyses']>([])
 const workspaceLoading = ref(true)
 const workspaceError = ref('')
@@ -62,8 +62,9 @@ const insertionTarget = ref<{ key: string; side: 'before' | 'after' } | null>(nu
 const dropFeedback = ref<{ key: string; phase: 'dropped' | 'settled' } | null>(null)
 let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 let pointerDragAnimationFrame: number | null = null
+const today = computed(() => isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
 const range = computed(() => analysisRangeForDays(
-  isoDateInTimeZone(auth.user?.timezone ?? 'UTC'),
+  today.value,
   Number(period.value),
 ))
 const cardEntries = computed(() => selectedKeys.value.flatMap((key) => {
@@ -138,6 +139,9 @@ function categoryExamples(categoryKey: AnalysisCategoryKey, entries: readonly Ca
 }
 
 let previewLoadId = 0
+function applyHubPeriod(value: { period: string }): void {
+  period.value = parseAnalysisHubPeriod(value.period)
+}
 let lastPreviewSignature = ''
 
 async function syncPeriodQuery(): Promise<void> {
@@ -453,9 +457,10 @@ function cardCoverageState(key: string): 'complete' | 'incomplete' | null {
   return count === null ? null : count === periodDays.value ? 'complete' : 'incomplete'
 }
 
-function miniChartColorRole(key: string): 'violet' | 'teal' | 'blue' | 'amber' | 'lilac' {
-  if (key === 'weight_kg' || key === 'active_energy_kcal'
-    || key === 'dietary_energy_kcal' || key === 'calories_kcal') return 'violet'
+function miniChartColorRole(key: string): 'violet' | 'teal' | 'blue' | 'amber' | 'emerald' | 'lilac' {
+  if (key === 'weight_kg' || key === 'dietary_energy_kcal' || key === 'calories_kcal') return 'violet'
+  if (key === 'active_energy_kcal') return 'amber'
+  if (registry.value.find((entry) => entry.analysis_key === key)?.category_key === 'micronutrients') return 'emerald'
   if (key === 'protein_g') return 'teal'
   if (key === 'carbohydrates_g') return 'blue'
   if (key === 'fat_g') return 'amber'
@@ -572,26 +577,21 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="analysis-hub">
-    <section class="card analysis-header page-heading">
+    <section class="analysis-header page-heading">
       <div class="analysis-heading-copy">
         <h1>{{ t('analysisV2.title') }}</h1>
         <p>{{ t('analysisV2.description') }}</p>
       </div>
-      <div class="analysis-period" :aria-label="t('analysisV2.period')">
-        <span>{{ t('analysisV2.period') }}</span>
-        <div role="group" :aria-label="t('analysisV2.period')">
-          <button
-            v-for="choice in hubPeriods"
-            :key="choice"
-            class="button secondary"
-            type="button"
-            :aria-pressed="period === choice"
-            @click="period = choice"
-          >
-            {{ t(`analysisV2.period${choice}`) }}
-          </button>
-        </div>
-      </div>
+      <AnalysisPeriodPicker
+        :start="range.start"
+        :end="range.end"
+        :today="today"
+        :period="period"
+        :presets="['7', '30']"
+        :custom-range="false"
+        :max-days="30"
+        @apply="applyHubPeriod"
+      />
     </section>
 
     <div v-if="workspaceLoading" class="dashboard-loading" role="status" aria-live="polite">
@@ -624,22 +624,31 @@ onBeforeUnmount(() => {
             :style="dragStyle(entry.analysis_key)"
             :data-drop-state="dropFeedback?.key === entry.analysis_key ? dropFeedback.phase : undefined"
           >
-            <button
-              class="analysis-drag-handle"
-              type="button"
-              :aria-label="t('analysisV2.dragHandle', { label: presentation.label })"
-              :disabled="saving"
-              @pointerdown="pointerDown(entry.analysis_key, $event)"
-            >
-              <span aria-hidden="true">⋮⋮</span>
-            </button>
-            <RouterLink class="analysis-card-content" :to="entryRoute(entry.analysis_key)">
-              <span class="analysis-card-icon" aria-hidden="true">
+            <div class="analysis-card-rail">
+              <span
+                class="analysis-card-icon"
+                :class="{
+                  'analysis-card-icon--weight': entry.analysis_key === 'weight_kg',
+                  'analysis-card-icon--activity': entry.analysis_key === 'active_energy_kcal',
+                  'analysis-card-icon--micronutrient': entry.category_key === 'micronutrients',
+                }"
+                aria-hidden="true"
+              >
                 {{ analysisIconSymbol(presentation.icon) }}
               </span>
+              <button
+                class="analysis-drag-handle"
+                type="button"
+                :aria-label="t('analysisV2.dragHandle', { label: presentation.label })"
+                :disabled="saving"
+                @pointerdown="pointerDown(entry.analysis_key, $event)"
+              >
+                <span aria-hidden="true">⋮⋮</span>
+              </button>
+            </div>
+            <RouterLink class="analysis-card-content" :to="entryRoute(entry.analysis_key)">
               <span class="analysis-card-copy">
                 <h3 class="analysis-card-heading">{{ presentation.label }}</h3>
-                <span class="analysis-card-description">{{ presentation.description }}</span>
                 <span v-if="cardState(entry.analysis_key) === 'loading'" class="analysis-card-state" role="status">
                   {{ t('common.loading') }}
                 </span>
@@ -647,26 +656,20 @@ onBeforeUnmount(() => {
                   {{ cardError(entry.analysis_key) }}
                 </span>
                 <span v-else-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key)" class="analysis-card-state">
-                  <span
-                    v-if="entry.analysis_key === 'weight_kg'"
-                    class="analysis-card-extra"
-                  >
-                    {{ t('analysisV2.noReadings') }}
-                  </span>
-                  <template v-else>
-                    <span class="analysis-card-extra">
-                      {{ entry.category_key === 'micronutrients' ? t('analysisV2.noDataPeriod') : t('analysisV2.noReadings') }}
-                    </span>
-                    <span
-                      class="analysis-card-extra analysis-card-coverage analysis-card-coverage--incomplete"
-                      data-coverage-status="incomplete"
-                    >
-                      <span class="analysis-card-coverage-icon" aria-hidden="true">!</span>
-                      {{ cardCoverage(entry.analysis_key) }}
-                    </span>
-                  </template>
+                  {{ entry.category_key === 'micronutrients' ? t('analysisV2.noDataPeriod') : t('analysisV2.noReadings') }}
                 </span>
-                <span v-else-if="cardState(entry.analysis_key) === 'ready'" class="analysis-card-state">
+                <span v-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key)" class="analysis-card-description">
+                  {{ presentation.description }}
+                </span>
+                <span
+                  v-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key) && entry.analysis_key !== 'weight_kg'"
+                  class="analysis-card-extra analysis-card-coverage analysis-card-coverage--incomplete"
+                  data-coverage-status="incomplete"
+                >
+                  <span class="analysis-card-coverage-icon" aria-hidden="true">!</span>
+                  {{ cardCoverage(entry.analysis_key) }}
+                </span>
+                <span v-else-if="cardState(entry.analysis_key) === 'ready' && cardHasReadings(entry.analysis_key)" class="analysis-card-state">
                   <span class="analysis-card-kpi">
                     <span class="analysis-card-kpi-label">
                       {{ entry.analysis_key === 'weight_kg' ? t('analysisV2.latestMeasurement') : t('analysisV2.averagePerDay') }}
@@ -677,29 +680,13 @@ onBeforeUnmount(() => {
                     {{ t('analysisV2.change') }}:
                     {{ weightChange() ?? t('analysisV2.changeUnavailable') }}
                   </span>
-                  <span
-                    v-if="entry.analysis_key === 'weight_kg'"
-                    class="analysis-card-extra"
-                  >
-                    {{ cardCoverage(entry.analysis_key) }}
-                  </span>
-                  <span
-                    v-else
-                    class="analysis-card-extra analysis-card-coverage"
-                    :class="cardCoverageState(entry.analysis_key) === 'complete' ? 'analysis-card-coverage--complete' : 'analysis-card-coverage--incomplete'"
-                    :data-coverage-status="cardCoverageState(entry.analysis_key)"
-                  >
-                    <span class="analysis-card-coverage-icon" aria-hidden="true">
-                      {{ cardCoverageState(entry.analysis_key) === 'complete' ? '✓' : '!' }}
-                    </span>
-                    {{ cardCoverage(entry.analysis_key) }}
-                  </span>
                   <time
                     v-if="entry.analysis_key === 'weight_kg' && weightResponse?.summary.latest"
                     :datetime="weightResponse.summary.latest.date"
                   >
                     {{ formatGermanDate(weightResponse.summary.latest.date) }}
                   </time>
+                  <span class="analysis-card-description">{{ presentation.description }}</span>
                   <AnalysisMiniChart
                     v-if="cardHasChartData(entry.analysis_key)"
                     class="analysis-card-chart"
@@ -710,10 +697,19 @@ onBeforeUnmount(() => {
                     :variant="entry.analysis_key === 'active_energy_kcal' ? 'bars' : 'line'"
                     :color-role="miniChartColorRole(entry.analysis_key)"
                   />
+                  <span
+                    class="analysis-card-extra analysis-card-coverage"
+                    :class="entry.analysis_key === 'weight_kg' ? '' : (cardCoverageState(entry.analysis_key) === 'complete' ? 'analysis-card-coverage--complete' : 'analysis-card-coverage--incomplete')"
+                    :data-coverage-status="entry.analysis_key === 'weight_kg' ? undefined : cardCoverageState(entry.analysis_key)"
+                  >
+                    <span v-if="entry.analysis_key !== 'weight_kg'" class="analysis-card-coverage-icon" aria-hidden="true">
+                      {{ cardCoverageState(entry.analysis_key) === 'complete' ? '✓' : '!' }}
+                    </span>
+                    {{ cardCoverage(entry.analysis_key) }}
+                  </span>
                 </span>
               </span>
             </RouterLink>
-
             <div class="analysis-card-tools">
               <details class="analysis-overflow">
                 <summary :aria-label="t('analysisV2.cardActions', { label: presentation.label })">
@@ -781,11 +777,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .analysis-hub { display: grid; gap: 1rem; }
-.analysis-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 1.05rem; margin-bottom: 0; }
+.analysis-header { align-items: end; margin-bottom: 0; }
 .analysis-heading-copy h1, .analysis-heading-copy p { margin: 0; }
 .analysis-heading-copy p { margin-top: .35rem; color: var(--muted); }
-.analysis-period [role="group"] { display: flex; flex-wrap: wrap; gap: .5rem; }
-.analysis-period button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .analysis-section { display: grid; gap: .75rem; min-width: 0; }
 .analysis-section > h2 { margin: 0; font-size: 1.2rem; }
 .analysis-empty-state { display: grid; justify-items: start; gap: .45rem; }
@@ -794,41 +788,46 @@ onBeforeUnmount(() => {
 .analysis-card-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .85rem; list-style: none; margin: 0; padding: 0; }
 .analysis-card { position: relative; display: grid; min-width: 0; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background-color .16s ease; }
 .analysis-card-reorder-move { transition: transform .22s cubic-bezier(.2, .7, .2, 1); }
-.analysis-card-content { display: grid; grid-template-columns: 2.8rem minmax(0, 1fr); align-content: start; align-items: start; gap: .75rem; min-width: 0; height: 100%; padding: 1rem 4rem 1rem 4rem; color: inherit; text-decoration: none; }
-.analysis-card-content:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: .5rem; }
-.analysis-card-icon { display: grid; place-items: center; width: 2.8rem; height: 2.8rem; border-radius: .8rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 1.35rem; }
+.analysis-card { grid-template-columns: 2.75rem minmax(0, 1fr); }
+.analysis-card-content { display: block; grid-column: 2; min-width: 0; height: 100%; padding: .9rem 2.8rem .9rem .4rem; color: inherit; text-decoration: none; }
+.analysis-card-content:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: .5rem; }
+.analysis-card-rail { display: flex; flex-direction: column; align-items: center; gap: .45rem; padding: .8rem 0 .6rem .5rem; }
+.analysis-card-icon { display: grid; place-items: center; width: 2.35rem; height: 2.35rem; border-radius: .7rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 1.2rem; }
+.analysis-card-icon--weight { color: var(--chart-series-violet); background: color-mix(in srgb, var(--chart-series-violet) 14%, transparent); }
+.analysis-card-icon--activity { color: var(--chart-series-amber); background: color-mix(in srgb, var(--chart-series-amber) 14%, transparent); }
+.analysis-card-icon--micronutrient { color: var(--chart-series-emerald); background: color-mix(in srgb, var(--chart-series-emerald) 14%, transparent); }
 .analysis-card-copy { display: grid; gap: .3rem; min-width: 0; }
 .analysis-card-heading { margin: 0; font-weight: 700; font-size: 1.05rem; }
 .analysis-card-description, .analysis-card-state { color: var(--muted); overflow-wrap: anywhere; }
+.analysis-card-description { font-size: .82rem; line-height: 1.35; }
 .analysis-card-state { display: grid; gap: .28rem; }
 .analysis-card-kpi { display: grid; gap: .12rem; }
 .analysis-card-kpi-label, .analysis-card-extra, .analysis-card-state time { font-size: .84rem; color: var(--muted); }
 .analysis-card-kpi strong { color: var(--ink); font-size: 1.3rem; line-height: 1.15; }
 .analysis-card-state time { display: block; margin-top: .05rem; }
-.analysis-card-chart { margin-top: .25rem; }
+.analysis-card-chart { margin-top: .35rem; padding: .2rem .35rem; border-radius: .4rem; background: color-mix(in srgb, var(--analysis-mini-chart-color) 7%, var(--surface)); }
 .analysis-card-error { color: var(--danger); }
 .analysis-card-coverage { display: inline-flex; align-items: center; gap: .32rem; }
 .analysis-card-coverage--complete { color: var(--success); }
 .analysis-card-coverage--incomplete { color: var(--warning); }
 .analysis-card-coverage-icon { flex: 0 0 auto; font-weight: 750; }
-.analysis-card-tools { position: absolute; z-index: 3; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .35rem; }
-.analysis-drag-handle, .analysis-overflow summary { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: var(--ink); }
-.analysis-drag-handle { position: absolute; z-index: 3; top: .5rem; left: .5rem; cursor: grab; touch-action: none; user-select: none; font-size: 1.35rem; }
-.analysis-drag-handle:hover, .analysis-drag-handle:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-hover); }
+.analysis-card-tools { position: absolute; z-index: 3; top: .45rem; right: .45rem; }
+.analysis-drag-handle { display: grid; place-items: center; min-width: 2rem; min-height: 1.8rem; padding: 0; border: 0; border-radius: .35rem; background: transparent; color: var(--muted); cursor: grab; touch-action: none; user-select: none; font-size: 1rem; line-height: 1; }
+.analysis-drag-handle:hover, .analysis-drag-handle:focus-visible { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent-hover); outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .analysis-drag-handle:active { cursor: grabbing; }
 .analysis-drag-handle:disabled { cursor: not-allowed; }
-.analysis-overflow { position: relative; }
-.analysis-overflow summary { cursor: pointer; list-style: none; }
+.analysis-overflow summary { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: var(--ink); cursor: pointer; list-style: none; }
 .analysis-overflow summary::-webkit-details-marker { display: none; }
-.analysis-overflow-menu { position: absolute; top: calc(100% + .25rem); right: 0; display: grid; min-width: 13rem; padding: .3rem; border: 1px solid var(--border); border-radius: .55rem; }
+.analysis-overflow-menu { position: absolute; top: calc(100% + .25rem); right: 0; display: grid; min-width: 13rem; padding: .3rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--popover); box-shadow: var(--shadow-popover); }
 .analysis-overflow-menu button { min-height: 2.75rem; padding: .5rem .65rem; border: 0; border-radius: .35rem; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
 .analysis-overflow-menu button:hover, .analysis-overflow-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .analysis-overflow-menu button:disabled { color: var(--muted); cursor: not-allowed; }
 .analysis-card.is-dragging { z-index: 4; translate: var(--drag-x, 0px) var(--drag-y, 0px); scale: 1.025; border-color: var(--accent); box-shadow: var(--shadow-popover); pointer-events: none; }
 .analysis-card.is-drop-before, .analysis-card.is-drop-after { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
-.analysis-card.is-drop-before::before, .analysis-card.is-drop-after::before { content: ''; position: absolute; z-index: 4; top: .55rem; bottom: .55rem; width: calc(50% - .85rem); border: 2px dashed var(--accent); border-radius: .55rem; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
-.analysis-card.is-drop-before::before { left: .55rem; }
-.analysis-card.is-drop-after::before { right: .55rem; }
+.analysis-card.is-drop-before::before, .analysis-card.is-drop-after::after { content: ''; position: absolute; z-index: 4; left: .55rem; right: .55rem; height: 3px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); pointer-events: none; }
+.analysis-card.is-drop-before::before { top: -.2rem; }
+.analysis-card.is-drop-after::after { bottom: -.2rem; }
+.analysis-overflow { position: relative; }
 .analysis-card.is-dropped { border-color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 24%, transparent); }
 .analysis-card.is-settled { border-color: var(--success); }
 .analysis-category-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }

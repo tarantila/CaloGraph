@@ -88,7 +88,7 @@ const en = {
   analysisV2: {
     title: 'Analysis', description: 'Choose the insights on your analysis home and explore readings for a shared period.',
     catalog: 'Analysis catalogue', catalogDescription: 'All readings in their categories.',
-    period: 'Period', period7: '7 days', period30: '30 days', daysCoverage: '{count} of {total} days with readings',
+    period: 'Period', period7: '7 days', period30: '30 days', period90: '90 days', periodYear: '1 year', quickPeriods: 'Choose period', customRangeSummary: 'Custom range: {start} to {end}', periodRangeError: 'The period must not exceed {days} days.', daysCoverage: '{count} of {total} days with readings',
     emptySelection: 'No analyses selected yet', emptySelectionHelp: 'Add readings under All analyses.',
     myAnalyses: 'My analyses', allAnalyses: 'All analyses', inMyAnalyses: 'In My analyses',
     micronutrientTypes: { vitamins: 'Vitamins', minerals: 'Minerals' },
@@ -107,7 +107,7 @@ const en = {
     measurementCount: '{count} measurements', latestDate: 'Most recent on {date}', changeUnavailable: 'Unavailable with fewer than two measurements.',
     weightHistory: 'Weight history', weightReadings: 'Measurements', weightEmpty: 'No weight readings are available for this period.',
     range: 'Period', range7: '7 days', range30: '30 days', range90: '90 days', range180: '180 days', range365: '365 days',
-    customRange: 'Custom period', invalidRange: 'Choose a valid period of no more than 3661 days.', micronutrientRangeInvalid: 'The period must not exceed 31 inclusive days.',
+    customRange: 'Custom range', invalidRange: 'Choose a valid period of no more than 3661 days.', micronutrientRangeInvalid: 'The period must not exceed 31 inclusive days.',
     applyRange: 'Apply period', startDate: 'From', endDate: 'To',
     activityCoverage: '{count} of {total} days with readings', activeEnergyChart: 'Active energy per day',
     activeEnergyDaily: 'Daily values', activeEnergyEmpty: 'No activity readings are available for this period.',

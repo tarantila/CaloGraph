@@ -5,6 +5,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
 import { analysisHubQuery, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
@@ -19,7 +20,6 @@ const auth = useAuthStore()
 const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
 const period = ref<AnalysisHubPeriod>(route.query.period === '30' ? '30' : '7')
-const hubPeriods: readonly AnalysisHubPeriod[] = ['7', '30']
 const range = computed(() => analysisRangeForDays(today, Number(period.value)))
 const response = ref<VerificationActivityResponse | null>(null)
 const loading = ref(true)
@@ -76,7 +76,7 @@ const chartOption = computed<EChartsOption>(() => {
       type: 'bar',
       barMaxWidth: 32,
       data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
-      itemStyle: { color: palette.violet },
+      itemStyle: { color: palette.amber },
     }],
   }
 })
@@ -116,9 +116,10 @@ async function load(): Promise<void> {
   }
 }
 
-function choosePeriod(value: AnalysisHubPeriod): void {
-  if (period.value === value) return
-  period.value = value
+function applyPeriod(value: { period: string }): void {
+  const nextPeriod = parseAnalysisHubPeriod(value.period)
+  if (nextPeriod === period.value) return
+  period.value = nextPeriod
   void load()
 }
 
@@ -150,18 +151,16 @@ onMounted(() => { void load() })
         <h1>{{ t('analysisV2.activeEnergyTitle') }}</h1>
         <p>{{ t('analysisV2.activeEnergyDescription') }}</p>
       </div>
-      <div class="period-control activity-period" role="group" :aria-label="t('analysisV2.period')">
-        <button
-          v-for="choice in hubPeriods"
-          :key="choice"
-          type="button"
-          :class="{ active: period === choice }"
-          :aria-pressed="period === choice"
-          @click="choosePeriod(choice)"
-        >
-          {{ t(`analysisV2.period${choice}`) }}
-        </button>
-      </div>
+      <AnalysisPeriodPicker
+        :start="range.start"
+        :end="range.end"
+        :today="today"
+        :period="period"
+        :presets="['7', '30']"
+        :custom-range="false"
+        :max-days="30"
+        @apply="applyPeriod"
+      />
     </div>
 
     <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">{{ t('common.loading') }}</div>
