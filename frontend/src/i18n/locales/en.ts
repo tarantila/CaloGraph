@@ -88,7 +88,7 @@ const en = {
   analysisV2: {
     title: 'Analysis', description: 'Choose the insights on your analysis home and explore readings for a shared period.',
     catalog: 'Analysis catalogue', catalogDescription: 'All readings in their categories.',
-    period: 'Period', period7: '7 days', period30: '30 days', period90: '90 days', periodYear: '1 year', quickPeriods: 'Choose period', customRangeSummary: 'Custom range: {start} to {end}', periodRangeError: 'The period must not exceed {days} days.', daysCoverage: '{count} of {total} days with readings',
+    period: 'Period', period7: '7 days', period30: '30 days', period90: '90 days', period180: '6 months', periodYear: '1 year', periodAll: 'All data', quickPeriods: 'Choose period', customRangeSummary: 'Custom range: {start} to {end}', periodRangeError: 'The period must not exceed {days} days.', daysCoverage: '{count} of {total} days with readings',
     emptySelection: 'No analyses selected yet', emptySelectionHelp: 'Add readings under All analyses.',
     myAnalyses: 'My analyses', allAnalyses: 'All analyses', inMyAnalyses: 'In My analyses',
     micronutrientTypes: { vitamins: 'Vitamins', minerals: 'Minerals' },

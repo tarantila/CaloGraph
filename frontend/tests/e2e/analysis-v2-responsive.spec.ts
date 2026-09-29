@@ -72,10 +72,30 @@ test('Analysis cards stay readable across viewports and detail cards have useful
 
   await page.setViewportSize({ width: 1440, height: 900 })
   expect(await layout()).toMatchObject({ columns: 3 })
+  await page.goto('/analyse/koerper/gewicht')
+  const desktopPicker = page.locator('.analysis-period-picker')
+  await desktopPicker.locator('.analysis-period-trigger').click()
+  const desktopPickerColumns = await desktopPicker.locator('.analysis-period-layout').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  expect(desktopPickerColumns).toBe(2)
+  await expect(desktopPicker.locator('.analysis-period-option')).toHaveCount(6)
+  await expect(desktopPicker.getByRole('button', { name: 'Alle Daten' })).toBeVisible()
+  await page.goto('/analyse')
+
 
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await layout()).toMatchObject({ columns: 1 })
   expect((await layout()).copyWidths.every((width) => width >= 100)).toBe(true)
+  await page.goto('/analyse/koerper/gewicht')
+  const mobileWeightPicker = page.locator('.analysis-period-picker')
+  await mobileWeightPicker.locator('.analysis-period-trigger').click()
+  await expect(mobileWeightPicker.locator('.analysis-period-option')).toHaveCount(6)
+  const mobileWeightPickerColumns = await mobileWeightPicker.locator('.analysis-period-layout').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  expect(mobileWeightPickerColumns).toBe(1)
+  await page.goto('/analyse')
   const expectUsefulInsets = async (selector: string) => {
     const cards = page.locator(selector)
     await expect(cards.first()).toBeVisible()
@@ -124,9 +144,12 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   expect(popoverBox).not.toBeNull()
   expect(popoverBox!.x).toBeGreaterThanOrEqual(0)
   expect(popoverBox!.x + popoverBox!.width).toBeLessThanOrEqual(390)
-  await picker.getByRole('button', { name: 'Benutzerdefiniert' }).click()
   await expect(picker.locator('.analysis-period-custom-form')).toBeVisible()
   await expect(picker.locator('.analysis-period-custom-form input[type="text"]')).toHaveCount(2)
+  const mobilePickerColumns = await picker.locator('.analysis-period-layout').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
+  )
+  expect(mobilePickerColumns).toBe(1)
   const nativeDatePickers = picker.locator('.analysis-period-custom-form .date-input-native-picker')
   await expect(nativeDatePickers).toHaveCount(2)
   for (const nativeDatePicker of await nativeDatePickers.all()) {

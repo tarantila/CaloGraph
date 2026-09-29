@@ -37,13 +37,50 @@ export const analysisCategories: readonly { key: AnalysisCategoryKey; labelKey: 
   { key: 'fluid', labelKey: 'analysisV2.categories.fluid' },
 ]
 
-export type AnalysisHubPeriod = '7' | '30'
+export type AnalysisHubPeriod = '7' | '30' | '90' | '180' | '365' | 'all'
+export type AnalysisPeriodSelection = AnalysisHubPeriod | 'custom'
 
 export function parseAnalysisHubPeriod(value: unknown): AnalysisHubPeriod {
-  return value === '7' ? '7' : '30'
+  return ['7', '30', '90', '180', '365', 'all'].includes(String(value))
+    ? value as AnalysisHubPeriod
+    : '30'
 }
-export function analysisHubQuery(value: unknown): { period: AnalysisHubPeriod } {
-  return { period: parseAnalysisHubPeriod(value) }
+
+export function parseAnalysisPeriodSelection(value: unknown): AnalysisPeriodSelection {
+  return value === 'custom' ? 'custom' : parseAnalysisHubPeriod(value)
+}
+
+export function analysisHubQuery(
+  value: unknown,
+  range?: { start: string; end: string },
+): { period: AnalysisPeriodSelection; start?: string; end?: string } {
+  const period = parseAnalysisPeriodSelection(value)
+  return period === 'custom' && range
+    ? { period, start: range.start, end: range.end }
+    : { period }
+}
+
+export function supportedAnalysisPeriods(maxDays: number, includeAll: boolean): AnalysisHubPeriod[] {
+  const periods = (['7', '30', '90', '180', '365'] as AnalysisHubPeriod[])
+    .filter((period) => Number(period) <= maxDays)
+  if (includeAll && maxDays >= 3661) periods.push('all')
+  return periods
+}
+
+export function analysisPeriodRange(
+  period: AnalysisPeriodSelection,
+  today: string,
+  maxDays: number,
+  customRange?: { start: string; end: string } | null,
+): { start: string; end: string } {
+  if (period === 'custom' && customRange) return customRange
+  return analysisRangeForDays(today, period === 'all' ? maxDays : Number(period))
+}
+
+export function analysisRangeDayCount(range: { start: string; end: string }): number {
+  return Math.floor(
+    (Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / 86_400_000,
+  ) + 1
 }
 
 export function analysisRangeForDays(today: string, days: number): { start: string; end: string } {

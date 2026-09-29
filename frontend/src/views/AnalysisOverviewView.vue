@@ -3,14 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
+import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
 import AnalysisCatalogEntryGrid from '../components/AnalysisCatalogEntryGrid.vue'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import AnalysisMiniChart from '../components/AnalysisMiniChart.vue'
-import { analysisCategories, analysisHref, analysisHubQuery, analysisIconSymbol, localizedAnalysisPresentation, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import { analysisCategories, analysisHref, analysisHubQuery, analysisIconSymbol, localizedAnalysisPresentation, analysisPeriodRange, analysisRangeDayCount, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisHubPeriod, type AnalysisPeriodSelection } from '../analysis-v2'
 import { useAnalysisPreferences } from '../composables/useAnalysisPreferences'
-import { formatGermanDate, isoDateInTimeZone } from '../date-format'
-import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
+import { isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { createNumberFormatter, i18n } from '../i18n'
 import type {
   AnalysisCategoryKey,
   AnalysisMicronutrientResponse,
@@ -35,7 +36,21 @@ const preferences = useAnalysisPreferences()
 const selectedKeys = preferences.selectedKeys
 const saving = preferences.saving
 const saveError = preferences.saveError
-const period = ref<AnalysisHubPeriod>(parseAnalysisHubPeriod(route.query.period))
+function queryString(value: unknown): string | null {
+  if (typeof value === 'string') return value
+  return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
+}
+
+const queryStart = queryString(route.query.start)
+const queryEnd = queryString(route.query.end)
+const requestedPeriod = parseAnalysisPeriodSelection(route.query.period)
+const initialCustomRange = requestedPeriod === 'custom' && validAnalyticsRange(queryStart, queryEnd)
+  ? { start: queryStart as string, end: queryEnd as string }
+  : null
+const period = ref<AnalysisPeriodSelection>(
+  requestedPeriod === 'custom' ? initialCustomRange ? 'custom' : '30' : requestedPeriod,
+)
+const customRange = ref(initialCustomRange)
 const registry = ref<AnalysisRegistryResponse['analyses']>([])
 const workspaceLoading = ref(true)
 const workspaceError = ref('')
@@ -63,10 +78,6 @@ const dropFeedback = ref<{ key: string; phase: 'dropped' | 'settled' } | null>(n
 let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 let pointerDragAnimationFrame: number | null = null
 const today = computed(() => isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
-const range = computed(() => analysisRangeForDays(
-  today.value,
-  Number(period.value),
-))
 const cardEntries = computed(() => selectedKeys.value.flatMap((key) => {
   const entry = registry.value.find((item) => item.analysis_key === key)
   const presentation = localizedAnalysisPresentation(key)
@@ -74,6 +85,16 @@ const cardEntries = computed(() => selectedKeys.value.flatMap((key) => {
     ? [{ entry, presentation }]
     : []
 }))
+const readerCapabilities = computed(() => cardEntries.value.flatMap(({ entry }) => (
+  entry.period_capability ? [entry.period_capability] : []
+)))
+const maxDays = computed(() => readerCapabilities.value.length
+  ? Math.min(...readerCapabilities.value.map(({ max_days }) => max_days))
+  : 30)
+const supportsCustomRange = computed(() => readerCapabilities.value.every(({ custom_range }) => custom_range))
+const presets = computed(() => supportedAnalysisPeriods(maxDays.value, maxDays.value >= 3661))
+const range = computed(() => analysisPeriodRange(period.value, today.value, maxDays.value, customRange.value))
+const periodDays = computed(() => analysisRangeDayCount(range.value))
 const displayedCardEntries = computed(() => {
   if (!previewOrder.value) return cardEntries.value
   const positions = new Map(previewOrder.value.map((key, index) => [key, index]))
@@ -81,7 +102,7 @@ const displayedCardEntries = computed(() => {
     (positions.get(left.entry.analysis_key) ?? Number.MAX_SAFE_INTEGER)
       - (positions.get(right.entry.analysis_key) ?? Number.MAX_SAFE_INTEGER))
 })
-const periodDays = computed(() => Number(period.value))
+
 const orderedActivityDays = computed(() => [...(activityResponse.value?.days ?? [])]
   .sort((left, right) => left.date.localeCompare(right.date)))
 const readingsByActivity = computed(() => orderedActivityDays.value.flatMap((day) => {
@@ -139,14 +160,40 @@ function categoryExamples(categoryKey: AnalysisCategoryKey, entries: readonly Ca
 }
 
 let previewLoadId = 0
-function applyHubPeriod(value: { period: string }): void {
-  period.value = parseAnalysisHubPeriod(value.period)
+function fallbackPeriod(): AnalysisHubPeriod {
+  return supportedAnalysisPeriods(maxDays.value, false).at(-1) ?? '30'
+}
+
+function normalizePeriodForCapabilities(): void {
+  if (period.value === 'custom') {
+    if (supportsCustomRange.value && customRange.value
+      && analysisRangeWithinDays(customRange.value.start, customRange.value.end, maxDays.value)) return
+    period.value = fallbackPeriod()
+    customRange.value = null
+    return
+  }
+  if (period.value === 'all' ? maxDays.value >= 3661 : Number(period.value) <= maxDays.value) return
+  period.value = fallbackPeriod()
+  customRange.value = null
+}
+
+function applyHubPeriod(value: { period: AnalysisPeriodSelection; start: string; end: string }): void {
+  period.value = value.period
+  customRange.value = value.period === 'custom' ? { start: value.start, end: value.end } : null
+  normalizePeriodForCapabilities()
 }
 let lastPreviewSignature = ''
 
 async function syncPeriodQuery(): Promise<void> {
-  if (route.query.period === period.value) return
-  await router.replace({ query: { ...route.query, period: period.value }, hash: route.hash })
+  const query = {
+    ...analysisHubQuery(period.value, range.value),
+    start: period.value === 'custom' ? range.value.start : undefined,
+    end: period.value === 'custom' ? range.value.end : undefined,
+  }
+  if (route.query.period === query.period
+    && queryString(route.query.start) === query.start
+    && queryString(route.query.end) === query.end) return
+  await router.replace({ query: { ...route.query, ...query }, hash: route.hash })
 }
 
 async function loadWorkspace(): Promise<void> {
@@ -160,13 +207,17 @@ async function loadWorkspace(): Promise<void> {
     ])
     registry.value = registryResponse.analyses
     workspaceReady.value = true
+    normalizePeriodForCapabilities()
   } catch (cause) {
     workspaceReady.value = false
     workspaceError.value = localizeApiError(cause, 'analysisV2.loadFailed')
   } finally {
     workspaceLoading.value = false
   }
-  if (workspaceReady.value) await loadPreviews()
+  if (workspaceReady.value) {
+    await syncPeriodQuery()
+    await loadPreviews()
+  }
 }
 
 async function loadPreviews(): Promise<void> {
@@ -397,7 +448,7 @@ function cancelPointerDrag(event: PointerEvent): void {
 }
 
 function entryRoute(key: string) {
-  return { path: analysisHref(key), query: analysisHubQuery(period.value) }
+  return { path: analysisHref(key), query: analysisHubQuery(period.value, range.value) }
 }
 
 const categoryPaths: Record<AnalysisCategoryKey, string> = {
@@ -412,7 +463,7 @@ function categoryRoute(key: AnalysisCategoryKey) {
   return {
     path: categoryPaths[key],
     hash: key === 'fluid' ? '#analysis-category-fluid' : undefined,
-    query: analysisHubQuery(period.value),
+    query: analysisHubQuery(period.value, range.value),
   }
 }
 
@@ -467,6 +518,16 @@ function miniChartColorRole(key: string): 'violet' | 'teal' | 'blue' | 'amber' |
   return 'lilac'
 }
 
+function cardIconRole(key: string, category: AnalysisCategoryKey): string {
+  if (key === 'weight_kg') return 'weight'
+  if (key === 'active_energy_kcal') return 'activity'
+  if (category === 'micronutrients') return 'micronutrient'
+  if (key === 'protein_g') return 'protein'
+  if (key === 'carbohydrates_g') return 'carbohydrates'
+  if (key === 'fat_g') return 'fat'
+  return ''
+}
+
 function cardValue(key: string): string | null {
   if (key === 'weight_kg') {
     const latest = weightResponse.value?.summary.latest
@@ -486,6 +547,16 @@ function weightChange(): string | null {
   return `${change > 0 ? '+' : ''}${number.format(change)} kg`
 }
 
+function weightSummaryDetail(): string {
+  const parts = [
+    weightChange(),
+    t('analysisV2.measurementCount', {
+      count: number.format(weightResponse.value?.summary.measurement_count ?? 0),
+    }),
+  ].filter((value): value is string => Boolean(value))
+  return parts.join(' · ')
+}
+
 function cardHasReadings(key: string): boolean {
   if (key === 'weight_kg') return (weightResponse.value?.summary.measurement_count ?? 0) > 0
   if (key === 'active_energy_kcal') return readingsByActivity.value.length > 0
@@ -495,13 +566,18 @@ function cardHasReadings(key: string): boolean {
 function cardChartValues(key: string): Array<number | null> {
   if (key === 'weight_kg') return weightPoints.value.map((point) => point.weight_kg)
   if (key === 'active_energy_kcal') return activityChartValues.value
-  return (micronutrientResponses[key]?.series ?? []).map((point) => point.value)
+  const valuesByDate = new Map(
+    (micronutrientResponses[key]?.series ?? []).map(({ date, value }) => [date, value]),
+  )
+  return Array.from({ length: periodDays.value }, (_, index) => (
+    valuesByDate.get(shiftIsoDate(range.value.start, index)) ?? null
+  ))
 }
 
 function cardChartDates(key: string): Array<string | null> {
   if (key === 'weight_kg') return weightPoints.value.map((point) => point.date)
   if (key === 'active_energy_kcal') return activityChartDates.value
-  return (micronutrientResponses[key]?.series ?? []).map((point) => point.date)
+  return Array.from({ length: periodDays.value }, (_, index) => shiftIsoDate(range.value.start, index))
 }
 
 function cardHasChartData(key: string): boolean {
@@ -541,17 +617,30 @@ async function scrollToCategoryHash(): Promise<void> {
 }
 
 watch(
-  () => route.query.period,
-  (value) => {
-    const nextPeriod = parseAnalysisHubPeriod(value)
-    if (nextPeriod !== period.value) period.value = nextPeriod
+  () => [route.query.period, route.query.start, route.query.end] as const,
+  ([nextPeriod, nextStart, nextEnd]) => {
+    const requested = parseAnalysisPeriodSelection(nextPeriod)
+    const start = queryString(nextStart)
+    const end = queryString(nextEnd)
+    const hasRange = validAnalyticsRange(start, end)
+    const nextPeriodValue = requested === 'custom' ? hasRange ? 'custom' : '30' : requested
+    const nextCustomRange = nextPeriodValue === 'custom' && hasRange
+      ? { start: start as string, end: end as string }
+      : null
+    if (period.value !== nextPeriodValue || customRange.value?.start !== nextCustomRange?.start
+      || customRange.value?.end !== nextCustomRange?.end) {
+      period.value = nextPeriodValue
+      customRange.value = nextCustomRange
+    }
   },
 )
 watch(() => route.hash, () => { void scrollToCategoryHash() })
 
 watch(
-  [period, () => selectedKeys.value.join('|')],
+  [period, customRange, () => selectedKeys.value.join('|')],
   async () => {
+    if (!workspaceReady.value) return
+    normalizePeriodForCapabilities()
     await syncPeriodQuery()
     await loadPreviews()
   },
@@ -561,7 +650,6 @@ onMounted(async () => {
   window.addEventListener('pointermove', updatePointerPreview)
   window.addEventListener('pointerup', finishPointerDrag)
   window.addEventListener('pointercancel', cancelPointerDrag)
-  await syncPeriodQuery()
   await loadWorkspace()
   await scrollToCategoryHash()
 })
@@ -587,9 +675,9 @@ onBeforeUnmount(() => {
         :end="range.end"
         :today="today"
         :period="period"
-        :presets="['7', '30']"
-        :custom-range="false"
-        :max-days="30"
+        :presets="presets"
+        :custom-range="supportsCustomRange"
+        :max-days="maxDays"
         @apply="applyHubPeriod"
       />
     </section>
@@ -627,11 +715,7 @@ onBeforeUnmount(() => {
             <div class="analysis-card-rail">
               <span
                 class="analysis-card-icon"
-                :class="{
-                  'analysis-card-icon--weight': entry.analysis_key === 'weight_kg',
-                  'analysis-card-icon--activity': entry.analysis_key === 'active_energy_kcal',
-                  'analysis-card-icon--micronutrient': entry.category_key === 'micronutrients',
-                }"
+                :class="`analysis-card-icon--${cardIconRole(entry.analysis_key, entry.category_key)}`"
                 aria-hidden="true"
               >
                 {{ analysisIconSymbol(presentation.icon) }}
@@ -658,9 +742,6 @@ onBeforeUnmount(() => {
                 <span v-else-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key)" class="analysis-card-state">
                   {{ entry.category_key === 'micronutrients' ? t('analysisV2.noDataPeriod') : t('analysisV2.noReadings') }}
                 </span>
-                <span v-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key)" class="analysis-card-description">
-                  {{ presentation.description }}
-                </span>
                 <span
                   v-if="cardState(entry.analysis_key) === 'ready' && !cardHasReadings(entry.analysis_key) && entry.analysis_key !== 'weight_kg'"
                   class="analysis-card-extra analysis-card-coverage analysis-card-coverage--incomplete"
@@ -670,23 +751,10 @@ onBeforeUnmount(() => {
                   {{ cardCoverage(entry.analysis_key) }}
                 </span>
                 <span v-else-if="cardState(entry.analysis_key) === 'ready' && cardHasReadings(entry.analysis_key)" class="analysis-card-state">
-                  <span class="analysis-card-kpi">
-                    <span class="analysis-card-kpi-label">
-                      {{ entry.analysis_key === 'weight_kg' ? t('analysisV2.latestMeasurement') : t('analysisV2.averagePerDay') }}
-                    </span>
-                    <strong class="analysis-metric-value">{{ cardValue(entry.analysis_key) ?? '–' }}</strong>
+                  <strong class="analysis-metric-value">{{ cardValue(entry.analysis_key) ?? '–' }}</strong>
+                  <span class="analysis-card-extra">
+                    {{ entry.analysis_key === 'weight_kg' ? weightSummaryDetail() : t('analysisV2.averagePerDay') }}
                   </span>
-                  <span v-if="entry.analysis_key === 'weight_kg'" class="analysis-card-extra">
-                    {{ t('analysisV2.change') }}:
-                    {{ weightChange() ?? t('analysisV2.changeUnavailable') }}
-                  </span>
-                  <time
-                    v-if="entry.analysis_key === 'weight_kg' && weightResponse?.summary.latest"
-                    :datetime="weightResponse.summary.latest.date"
-                  >
-                    {{ formatGermanDate(weightResponse.summary.latest.date) }}
-                  </time>
-                  <span class="analysis-card-description">{{ presentation.description }}</span>
                   <AnalysisMiniChart
                     v-if="cardHasChartData(entry.analysis_key)"
                     class="analysis-card-chart"
@@ -698,11 +766,12 @@ onBeforeUnmount(() => {
                     :color-role="miniChartColorRole(entry.analysis_key)"
                   />
                   <span
+                    v-if="entry.analysis_key !== 'weight_kg'"
                     class="analysis-card-extra analysis-card-coverage"
-                    :class="entry.analysis_key === 'weight_kg' ? '' : (cardCoverageState(entry.analysis_key) === 'complete' ? 'analysis-card-coverage--complete' : 'analysis-card-coverage--incomplete')"
-                    :data-coverage-status="entry.analysis_key === 'weight_kg' ? undefined : cardCoverageState(entry.analysis_key)"
+                    :class="cardCoverageState(entry.analysis_key) === 'complete' ? 'analysis-card-coverage--complete' : 'analysis-card-coverage--incomplete'"
+                    :data-coverage-status="cardCoverageState(entry.analysis_key)"
                   >
-                    <span v-if="entry.analysis_key !== 'weight_kg'" class="analysis-card-coverage-icon" aria-hidden="true">
+                    <span class="analysis-card-coverage-icon" aria-hidden="true">
                       {{ cardCoverageState(entry.analysis_key) === 'complete' ? '✓' : '!' }}
                     </span>
                     {{ cardCoverage(entry.analysis_key) }}
@@ -766,6 +835,8 @@ onBeforeUnmount(() => {
               :selected-keys="selectedKeys"
               :saving="saving"
               :period="period"
+              :period-range="range"
+              :period-days="periodDays"
               @add="addKey"
             />
           </section>
@@ -787,25 +858,24 @@ onBeforeUnmount(() => {
 .analysis-empty-state h3 { font-size: 1rem; }
 .analysis-card-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .85rem; list-style: none; margin: 0; padding: 0; }
 .analysis-card { position: relative; display: grid; min-width: 0; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background-color .16s ease; }
-.analysis-card-reorder-move { transition: transform .22s cubic-bezier(.2, .7, .2, 1); }
+.analysis-card-reorder-move { transition: transform .25s cubic-bezier(.2, .7, .2, 1); }
 .analysis-card { grid-template-columns: 2.75rem minmax(0, 1fr); }
 .analysis-card-content { display: block; grid-column: 2; min-width: 0; height: 100%; padding: .9rem 2.8rem .9rem .4rem; color: inherit; text-decoration: none; }
 .analysis-card-content:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: .5rem; }
-.analysis-card-rail { display: flex; flex-direction: column; align-items: center; gap: .45rem; padding: .8rem 0 .6rem .5rem; }
+.analysis-card-rail { display: flex; flex-direction: column; align-items: center; gap: .12rem; padding: .8rem 0 .6rem .5rem; }
 .analysis-card-icon { display: grid; place-items: center; width: 2.35rem; height: 2.35rem; border-radius: .7rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 1.2rem; }
 .analysis-card-icon--weight { color: var(--chart-series-violet); background: color-mix(in srgb, var(--chart-series-violet) 14%, transparent); }
-.analysis-card-icon--activity { color: var(--chart-series-amber); background: color-mix(in srgb, var(--chart-series-amber) 14%, transparent); }
+.analysis-card-icon--activity, .analysis-card-icon--fat { color: var(--chart-series-amber); background: color-mix(in srgb, var(--chart-series-amber) 14%, transparent); }
 .analysis-card-icon--micronutrient { color: var(--chart-series-emerald); background: color-mix(in srgb, var(--chart-series-emerald) 14%, transparent); }
-.analysis-card-copy { display: grid; gap: .3rem; min-width: 0; }
-.analysis-card-heading { margin: 0; font-weight: 700; font-size: 1.05rem; }
-.analysis-card-description, .analysis-card-state { color: var(--muted); overflow-wrap: anywhere; }
-.analysis-card-description { font-size: .82rem; line-height: 1.35; }
-.analysis-card-state { display: grid; gap: .28rem; }
-.analysis-card-kpi { display: grid; gap: .12rem; }
-.analysis-card-kpi-label, .analysis-card-extra, .analysis-card-state time { font-size: .84rem; color: var(--muted); }
-.analysis-card-kpi strong { color: var(--ink); font-size: 1.3rem; line-height: 1.15; }
-.analysis-card-state time { display: block; margin-top: .05rem; }
-.analysis-card-chart { margin-top: .35rem; padding: .2rem .35rem; border-radius: .4rem; background: color-mix(in srgb, var(--analysis-mini-chart-color) 7%, var(--surface)); }
+.analysis-card-icon--protein { color: var(--chart-series-teal); background: color-mix(in srgb, var(--chart-series-teal) 14%, transparent); }
+.analysis-card-icon--carbohydrates { color: var(--chart-series-blue); background: color-mix(in srgb, var(--chart-series-blue) 14%, transparent); }
+.analysis-card-copy { display: grid; gap: .38rem; min-width: 0; }
+.analysis-card-heading { margin: 0; font-weight: 700; font-size: 1.05rem; overflow-wrap: anywhere; }
+.analysis-card-state { color: var(--muted); overflow-wrap: anywhere; }
+.analysis-card-state { display: grid; gap: .32rem; }
+.analysis-card-extra { font-size: .84rem; color: var(--muted); }
+.analysis-metric-value { color: var(--ink); font-size: 1.55rem; line-height: 1.15; font-weight: 700; }
+.analysis-card-chart { margin-top: .1rem; }
 .analysis-card-error { color: var(--danger); }
 .analysis-card-coverage { display: inline-flex; align-items: center; gap: .32rem; }
 .analysis-card-coverage--complete { color: var(--success); }

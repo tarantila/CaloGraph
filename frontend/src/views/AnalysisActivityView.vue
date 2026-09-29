@@ -4,7 +4,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisHubQuery, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
+import { analysisHubQuery, analysisPeriodRange, analysisRangeDayCount, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
@@ -19,8 +20,30 @@ const router = useRouter()
 const auth = useAuthStore()
 const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
-const period = ref<AnalysisHubPeriod>(route.query.period === '30' ? '30' : '7')
-const range = computed(() => analysisRangeForDays(today, Number(period.value)))
+
+function queryString(value: unknown): string | null {
+  if (typeof value === 'string') return value
+  return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
+}
+
+const maxDays = 3661
+const presets = supportedAnalysisPeriods(maxDays, true)
+const queryStart = queryString(route.query.start)
+const queryEnd = queryString(route.query.end)
+const queryRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
+const initialQueryPeriod: AnalysisPeriodSelection = route.query.period == null
+  ? '7'
+  : parseAnalysisPeriodSelection(route.query.period)
+const period = ref<AnalysisPeriodSelection>(
+  initialQueryPeriod === 'custom' && queryRangeIsValid && analysisRangeWithinDays(queryStart, queryEnd, maxDays)
+    ? 'custom'
+    : initialQueryPeriod === 'custom' ? '30' : initialQueryPeriod,
+)
+const customRange = ref<{ start: string; end: string } | null>(
+  period.value === 'custom' && queryStart && queryEnd ? { start: queryStart, end: queryEnd } : null,
+)
+const range = computed(() => analysisPeriodRange(period.value, today, maxDays, customRange.value))
+const periodDays = computed(() => analysisRangeDayCount(range.value))
 const response = ref<VerificationActivityResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -34,14 +57,14 @@ const readings = computed(() => (response.value?.days ?? []).flatMap((day) => {
 }).sort((left, right) => left.date.localeCompare(right.date)))
 const coverage = computed(() => t('analysisV2.activityCoverage', {
   count: number.format(readings.value.length),
-  total: number.format(Number(period.value)),
+  total: number.format(periodDays.value),
 }))
 const average = computed(() => readings.value.length
   ? readings.value.reduce((sum, reading) => sum + reading.value, 0) / readings.value.length
   : null)
-const coverageIsComplete = computed(() => readings.value.length === Number(period.value))
+const coverageIsComplete = computed(() => readings.value.length === periodDays.value)
 const chartDates = computed(() => Array.from(
-  { length: Number(period.value) },
+  { length: periodDays.value },
   (_, index) => shiftIsoDate(range.value.start, index),
 ))
 const readingsByDate = computed(() => new Map(readings.value.map((reading) => [reading.date, reading.value])))
@@ -85,8 +108,8 @@ async function syncQuery(): Promise<void> {
   await router.replace({
     query: {
       ...route.query,
-      start: range.value.start,
-      end: range.value.end,
+      start: period.value === 'custom' ? range.value.start : undefined,
+      end: period.value === 'custom' ? range.value.end : undefined,
       period: period.value,
     },
   })
@@ -94,6 +117,12 @@ async function syncQuery(): Promise<void> {
 
 async function load(): Promise<void> {
   const requestId = ++latestLoadId
+  if (!analysisRangeWithinDays(range.value.start, range.value.end, maxDays)) {
+    response.value = null
+    error.value = t('analysisV2.invalidRange')
+    loading.value = false
+    return
+  }
   loading.value = true
   error.value = ''
   response.value = null
@@ -116,21 +145,31 @@ async function load(): Promise<void> {
   }
 }
 
-function applyPeriod(value: { period: string }): void {
-  const nextPeriod = parseAnalysisHubPeriod(value.period)
-  if (nextPeriod === period.value) return
-  period.value = nextPeriod
-  void load()
+function applyPeriod(value: { period: AnalysisPeriodSelection; start: string; end: string }): void {
+  const changed = value.start !== range.value.start || value.end !== range.value.end
+    || value.period !== period.value
+  period.value = value.period
+  customRange.value = value.period === 'custom' ? { start: value.start, end: value.end } : null
+  if (changed) void load()
 }
 
 watch(
-  () => route.query.period,
-  (value) => {
-    const next = parseAnalysisHubPeriod(value)
-    if (next !== period.value) {
-      period.value = next
-      void load()
-    }
+  () => [route.query.start, route.query.end, route.query.period] as const,
+  ([nextStart, nextEnd, nextPeriod]) => {
+    const start = queryString(nextStart)
+    const end = queryString(nextEnd)
+    const valid = validAnalyticsRange(start, end) && analysisRangeWithinDays(start, end, maxDays)
+    const requested = parseAnalysisPeriodSelection(nextPeriod)
+    const nextPeriodValue = requested === 'custom' ? valid ? 'custom' : '30' : requested
+    const nextCustomRange = nextPeriodValue === 'custom' && valid
+      ? { start: start as string, end: end as string }
+      : null
+    const nextRange = analysisPeriodRange(nextPeriodValue, today, maxDays, nextCustomRange)
+    const changed = nextPeriodValue !== period.value
+      || nextRange.start !== range.value.start || nextRange.end !== range.value.end
+    period.value = nextPeriodValue
+    customRange.value = nextCustomRange
+    if (changed) void load()
   },
 )
 
@@ -140,9 +179,9 @@ onMounted(() => { void load() })
 <template>
   <div class="analysis-detail-page">
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
-      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period, range) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
       <span aria-hidden="true">›</span>
-      <RouterLink :to="{ path: '/analyse/aktivitaet', query: analysisHubQuery(period) }">{{ t('analysisV2.categories.activity') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse/aktivitaet', query: analysisHubQuery(period, range) }">{{ t('analysisV2.categories.activity') }}</RouterLink>
       <span aria-hidden="true">›</span>
       <span aria-current="page">{{ t('analysisV2.activeEnergyTitle') }}</span>
     </nav>
@@ -156,9 +195,9 @@ onMounted(() => { void load() })
         :end="range.end"
         :today="today"
         :period="period"
-        :presets="['7', '30']"
-        :custom-range="false"
-        :max-days="30"
+        :presets="presets"
+        :custom-range="true"
+        :max-days="maxDays"
         @apply="applyPeriod"
       />
     </div>

@@ -5,7 +5,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
 import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
-import { analysisHubQuery, analysisRangeForDays } from '../analysis-v2'
+import { analysisHubQuery, analysisPeriodRange, parseAnalysisPeriodSelection, type AnalysisHubPeriod, type AnalysisPeriodSelection } from '../analysis-v2'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
@@ -14,8 +14,8 @@ import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { WeightResponse } from '../types'
 
-type WeightPreset = '7' | '30' | '90' | '365' | 'custom'
-const presets: readonly Exclude<WeightPreset, 'custom'>[] = ['7', '30', '90', '365']
+type WeightPreset = AnalysisPeriodSelection
+const presets: readonly AnalysisHubPeriod[] = ['7', '30', '90', '180', '365', 'all']
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
@@ -32,23 +32,29 @@ function queryString(value: unknown): string | null {
   return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
 }
 
-function rangeForPreset(value: Exclude<WeightPreset, 'custom'>): { start: string; end: string } {
-  return analysisRangeForDays(today, Number(value))
+function rangeForPreset(value: AnalysisHubPeriod): { start: string; end: string } {
+  return analysisPeriodRange(value, today, 3661)
 }
 
 const queryStart = queryString(route.query.start)
 const queryEnd = queryString(route.query.end)
 const queryRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
-const queryPeriod = queryString(route.query.period)
-const initialPreset = presets.find((value) => value === queryPeriod)
+const queryPeriod = parseAnalysisPeriodSelection(queryString(route.query.period))
+const matchedPreset = queryRangeIsValid && queryPeriod !== 'custom'
+  && queryPeriod !== 'all'
+  && rangeForPreset(queryPeriod).start === queryStart
+  && rangeForPreset(queryPeriod).end === queryEnd
+  ? queryPeriod
+  : null
+const initialPreset: WeightPreset = queryRangeIsValid
+  ? queryPeriod === 'all' ? 'all' : matchedPreset ?? 'custom'
+  : queryPeriod
 const initialRange = queryRangeIsValid
   ? { start: queryStart as string, end: queryEnd as string }
-  : rangeForPreset(initialPreset ?? '30')
+  : rangeForPreset(initialPreset === 'custom' ? '30' : initialPreset)
 const start = ref(initialRange.start)
 const end = ref(initialRange.end)
-const period = ref<WeightPreset>(queryRangeIsValid
-  ? (presets.find((value) => start.value === rangeForPreset(value).start && end.value === rangeForPreset(value).end) ?? 'custom')
-  : initialPreset ?? '30')
+const period = ref<WeightPreset>(initialPreset)
 const points = computed(() => [...(response.value?.points ?? [])].sort((left, right) => left.date.localeCompare(right.date)))
 const summary = computed(() => response.value?.summary ?? null)
 const change = computed(() => points.value.length >= 2 ? summary.value?.change_kg ?? null : null)
@@ -101,7 +107,12 @@ function formatWeight(value: number | null | undefined): string {
 
 async function syncQuery(): Promise<void> {
   await router.replace({
-    query: { ...route.query, start: start.value, end: end.value, period: period.value },
+    query: {
+      ...route.query,
+      start: period.value === 'custom' ? start.value : undefined,
+      end: period.value === 'custom' ? end.value : undefined,
+      period: period.value,
+    },
   })
 }
 
@@ -142,13 +153,18 @@ watch(
     const queryStart = queryString(nextStart)
     const queryEnd = queryString(nextEnd)
     const hasRange = validAnalyticsRange(queryStart, queryEnd)
-    const requestedPreset = presets.find((value) => value === queryString(nextPeriod))
-    const nextPreset = requestedPreset ?? (hasRange ? 'custom' : '30')
+    const requestedPeriod = parseAnalysisPeriodSelection(nextPeriod)
+    const matched = hasRange && requestedPeriod !== 'custom' && requestedPeriod !== 'all'
+      && rangeForPreset(requestedPeriod).start === queryStart
+      && rangeForPreset(requestedPeriod).end === queryEnd
+      ? requestedPeriod
+      : null
+    const nextPreset: WeightPreset = hasRange
+      ? requestedPeriod === 'all' ? 'all' : matched ?? 'custom'
+      : requestedPeriod === 'custom' ? '30' : requestedPeriod
     const nextRange = hasRange
       ? { start: queryStart as string, end: queryEnd as string }
-      : nextPreset === 'custom'
-        ? { start: start.value, end: end.value }
-        : rangeForPreset(nextPreset)
+      : rangeForPreset(nextPreset === 'custom' ? '30' : nextPreset)
     const rangeChanged = nextRange.start !== start.value || nextRange.end !== end.value
     const presetChanged = nextPreset !== period.value
     start.value = nextRange.start
@@ -164,11 +180,9 @@ onMounted(() => { void load() })
 <template>
   <div class="analysis-detail-page">
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
-      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period, { start, end }) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
       <span aria-hidden="true">›</span>
-      <RouterLink :to="{ path: '/analyse/koerper', query: analysisHubQuery(period) }">{{ t('analysisV2.categories.body') }}</RouterLink>
-      <span aria-hidden="true">›</span>
-      <span aria-current="page">{{ t('analysisV2.weightTitle') }}</span>
+      <RouterLink :to="{ path: '/analyse/koerper', query: analysisHubQuery(period, { start, end }) }">{{ t('analysisV2.categories.body') }}</RouterLink>
     </nav>
     <div class="page-heading">
       <div>

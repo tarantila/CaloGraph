@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { analysisHref, analysisHubQuery, analysisIconSymbol, type AnalysisHubPeriod, type LocalizedAnalysisPresentation } from '../analysis-v2'
+import { analysisHref, analysisHubQuery, analysisIconSymbol, type AnalysisPeriodSelection, type LocalizedAnalysisPresentation } from '../analysis-v2'
 import { createNumberFormatter, i18n } from '../i18n'
 import type { AnalysisMicronutrientResponse, AnalysisRegistryEntry } from '../types'
 
@@ -17,8 +17,10 @@ interface CatalogEntry {
 const props = withDefaults(defineProps<{
   entries: readonly CatalogEntry[]
   selectedKeys: readonly string[]
+  period: AnalysisPeriodSelection
   saving: boolean
-  period: AnalysisHubPeriod
+  periodRange: { start: string; end: string }
+  periodDays: number
   micronutrients?: AnalysisMicronutrientResponse | null
   limit?: number
 }>(), { limit: Number.POSITIVE_INFINITY, micronutrients: null })
@@ -40,6 +42,19 @@ function entryPath({ entry, presentation }: CatalogEntry): string {
     : analysisHref(entry.analysis_key)
 }
 
+function entryQuery() {
+  return analysisHubQuery(props.period, props.periodRange)
+}
+
+function iconRole(entry: AnalysisRegistryEntry): string {
+  if (entry.analysis_key === 'weight_kg') return 'violet'
+  if (entry.analysis_key === 'active_energy_kcal' || entry.analysis_key === 'fat_g') return 'amber'
+  if (entry.category_key === 'micronutrients') return 'emerald'
+  if (entry.analysis_key === 'protein_g') return 'teal'
+  if (entry.analysis_key === 'carbohydrates_g') return 'blue'
+  if (entry.status === 'coming_soon') return 'slate'
+  return 'slate'
+}
 type CoverageStatus = { text: string; status: 'complete' | 'incomplete' }
 
 const micronutrientCoverage = computed(() => {
@@ -54,9 +69,9 @@ const micronutrientCoverage = computed(() => {
         ? t('analysisV2.noDataPeriod')
         : t('analysisV2.daysCoverage', {
           count: number.format(metric.days_with_data),
-          total: number.format(Number(props.period)),
+          total: number.format(props.periodDays),
         }),
-      status: metric.days_with_data === Number(props.period) ? 'complete' : 'incomplete',
+      status: metric.days_with_data === props.periodDays ? 'complete' : 'incomplete',
     })
   }
   return byKey
@@ -68,17 +83,19 @@ const micronutrientCoverage = computed(() => {
     <article
       v-for="({ entry, presentation }) in shownEntries"
       :key="entry.analysis_key"
-      class="card analysis-catalog-entry"
       :data-analysis-key="entry.analysis_key"
       :data-analysis-catalog-key="entry.analysis_key"
+      class="analysis-catalog-entry"
       :aria-disabled="entry.status === 'coming_soon' ? 'true' : undefined"
     >
-      <span class="analysis-catalog-icon" aria-hidden="true">{{ analysisIconSymbol(presentation.icon) }}</span>
+      <span class="analysis-catalog-icon" :class="`analysis-catalog-icon--${iconRole(entry)}`" aria-hidden="true">
+        {{ analysisIconSymbol(presentation.icon) }}
+      </span>
       <div class="analysis-catalog-copy">
         <h3 class="analysis-catalog-title">
           <RouterLink
             v-if="entry.status === 'available' && entry.detail_capable"
-            :to="{ path: entryPath({ entry, presentation }), query: analysisHubQuery(period) }"
+            :to="{ path: entryPath({ entry, presentation }), query: entryQuery() }"
           >
             {{ presentation.label }}
           </RouterLink>
@@ -120,8 +137,8 @@ const micronutrientCoverage = computed(() => {
 <style scoped>
 .analysis-catalog-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
-  gap: .65rem;
+  grid-template-columns: 1fr;
+  min-width: 0;
 }
 .analysis-catalog-entry {
   display: grid;
@@ -129,22 +146,29 @@ const micronutrientCoverage = computed(() => {
   align-items: center;
   gap: .65rem;
   min-width: 0;
-  padding: .7rem;
-  transition: border-color .16s ease, background-color .16s ease;
+  padding: .65rem .1rem;
+  border-bottom: 1px solid var(--border);
+  transition: background-color .16s ease;
 }
-.analysis-catalog-entry:hover { border-color: var(--border-strong); background: var(--surface-raised); }
-.analysis-catalog-entry[aria-disabled="true"] { opacity: .68; }
+.analysis-catalog-entry:last-child { border-bottom: 0; }
+.analysis-catalog-entry:hover { background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.analysis-catalog-entry[aria-disabled="true"] { opacity: .72; }
 .analysis-catalog-icon {
   display: grid;
   place-items: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: .65rem;
-  color: var(--accent-hover);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: .62rem;
+  color: var(--chart-series-baseline);
+  background: color-mix(in srgb, var(--chart-series-baseline) 14%, transparent);
 }
+.analysis-catalog-icon--violet { color: var(--chart-series-violet); background: color-mix(in srgb, var(--chart-series-violet) 14%, transparent); }
+.analysis-catalog-icon--amber { color: var(--chart-series-amber); background: color-mix(in srgb, var(--chart-series-amber) 14%, transparent); }
+.analysis-catalog-icon--emerald { color: var(--chart-series-emerald); background: color-mix(in srgb, var(--chart-series-emerald) 14%, transparent); }
+.analysis-catalog-icon--teal { color: var(--chart-series-teal); background: color-mix(in srgb, var(--chart-series-teal) 14%, transparent); }
+.analysis-catalog-icon--blue { color: var(--chart-series-blue); background: color-mix(in srgb, var(--chart-series-blue) 14%, transparent); }
 .analysis-catalog-copy { display: grid; gap: .2rem; min-width: 0; }
-.analysis-catalog-title { margin: 0; font-size: .92rem; font-weight: 650; overflow-wrap: anywhere; }
+.analysis-catalog-title { margin: 0; font-size: .92rem; font-weight: 650; overflow-wrap: anywhere; hyphens: auto; }
 .analysis-catalog-title a { color: inherit; text-decoration: none; }
 .analysis-catalog-title a:hover { color: var(--accent-hover); }
 .analysis-catalog-status--complete { color: var(--success); }
@@ -153,8 +177,9 @@ const micronutrientCoverage = computed(() => {
 .analysis-catalog-action { min-height: 2.75rem; padding: .42rem .6rem; white-space: nowrap; font-size: .78rem; }
 .analysis-catalog-action > span { font-size: 1.05rem; }
 @media (max-width: 440px) {
-  .analysis-catalog-grid { grid-template-columns: 1fr; }
-  .analysis-catalog-entry { grid-template-columns: 2.25rem minmax(0, 1fr) auto; }
-  .analysis-catalog-action { min-width: 2.75rem; min-height: 2.75rem; }
+  .analysis-catalog-entry { grid-template-columns: 2rem minmax(0, 1fr) auto; gap: .5rem; }
+  .analysis-catalog-icon { width: 2rem; height: 2rem; }
+  .analysis-catalog-action { min-width: 2.75rem; padding: .42rem; }
+  .analysis-catalog-action > span { margin-right: 0; }
 }
 </style>

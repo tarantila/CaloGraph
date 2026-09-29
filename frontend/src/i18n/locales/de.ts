@@ -90,7 +90,7 @@ const de = {
   analysisV2: {
     title: 'Analyse', description: 'Stelle deine Auswertungen zusammen und erkunde Messwerte im gewählten Zeitraum.',
     catalog: 'Analyse-Katalog', catalogDescription: 'Alle Messwerte in ihren Kategorien.',
-    period: 'Zeitraum', period7: '7 Tage', period30: '30 Tage', period90: '90 Tage', periodYear: '1 Jahr', quickPeriods: 'Zeitraum auswählen', customRangeSummary: 'Benutzerdefiniert: {start} bis {end}', periodRangeError: 'Der Zeitraum darf höchstens {days} Tage umfassen.', daysCoverage: '{count} von {total} Tagen mit Werten',
+    period: 'Zeitraum', period7: '7 Tage', period30: '30 Tage', period90: '90 Tage', period180: '6 Monate', periodYear: '1 Jahr', periodAll: 'Alle Daten', quickPeriods: 'Zeitraum auswählen', customRangeSummary: 'Benutzerdefiniert: {start} bis {end}', periodRangeError: 'Der Zeitraum darf höchstens {days} Tage umfassen.', daysCoverage: '{count} von {total} Tagen mit Werten',
     emptySelection: 'Noch keine Analysen ausgewählt', emptySelectionHelp: 'Füge unter Alle Analysen passende Messwerte hinzu.',
     myAnalyses: 'Meine Analysen', allAnalyses: 'Alle Analysen', inMyAnalyses: 'In Meine Analysen',
     micronutrientTypes: { vitamins: 'Vitamine', minerals: 'Mineralstoffe' },

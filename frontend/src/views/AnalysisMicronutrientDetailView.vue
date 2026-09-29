@@ -26,11 +26,12 @@ function queryString(value: unknown): string | null {
   return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
 }
 
-const initialPeriod = parseAnalysisHubPeriod(route.query.period)
-const defaultRange = { start: shiftIsoDate(today, -(Number(initialPeriod) - 1)), end: today }
+const requestedPeriod = parseAnalysisHubPeriod(route.query.period)
+const initialPeriod: '7' | '30' = requestedPeriod === '7' ? '7' : '30'
 const queryStart = queryString(route.query.start)
 const queryEnd = queryString(route.query.end)
 const initialRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
+const defaultRange = { start: shiftIsoDate(today, -(Number(initialPeriod) - 1)), end: today }
 const initialRange = initialRangeIsValid
   ? { start: queryStart as string, end: queryEnd as string }
   : defaultRange
@@ -52,6 +53,14 @@ const metric = computed<AnalysisMicronutrientMetric | null>(() => (
   response.value?.metrics.find((item) => item.metric_key === metricKey.value) ?? null
 ))
 const detailPresentation = computed(() => localizedAnalysisPresentation(metricKey.value))
+const chartDates = computed(() => Array.from(
+  { length: response.value?.period_days ?? 0 },
+  (_, index) => shiftIsoDate(start.value, index),
+))
+const chartValues = computed(() => {
+  const valuesByDate = new Map((response.value?.series ?? []).map(({ date, value }) => [date, value]))
+  return chartDates.value.map((date) => valuesByDate.get(date) ?? null)
+})
 const actualReadings = computed(() => (response.value?.series ?? []).filter(
   (point) => point.value !== null && Number.isFinite(point.value),
 ))
@@ -71,7 +80,7 @@ const chartOption = computed<EChartsOption>(() => {
     },
     xAxis: {
       type: 'category',
-      data: response.value?.series.map((point) => point.date) ?? [],
+      data: chartDates.value,
       axisLine: { lineStyle: { color: palette.axis } },
       axisLabel: {
         color: palette.label,
@@ -90,7 +99,7 @@ const chartOption = computed<EChartsOption>(() => {
       type: 'line',
       connectNulls: false,
       showSymbol: true,
-      data: response.value?.series.map((point) => point.value) ?? [],
+      data: chartValues.value,
       lineStyle: { color: palette.emerald, width: 2 },
       itemStyle: { color: palette.emerald },
       areaStyle: { color: palette.emerald, opacity: 0.12 },
@@ -170,8 +179,9 @@ watch(
     const nextKey = Array.isArray(nextMetric) ? nextMetric[0] ?? '' : String(nextMetric ?? '')
     const nextQueryStart = queryString(nextStart)
     const nextQueryEnd = queryString(nextEnd)
+    const parsed = parseAnalysisHubPeriod(nextPeriod)
+    const defaultPeriod: '7' | '30' = parsed === '7' ? '7' : '30'
     const hasRange = validAnalyticsRange(nextQueryStart, nextQueryEnd)
-    const defaultPeriod = parseAnalysisHubPeriod(nextPeriod)
     const nextRange = hasRange
       ? { start: nextQueryStart as string, end: nextQueryEnd as string }
       : { start: shiftIsoDate(today, -(Number(defaultPeriod) - 1)), end: today }
@@ -195,9 +205,9 @@ onMounted(() => { void load() })
 <template>
   <div class="analysis-detail-page">
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
-      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period, { start: start, end: end }) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
       <span aria-hidden="true">›</span>
-      <RouterLink :to="{ path: '/analyse/mikronaehrstoffe', query: analysisHubQuery(period) }">{{ t('analysisV2.categories.micronutrients') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse/mikronaehrstoffe', query: analysisHubQuery(period, { start: start, end: end }) }">{{ t('analysisV2.categories.micronutrients') }}</RouterLink>
       <span aria-hidden="true">›</span>
       <span aria-current="page">{{ detailPresentation?.label ?? t('analysisV2.micronutrientDetailTitle') }}</span>
     </nav>

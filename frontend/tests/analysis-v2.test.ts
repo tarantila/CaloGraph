@@ -272,7 +272,7 @@ describe('Analysis V2 hub and catalogue', () => {
 
     const weightCard = wrapper.get('[data-analysis-key="weight_kg"]')
     expect(weightCard.get('.analysis-card-heading').text()).toBe('Weight')
-    expect(weightCard.get('.analysis-card-description').text()).toBe('Actual weight measurements in the selected period.')
+    expect(weightCard.find('.analysis-card-description').exists()).toBe(false)
     expect(weightCard.find('[aria-label="Move Weight forward"]').exists()).toBe(true)
 
     await router.push('/analyse/katalog')
@@ -425,18 +425,66 @@ describe('Analysis V2 hub and catalogue', () => {
     expect(router.currentRoute.value.query.period).toBe('7')
     wrapper.unmount()
   })
-  it('limits the shared hub picker to its safe 7/30-day range contract', async () => {
-    const { wrapper } = await mountAnalysis('/analyse?period=30')
+  it('limits the hub picker to selected-reader capabilities while keeping custom and quick ranges visible', async () => {
+    const { wrapper } = await mountAnalysis(
+      '/analyse?period=30',
+      ['weight_kg', 'active_energy_kcal', 'vitamin_a_ug'],
+    )
     const trigger = wrapper.get('.analysis-period-trigger')
-    expect(trigger.text()).toContain('30 Tage')
     await trigger.trigger('click')
 
     const picker = wrapper.get('.analysis-period-picker')
     expect(picker.text()).toContain('7 Tage')
     expect(picker.text()).toContain('30 Tage')
     expect(picker.text()).not.toContain('90 Tage')
-    expect(picker.text()).not.toContain('1 Jahr')
-    expect(picker.text()).not.toContain('Eigener Zeitraum')
+    expect(picker.text()).not.toContain('Alle Daten')
+    expect(picker.find('.analysis-period-custom-form').isVisible()).toBe(true)
+    wrapper.unmount()
+  })
+  it('applies an inclusive capability-bounded custom hub range and preserves it in analysis links', async () => {
+    const { router, wrapper } = await mountAnalysis(
+      '/analyse?period=30',
+      ['weight_kg', 'active_energy_kcal', 'vitamin_a_ug'],
+    )
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    const dates = wrapper.findAll('.analysis-period-custom-form input[type="text"]')
+    await dates[0]!.setValue('01.03.2020')
+    await dates[1]!.setValue('01.04.2020')
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    expect(wrapper.get('.analysis-period-error').text()).toContain('31')
+
+    await dates[1]!.setValue('31.03.2020')
+    await wrapper.get('.analysis-period-custom-form button[type="submit"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({
+      period: 'custom', start: '2020-03-01', end: '2020-03-31',
+    })
+    const requests = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/nutrition/micronutrients?'))
+    expect(requests.at(-1)).toContain('start=2020-03-01')
+    expect(requests.at(-1)).toContain('end=2020-03-31')
+    const detailLink = wrapper.get('[data-analysis-card="vitamin_a_ug"] .analysis-card-content')
+    await detailLink.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({
+      period: 'custom', start: '2020-03-01', end: '2020-03-31',
+    })
+    wrapper.unmount()
+  })
+  it('retains the shared 3661-day reader limit for the all-supported-range preset', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse/aktivitaet/aktive-energie')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    const allData = wrapper.findAll('.analysis-period-option').find((option) => option.text() === 'Alle Daten')
+    expect(allData).toBeDefined()
+    await allData!.trigger('click')
+    await flushPromises()
+    const requests = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/verification/activity?'))
+    const params = new URLSearchParams(requests.at(-1)!.split('?')[1])
+    expect(params.get('start')).toBe(shiftIsoDate(params.get('end')!, -3660))
+    expect(router.currentRoute.value.query.period).toBe('all')
     wrapper.unmount()
   })
   it('keeps the fluid category hash when adding the default period query', async () => {
@@ -468,8 +516,7 @@ describe('Analysis V2 hub and catalogue', () => {
           series: metricKey === 'vitamin_a_ug'
             ? [
               { date: dateAtOffset(0), provider_key: 'yazio', value: 10 },
-              { date: dateAtOffset(1), provider_key: 'yazio', value: null },
-              { date: dateAtOffset(2), provider_key: 'yazio', value: 20 },
+              { date: dateAtOffset(6), provider_key: 'yazio', value: 20 },
             ]
             : [],
         })
@@ -485,7 +532,7 @@ describe('Analysis V2 hub and catalogue', () => {
     expect(card.findAll('.analysis-mini-chart circle')).toHaveLength(2)
     const circles = card.findAll('.analysis-mini-chart circle')
     expect(circles).toHaveLength(2)
-    expect(Number(circles[1].attributes('cx')) - Number(circles[0].attributes('cx'))).toBeCloseTo(40)
+    expect(Number(circles[1].attributes('cx')) - Number(circles[0].attributes('cx'))).toBeCloseTo(120)
     const seriesRequests = apiMock.mock.calls.flatMap(([path]) => {
       if (!String(path).startsWith('/analytics/nutrition/micronutrients')) return []
       const key = new URLSearchParams(String(path).split('?')[1] ?? '').get('metric_key')
@@ -755,17 +802,17 @@ describe('Analysis V2 detail views', () => {
       setThemePreference('dark')
     }
   })
-  it('limits the shared period picker to each analysis reader capability', async () => {
+  it('limits each shared period picker to its reader capability and shows custom fields immediately', async () => {
     const cases = [
       {
         path: '/analyse/koerper/gewicht?period=365',
-        labels: ['7 Tage', '30 Tage', '90 Tage', '1 Jahr'],
+        labels: ['7 Tage', '30 Tage', '90 Tage', '6 Monate', '1 Jahr', 'Alle Daten'],
         custom: true,
       },
       {
         path: '/analyse/aktivitaet/aktive-energie',
-        labels: ['7 Tage', '30 Tage'],
-        custom: false,
+        labels: ['7 Tage', '30 Tage', '90 Tage', '6 Monate', '1 Jahr', 'Alle Daten'],
+        custom: true,
       },
       {
         path: '/analyse/mikronaehrstoffe/vitamin_a_ug',
@@ -778,8 +825,10 @@ describe('Analysis V2 detail views', () => {
       await wrapper.get('.analysis-period-trigger').trigger('click')
       expect(wrapper.findAll('.analysis-period-option').map((option) => option.text()))
         .toEqual(pickerCase.labels)
-      expect(wrapper.findAll('.analysis-period-option').some((option) => option.text().includes('180'))).toBe(false)
-      expect(wrapper.find('.analysis-period-custom-choice').exists()).toBe(pickerCase.custom)
+      expect(wrapper.find('.analysis-period-custom-form').exists()).toBe(pickerCase.custom)
+      if (pickerCase.custom) {
+        expect(wrapper.findAll('.analysis-period-custom-form input[type="text"]')).toHaveLength(2)
+      }
       const trigger = wrapper.get('.analysis-period-trigger')
       await trigger.trigger('keydown', { key: 'Escape' })
       expect(trigger.attributes('aria-expanded')).toBe('false')
@@ -819,11 +868,25 @@ describe('Analysis V2 detail views', () => {
     expect(wrapper.get('.analysis-period-trigger').text()).toContain('1 Jahr')
     wrapper.unmount()
   })
+  it('applies the six-month preset as the latest 180 rolling days', async () => {
+    const { router, wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
+    await wrapper.get('.analysis-period-trigger').trigger('click')
+    const sixMonthPreset = wrapper.findAll('.analysis-period-option').find((option) => option.text() === '6 Monate')
+    expect(sixMonthPreset).toBeDefined()
+    await sixMonthPreset!.trigger('click')
+    await flushPromises()
+    const calls = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith('/analytics/weight'))
+    const params = new URLSearchParams(calls.at(-1)!.split('?')[1])
+    expect(params.get('start')).toBe(shiftIsoDate(params.get('end')!, -179))
+    expect(router.currentRoute.value.query.period).toBe('180')
+    wrapper.unmount()
+  })
 
   it('applies an inclusive 31-day micronutrient custom range only after validation', async () => {
     const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe/vitamin_a_ug')
     await wrapper.get('.analysis-period-trigger').trigger('click')
-    await wrapper.get('.analysis-period-custom-choice').trigger('click')
     const dates = wrapper.findAll('.analysis-period-custom-form input[type="text"]')
     await dates[0]!.setValue('01.03.2020')
     await dates[1]!.setValue('01.04.2020')
@@ -846,7 +909,6 @@ describe('Analysis V2 detail views', () => {
   it('allows at most 3661 inclusive days for a weight custom range', async () => {
     const { wrapper } = await mountAnalysis('/analyse/koerper/gewicht')
     await wrapper.get('.analysis-period-trigger').trigger('click')
-    await wrapper.get('.analysis-period-custom-choice').trigger('click')
     const dates = wrapper.findAll('.analysis-period-custom-form input[type="text"]')
     const today = wrapper.find('.analysis-period-custom-form input[type="date"]').attributes('max')!
     await dates[0]!.setValue(formatGermanDate(shiftIsoDate(today, -3661)))
@@ -907,6 +969,37 @@ describe('Analysis V2 detail views', () => {
     expect(wrapper.findAll('.micronutrient-empty')).toHaveLength(1)
     expect(wrapper.findAll('.micronutrient-summary')).toHaveLength(0)
     expect(wrapper.findComponent({ name: 'ChartPanel' }).exists()).toBe(false)
+  })
+  it('renders nulls between sparse canonical micronutrient points in the detail chart', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/analytics/nutrition/micronutrients')) {
+        const params = new URLSearchParams(path.split('?')[1] ?? '')
+        const start = params.get('start')!
+        const end = params.get('end')!
+        return Promise.resolve({
+          start_date: start, end_date: end, selected_provider: null, period_days: 7,
+          metrics: [{
+            metric_key: 'vitamin_a_ug', label: 'Vitamin A', category: 'vitamin',
+            unit: 'ug', eu_nrv: 800, total: 30, days_with_data: 2, contributors: [],
+          }],
+          series: [
+            { date: start, provider_key: 'yazio', value: 10 },
+            { date: shiftIsoDate(start, 6), provider_key: 'yazio', value: 20 },
+          ],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const { wrapper } = await mountAnalysis('/analyse/mikronaehrstoffe/vitamin_a_ug')
+    const chart = wrapper.findComponent({ name: 'ChartPanel' })
+    const option = chart.props('option') as {
+      xAxis: { data: string[] }
+      series: Array<{ connectNulls?: boolean; data: Array<number | null> }>
+    }
+    expect(option.xAxis.data).toHaveLength(7)
+    expect(option.series[0]!.connectNulls).toBe(false)
+    expect(option.series[0]!.data).toEqual([10, null, null, null, null, null, 20])
+    wrapper.unmount()
   })
 
   it('reads active energy only from canonical days and leaves missing values as gaps', async () => {

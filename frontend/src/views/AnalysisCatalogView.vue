@@ -4,7 +4,9 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
 import AnalysisCatalogEntryGrid from '../components/AnalysisCatalogEntryGrid.vue'
-import { analysisCategories, analysisHubQuery, localizedAnalysisPresentation, analysisRangeForDays, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
+import { analysisCategories, analysisHubQuery, localizedAnalysisPresentation, analysisPeriodRange, analysisRangeDayCount, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
+import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
+import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import { useAnalysisPreferences } from '../composables/useAnalysisPreferences'
 import { isoDateInTimeZone } from '../date-format'
 import { i18n } from '../i18n'
@@ -20,8 +22,26 @@ const preferences = useAnalysisPreferences()
 const selectedKeys = preferences.selectedKeys
 const saving = preferences.saving
 const saveError = preferences.saveError
-const period = ref<AnalysisHubPeriod>(parseAnalysisHubPeriod(route.query.period))
-const hubPeriods: readonly AnalysisHubPeriod[] = ['7', '30']
+const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+const requestedPeriod = parseAnalysisPeriodSelection(route.query.period)
+const queryStart = typeof route.query.start === 'string' ? route.query.start : null
+const queryEnd = typeof route.query.end === 'string' ? route.query.end : null
+const maxDays = computed(() => (
+  props.categoryKey === undefined || props.categoryKey === 'micronutrients' ? 31
+    : props.categoryKey === 'body' || props.categoryKey === 'activity' ? 3661 : 31
+))
+const presets = computed(() => supportedAnalysisPeriods(maxDays.value, maxDays.value >= 3661))
+const initialCustomRange = requestedPeriod === 'custom' && validAnalyticsRange(queryStart, queryEnd)
+  && analysisRangeWithinDays(queryStart as string, queryEnd as string, maxDays.value)
+  ? { start: queryStart as string, end: queryEnd as string }
+  : null
+const initialPeriod: AnalysisPeriodSelection = requestedPeriod === 'custom'
+  ? initialCustomRange ? 'custom' : '30'
+  : presets.value.includes(requestedPeriod) ? requestedPeriod : '30'
+const period = ref<AnalysisPeriodSelection>(initialPeriod)
+const customRange = ref(initialCustomRange)
+const range = computed(() => analysisPeriodRange(period.value, today, maxDays.value, customRange.value))
+const periodDays = computed(() => analysisRangeDayCount(range.value))
 const registry = ref<AnalysisRegistryResponse['analyses']>([])
 const workspaceLoading = ref(true)
 const workspaceError = ref('')
@@ -29,8 +49,6 @@ const micronutrientLoading = ref(false)
 const micronutrientError = ref('')
 const micronutrients = ref<AnalysisMicronutrientResponse | null>(null)
 let micronutrientLoadId = 0
-const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-const range = computed(() => analysisRangeForDays(today, Number(period.value)))
 const groupedEntries = computed(() => analysisCategories
   .filter((category) => !props.categoryKey || category.key === props.categoryKey)
   .map((category) => ({
@@ -62,8 +80,12 @@ const micronutrientTypeGroups = computed(() => ([
 })))
 
 async function syncPeriodQuery(): Promise<void> {
-  if (route.query.period === period.value) return
-  await router.replace({ query: { ...route.query, period: period.value }, hash: route.hash })
+  const query = { ...route.query }
+  delete query.start
+  delete query.end
+  Object.assign(query, analysisHubQuery(period.value, range.value))
+  if (route.query.period === query.period && route.query.start === query.start && route.query.end === query.end) return
+  await router.replace({ query, hash: route.hash })
 }
 
 async function loadMicronutrients(): Promise<void> {
@@ -111,9 +133,11 @@ async function loadWorkspace(): Promise<void> {
   }
 }
 
-async function changePeriod(value: AnalysisHubPeriod): Promise<void> {
-  period.value = value
+async function applyPeriod(value: { start: string; end: string; period: AnalysisPeriodSelection }): Promise<void> {
+  period.value = value.period
+  customRange.value = value.period === 'custom' ? { start: value.start, end: value.end } : null
   await syncPeriodQuery()
+  await loadMicronutrients()
 }
 
 async function addAnalysis(key: string): Promise<void> {
@@ -130,11 +154,25 @@ async function scrollToCategoryHash(): Promise<void> {
 }
 
 watch(
-  () => [route.query.period, props.categoryKey] as const,
-  ([queryPeriod, categoryKey]) => {
-    period.value = parseAnalysisHubPeriod(queryPeriod)
+  () => [route.query.period, route.query.start, route.query.end, props.categoryKey] as const,
+  (current, previous) => {
+    const [queryPeriod, queryStartValue, queryEndValue, categoryKey] = current
+    const categoryChanged = previous !== undefined && previous[3] !== categoryKey
+    const requested = parseAnalysisPeriodSelection(queryPeriod)
+    const start = typeof queryStartValue === 'string' ? queryStartValue : null
+    const end = typeof queryEndValue === 'string' ? queryEndValue : null
+    const customIsValid = requested === 'custom' && validAnalyticsRange(start, end)
+      && analysisRangeWithinDays(start as string, end as string, maxDays.value)
+    const nextPeriod: AnalysisPeriodSelection = requested === 'custom'
+      ? customIsValid ? 'custom' : '30'
+      : presets.value.includes(requested) ? requested : '30'
+    const nextCustom = nextPeriod === 'custom' ? { start: start as string, end: end as string } : null
+    const changed = period.value !== nextPeriod || customRange.value?.start !== nextCustom?.start
+      || customRange.value?.end !== nextCustom?.end
+    period.value = nextPeriod
+    customRange.value = nextCustom
     if (categoryKey === undefined || categoryKey === 'micronutrients') {
-      if (!workspaceLoading.value && registry.value.length) void loadMicronutrients()
+      if ((changed || categoryChanged) && !workspaceLoading.value && registry.value.length) void loadMicronutrients()
       return
     }
     micronutrientLoadId += 1
@@ -146,8 +184,8 @@ watch(
 
 
 onMounted(async () => {
-  await syncPeriodQuery()
   await loadWorkspace()
+  await syncPeriodQuery()
   await scrollToCategoryHash()
 })
 </script>
@@ -155,7 +193,7 @@ onMounted(async () => {
 <template>
   <div class="analysis-catalog-page">
     <nav class="analysis-breadcrumbs" :aria-label="t('analysisV2.breadcrumbs')">
-      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
+      <RouterLink :to="{ path: '/analyse', query: analysisHubQuery(period, range) }">{{ t('analysisV2.breadcrumbHub') }}</RouterLink>
       <span aria-hidden="true">›</span>
       <span aria-current="page">{{ pageTitle }}</span>
     </nav>
@@ -165,18 +203,16 @@ onMounted(async () => {
         <h1>{{ pageTitle }}</h1>
         <p v-if="!props.categoryKey">{{ t('analysisV2.catalogDescription') }}</p>
       </div>
-      <div class="period-control" role="group" :aria-label="t('analysisV2.period')">
-        <button
-          v-for="choice in hubPeriods"
-          :key="choice"
-          type="button"
-          :class="{ active: period === choice }"
-          :aria-pressed="period === choice"
-          @click="changePeriod(choice)"
-        >
-          {{ t(`analysisV2.period${choice}`) }}
-        </button>
-      </div>
+      <AnalysisPeriodPicker
+        :start="range.start"
+        :end="range.end"
+        :today="today"
+        :period="period"
+        :presets="presets"
+        :custom-range="true"
+        :max-days="maxDays"
+        @apply="applyPeriod"
+      />
     </div>
 
     <div v-if="workspaceLoading" class="dashboard-loading" role="status" aria-live="polite">
@@ -203,7 +239,7 @@ onMounted(async () => {
         class="card analysis-catalog-category"
       >
         <h2 v-if="!props.categoryKey" class="analysis-catalog-category-heading">
-          <RouterLink :to="{ path: categoryPath[group.key], query: analysisHubQuery(period), hash: group.key === 'fluid' ? '#analysis-category-fluid' : undefined }">{{ t(group.labelKey) }}</RouterLink>
+          <RouterLink :to="{ path: categoryPath[group.key], query: analysisHubQuery(period, range), hash: group.key === 'fluid' ? '#analysis-category-fluid' : undefined }">{{ t(group.labelKey) }}</RouterLink>
         </h2>
         <p v-if="!group.entries.length" class="card empty">{{ t('analysisV2.catalogEmpty') }}</p>
         <template v-else-if="group.key === 'micronutrients' && micronutrients">
@@ -214,6 +250,8 @@ onMounted(async () => {
               :selected-keys="selectedKeys"
               :saving="saving"
               :period="period"
+              :period-range="range"
+              :period-days="periodDays"
               :micronutrients="micronutrients"
               @add="addAnalysis"
             />
@@ -225,6 +263,8 @@ onMounted(async () => {
           :selected-keys="selectedKeys"
           :saving="saving"
           :period="period"
+          :period-range="range"
+          :period-days="periodDays"
           :micronutrients="micronutrients"
           @add="addAnalysis"
         />
