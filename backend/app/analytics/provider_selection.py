@@ -40,6 +40,23 @@ def _available_owned_source_instance_ids(
     user_id: UUID,
     provider_key: str,
 ) -> tuple[UUID, ...]:
+    if provider_key == "analysis_demo":
+        from app.nutrition.resolution.sources import AnalysisDemoSourceInstanceResolver
+        from app.services.analysis_demo import demo_user_id
+
+        if settings.environment not in {"development", "test"} or user_id != demo_user_id():
+            return ()
+        source_instance_id = AnalysisDemoSourceInstanceResolver().resolve_source_instance_id(
+            db, user_id=user_id,
+        )
+        if source_instance_id is None:
+            return ()
+        has_observation = db.scalar(select(NutritionSourceObservation.id).where(
+            NutritionSourceObservation.user_id == user_id,
+            NutritionSourceObservation.provider_key == "analysis_demo",
+            NutritionSourceObservation.source_instance_id == source_instance_id,
+        ).limit(1))
+        return (source_instance_id,) if has_observation is not None else ()
     if provider_key == "yazio":
         if not settings.yazio_enabled:
             return ()
@@ -81,11 +98,20 @@ def resolve_nutrition_provider(
     db: Session,
     *,
     user_id: UUID,
+    include_analysis_demo: bool = False,
 ) -> NutritionProviderSelection | None:
+    from app.services.analysis_demo import demo_user_id
+
+    demo_eligible = (
+        include_analysis_demo
+        and settings.environment in {"development", "test"}
+        and user_id == demo_user_id()
+    )
     saved_preferences = [
         item
         for item in list_provider_preferences(db, user_id)
         if item.data_area == NUTRITION_DATA_AREA
+        and (demo_eligible or item.provider_key != "analysis_demo")
     ]
     try:
         provider_keys = effective_provider_order(
@@ -95,6 +121,10 @@ def resolve_nutrition_provider(
         )
     except ValueError as exc:
         raise NutritionProviderNotReady("configured provider is invalid") from exc
+    if demo_eligible:
+        provider_keys = ("analysis_demo", *tuple(key for key in provider_keys if key != "analysis_demo"))
+    else:
+        provider_keys = tuple(key for key in provider_keys if key != "analysis_demo")
 
     provider_sources: list[tuple[str, UUID]] = []
     for provider_key in provider_keys:

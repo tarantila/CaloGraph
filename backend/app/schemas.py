@@ -740,6 +740,55 @@ class AnalysisMicronutrientResponse(BaseModel):
     series: list[AnalysisMicronutrientDayResponse]
 
 
+class AnalysisNutritionMealResponse(BaseModel):
+    provider_key: str
+    local_time: str | None
+    meal_type: str | None
+    display_name: str
+    dietary_energy_kcal: Decimal | None
+    protein_g: Decimal | None
+    carbohydrates_g: Decimal | None
+    fat_g: Decimal | None
+    fiber_g: Decimal | None
+    sugar_g: Decimal | None
+    saturated_fat_g: Decimal | None
+
+    @field_serializer(
+        "dietary_energy_kcal", "protein_g", "carbohydrates_g", "fat_g",
+        "fiber_g", "sugar_g", "saturated_fat_g", when_used="json"
+    )
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisNutritionDayResponse(BaseModel):
+    date: date
+    provider_key: str | None
+    dietary_energy_kcal: Decimal | None
+    protein_g: Decimal | None
+    carbohydrates_g: Decimal | None
+    fat_g: Decimal | None
+    fiber_g: Decimal | None
+    sugar_g: Decimal | None
+    saturated_fat_g: Decimal | None
+    meals: list[AnalysisNutritionMealResponse]
+
+    @field_serializer(
+        "dietary_energy_kcal", "protein_g", "carbohydrates_g", "fat_g",
+        "fiber_g", "sugar_g", "saturated_fat_g", when_used="json"
+    )
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisNutritionResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: AnalysisSelectedProviderResponse
+    period_days: int
+    days: list[AnalysisNutritionDayResponse]
+
+
 class AnalysisPeriodCapability(BaseModel):
     min_days: int
     max_days: int
@@ -777,7 +826,7 @@ class TargetSettingsResponse(BaseModel):
 
 VerificationView = Literal["canonical", "all"]
 VerificationProviderKey = Literal["google_health", "yazio", "apple_health"]
-VerificationActivityProviderKey = Literal["google_health", "yazio", "apple_health", "withings"]
+VerificationActivityProviderKey = Literal["google_health", "yazio", "apple_health", "withings", "analysis_demo"]
 VerificationRecordStatus = Literal["available", "no_data", "unavailable"]
 VerificationActivitySourceType = Literal[
     "google_health_activity_v4",
@@ -785,6 +834,7 @@ VerificationActivitySourceType = Literal[
     "apple_health_xml",
     "health_auto_export_v2",
     "withings_activity_v2",
+    "analysis_demo_offline",
 ]
 
 

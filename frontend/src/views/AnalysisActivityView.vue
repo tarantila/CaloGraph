@@ -1,11 +1,13 @@
 <script setup lang="ts">
+import { MarkPointComponent } from 'echarts/components'
+import { use } from 'echarts/core'
 import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
-import { analysisHubQuery, analysisPeriodRange, analysisRangeDayCount, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
+import { analysisRangeWithinDays } from '../analytics-period'
+import { analysisHubQuery, analysisRangeDayCount, normalizeAnalysisPeriodForCapability, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
@@ -14,6 +16,7 @@ import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { VerificationActivityResponse } from '../types'
 
+use([MarkPointComponent])
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
@@ -28,21 +31,22 @@ function queryString(value: unknown): string | null {
 
 const maxDays = 3661
 const presets = supportedAnalysisPeriods(maxDays, true)
-const queryStart = queryString(route.query.start)
-const queryEnd = queryString(route.query.end)
-const queryRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
 const initialQueryPeriod: AnalysisPeriodSelection = route.query.period == null
-  ? '7'
-  : parseAnalysisPeriodSelection(route.query.period)
-const period = ref<AnalysisPeriodSelection>(
-  initialQueryPeriod === 'custom' && queryRangeIsValid && analysisRangeWithinDays(queryStart, queryEnd, maxDays)
-    ? 'custom'
-    : initialQueryPeriod === 'custom' ? '30' : initialQueryPeriod,
+  ? '7' : parseAnalysisPeriodSelection(route.query.period)
+const initialSelection = normalizeAnalysisPeriodForCapability(
+  initialQueryPeriod,
+  initialQueryPeriod === 'custom' && queryString(route.query.start) && queryString(route.query.end)
+    ? { start: queryString(route.query.start)!, end: queryString(route.query.end)! } : null,
+  maxDays, today,
 )
+const period = ref<AnalysisPeriodSelection>(initialSelection.period)
 const customRange = ref<{ start: string; end: string } | null>(
-  period.value === 'custom' && queryStart && queryEnd ? { start: queryStart, end: queryEnd } : null,
+  initialSelection.period === 'custom' ? initialSelection.range : null,
 )
-const range = computed(() => analysisPeriodRange(period.value, today, maxDays, customRange.value))
+const normalizedSelection = computed(() => normalizeAnalysisPeriodForCapability(
+  period.value, customRange.value, maxDays, today,
+))
+const range = computed(() => normalizedSelection.value.range)
 const periodDays = computed(() => analysisRangeDayCount(range.value))
 const response = ref<VerificationActivityResponse | null>(null)
 const loading = ref(true)
@@ -100,24 +104,32 @@ const chartOption = computed<EChartsOption>(() => {
       barMaxWidth: 32,
       data: chartDates.value.map((date) => readingsByDate.value.get(date) ?? null),
       itemStyle: { color: palette.amber },
+      markPoint: {
+        symbol: 'circle',
+        symbolSize: 9,
+        itemStyle: { color: palette.amber },
+        data: readings.value.filter(({ value }) => value === 0).map(({ date }) => ({
+          name: t('analysisV2.activeEnergyTitle'),
+          coord: [date, 0],
+        })),
+      },
     }],
   }
 })
 
 async function syncQuery(): Promise<void> {
+  const query = analysisHubQuery(period.value, range.value)
+  if (route.query.period === query.period
+    && route.query.start === query.start && route.query.end === query.end) return
   await router.replace({
-    query: {
-      ...route.query,
-      start: period.value === 'custom' ? range.value.start : undefined,
-      end: period.value === 'custom' ? range.value.end : undefined,
-      period: period.value,
-    },
+    query: { ...route.query, start: query.start, end: query.end, period: query.period },
+    hash: route.hash,
   })
 }
 
 async function load(): Promise<void> {
   const requestId = ++latestLoadId
-  if (!analysisRangeWithinDays(range.value.start, range.value.end, maxDays)) {
+  if (!analysisRangeWithinDays(range.value.start, range.value.end, maxDays) || range.value.end > today) {
     response.value = null
     error.value = t('analysisV2.invalidRange')
     loading.value = false
@@ -146,10 +158,13 @@ async function load(): Promise<void> {
 }
 
 function applyPeriod(value: { period: AnalysisPeriodSelection; start: string; end: string }): void {
-  const changed = value.start !== range.value.start || value.end !== range.value.end
-    || value.period !== period.value
-  period.value = value.period
-  customRange.value = value.period === 'custom' ? { start: value.start, end: value.end } : null
+  const normalized = normalizeAnalysisPeriodForCapability(
+    value.period, value.period === 'custom' ? value : null, maxDays, today,
+  )
+  const changed = normalized.range.start !== range.value.start || normalized.range.end !== range.value.end
+    || normalized.period !== period.value
+  period.value = normalized.period
+  customRange.value = normalized.period === 'custom' ? normalized.range : null
   if (changed) void load()
 }
 
@@ -158,18 +173,20 @@ watch(
   ([nextStart, nextEnd, nextPeriod]) => {
     const start = queryString(nextStart)
     const end = queryString(nextEnd)
-    const valid = validAnalyticsRange(start, end) && analysisRangeWithinDays(start, end, maxDays)
-    const requested = parseAnalysisPeriodSelection(nextPeriod)
-    const nextPeriodValue = requested === 'custom' ? valid ? 'custom' : '30' : requested
-    const nextCustomRange = nextPeriodValue === 'custom' && valid
-      ? { start: start as string, end: end as string }
-      : null
-    const nextRange = analysisPeriodRange(nextPeriodValue, today, maxDays, nextCustomRange)
+    const requested = nextPeriod == null ? '7' : parseAnalysisPeriodSelection(nextPeriod)
+    const normalized = normalizeAnalysisPeriodForCapability(
+      requested, requested === 'custom' && start && end ? { start, end } : null,
+      maxDays, today,
+    )
+    const nextPeriodValue = normalized.period
+    const nextCustomRange = nextPeriodValue === 'custom' ? normalized.range : null
+    const nextRange = normalized.range
     const changed = nextPeriodValue !== period.value
       || nextRange.start !== range.value.start || nextRange.end !== range.value.end
     period.value = nextPeriodValue
     customRange.value = nextCustomRange
     if (changed) void load()
+    else void syncQuery()
   },
 )
 
@@ -187,7 +204,7 @@ onMounted(() => { void load() })
     </nav>
     <div class="page-heading">
       <div>
-        <h1>{{ t('analysisV2.activeEnergyTitle') }}</h1>
+        <h1 class="analysis-detail-title"><span class="analysis-detail-icon analysis-detail-icon--activity" aria-hidden="true">↗</span>{{ t('analysisV2.activeEnergyTitle') }}</h1>
         <p>{{ t('analysisV2.activeEnergyDescription') }}</p>
       </div>
       <AnalysisPeriodPicker

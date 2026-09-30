@@ -19,7 +19,7 @@ const registry = [
   },
 ]
 
-async function installSyntheticAnalysisApi(page: Page): Promise<{ persistedOrders: string[][] }> {
+async function installSyntheticAnalysisApi(page: Page, rejectSave = false): Promise<{ persistedOrders: string[][] }> {
   const state: { analysisKeys: string[]; persistedOrders: string[][] } = {
     analysisKeys: [...initialKeys],
     persistedOrders: [],
@@ -29,6 +29,11 @@ async function installSyntheticAnalysisApi(page: Page): Promise<{ persistedOrder
     const path = requestUrl.pathname.replace(/^\/api\/v1/u, '')
     if (path === '/settings/analysis-preferences' && route.request().method() === 'PUT') {
       const body = route.request().postDataJSON() as { analysis_keys: string[] }
+      if (rejectSave) {
+        state.persistedOrders.push([...body.analysis_keys])
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Synthetic save failure' }) })
+        return
+      }
       state.analysisKeys = [...body.analysis_keys]
       state.persistedOrders.push([...body.analysis_keys])
       await route.fulfill({
@@ -95,22 +100,9 @@ async function dispatchPointer(
   }, { type, pointerId, pointerType, x, y })
 }
 
-test('Analysis hub uses a card-free shared heading and pointer drag persists its destination', async ({ page }) => {
+test('Analysis hub pointer drag persists its destination once without opening a detail', async ({ page }) => {
   const { persistedOrders } = await installSyntheticAnalysisApi(page)
   await openHub(page)
-
-  const heading = page.locator('.analysis-header h1')
-  const header = page.locator('.analysis-header')
-  await expect(heading).toBeVisible()
-  const headingStyles = await heading.evaluate((element) => ({
-    fontSize: getComputedStyle(element).fontSize,
-    lineHeight: getComputedStyle(element).lineHeight,
-  }))
-  expect(Number.parseFloat(headingStyles.fontSize)).toBeGreaterThanOrEqual(25)
-  expect(Number.parseFloat(headingStyles.lineHeight))
-    .toBeCloseTo(Number.parseFloat(headingStyles.fontSize) * 1.15, 1)
-  expect(await header.evaluate((element) => element.classList.contains('card'))).toBe(false)
-  expect(await header.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
 
   const weightCard = page.locator('.analysis-card[data-analysis-key="weight_kg"]')
   const targetCard = page.locator('.analysis-card[data-analysis-key="active_energy_kcal"]')
@@ -121,19 +113,6 @@ test('Analysis hub uses a card-free shared heading and pointer drag persists its
   expect(sourceBox).not.toBeNull()
   expect(handleBox).not.toBeNull()
   expect(targetBox).not.toBeNull()
-  const railIcon = await weightCard.locator('.analysis-card-icon').boundingBox()
-  const railHandle = await handle.boundingBox()
-  const content = await weightCard.locator('.analysis-card-content').boundingBox()
-  const tools = await weightCard.locator('.analysis-card-tools').boundingBox()
-  expect(railIcon).not.toBeNull()
-  expect(railHandle).not.toBeNull()
-  expect(content).not.toBeNull()
-  expect(tools).not.toBeNull()
-  expect(railIcon!.y + railIcon!.height).toBeLessThanOrEqual(railHandle!.y)
-  expect(sourceBox!.x + sourceBox!.width - tools!.x - tools!.width).toBeGreaterThan(0)
-  expect(sourceBox!.x + sourceBox!.width - tools!.x - tools!.width).toBeLessThan(12)
-  expect(tools!.y - sourceBox!.y).toBeLessThan(12)
-  expect(content!.width).toBeGreaterThan(0)
   const startX = handleBox!.x + handleBox!.width / 2
   const startY = handleBox!.y + handleBox!.height / 2
   const grabOffsetX = startX - sourceBox!.x
@@ -178,6 +157,10 @@ test('Analysis hub uses a card-free shared heading and pointer drag persists its
   expect(persistedOrders[0]).toEqual(['active_energy_kcal', 'weight_kg', 'vitamin_a_ug'])
   await expect(page.locator('.analysis-card').nth(0)).toHaveAttribute('data-analysis-key', 'active_energy_kcal')
   await expect(weightCard).toHaveClass(/is-settled/u)
+  await expect(page).toHaveURL(/\/analyse(?:\?|$)/u)
+  await page.reload()
+  await expect(page.locator('.analysis-card').first()).toHaveAttribute('data-analysis-key', 'active_energy_kcal')
+  expect(persistedOrders).toHaveLength(1)
 })
 
 test('Analysis hub supports touch-handle dragging and keyboard menu reordering', async ({ page }) => {
@@ -232,10 +215,18 @@ test('Analysis hub supports touch-handle dragging and keyboard menu reordering',
   await page.keyboard.press('Enter')
   await expect.poll(() => persistedOrders.length).toBe(2)
   expect(persistedOrders[1]).toEqual(['active_energy_kcal', 'vitamin_a_ug', 'weight_kg'])
+  expect(await page.locator('.analysis-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('data-analysis-key'))))
+    .toEqual(['active_energy_kcal', 'vitamin_a_ug', 'weight_kg'])
+  await expect(page).toHaveURL(/\/analyse(?:\?|$)/u)
+  await page.reload()
+  await expect(page.locator('.analysis-card').first()).toHaveAttribute('data-analysis-key', 'active_energy_kcal')
+  expect(await page.locator('.analysis-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('data-analysis-key'))))
+    .toEqual(['active_energy_kcal', 'vitamin_a_ug', 'weight_kg'])
+  expect(persistedOrders).toHaveLength(2)
 })
 
 test('Analysis hub remains touch-scrollable outside the drag handle', async ({ page }) => {
-  await installSyntheticAnalysisApi(page)
+  const { persistedOrders } = await installSyntheticAnalysisApi(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/analyse')
   const content = page.locator('.analysis-card[data-analysis-key="weight_kg"] .analysis-card-content')
@@ -258,6 +249,10 @@ test('Analysis hub remains touch-scrollable outside the drag handle', async ({ p
   await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
   await expect(page.locator('.analysis-card.is-dragging')).toHaveCount(0)
+  expect(persistedOrders).toEqual([])
+  await expect(page).toHaveURL(/\/analyse(?:\?|$)/u)
+  expect(await page.locator('.analysis-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('data-analysis-key'))))
+    .toEqual(initialKeys)
   await touch.detach()
 })
 
@@ -289,3 +284,59 @@ test('Analysis hub drag feedback respects reduced motion while preserving pointe
   expect(reducedFeedback.transitionDuration.split(',').every((duration) => Number.parseFloat(duration) === 0)).toBe(true)
   await dispatchPointer(page, 'pointerup', pointerId, 'mouse', startX + 80, startY + 24)
 })
+
+test('card header reading order and touch target keep reorder separate from real detail navigation', async ({ page }) => {
+  const { persistedOrders } = await installSyntheticAnalysisApi(page)
+  await openHub(page)
+  const card = page.locator('[data-analysis-card="weight_kg"]')
+  const handle = card.locator('.analysis-drag-handle')
+  const box = await handle.boundingBox()
+  expect(box!.width).toBeGreaterThanOrEqual(44)
+  expect(box!.height).toBeGreaterThanOrEqual(44)
+  expect(await card.evaluate((element) => {
+    const items = ['.analysis-drag-handle', '.analysis-card-icon', 'h3', '.analysis-overflow summary']
+      .map((selector) => element.querySelector(selector)!)
+    return items.slice(1).every((item, index) => Boolean(items[index]!.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })).toBe(true)
+  await expect(handle).toHaveAccessibleName(/Gewicht/u)
+  await expect(card.locator('.analysis-overflow summary')).toHaveAccessibleName(/Gewicht/u)
+  await handle.click()
+  await expect(page).toHaveURL(/\/analyse(?:\?|$)/u)
+  expect(persistedOrders).toEqual([])
+  await card.locator('.analysis-card-content').click()
+  await expect(page).toHaveURL(/\/analyse\/koerper\/gewicht/u)
+  await expect(page.locator('.weight-summary-primary')).toContainText('69,5 kg')
+  await page.goto('/analyse')
+  await page.locator('[data-analysis-card="active_energy_kcal"] .analysis-card-content').click()
+  await expect(page).toHaveURL(/\/analyse\/aktivitaet\/aktive-energie/u)
+  await expect(page.locator('.activity-reading-list')).toContainText('240 kcal')
+})
+
+for (const outcome of ['cancel', 'outside', 'reject'] as const) {
+  test(`pointer ${outcome} restores original order without success confirmation or detail click-through`, async ({ page }) => {
+    const { persistedOrders } = await installSyntheticAnalysisApi(page, outcome === 'reject')
+    await openHub(page)
+    const weight = page.locator('[data-analysis-card="weight_kg"]')
+    const target = page.locator('[data-analysis-card="active_energy_kcal"]')
+    const handleBox = await weight.locator('.analysis-drag-handle').boundingBox()
+    const targetBox = await target.boundingBox()
+    await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(targetBox!.x + targetBox!.width * .82, targetBox!.y + targetBox!.height / 2, { steps: 8 })
+    await expect(page.locator('.analysis-card').first()).toHaveAttribute('data-analysis-key', 'active_energy_kcal')
+    if (outcome === 'cancel') {
+      await dispatchPointer(page, 'pointercancel', 1, 'mouse', 0, 0)
+    } else if (outcome === 'outside') {
+      await page.mouse.move(2, 2)
+    }
+    await page.mouse.up()
+    await expect.poll(() => page.locator('.analysis-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('data-analysis-key'))))
+      .toEqual(initialKeys)
+    expect(persistedOrders).toHaveLength(outcome === 'reject' ? 1 : 0)
+    await expect(page.locator('[data-drop-state="dropped"], .analysis-card.is-settled')).toHaveCount(0)
+    await expect(page).toHaveURL(/\/analyse(?:\?|$)/u)
+    if (outcome === 'reject') await expect(page.locator('.analysis-save-error')).toBeVisible()
+    await page.reload()
+    await expect(page.locator('.analysis-card').first()).toHaveAttribute('data-analysis-key', 'weight_kg')
+  })
+}

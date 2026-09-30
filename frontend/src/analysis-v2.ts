@@ -1,12 +1,13 @@
 import analysisPresentationMap from './analysis-presentation.json'
+import { analysisRangeWithinDays } from './analytics-period'
 import { i18n, type SupportedLocale } from './i18n'
-import type { AnalysisCategoryKey } from './types'
+import type { AnalysisCategoryKey, AnalysisNutritionMetricKey } from './types'
 
 export interface AnalysisPresentation {
   label: Record<SupportedLocale, string>
   description: Record<SupportedLocale, string>
   icon: string
-  route: 'weight' | 'active-energy' | 'micronutrient' | 'catalog'
+  route: 'weight' | 'active-energy' | 'micronutrient' | 'nutrition' | 'catalog'
 }
 
 export interface LocalizedAnalysisPresentation {
@@ -61,20 +62,27 @@ export function analysisHubQuery(
 }
 
 export function supportedAnalysisPeriods(maxDays: number, includeAll: boolean): AnalysisHubPeriod[] {
-  const periods = (['7', '30', '90', '180', '365'] as AnalysisHubPeriod[])
+  const periods = (['7', '30', '90', '365'] as AnalysisHubPeriod[])
     .filter((period) => Number(period) <= maxDays)
   if (includeAll && maxDays >= 3661) periods.push('all')
   return periods
 }
 
-export function analysisPeriodRange(
-  period: AnalysisPeriodSelection,
-  today: string,
+export function normalizeAnalysisPeriodForCapability(
+  selection: AnalysisPeriodSelection,
+  customRange: { start: string; end: string } | null,
   maxDays: number,
-  customRange?: { start: string; end: string } | null,
-): { start: string; end: string } {
-  if (period === 'custom' && customRange) return customRange
-  return analysisRangeForDays(today, period === 'all' ? maxDays : Number(period))
+  today: string,
+): { period: AnalysisPeriodSelection; range: { start: string; end: string } } {
+  const available = supportedAnalysisPeriods(maxDays, true)
+  if (selection === 'custom' && customRange
+    && customRange.end <= today
+    && analysisRangeWithinDays(customRange.start, customRange.end, maxDays)) {
+    return { period: 'custom', range: customRange }
+  }
+  const fallback = available.at(available.at(-1) === 'all' ? -2 : -1) ?? '30'
+  const period = available.includes(selection as AnalysisHubPeriod) ? selection : fallback
+  return { period, range: analysisRangeForDays(today, period === 'all' ? maxDays : Number(period)) }
 }
 
 export function analysisRangeDayCount(range: { start: string; end: string }): number {
@@ -89,6 +97,15 @@ export function analysisRangeForDays(today: string, days: number): { start: stri
   return { start: date.toISOString().slice(0, 10), end: today }
 }
 
+export const nutritionAnalysisKeys: readonly AnalysisNutritionMetricKey[] = [
+  'dietary_energy_kcal', 'protein_g', 'carbohydrates_g', 'fat_g',
+  'fiber_g', 'sugar_g', 'saturated_fat_g',
+]
+
+export function isNutritionAnalysisKey(key: string): key is AnalysisNutritionMetricKey {
+  return nutritionAnalysisKeys.some((supported) => supported === key)
+}
+
 export function analysisHref(key: string): string {
   const presentation = analysisPresentation[key]
   if (!presentation) return '/analyse/katalog'
@@ -96,6 +113,8 @@ export function analysisHref(key: string): string {
     case 'weight': return '/analyse/koerper/gewicht'
     case 'active-energy': return '/analyse/aktivitaet/aktive-energie'
     case 'micronutrient': return `/analyse/mikronaehrstoffe/${encodeURIComponent(key)}`
+    case 'nutrition': return isNutritionAnalysisKey(key)
+      ? `/analyse/ernaehrung/${encodeURIComponent(key)}` : '/analyse/katalog'
     default: return '/analyse/katalog'
   }
 }

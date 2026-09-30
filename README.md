@@ -201,6 +201,31 @@ Backend development uses Python 3.14 and the project lockfile; frontend
 development uses the package lockfile. The repository CI workflow contains the
 supported checks. Do not use development defaults for a public deployment.
 
+### Analysis demo (disposable developer databases only)
+
+Use `seed-analysis-demo` **only against a confirmed disposable development or
+test database** (`ENVIRONMENT=development` or `ENVIRONMENT=test`). Never point
+these commands at a real health database or a production instance. Create a
+separate real account first; the dedicated non-admin
+`calograph-analysis-demo` account cannot be the first user. From the backend
+directory:
+
+```sh
+cd backend
+uv run python -m app.cli seed-analysis-demo
+uv run python -m app.cli remove-analysis-demo
+```
+
+The seed command prompts privately for a password only when creating the
+account. After successful seeding, log in as `calograph-analysis-demo` with
+that privately entered password. Repeat seeding does not reset the password
+and preserves the original 90-day anchor. Removal refuses an account containing
+changes or references it cannot prove belong to the seed and does not delete
+any other user's data. Repeating removal when the account is absent is a no-op;
+Changes made by the former legacy demo seeder to unmarked target histories are
+**not automatically reversible**. Restore those from a known-good disposable
+database snapshot if needed; the current removal command is not a legacy cleanup.
+
 ## Limitations
 
 - This is 0.x software; review migrations and maintain independent backups.

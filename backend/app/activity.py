@@ -1,5 +1,6 @@
 from typing import Final
 
+from app.config import settings
 from app.withings.constants import WITHINGS_ACTIVITY_SOURCE_TYPE
 
 ACTIVE_ENERGY_METRIC: Final = "active_energy_kcal"
@@ -13,10 +14,17 @@ ACTIVITY_PROVIDER_SOURCE_TYPES: Final = {
     "yazio": "yazio_export_v1",
     "withings": WITHINGS_ACTIVITY_SOURCE_TYPE,
 }
+if settings.environment in {"development", "test"}:
+    ACTIVITY_PROVIDER_SOURCE_TYPES["analysis_demo"] = "analysis_demo_offline"
 ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS: Final = {
     "google_health": GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE_GROUP,
     "apple_health": ("apple_health_xml", "health_auto_export_v2"),
     "yazio": ("yazio_export_v1",),
     "withings": (WITHINGS_ACTIVITY_SOURCE_TYPE,),
 }
-ACTIVITY_SOURCE_TYPES: Final = frozenset(ACTIVITY_PROVIDER_SOURCE_TYPES.values())
+if settings.environment in {"development", "test"}:
+    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["analysis_demo"] = ("analysis_demo_offline",)
+ACTIVITY_SOURCE_TYPES: Final = frozenset(
+    source_type for provider, source_type in ACTIVITY_PROVIDER_SOURCE_TYPES.items()
+    if provider != "analysis_demo"
+)

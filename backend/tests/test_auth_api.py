@@ -15,6 +15,7 @@ from app.config import settings
 from app.main import app
 from app.models import (
     HealthSample,
+    ImportBatch,
     NutritionTarget,
     TrackingQualitySettings,
     User,
@@ -710,6 +711,64 @@ def test_target_rejects_activity_source_without_user_data(
     assert response.status_code == 422
     assert response.json()["type"].endswith("activity-source-unavailable")
     assert response.headers["content-type"] == "application/problem+json"
+
+
+def test_ordinary_user_can_save_full_activity_target_without_provider_preference(
+    client: TestClient, user: User, db
+) -> None:
+    batch = ImportBatch(user_id=user.id, source_type="apple_health_xml", status="completed")
+    db.add(batch)
+    db.flush()
+    db.add(
+        HealthSample(
+            user_id=user.id,
+            import_batch_id=batch.id,
+            external_sample_id="ordinary-user-active-energy",
+            fingerprint=f"{user.id}-ordinary-user-active-energy",
+            source_type="apple_health_xml",
+            source_name="Apple Health",
+            source_identifier="ordinary-user-watch",
+            metric_type="active_energy_kcal",
+            value=Decimal("275"),
+            unit="kcal",
+            original_value=Decimal("275"),
+            original_unit="kcal",
+            start_at=datetime(2024, 2, 1, 12, tzinfo=UTC),
+            end_at=datetime(2024, 2, 1, 12, tzinfo=UTC),
+            local_date=date(2024, 2, 1),
+            timezone="UTC",
+        )
+    )
+    db.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "correct-horse-battery-staple"},
+    )
+    response = client.post(
+        "/api/v1/settings/targets",
+        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        json={
+            "valid_from": "2024-02-01",
+            "calories_kcal": 2200,
+            "protein_g": 140,
+            "activity_mode": "full",
+            "activity_source_type": "apple_health_xml",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["activity_mode"] == "full"
+    assert response.json()["activity_source_type"] == "apple_health_xml"
+    saved = db.scalar(
+        select(NutritionTarget).where(
+            NutritionTarget.user_id == user.id,
+            NutritionTarget.valid_from == date(2024, 2, 1),
+        )
+    )
+    assert saved is not None
+    assert saved.activity_mode == "full"
+    assert saved.activity_source_type == "apple_health_xml"
 
 
 def test_target_delete_preserves_history_and_requires_one_version(

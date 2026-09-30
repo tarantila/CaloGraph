@@ -4,10 +4,12 @@
   unit, administrator flag, and lifecycle state. `is_active=true` requires
   `deactivated_at=NULL`; an inactive account requires a UTC deactivation
   timestamp.
-- `user_provider_preferences`: at most one provider key per user and
-  functional data area (`nutrition`, `weight`, or `activity_energy`). The
-  composite primary key is `(user_id, data_area)`; the table stores provider
-  identity only, never source-instance identifiers.
+- `user_provider_priorities`: ordered per-user providers by functional data
+  area; composite primary key `(user_id, data_area, priority)`. Versioned,
+  effective-dated `source_priority_policies` and `source_priority_rules`
+  preserve the source chain used for historical resolution.
+- Historical `user_provider_preferences` is migration input only; revision
+  `20260918_0031` moves those choices and removes the table from the current schema.
 - `user_analysis_preferences`: ordered per-user Analysis card keys; composite
   primary key `(user_id, analysis_key)`, unique `(user_id, position)`, and
   cascade deletion with the user. No rows means an explicitly empty selection.
@@ -61,3 +63,14 @@ user-owned profile, provider-preference, authentication, recovery, import,
 nutrition, target, tracking, and YAZIO rows. Related rate-limit buckets use
 HMAC keys rather than foreign keys and are removed explicitly by the lifecycle
 service in the same transaction.
+
+## Analysis demo data
+
+The dedicated non-admin `calograph-analysis-demo` account owns the demo's
+synthetic `health_samples` with source type `analysis_demo_offline`, import
+batches, nutrition rows, projections, and ordinary per-user priority policy.
+The demo-only source/provider identity is `analysis_demo`; these rows use the
+normal user-isolation boundary rather than a separate analytics data model.
+Removal audits exclusive seed ownership before deleting demo-owned rows and
+the account. Security audit events survive, with account references cleared
+through `SET NULL` where applicable.

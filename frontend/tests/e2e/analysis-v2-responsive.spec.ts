@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const registry = [
   {
@@ -18,7 +18,7 @@ const registry = [
   },
 ]
 
-test('Analysis cards stay readable across viewports and detail cards have useful insets', async ({ page }) => {
+async function installSyntheticAnalysisApi(page: Page): Promise<void> {
   await page.route('**/api/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     const path = requestUrl.pathname.replace(/^\/api\/v1/u, '')
@@ -54,6 +54,10 @@ test('Analysis cards stay readable across viewports and detail cards have useful
     }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responses[path] ?? {}) })
   })
+}
+
+test('Analysis cards stay readable across viewports and detail cards have useful insets', async ({ page }) => {
+  await installSyntheticAnalysisApi(page)
 
   await page.setViewportSize({ width: 1024, height: 900 })
   await page.goto('/analyse')
@@ -71,16 +75,17 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   expect((await layout()).copyWidths.every((width) => width >= 100)).toBe(true)
 
   await page.setViewportSize({ width: 1440, height: 900 })
-  expect(await layout()).toMatchObject({ columns: 3 })
+  expect(await layout()).toMatchObject({ columns: 4 })
   await page.goto('/analyse/koerper/gewicht')
   const desktopPicker = page.locator('.analysis-period-picker')
-  await desktopPicker.locator('.analysis-period-trigger').click()
+  await desktopPicker.locator('.analysis-period-custom-button').click()
   const desktopPickerColumns = await desktopPicker.locator('.analysis-period-layout').evaluate(
     (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
   )
   expect(desktopPickerColumns).toBe(2)
-  await expect(desktopPicker.locator('.analysis-period-option')).toHaveCount(6)
-  await expect(desktopPicker.getByRole('button', { name: 'Alle Daten' })).toBeVisible()
+  await expect(desktopPicker.locator('.analysis-period-option')).toHaveCount(5)
+  await expect(desktopPicker.locator('.analysis-period-custom-form')).toBeVisible()
+  await expect(desktopPicker.locator('.analysis-period-strip').getByRole('button', { name: 'Alle Daten' })).toBeVisible()
   await page.goto('/analyse')
 
 
@@ -90,7 +95,7 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   await page.goto('/analyse/koerper/gewicht')
   const mobileWeightPicker = page.locator('.analysis-period-picker')
   await mobileWeightPicker.locator('.analysis-period-trigger').click()
-  await expect(mobileWeightPicker.locator('.analysis-period-option')).toHaveCount(6)
+  await expect(mobileWeightPicker.locator('.analysis-period-option')).toHaveCount(5)
   const mobileWeightPickerColumns = await mobileWeightPicker.locator('.analysis-period-layout').evaluate(
     (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
   )
@@ -160,3 +165,74 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   await expectUsefulInsets('.micronutrient-daily-card')
 
 })
+
+for (const width of [320, 375]) {
+  test(`Analysis charts, overflow and period overlay fit ${width}px with visible keyboard focus`, async ({ page }) => {
+    await installSyntheticAnalysisApi(page)
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/analyse')
+    const handle = page.locator('[data-analysis-card="weight_kg"] .analysis-drag-handle')
+    await expect(handle).toBeVisible()
+    const handleBox = await handle.boundingBox()
+    expect(handleBox!.width).toBeGreaterThanOrEqual(44)
+    expect(handleBox!.height).toBeGreaterThanOrEqual(44)
+    await handle.focus()
+    await page.keyboard.press('Tab')
+    const focused = page.locator(':focus')
+    await expect(focused).toBeVisible()
+    const focusPaint = await focused.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return {
+        keyboardFocus: element.matches(':focus-visible'),
+        outlineVisible: style.outlineStyle !== 'none' && Number.parseFloat(style.outlineWidth) >= 2
+          && style.outlineColor !== 'transparent' && style.outlineColor !== 'rgba(0, 0, 0, 0)',
+        box: element.getBoundingClientRect().toJSON(),
+      }
+    })
+    expect(focusPaint.keyboardFocus).toBe(true)
+    expect(focusPaint.outlineVisible).toBe(true)
+    expect(focusPaint.box.x).toBeGreaterThanOrEqual(2)
+    expect(focusPaint.box.right).toBeLessThanOrEqual(width - 2)
+    await page.locator('[data-analysis-card="weight_kg"] .analysis-overflow summary').focus()
+    await page.keyboard.press('Enter')
+    const overflow = page.locator('[data-analysis-card="weight_kg"] .analysis-overflow-menu')
+    await expect(overflow).toBeVisible()
+    const overflowBox = await overflow.boundingBox()
+    expect(overflowBox!.x).toBeGreaterThanOrEqual(0)
+    expect(overflowBox!.x + overflowBox!.width).toBeLessThanOrEqual(width)
+    await page.keyboard.press('Tab')
+    const moveAction = page.locator(':focus')
+    await expect(moveAction).toBeVisible()
+    expect(await moveAction.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return element.matches(':focus-visible') && style.outlineStyle !== 'none'
+        && Number.parseFloat(style.outlineWidth) >= 2
+        && style.outlineColor !== 'rgba(0, 0, 0, 0)' && style.outlineColor !== 'transparent'
+    })).toBe(true)
+
+    for (const path of ['/analyse/koerper/gewicht', '/analyse/aktivitaet/aktive-energie', '/analyse/mikronaehrstoffe/vitamin_a_ug']) {
+      await page.goto(`${path}?period=custom&start=2026-09-22&end=2026-09-28`)
+      const chart = page.locator('.chart-card [role="img"]')
+      await expect(chart.first()).toBeVisible()
+      for (const surface of await chart.all()) {
+        const box = await surface.boundingBox()
+        expect(box!.x).toBeGreaterThanOrEqual(0)
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+        expect(await surface.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+      const trigger = page.locator('.analysis-period-trigger')
+      await trigger.focus()
+      await page.keyboard.press('Enter')
+      const popover = page.locator('.analysis-period-popover')
+      await expect(popover).toBeVisible()
+      const box = await popover.boundingBox()
+      expect(box!.x).toBeGreaterThanOrEqual(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+      expect(await popover.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+      await page.keyboard.press('Escape')
+      await expect(trigger).toBeFocused()
+      await expect(popover).not.toBeVisible()
+    }
+  })
+}

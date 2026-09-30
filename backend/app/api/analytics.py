@@ -28,6 +28,11 @@ from app.analytics.micronutrient_shadow import (
     run_micronutrient_canonical_read,
     run_micronutrient_shadow,
 )
+from app.analytics.nutrition_analysis import (
+    MAX_ANALYSIS_NUTRITION_DAYS,
+    AnalysisNutritionReadError,
+    read_analysis_nutrition,
+)
 from app.analytics.nutrition_micronutrients import (
     AnalysisMicronutrientReadError,
     read_analysis_micronutrients,
@@ -83,6 +88,7 @@ from app.problem_types import (
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
     AnalysisMicronutrientResponse,
+    AnalysisNutritionResponse,
     AnalysisPeriodCapability,
     AnalysisRegistryEntryResponse,
     AnalysisRegistryResponse,
@@ -373,7 +379,7 @@ def analysis_nutrition_micronutrients(
         raise HTTPException(status_code=422, detail="Unbekannter Mikronährstoff")
 
     try:
-        selection = resolve_nutrition_provider(db, user_id=user.id)
+        selection = resolve_nutrition_provider(db, user_id=user.id, include_analysis_demo=True)
     except NutritionProviderUnavailable as exc:
         raise ProblemHTTPException(
             status_code=503,
@@ -403,6 +409,53 @@ def analysis_nutrition_micronutrients(
             metric_key=metric_key,
         )
     except AnalysisMicronutrientReadError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+@router.get(
+    "/analytics/nutrition/analysis",
+    response_model=AnalysisNutritionResponse,
+)
+def analysis_nutrition(
+    start: date | None = None,
+    end: date | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisNutritionResponse:
+    start, end = _range(start, end, user.timezone, default_days=30)
+    if (end - start).days >= MAX_ANALYSIS_NUTRITION_DAYS:
+        raise HTTPException(status_code=422, detail="Datumsbereich darf höchstens 365 Tage umfassen")
+
+    try:
+        selection = resolve_nutrition_provider(db, user_id=user.id, include_analysis_demo=True)
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+    if selection is None:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Kein konfigurierter Nutrition-Provider ist verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        )
+
+    try:
+        return read_analysis_nutrition(
+            db, user_id=user.id, selection=selection, start=start, end=end,
+        )
+    except AnalysisNutritionReadError as exc:
         raise ProblemHTTPException(
             status_code=503,
             detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
@@ -564,6 +617,10 @@ def weight(
         ]
         if provider_key == "yazio":
             source_filter.append(HealthSample.source_identifier == source_identifier)
+        elif provider_key == "analysis_demo":
+            from app.services.analysis_demo import demo_source_instance_id
+
+            source_filter.append(HealthSample.source_identifier == str(demo_source_instance_id(user.id)))
         elif provider_key == "google_health":
             source_filter.append(
                 HealthSample.source_identifier

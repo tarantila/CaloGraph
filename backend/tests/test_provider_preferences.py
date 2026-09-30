@@ -290,12 +290,9 @@ def test_provider_preference_domain_accepts_canonical_nutrition_provider() -> No
     assert normalize_provider_key(" Google_Health ") == "google_health"
 
 def test_legacy_health_auto_export_preference_canonicalizes_to_apple_health() -> None:
-    assert effective_provider_order(WEIGHT_DATA_AREA, ("health_auto_export",)) == (
-        "apple_health",
-        "google_health",
-        "yazio",
-        "withings",
-    )
+    assert effective_provider_order(
+        WEIGHT_DATA_AREA, ("health_auto_export",), include_missing=False
+    ) == ("apple_health",)
     assert validate_provider_preference(
         ACTIVITY_ENERGY_DATA_AREA, "health_auto_export"
     ) == (ACTIVITY_ENERGY_DATA_AREA, "apple_health")

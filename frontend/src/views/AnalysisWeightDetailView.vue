@@ -1,21 +1,20 @@
 <script setup lang="ts">
-import type { EChartsOption } from 'echarts'
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
-import { analysisHubQuery, analysisPeriodRange, parseAnalysisPeriodSelection, type AnalysisHubPeriod, type AnalysisPeriodSelection } from '../analysis-v2'
+import { analysisRangeWithinDays } from '../analytics-period'
+import { analysisHubQuery, analysisRangeDayCount, normalizeAnalysisPeriodForCapability, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
-import ChartPanel from '../components/ChartPanel.vue'
-import { chartColors } from '../chart-theme'
+import WeightHistoryChart from '../components/WeightHistoryChart.vue'
 import { formatGermanDate, isoDateInTimeZone } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { WeightResponse } from '../types'
 
 type WeightPreset = AnalysisPeriodSelection
-const presets: readonly AnalysisHubPeriod[] = ['7', '30', '90', '180', '365', 'all']
+const maxDays = 3661
+const presets = supportedAnalysisPeriods(maxDays, true)
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
@@ -32,93 +31,40 @@ function queryString(value: unknown): string | null {
   return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
 }
 
-function rangeForPreset(value: AnalysisHubPeriod): { start: string; end: string } {
-  return analysisPeriodRange(value, today, 3661)
-}
-
-const queryStart = queryString(route.query.start)
-const queryEnd = queryString(route.query.end)
-const queryRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
-const queryPeriod = parseAnalysisPeriodSelection(queryString(route.query.period))
-const matchedPreset = queryRangeIsValid && queryPeriod !== 'custom'
-  && queryPeriod !== 'all'
-  && rangeForPreset(queryPeriod).start === queryStart
-  && rangeForPreset(queryPeriod).end === queryEnd
-  ? queryPeriod
-  : null
-const initialPreset: WeightPreset = queryRangeIsValid
-  ? queryPeriod === 'all' ? 'all' : matchedPreset ?? 'custom'
-  : queryPeriod
-const initialRange = queryRangeIsValid
-  ? { start: queryStart as string, end: queryEnd as string }
-  : rangeForPreset(initialPreset === 'custom' ? '30' : initialPreset)
-const start = ref(initialRange.start)
-const end = ref(initialRange.end)
-const period = ref<WeightPreset>(initialPreset)
+const initialSelection = normalizeAnalysisPeriodForCapability(
+  parseAnalysisPeriodSelection(queryString(route.query.period)),
+  queryString(route.query.start) && queryString(route.query.end)
+    ? { start: queryString(route.query.start)!, end: queryString(route.query.end)! } : null,
+  maxDays, today,
+)
+const start = ref(initialSelection.range.start)
+const end = ref(initialSelection.range.end)
+const period = ref<WeightPreset>(initialSelection.period)
 const points = computed(() => [...(response.value?.points ?? [])].sort((left, right) => left.date.localeCompare(right.date)))
 const summary = computed(() => response.value?.summary ?? null)
 const change = computed(() => points.value.length >= 2 ? summary.value?.change_kg ?? null : null)
-const chartOption = computed<EChartsOption>(() => {
-  const palette = chartColors.value
-  return {
-    backgroundColor: palette.background,
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: palette.tooltipBackground,
-      borderColor: palette.tooltipBorder,
-      textStyle: { color: palette.tooltipInk },
-    },
-    xAxis: {
-      type: 'time',
-      axisLine: { lineStyle: { color: palette.axis } },
-      axisLabel: {
-        color: palette.label,
-        hideOverlap: true,
-        formatter: (value: string | number) => formatGermanDate(new Date(value).toISOString().slice(0, 10)),
-      },
-      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
-    },
-    yAxis: {
-      type: 'value',
-      axisLine: { lineStyle: { color: palette.axis } },
-      name: 'kg',
-      scale: true,
-      nameTextStyle: { color: palette.label },
-      axisLabel: { color: palette.label },
-      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
-    },
-    series: [{
-      name: t('analysisV2.weightTitle'),
-      type: 'line',
-      smooth: false,
-      showSymbol: true,
-      symbol: 'circle',
-      symbolSize: 8,
-      data: points.value.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
-      lineStyle: { color: palette.violet, width: 2 },
-      itemStyle: { color: palette.violet },
-    }],
-  }
-})
+const periodDays = computed(() => analysisRangeDayCount({ start: start.value, end: end.value }))
+const measuredDays = computed(() => new Set(points.value
+  .filter((point) => point.date >= start.value && point.date <= end.value)
+  .map((point) => point.date)).size)
 
 function formatWeight(value: number | null | undefined): string {
   return value === null || value === undefined ? '–' : `${number.format(value)} kg`
 }
 
 async function syncQuery(): Promise<void> {
+  const query = analysisHubQuery(period.value, { start: start.value, end: end.value })
+  if (route.query.period === query.period
+    && route.query.start === query.start && route.query.end === query.end) return
   await router.replace({
-    query: {
-      ...route.query,
-      start: period.value === 'custom' ? start.value : undefined,
-      end: period.value === 'custom' ? end.value : undefined,
-      period: period.value,
-    },
+    query: { ...route.query, start: query.start, end: query.end, period: query.period },
+    hash: route.hash,
   })
 }
 
 async function load(): Promise<void> {
   const requestId = ++loadId.value
-  if (!analysisRangeWithinDays(start.value, end.value, 3661)) {
+  if (!analysisRangeWithinDays(start.value, end.value, maxDays) || end.value > today) {
     response.value = null
     error.value = t('analysisV2.invalidRange')
     loading.value = false
@@ -141,36 +87,34 @@ async function load(): Promise<void> {
 }
 
 function applyPeriod(value: { start: string; end: string; period: WeightPreset }): void {
-  period.value = value.period
-  start.value = value.start
-  end.value = value.end
+  const normalized = normalizeAnalysisPeriodForCapability(
+    value.period, value.period === 'custom' ? value : null, maxDays, today,
+  )
+  period.value = normalized.period
+  start.value = normalized.range.start
+  end.value = normalized.range.end
   void load()
 }
 
 watch(
   () => [route.query.start, route.query.end, route.query.period] as const,
   ([nextStart, nextEnd, nextPeriod]) => {
+    const requested = parseAnalysisPeriodSelection(nextPeriod)
     const queryStart = queryString(nextStart)
     const queryEnd = queryString(nextEnd)
-    const hasRange = validAnalyticsRange(queryStart, queryEnd)
-    const requestedPeriod = parseAnalysisPeriodSelection(nextPeriod)
-    const matched = hasRange && requestedPeriod !== 'custom' && requestedPeriod !== 'all'
-      && rangeForPreset(requestedPeriod).start === queryStart
-      && rangeForPreset(requestedPeriod).end === queryEnd
-      ? requestedPeriod
-      : null
-    const nextPreset: WeightPreset = hasRange
-      ? requestedPeriod === 'all' ? 'all' : matched ?? 'custom'
-      : requestedPeriod === 'custom' ? '30' : requestedPeriod
-    const nextRange = hasRange
-      ? { start: queryStart as string, end: queryEnd as string }
-      : rangeForPreset(nextPreset === 'custom' ? '30' : nextPreset)
+    const normalized = normalizeAnalysisPeriodForCapability(
+      requested, requested === 'custom' && queryStart && queryEnd
+        ? { start: queryStart, end: queryEnd } : null, maxDays, today,
+    )
+    const nextPreset = normalized.period
+    const nextRange = normalized.range
     const rangeChanged = nextRange.start !== start.value || nextRange.end !== end.value
     const presetChanged = nextPreset !== period.value
     start.value = nextRange.start
     end.value = nextRange.end
     period.value = nextPreset
     if (rangeChanged || presetChanged) void load()
+    else void syncQuery()
   },
 )
 
@@ -186,7 +130,7 @@ onMounted(() => { void load() })
     </nav>
     <div class="page-heading">
       <div>
-        <h1>{{ t('analysisV2.weightTitle') }}</h1>
+        <h1 class="analysis-detail-title"><span class="analysis-detail-icon analysis-detail-icon--weight" aria-hidden="true">◉</span>{{ t('analysisV2.weightTitle') }}</h1>
         <p>{{ t('analysisV2.weightDescription') }}</p>
       </div>
       <AnalysisPeriodPicker
@@ -220,6 +164,9 @@ onMounted(() => { void load() })
             </span>
             <span>
               <span class="weight-summary-meta-label">{{ t('analysisV2.measurementCount', { count: number.format(summary.measurement_count) }) }}</span>
+              <span class="weight-period-range">{{ t('analysisV2.daysCoverage', {
+                count: number.format(measuredDays), total: number.format(periodDays),
+              }) }}</span>
               <span class="weight-period-range">{{ formatGermanDate(start) }} – {{ formatGermanDate(end) }}</span>
             </span>
           </div>
@@ -241,7 +188,7 @@ onMounted(() => { void load() })
       </section>
       <p v-if="!points.length" class="card empty" role="status">{{ t('analysisV2.weightEmpty') }}</p>
       <template v-else>
-        <ChartPanel :title="t('analysisV2.weightHistory')" :option="chartOption" :empty="false" />
+        <WeightHistoryChart :points="points" />
         <section class="card weight-reading-list">
           <h2>{{ t('analysisV2.weightReadings') }}</h2>
           <ul :aria-label="t('analysisV2.weightReadings')">
@@ -265,7 +212,7 @@ onMounted(() => { void load() })
 .weight-summary-grid article { display: grid; align-content: start; gap: .35rem; min-width: 0; }
 .weight-summary-primary, .weight-reading-list { padding: .9rem; }
 .weight-summary-grid h2 { margin: 0; color: var(--muted); font-size: .92rem; }
-.weight-summary-primary > strong { font-size: 1.5rem; overflow-wrap: anywhere; }
+.weight-summary-primary > strong { color: var(--chart-series-violet); font-size: 1.5rem; overflow-wrap: anywhere; }
 .weight-summary-grid time, .weight-summary-grid article > span, .weight-summary-meta-label, .weight-period-range { color: var(--muted); font-size: .9rem; }
 .weight-summary-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .35rem; padding-top: .65rem; border-top: 1px solid var(--border); }
 .weight-summary-meta > span { display: grid; gap: .15rem; min-width: 0; }

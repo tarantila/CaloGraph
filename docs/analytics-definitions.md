@@ -146,6 +146,34 @@ evidence and contributes to totals and coverage; missing or unusable values
 remain `null`. The optional EU reference value is secondary context only; this
 endpoint does not calculate percentages or assign a health-status label.
 
+### Canonical Analyse nutrition days and meals
+
+`GET /api/v1/analytics/nutrition/analysis` is authenticated and reads one
+inclusive account-local range of 1–365 days. Internally, each provider period
+is read in chunks of at most 31 days; chunk boundaries do not change day
+selection. Invalid or reversed ranges return HTTP 422. Missing, unavailable
+or unreadable configured sources return a provider problem (HTTP 503), not
+empty evidence.
+
+The configured `selected_provider` describes the head of the ordered source
+chain. For each date independently, the first source with all seven primary
+daily nutrition metrics complete and resolved, and at least one supplied value
+(including explicit zero), wins the **whole day**. Daily totals and named meals
+come only from that winning provider/source instance; no individual metric
+or meal is filled from another provider. A date without such a winner returns
+HTTP 200 with `provider_key: null`, seven null metrics and `meals: []`.
+`null` means absent or unusable evidence; numeric zero is a present value,
+never a missing-day substitute. Unsafe conflicts or duplicate candidates
+fail closed.
+
+Meals are current, non-tombstoned consumption events from the winning
+account/provider/source only, with real persisted food-snapshot names or
+allowlisted provider names (Google Health `food_display_name`, Apple Health
+`food_name`). Unnamed entries are omitted, not labeled with invented food
+names. Their seven optional nutrient values come solely from safe event
+fields, not a division of the day's totals. Reads never import, project
+or change persisted evidence.
+
 
 ## Analysis registry and sparse weight summary
 

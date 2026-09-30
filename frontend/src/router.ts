@@ -35,6 +35,7 @@ const router = createRouter({
         { path: 'koerper', name: 'analysis-category-body', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'body' } },
         { path: 'aktivitaet', name: 'analysis-category-activity', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'activity' } },
         { path: 'ernaehrung', name: 'analysis-category-nutrition', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'nutrition' } },
+        { path: 'ernaehrung/:metric', name: 'analysis-nutrition-detail', component: () => import('./views/AnalysisNutritionDetailView.vue') },
         { path: 'mikronaehrstoffe', name: 'analysis-category-micronutrients', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'micronutrients' } },
         { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: () => import('./views/AnalysisWeightDetailView.vue') },
         { path: 'aktivitaet/aktive-energie', name: 'analysis-active-energy', component: () => import('./views/AnalysisActivityView.vue') },

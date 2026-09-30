@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
+from app.config import settings
+
 NUTRITION_DATA_AREA: Final = "nutrition"
 WEIGHT_DATA_AREA: Final = "weight"
 ACTIVITY_ENERGY_DATA_AREA: Final = "activity_energy"
@@ -33,6 +35,8 @@ def effective_provider_order(
     supported = SUPPORTED_PROVIDER_KEYS.get(normalized_area)
     if supported is None:
         raise ValueError("unknown data area")
+    if settings.environment in {"development", "test"}:
+        supported = (*supported, "analysis_demo")
     effective: list[str] = []
     seen: set[str] = set()
     for provider_key in provider_keys:
@@ -86,6 +90,8 @@ def validate_provider_preference(data_area: str, provider_key: str) -> tuple[str
     supported = SUPPORTED_PROVIDER_KEYS.get(normalized_area)
     if supported is None:
         raise ValueError("unknown data area")
+    if settings.environment in {"development", "test"}:
+        supported = (*supported, "analysis_demo")
     if normalized_provider not in supported:
         raise ValueError("provider is not supported for data area")
     return normalized_area, normalized_provider

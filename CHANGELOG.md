@@ -34,6 +34,11 @@ follows [Semantic Versioning](https://semver.org/).
 - Analysis V2 card visuals now use domain-specific weight violet, active-energy amber, and micronutrient emerald roles. Reordered card content emphasizes the current KPI and trend chart, with a compact metric rail and subtle drag insertion marker.
 - A shared responsive period picker now exposes only reader-supported rolling presets, including a rolling 365-day year, and keeps validated custom ranges inside the same popover; weight accepts up to 3661 inclusive days and micronutrients up to 31.
 - Weight details use discrete, date-spaced violet line points; activity retains amber zero-based bars and missing-day gaps; micronutrients use emerald lines with subtle area fills and actual series gaps.
+- Added localized analysis catalogue filtering and an explicit no-results state.
+- The Analysis hub now keeps its selected summary cards peer-sized and places the full-width weight history in a separate section beneath them.
+- Weight and activity details show measured-day values and period coverage
+  without filling missing days with zero.
+- Analysis cards support accessible reordering with keyboard controls.
 
 ## [0.6.5] - 2026-09-07
 

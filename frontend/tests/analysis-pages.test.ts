@@ -12,7 +12,6 @@ vi.mock('../src/api', () => ({
 
 import AnalysisMicronutrientDetailView from '../src/views/AnalysisMicronutrientDetailView.vue'
 import AnalysisLayout from '../src/views/AnalysisLayout.vue'
-import ChartPanel from '../src/components/ChartPanel.vue'
 import { setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 import type { AnalysisMicronutrientResponse } from '../src/types'
@@ -39,6 +38,7 @@ async function mountAnalysis(path: string) {
       children: [
         { path: '', name: 'analysis-overview', component: { template: '<h1>Analyse</h1>' } },
         { path: 'katalog', name: 'analysis-catalog', component: { template: '<h1>Katalog</h1>' } },
+        { path: 'mikronaehrstoffe', name: 'analysis-category-micronutrients', component: { template: '<h1>Mikronährstoffe</h1>' } },
         { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: AnalysisMicronutrientDetailView },
       ],
     }],
@@ -47,7 +47,16 @@ async function mountAnalysis(path: string) {
   await router.isReady()
   const wrapper = mount({ template: '<RouterView />' }, {
     attachTo: document.body,
-    global: { plugins: [pinia, router], stubs: { ChartPanel: true } },
+    global: {
+      plugins: [pinia, router],
+      stubs: {
+        ChartPanel: {
+          name: 'ChartPanel',
+          props: ['option', 'title', 'empty'],
+          template: '<div />',
+        },
+      },
+    },
   })
   await flushPromises()
   return { wrapper, router }
@@ -82,7 +91,7 @@ beforeEach(() => {
 describe('Analysis micronutrient detail', () => {
   it('preserves the inclusive 31-day range, actual zero readings, and per-day provenance', async () => {
     const { wrapper } = await mountAnalysis(
-      '/analyse/mikronaehrstoffe/vitamin_a_ug?start=2026-03-01&end=2026-03-31',
+      '/analyse/mikronaehrstoffe/vitamin_a_ug?period=custom&start=2026-03-01&end=2026-03-31',
     )
 
     const request = apiMock.mock.calls.find(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients'))?.[0] as string
@@ -94,17 +103,61 @@ describe('Analysis micronutrient detail', () => {
     expect(wrapper.text()).toContain('YAZIO')
     expect(wrapper.text()).toContain('2 von 31 Tagen')
     expect(wrapper.find('ul[aria-label="Tägliche Werte"]').exists()).toBe(true)
-    expect(wrapper.findComponent(ChartPanel).exists()).toBe(true)
+    expect(wrapper.text()).not.toMatch(/Mangel|Unterversorgung|Überversorgung|Überdosierung/i)
     wrapper.unmount()
   })
 
-  it('rejects a range longer than 31 inclusive days before reading data', async () => {
+  it('plots every calendar date with a real null break, exact zero and sourced daily reading', async () => {
+    apiMock.mockResolvedValue({
+      ...micronutrientResponse,
+      start_date: '2026-03-28',
+      end_date: '2026-03-31',
+      period_days: 4,
+      metrics: [{
+        ...micronutrientResponse.metrics[0]!,
+        total: 12, days_with_data: 3,
+      }],
+      series: [
+        { date: '2026-03-28', provider_key: 'google_health', value: 4 },
+        { date: '2026-03-30', provider_key: 'yazio', value: 0 },
+        { date: '2026-03-31', provider_key: 'google_health', value: 8 },
+      ],
+    } satisfies AnalysisMicronutrientResponse)
     const { wrapper } = await mountAnalysis(
-      '/analyse/mikronaehrstoffe/vitamin_a_ug?start=2026-02-28&end=2026-03-31',
+      '/analyse/mikronaehrstoffe/vitamin_a_ug?period=custom&start=2026-03-28&end=2026-03-31',
+    )
+    const option = wrapper.getComponent({ name: 'ChartPanel' }).props('option') as {
+      xAxis: { type: string; data: string[] }
+      series: Array<{ type: string; data: (number | null)[]; connectNulls: boolean }>
+    }
+    expect(option.xAxis).toMatchObject({
+      type: 'category',
+      data: ['2026-03-28', '2026-03-29', '2026-03-30', '2026-03-31'],
+    })
+    expect(option.series[0]).toMatchObject({
+      type: 'line', data: [4, null, 0, 8], connectNulls: false,
+    })
+    const zeroReading = wrapper.get('.micronutrient-daily-card time[datetime="2026-03-30"]').element.closest('li')
+    expect(zeroReading?.textContent).toContain('YAZIO')
+    expect(zeroReading?.textContent).toContain('0 ug')
+    expect(wrapper.find('.micronutrient-daily-card time[datetime="2026-03-29"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('normalizes an oversized custom micronutrient range to a supported 30-day request', async () => {
+    const { wrapper, router } = await mountAnalysis(
+      '/analyse/mikronaehrstoffe/vitamin_a_ug?period=custom&start=2026-02-28&end=2026-03-31',
     )
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('31')
-    expect(apiMock.mock.calls.some(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients'))).toBe(false)
+    expect(router.currentRoute.value.query.period).toBe('30')
+    const request = apiMock.mock.calls.find(([path]) => String(path).startsWith('/analytics/nutrition/micronutrients?'))?.[0] as string
+    const params = new URLSearchParams(request.split('?')[1])
+    const start = params.get('start')!
+    const end = params.get('end')!
+    expect((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000 + 1).toBe(30)
+    expect(start).not.toBe('2026-02-28')
+    expect(params.get('metric_key')).toBe('vitamin_a_ug')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

@@ -4,8 +4,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisHubQuery, localizedAnalysisPresentation, parseAnalysisHubPeriod, type AnalysisHubPeriod } from '../analysis-v2'
-import { analysisRangeWithinDays, validAnalyticsRange } from '../analytics-period'
+import { analysisHubQuery, analysisRangeDayCount, localizedAnalysisPresentation, normalizeAnalysisPeriodForCapability, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
+import { analysisRangeWithinDays } from '../analytics-period'
 import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
@@ -26,23 +26,18 @@ function queryString(value: unknown): string | null {
   return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
 }
 
-const requestedPeriod = parseAnalysisHubPeriod(route.query.period)
-const initialPeriod: '7' | '30' = requestedPeriod === '7' ? '7' : '30'
+const maxDays = 31
+const presets = supportedAnalysisPeriods(maxDays, false)
+const requestedPeriod = parseAnalysisPeriodSelection(route.query.period)
 const queryStart = queryString(route.query.start)
 const queryEnd = queryString(route.query.end)
-const initialRangeIsValid = validAnalyticsRange(queryStart, queryEnd)
-const defaultRange = { start: shiftIsoDate(today, -(Number(initialPeriod) - 1)), end: today }
-const initialRange = initialRangeIsValid
-  ? { start: queryStart as string, end: queryEnd as string }
-  : defaultRange
-const start = ref(initialRange.start)
-const end = ref(initialRange.end)
-const period = ref<AnalysisHubPeriod | 'custom'>(
-  initialRangeIsValid
-    ? (initialRange.start === shiftIsoDate(initialRange.end, -6) ? '7'
-      : initialRange.start === shiftIsoDate(initialRange.end, -29) ? '30' : 'custom')
-    : initialPeriod,
+const initialSelection = normalizeAnalysisPeriodForCapability(
+  requestedPeriod, requestedPeriod === 'custom' && queryStart && queryEnd
+    ? { start: queryStart, end: queryEnd } : null, maxDays, today,
 )
+const start = ref(initialSelection.range.start)
+const end = ref(initialSelection.range.end)
+const period = ref<AnalysisPeriodSelection>(initialSelection.period)
 const metricKey = ref(Array.isArray(route.params.metric) ? route.params.metric[0] ?? '' : String(route.params.metric ?? ''))
 const response = ref<AnalysisMicronutrientResponse | null>(null)
 const loading = ref(true)
@@ -53,10 +48,10 @@ const metric = computed<AnalysisMicronutrientMetric | null>(() => (
   response.value?.metrics.find((item) => item.metric_key === metricKey.value) ?? null
 ))
 const detailPresentation = computed(() => localizedAnalysisPresentation(metricKey.value))
-const chartDates = computed(() => Array.from(
-  { length: response.value?.period_days ?? 0 },
+const chartDates = computed(() => response.value ? Array.from(
+  { length: analysisRangeDayCount({ start: start.value, end: end.value }) },
   (_, index) => shiftIsoDate(start.value, index),
-))
+) : [])
 const chartValues = computed(() => {
   const valuesByDate = new Map((response.value?.series ?? []).map(({ date, value }) => [date, value]))
   return chartDates.value.map((date) => valuesByDate.get(date) ?? null)
@@ -125,14 +120,18 @@ function formatValue(value: number | null): string {
 }
 
 async function syncQuery(): Promise<void> {
+  const query = analysisHubQuery(period.value, { start: start.value, end: end.value })
+  if (route.query.period === query.period
+    && route.query.start === query.start && route.query.end === query.end) return
   await router.replace({
-    query: { ...route.query, start: start.value, end: end.value, period: period.value },
+    query: { ...route.query, start: query.start, end: query.end, period: query.period },
+    hash: route.hash,
   })
 }
 
 async function load(): Promise<void> {
   const requestId = ++latestLoadId
-  if (!analysisRangeWithinDays(start.value, end.value, 31)) {
+  if (!analysisRangeWithinDays(start.value, end.value, maxDays) || end.value > today) {
     response.value = null
     error.value = t('analysisV2.micronutrientRangeInvalid')
     loading.value = false
@@ -166,10 +165,13 @@ async function load(): Promise<void> {
   }
 }
 
-function applyPeriod(value: { start: string; end: string; period: string }): void {
-  period.value = value.period === 'custom' ? 'custom' : parseAnalysisHubPeriod(value.period)
-  start.value = value.start
-  end.value = value.end
+function applyPeriod(value: { start: string; end: string; period: AnalysisPeriodSelection }): void {
+  const normalized = normalizeAnalysisPeriodForCapability(
+    value.period, value.period === 'custom' ? value : null, maxDays, today,
+  )
+  period.value = normalized.period
+  start.value = normalized.range.start
+  end.value = normalized.range.end
   void load()
 }
 
@@ -179,16 +181,13 @@ watch(
     const nextKey = Array.isArray(nextMetric) ? nextMetric[0] ?? '' : String(nextMetric ?? '')
     const nextQueryStart = queryString(nextStart)
     const nextQueryEnd = queryString(nextEnd)
-    const parsed = parseAnalysisHubPeriod(nextPeriod)
-    const defaultPeriod: '7' | '30' = parsed === '7' ? '7' : '30'
-    const hasRange = validAnalyticsRange(nextQueryStart, nextQueryEnd)
-    const nextRange = hasRange
-      ? { start: nextQueryStart as string, end: nextQueryEnd as string }
-      : { start: shiftIsoDate(today, -(Number(defaultPeriod) - 1)), end: today }
-    const nextPreset: AnalysisHubPeriod | 'custom' = hasRange
-      ? nextRange.start === shiftIsoDate(nextRange.end, -6) ? '7'
-        : nextRange.start === shiftIsoDate(nextRange.end, -29) ? '30' : 'custom'
-      : defaultPeriod
+    const parsed = parseAnalysisPeriodSelection(nextPeriod)
+    const normalized = normalizeAnalysisPeriodForCapability(
+      parsed, parsed === 'custom' && nextQueryStart && nextQueryEnd
+        ? { start: nextQueryStart, end: nextQueryEnd } : null, maxDays, today,
+    )
+    const nextRange = normalized.range
+    const nextPreset = normalized.period
     const changed = nextKey !== metricKey.value || nextRange.start !== start.value
       || nextRange.end !== end.value || nextPreset !== period.value
     metricKey.value = nextKey
@@ -196,6 +195,7 @@ watch(
     end.value = nextRange.end
     period.value = nextPreset
     if (changed) void load()
+    else void syncQuery()
   },
 )
 
@@ -221,9 +221,9 @@ onMounted(() => { void load() })
         :end="end"
         :today="today"
         :period="period"
-        :presets="['7', '30']"
+        :presets="presets"
         :custom-range="true"
-        :max-days="31"
+        :max-days="maxDays"
         @apply="applyPeriod"
       />
     </div>
@@ -233,7 +233,10 @@ onMounted(() => { void load() })
       <button class="button secondary" type="button" @click="load">{{ t('analysisV2.retry') }}</button>
     </section>
     <template v-else-if="response && metric">
-      <p v-if="!hasSeriesValues" class="card empty micronutrient-empty" role="status">{{ t('analysisV2.micronutrientEmpty') }}</p>
+      <p v-if="!hasSeriesValues" class="card empty micronutrient-empty" role="status">
+        {{ t('analysisV2.micronutrientEmpty') }}
+        <span>{{ t('analysisV2.daysCoverage', { count: metric.days_with_data, total: response.period_days }) }}</span>
+      </p>
       <template v-else>
         <section class="micronutrient-summary">
           <article class="card">
@@ -285,7 +288,7 @@ onMounted(() => { void load() })
 .micronutrient-coverage--complete { color: var(--success); }
 .micronutrient-coverage--incomplete { color: var(--warning); }
 .micronutrient-coverage-icon { flex: 0 0 auto; font-size: 1rem; }
-.micronutrient-empty { margin: 0; padding: .75rem 1rem; }
+.micronutrient-empty { display: grid; gap: .4rem; margin: 0; padding: .75rem 1rem; }
 .micronutrient-provenance { margin: 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
 .micronutrient-daily-card { padding: .9rem; }
 .micronutrient-daily-card h2 { margin-top: 0; font-size: 1.05rem; }

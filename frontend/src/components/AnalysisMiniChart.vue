@@ -2,14 +2,17 @@
 import { computed } from 'vue'
 
 type AnalysisMiniChartColorRole = 'violet' | 'teal' | 'blue' | 'amber' | 'emerald' | 'lilac'
+type MacroKey = 'protein_g' | 'carbohydrates_g' | 'fat_g'
+type MacroSeries = { key: MacroKey; values: readonly (number | null)[]; colorRole: 'teal' | 'blue' | 'amber' }
 
 const props = defineProps<{
   values: readonly (number | null)[]
   dates?: readonly (string | null)[]
   dateRange?: { start: string; end: string }
   label: string
-  variant: 'line' | 'bars'
+  variant: 'line' | 'bars' | 'stacked-bars'
   colorRole: AnalysisMiniChartColorRole
+  series?: readonly MacroSeries[]
 }>()
 
 const chartColor = computed(() => `var(--chart-series-${props.colorRole})`)
@@ -39,23 +42,32 @@ function xPosition(index: number): number {
   }
   return values.value.length === 1 ? 60 : (index * 120) / (values.value.length - 1)
 }
-const lineSegments = computed(() => {
+const lineGeometry = computed(() => {
   const { min, max } = bounds.value
   const span = max - min || 1
   const segments: string[][] = []
+  const markers: { x: number; y: number }[] = []
   let segment: string[] = []
+  let singleton: { x: number; y: number; value: number } | null = null
+  const finishSegment = () => {
+    if (segment.length > 1) segments.push(segment)
+    else if (singleton && singleton.value !== 0) markers.push(singleton)
+    segment = []
+    singleton = null
+  }
   values.value.forEach((value, index) => {
     if (value === null) {
-      if (segment.length) segments.push(segment)
-      segment = []
+      finishSegment()
       return
     }
     const x = xPosition(index)
     const y = 32 - ((value - min) / span) * 26
     segment.push(`${x},${y}`)
+    if (segment.length === 1) singleton = { x, y, value }
+    if (value === 0) markers.push({ x, y })
   })
-  if (segment.length) segments.push(segment)
-  return segments
+  finishSegment()
+  return { segments, markers }
 })
 const bars = computed(() => {
   const { min, max } = bounds.value
@@ -75,11 +87,49 @@ const bars = computed(() => {
     return [{ x, y: 34 - height, width, height }]
   })
 })
+const stackedBars = computed(() => {
+  const series = props.series ?? []
+  const length = Math.max(props.values.length, ...series.map(({ values }) => values.length), 0)
+  const totals = Array.from({ length }, (_, index) => series.reduce((total, item) => {
+    const value = item.values[index]
+    return total + (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  }, 0))
+  const maximum = Math.max(1, ...totals)
+  const range = dateRangeBounds.value
+  const slots = range ? Math.floor((range.end - range.start) / 86_400_000) + 1 : length
+  const slotWidth = 120 / Math.max(slots, 1)
+  const width = slotWidth * 0.65
+  const rects: { x: number; y: number; width: number; height: number; color: string }[] = []
+  const zeros: { x: number; y: number; rx: number; color: string }[] = []
+  for (let index = 0; index < length; index++) {
+    const date = props.dates?.[index]
+    const timestamp = date ? Date.parse(`${date.slice(0, 10)}T00:00:00Z`) : Number.NaN
+    const offset = range && Number.isFinite(timestamp) ? (timestamp - range.start) / 86_400_000 : index
+    const x = Math.max(0, Math.min(120 - width, (offset + 0.5) * slotWidth - width / 2))
+    let stackedHeight = 0
+    for (const item of series) {
+      const value = item.values[index]
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      const color = `var(--chart-series-${item.colorRole})`
+      if (value === 0) {
+        zeros.push({ x: x + width / 2, y: 34 - stackedHeight, rx: Math.min(1.5, width / 2), color })
+      } else {
+        const height = value / maximum * 28
+        rects.push({ x, y: 34 - stackedHeight - height, width, height, color })
+        stackedHeight += height
+      }
+    }
+  }
+  return { rects, zeros }
+})
+const hasChartValues = computed(() => props.variant === 'stacked-bars'
+  ? (props.series ?? []).some(({ values }) => values.some((value) => typeof value === 'number' && Number.isFinite(value)))
+  : numericValues.value.length > 0)
 </script>
 
 <template>
   <svg
-    v-if="numericValues.length"
+    v-if="hasChartValues"
     class="analysis-mini-chart"
     :class="`analysis-mini-chart--${colorRole}`"
     :style="{ '--analysis-mini-chart-color': chartColor }"
@@ -106,17 +156,38 @@ const bars = computed(() => {
         r="1.5"
       />
     </template>
+    <template v-else-if="variant === 'stacked-bars'">
+      <rect
+        v-for="(bar, index) in stackedBars.rects"
+        :key="index"
+        :x="bar.x"
+        :y="bar.y"
+        :width="bar.width"
+        :height="bar.height"
+        :fill="bar.color"
+        rx="1.5"
+      />
+      <ellipse
+        v-for="(point, index) in stackedBars.zeros"
+        :key="index"
+        :cx="point.x"
+        :cy="point.y"
+        :fill="point.color"
+        :rx="point.rx"
+        ry="1.5"
+      />
+    </template>
     <template v-else>
       <polyline
-        v-for="(segment, index) in lineSegments.filter((item) => item.length > 1)"
+        v-for="(segment, index) in lineGeometry.segments"
         :key="index"
         :points="segment.join(' ')"
       />
       <circle
-        v-for="(point, index) in lineSegments.flatMap((segment) => segment.length === 1 ? segment : [])"
+        v-for="(point, index) in lineGeometry.markers"
         :key="index"
-        :cx="point.split(',')[0]"
-        :cy="point.split(',')[1]"
+        :cx="point.x"
+        :cy="point.y"
         r="2.5"
       />
     </template>
@@ -124,9 +195,9 @@ const bars = computed(() => {
 </template>
 
 <style scoped>
-.analysis-mini-chart { display: block; width: 100%; height: 3rem; overflow: visible; }
+.analysis-mini-chart { display: block; width: 100%; height: 6rem; overflow: visible; }
 .analysis-mini-chart polyline { fill: none; stroke: var(--analysis-mini-chart-color); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.analysis-mini-chart circle { fill: var(--analysis-mini-chart-color); }
-.analysis-mini-chart rect { fill: color-mix(in srgb, var(--analysis-mini-chart-color) 74%, var(--surface)); }
+.analysis-mini-chart circle:not([fill]) { fill: var(--analysis-mini-chart-color); }
+.analysis-mini-chart rect:not([fill]) { fill: color-mix(in srgb, var(--analysis-mini-chart-color) 74%, var(--surface)); }
 </style>
 

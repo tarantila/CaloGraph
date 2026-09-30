@@ -26,6 +26,7 @@ const emit = defineEmits<{
 const t = i18n.global.t.bind(i18n.global)
 const root = ref<HTMLElement | null>(null)
 const trigger = ref<HTMLButtonElement | null>(null)
+const focusReturn = ref<HTMLButtonElement | null>(null)
 const startInput = ref<InstanceType<typeof DateInput> | null>(null)
 const endInput = ref<InstanceType<typeof DateInput> | null>(null)
 const isOpen = ref(false)
@@ -35,7 +36,6 @@ const validationError = ref('')
 
 function presetLabel(preset: Preset): string {
   if (preset === 'all') return t('analysisV2.periodAll')
-  if (preset === '180') return t('analysisV2.period180')
   return t(preset === '365' ? 'analysisV2.periodYear' : `analysisV2.period${preset}`)
 }
 
@@ -49,7 +49,7 @@ const triggerLabel = computed(() => props.period === 'custom'
 function close(restoreFocus = false): void {
   isOpen.value = false
   validationError.value = ''
-  if (restoreFocus) void nextTick(() => trigger.value?.focus())
+  if (restoreFocus) void nextTick(() => (focusReturn.value ?? trigger.value)?.focus())
 }
 
 function onDocumentPointerDown(event: PointerEvent): void {
@@ -64,7 +64,8 @@ function onDocumentKeydown(event: KeyboardEvent): void {
   }
 }
 
-async function open(): Promise<void> {
+async function open(opener: HTMLButtonElement | null): Promise<void> {
+  focusReturn.value = opener
   draftStart.value = props.start
   draftEnd.value = props.end
   validationError.value = ''
@@ -77,21 +78,24 @@ async function open(): Promise<void> {
   }
 }
 
-function toggle(): void {
+function toggle(event: MouseEvent): void {
   if (isOpen.value) close()
-  else void open()
+  else void open(event.currentTarget as HTMLButtonElement)
 }
 
-function selectPreset(preset: Preset): void {
+function selectPreset(preset: Preset, fromPopover = false): void {
   const days = preset === 'all' ? props.maxDays : Number(preset)
   const range = analysisRangeForDays(props.today, days)
   emit('apply', { ...range, period: preset })
-  close(true)
+  close(fromPopover)
 }
 
 function applyCustom(): void {
-  if (!startInput.value?.reportValidity() || !endInput.value?.reportValidity()) return
-  if (!validAnalyticsRange(draftStart.value, draftEnd.value)) {
+  if (!startInput.value?.reportValidity() || !endInput.value?.reportValidity()) {
+    validationError.value = t('analysisV2.invalidRange')
+    return
+  }
+  if (!validAnalyticsRange(draftStart.value, draftEnd.value) || draftEnd.value > props.today) {
     validationError.value = t('analysisV2.invalidRange')
     return
   }
@@ -122,6 +126,25 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="root" class="analysis-period-picker">
+    <div class="analysis-period-strip" :aria-label="t('analysisV2.period')">
+      <button
+        v-for="preset in presets"
+        :key="preset"
+        class="analysis-period-quick-button"
+        type="button"
+        :aria-pressed="period === preset"
+        @click="selectPreset(preset)"
+      >{{ presetLabel(preset) }}</button>
+      <button
+        v-if="customRange"
+        class="analysis-period-custom-button"
+        type="button"
+        :aria-pressed="period === 'custom' ? true : undefined"
+        :aria-expanded="isOpen"
+        aria-controls="analysis-period-popover"
+        @click="toggle"
+      >{{ t('analysisV2.customRange') }}<span v-if="period === 'custom'">: {{ triggerText }}</span></button>
+    </div>
     <button
       ref="trigger"
       class="analysis-period-trigger"
@@ -167,7 +190,7 @@ onBeforeUnmount(() => {
               class="analysis-period-option"
               type="button"
               :aria-pressed="period === preset"
-              @click="selectPreset(preset)"
+              @click="selectPreset(preset, true)"
             >
               {{ presetLabel(preset) }}
             </button>
@@ -179,10 +202,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.analysis-period-picker { position: relative; display: inline-flex; flex: 0 0 auto; }
-.analysis-period-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: .65rem; min-height: 2.75rem; max-width: 100%; padding: .55rem .8rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--control-bg); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
+.analysis-period-picker { position: relative; display: inline-flex; align-items: center; gap: .5rem; min-width: 0; flex: 0 1 auto; }
+.analysis-period-strip { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; min-width: 0; }
+.analysis-period-strip button { min-height: 2.75rem; padding: .5rem .7rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--control-bg); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
+.analysis-period-strip button:hover, .analysis-period-strip button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--control-bg)); }
+.analysis-period-strip button[aria-pressed="true"] { box-shadow: inset 0 -3px var(--accent); }
+.analysis-period-trigger { display: none; align-items: center; justify-content: space-between; gap: .65rem; min-height: 2.75rem; max-width: 100%; padding: .55rem .8rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--control-bg); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
 .analysis-period-trigger:hover, .analysis-period-trigger[aria-expanded="true"] { border-color: var(--accent); }
-.analysis-period-trigger:focus-visible, .analysis-period-popover button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.analysis-period-strip button:focus-visible, .analysis-period-trigger:focus-visible, .analysis-period-popover button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .analysis-period-chevron { color: var(--muted); }
 .analysis-period-popover { position: absolute; z-index: 20; top: calc(100% + .45rem); right: 0; width: min(36rem, calc(100vw - 2rem)); max-height: min(80vh, 36rem); overflow-y: auto; padding: .8rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--popover); box-shadow: var(--shadow-popover); }
 .analysis-period-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(10rem, .9fr); gap: 1rem; }
@@ -200,7 +227,8 @@ onBeforeUnmount(() => {
 .analysis-period-error { margin: 0; color: var(--danger); font-size: .9rem; }
 @media (max-width: 600px) {
   .analysis-period-picker { width: 100%; }
-  .analysis-period-trigger { width: 100%; }
+  .analysis-period-strip { display: none; }
+  .analysis-period-trigger { display: inline-flex; width: 100%; }
   .analysis-period-popover { left: 0; right: auto; width: 100%; }
   .analysis-period-layout { grid-template-columns: 1fr; gap: 1.1rem; }
 }

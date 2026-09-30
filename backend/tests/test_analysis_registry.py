@@ -23,7 +23,7 @@ def _login(client: TestClient, username: str = "admin") -> str:
     return response.json()["csrf_token"]
 
 
-def test_registry_exposes_only_canonical_capabilities_and_has_frontend_metadata(
+def test_registry_exposes_capabilities_without_nutrition_data_and_has_frontend_metadata(
     client: TestClient,
     user: User,
 ) -> None:
@@ -36,8 +36,23 @@ def test_registry_exposes_only_canonical_capabilities_and_has_frontend_metadata(
     assert len(entries) == len(by_key)
     assert by_key["weight_kg"]["status"] == "available"
     assert by_key["active_energy_kcal"]["status"] == "available"
-    assert by_key["protein_g"]["status"] == "coming_soon"
+    nutrition_keys = [
+        "dietary_energy_kcal",
+        "protein_g",
+        "carbohydrates_g",
+        "fat_g",
+        "fiber_g",
+        "sugar_g",
+        "saturated_fat_g",
+    ]
+    for key in nutrition_keys:
+        assert by_key[key]["status"] == "available"
+        assert by_key[key]["card_capable"] is True
+        assert by_key[key]["detail_capable"] is True
+        assert by_key[key]["reader_key"] == "analytics.nutrition.analysis"
+        assert by_key[key]["period_capability"]["max_days"] == 365
     assert by_key["water_intake_ml"]["category_key"] == "fluid"
+    assert by_key["steps"]["status"] == "coming_soon"
     assert by_key["vitamin_a_ug"]["detail_capable"] is True
     assert set(by_key["weight_kg"]) == {
         "analysis_key",
@@ -132,11 +147,39 @@ def test_preferences_reject_duplicate_unknown_and_not_selectable_keys_without_pa
     for keys in (
         ["weight_kg", "weight_kg"],
         ["unknown_metric"],
-        ["protein_g"],
+        ["steps"],
     ):
         response = client.put(PREFERENCES_PATH, headers=headers, json={"analysis_keys": keys})
         assert response.status_code == 422
         assert client.get(PREFERENCES_PATH).json() == {"analysis_keys": ["weight_kg"]}
+
+
+def test_preferences_accept_ordered_nutrition_analysis_keys(
+    client: TestClient,
+    user: User,
+) -> None:
+    csrf = _login(client)
+    headers = {"X-CSRF-Token": csrf}
+    selected = [
+        "saturated_fat_g",
+        "dietary_energy_kcal",
+        "protein_g",
+        "carbohydrates_g",
+        "fat_g",
+        "fiber_g",
+        "sugar_g",
+    ]
+    response = client.put(PREFERENCES_PATH, headers=headers, json={"analysis_keys": selected})
+    assert response.status_code == 200
+    assert response.json() == {"analysis_keys": selected}
+
+    rejected = client.put(
+        PREFERENCES_PATH,
+        headers=headers,
+        json={"analysis_keys": [*selected, "steps"]},
+    )
+    assert rejected.status_code == 422
+    assert client.get(PREFERENCES_PATH).json() == {"analysis_keys": selected}
 
 
 def test_preferences_accept_empty_selection_and_preserve_order(

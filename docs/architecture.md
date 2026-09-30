@@ -138,7 +138,23 @@ each user's ordered card selection. An absent selection is empty, not a
 default dashboard. The relational preference rows are scoped by `user_id`;
 unsupported or coming-soon keys are rejected on write.
 
-Analysis cards and details use the existing canonical weight, activity, and
-micronutrient readers. Weight summaries derive only from the endpoint's sparse
-daily points. Missing days remain missing, and source-comparison views remain
-separate from Analysis.
+Analysis cards and details use the existing canonical weight and activity
+readers (up to 3661 days), the seven canonical nutrition analyses via
+`analytics.nutrition.analysis` (up to 365 days), and the existing micronutrient
+reader `analytics.nutrition.micronutrients` (up to 31 days). These registry
+capabilities do not depend on whether a user has records. Weight summaries
+derive only from the endpoint's sparse daily points. Missing days remain
+missing, and source-comparison views remain separate from Analysis.
+
+### Offline analysis demo
+
+The demo seed is restricted to development/test environments and creates the
+dedicated non-admin `calograph-analysis-demo` account. Its offline
+`analysis_demo` source/provider supplies synthetic records through the normal
+canonical readers and user-scoped policies; it does not contact real providers
+or change their contracts or the Legacy analytics paths.
+
+Removal first audits the account's rows and references for exclusive seed
+ownership and refuses unproven changes. It then removes the seed-owned data
+and account. Security audit events are preserved; their account references can
+be cleared through `SET NULL`.

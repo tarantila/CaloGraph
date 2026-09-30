@@ -158,6 +158,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   outline-offset: 2px;
 }
 
+.analysis-detail-title { display: flex; align-items: center; gap: .65rem; }
+.analysis-detail-icon { display: grid; place-items: center; flex: 0 0 auto; width: 2.35rem; height: 2.35rem; border-radius: .7rem; font-size: 1.2rem; }
+.analysis-detail-icon--weight { color: var(--chart-series-violet); background: color-mix(in srgb, var(--chart-series-violet) 14%, transparent); }
+.analysis-detail-icon--activity { color: var(--chart-series-amber); background: color-mix(in srgb, var(--chart-series-amber) 14%, transparent); }
+
 .skip-link {
   position: fixed;
   left: 1rem;

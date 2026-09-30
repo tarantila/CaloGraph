@@ -430,6 +430,15 @@ def test_activity_all_sources_keeps_provider_totals_separate(
             source_type=source_type,
             value=value,
         )
+    # An ordinary user cannot claim the demo provider with only a matching source type.
+    _activity_sample(
+        db,
+        user,
+        local_date=day,
+        source_type="analysis_demo_offline",
+        value=Decimal("999"),
+    )
+
 
     response = verification.read_activity_verification(
         db, user_id=user.id, start=day, end=day, view="all"
@@ -524,6 +533,7 @@ def test_activity_empty_range_returns_no_data_days(db: Session, user: User) -> N
                 "source_types": [],
             }
             for provider_key in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
+            if provider_key != "analysis_demo"
         ]
 
 

@@ -99,6 +99,7 @@ from app.schemas import (
 )
 from app.security_events import log_security_event, security_context_references, security_reference
 from app.services.achievements import unlock_achievement_keys
+from app.services.analysis_demo import is_owned_analysis_demo_account
 from app.services.data_export import (
     ExportBusy,
     ExportStream,
@@ -1038,6 +1039,10 @@ def _activity_priority_chain(
             provider_key
             for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
             if provider_key != projection_provider
+            and (
+                provider_key != "analysis_demo"
+                or is_owned_analysis_demo_account(db, user_id)
+            )
         )
         if projection_provider is not None:
             _activity_provider_source_type(
