@@ -31,6 +31,13 @@ activity credit and selects the sample's source type; sources are never summed
 automatically. This preserves user isolation and makes historical budget
 results reproducible after a later settings change.
 
+The Analysis Hub preference API stores one ordered `users.active_card_ids`
+list per account. Built-in cards and available standalone metric IDs share
+that sequence; legacy `analysis_keys` and `summary_order` responses are
+projections, and legacy writes are translated into the canonical sequence
+under the user-row lock and transaction. Registry validation rejects
+unavailable or non-card-capable metrics before persistence.
+
 ## Operational decisions
 
 `ENVIRONMENT` is explicit. Before production migrations or the scheduler loop,
@@ -133,18 +140,76 @@ reader capabilities without UI presentation data. The frontend keeps labels,
 icons, and routes in its presentation map; a backend test checks that every
 registry key has frontend metadata.
 
-`GET` and full-replacement `PUT /api/v1/settings/analysis-preferences` expose
-each user's ordered card selection. An absent selection is empty, not a
-default dashboard. The relational preference rows are scoped by `user_id`;
-unsupported or coming-soon keys are rejected on write.
+The authenticated `GET /api/v1/settings/analysis-preferences` returns the
+canonical mixed ordered `active_card_ids` list. New accounts receive the four
+domain cards `weight`, `nutrition`, `micronutrients`, and `activity`;
+`meals_today` is an optional built-in card, and standalone metric IDs must be
+available and card-capable in the analysis registry. The hub presents this
+single list in the saved order; all entries are removable.
+
+`PUT` accepts `active_card_ids` as the source of truth and rejects duplicate,
+legacy-alias, unknown, and unavailable metric IDs. It also returns
+`analysis_keys` and `summary_order` as compatibility projections for older
+clients; legacy writes are adapted into the canonical list. Revision
+`20261006_0039` adds `users.active_card_ids` and deterministically backfills
+the previous summary order followed by selected metric rows, mapping the
+weight and active-energy aliases to their built-in cards and deduplicating
+them. Invalid persisted preferences abort the migration rather than discard
+data.
 
 Analysis cards and details use the existing canonical weight and activity
 readers (up to 3661 days), the seven canonical nutrition analyses via
 `analytics.nutrition.analysis` (up to 365 days), and the existing micronutrient
-reader `analytics.nutrition.micronutrients` (up to 31 days). These registry
-capabilities do not depend on whether a user has records. Weight summaries
-derive only from the endpoint's sparse daily points. Missing days remain
-missing, and source-comparison views remain separate from Analysis.
+reader `analytics.nutrition.micronutrients` (up to 365 days). Internal
+micronutrient provider reads remain at most 31 days; all required chunks finish
+before one complete aggregate is returned. A required-chunk failure or unsafe
+conflict fails the request with the existing HTTP 503 provider problem, never a
+partial aggregate. These registry capabilities do not depend on whether a user
+has records. Weight summaries derive only from the endpoint's sparse daily
+points. Missing days remain missing, and source-comparison views remain
+separate from Analysis.
+The shared frontend `PeriodPicker` is controlled by its route view. Views own
+the reader, data loading, URL query state, and reader changes; the component
+owns only the uncommitted date draft and emits one `apply` event. Quick presets
+apply immediately. The desktop bar remains `7 days | 30 days | 90 days |
+Individuell`; unsupported fixed slots are disabled in place, while the mobile
+control lists only supported choices. `30 days` is the default, `6 months`
+means 180 inclusive rolling days, and `1 year` means 365.
+Weight detail alone adds an `Alle` preset mapped to the bounded rolling
+`period=3661` range. It remains distinct from capability-gated `period=all`.
+
+Registry `min_days`, `max_days`, and `custom_range` are static request limits,
+not an all-data capability. A successful data-reader response supplies the
+dynamic capability for that reader request. The Analysis hub intersects the
+capabilities of its four fixed Summary readers and selected available Metric
+readers, not selected readers alone. `All data` is selectable only when the
+response explicitly supports it and supplies a valid matching range within the
+existing reader limit. An unresolved or failed response does not enable it;
+current readers without a complete reader-owned start boundary report
+`supports_all_data: false`. Existing API range and Legacy `period=all`
+semantics remain unchanged.
+
+Analysis period state remains URL-owned, with no period store or persisted
+preference. Rolling presets use only `period`; custom ranges use absolute
+`period=custom&start=...&end=...` bounds. Unrelated query parameters and hashes
+survive. Picker changes replace the current navigation entry; Summary, Metric,
+and breadcrumb links navigate normally while retaining the selected range.
+Back/Forward restores the range attached to each route entry.
+
+The real authenticated browser acceptance is:
+
+```bash
+npm run test:e2e -- tests/e2e/product-wide-period-picker.spec.ts --project=chromium --workers=1
+```
+
+Run it only with a confirmed isolated local Development/Test runtime and the
+dedicated synthetic demo sign-in privately supplied to the test process:
+`CALOGRAPH_ANALYSIS_DEMO_SAFE_RUNTIME=1`, a local `BASE_URL`, and
+`CALOGRAPH_ANALYSIS_DEMO_PASSWORD`. The test fails closed if these are absent.
+Do not fall back to a default target or API mocks, and never print or persist
+the demo credential.
+
+
 
 ### Offline analysis demo
 
@@ -153,6 +218,11 @@ dedicated non-admin `calograph-analysis-demo` account. Its offline
 `analysis_demo` source/provider supplies synthetic records through the normal
 canonical readers and user-scoped policies; it does not contact real providers
 or change their contracts or the Legacy analytics paths.
+
+Only the exact reserved demo user also opts into `analysis_demo` for Overview
+Summary and Trends in `development`/`test`; the resolver's environment and
+user-ID gates remain authoritative. These reads use canonical Nutrition data
+and do not create Legacy `HealthSample` nutrition rows.
 
 Removal first audits the account's rows and references for exclusive seed
 ownership and refuses unproven changes. It then removes the seed-owned data

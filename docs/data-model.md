@@ -10,9 +10,15 @@
   preserve the source chain used for historical resolution.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
-- `user_analysis_preferences`: ordered per-user Analysis card keys; composite
-  primary key `(user_id, analysis_key)`, unique `(user_id, position)`, and
-  cascade deletion with the user. No rows means an explicitly empty selection.
+- `users.active_card_ids`: canonical ordered Analysis Hub membership, including
+  built-in domain cards (`weight`, `nutrition`, `micronutrients`, `activity`),
+  `meals_today`, and available standalone metric IDs. New users default to the
+  four domain cards; `meals_today` is inactive. Revision `20261006_0039`
+  backfills each account from its prior summary order and selected metric rows.
+- `user_analysis_preferences`: compatibility projection containing only
+  active standalone metric keys in canonical order; built-in cards are not
+  represented as rows. The `users.active_card_ids` JSON list is the source of
+  truth for membership and order.
 - `user_profiles`: optional one-to-one personal information for a user:
   display name, gender, birth date, height, diet, voluntary health notes, and
   intolerances. All content fields are nullable; the user foreign key is the
@@ -69,6 +75,8 @@ service in the same transaction.
 The dedicated non-admin `calograph-analysis-demo` account owns the demo's
 synthetic `health_samples` with source type `analysis_demo_offline`, import
 batches, nutrition rows, projections, and ordinary per-user priority policy.
+Authenticated use can create `user_usage_days` and `user_achievements`; those
+per-user rows belong to the demo account and are removed with it.
 The demo-only source/provider identity is `analysis_demo`; these rows use the
 normal user-isolation boundary rather than a separate analytics data model.
 Removal audits exclusive seed ownership before deleting demo-owned rows and

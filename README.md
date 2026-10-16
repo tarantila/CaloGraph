@@ -213,18 +213,52 @@ directory:
 ```sh
 cd backend
 uv run python -m app.cli seed-analysis-demo
+uv run python -m app.cli seed-analysis-demo --include-current-day-supplement
+uv run python -m app.cli seed-analysis-demo --include-follow-up-meals
 uv run python -m app.cli remove-analysis-demo
 ```
 
 The seed command prompts privately for a password only when creating the
 account. After successful seeding, log in as `calograph-analysis-demo` with
-that privately entered password. Repeat seeding does not reset the password
-and preserves the original 90-day anchor. Removal refuses an account containing
-changes or references it cannot prove belong to the seed and does not delete
-any other user's data. Repeating removal when the account is absent is a no-op;
+that privately entered password. Rerunning does not reset the password or
+replace the original 90-day seed anchor. The optional
+`--include-current-day-supplement` flag adds today's synthetic
+`Europe/Berlin` meals as one strictly audited supplement when the date lies
+outside the original seed window. Repeating it for the same date is
+idempotent; it does not move the anchor or create supplements for later dates.
+`--include-follow-up-meals` additionally adds one strictly audited pudding
+after dinner today and three meals tomorrow. It leaves the existing supplement
+unchanged, preserves both days' projection history, and is idempotent for the
+same date; it does not create supplements for later dates.
+Removal refuses an account containing changes or references it cannot prove
+belong to the seed and does not delete any other user's data. Repeating
+removal when the account is absent is a no-op;
 Changes made by the former legacy demo seeder to unmarked target histories are
 **not automatically reversible**. Restore those from a known-good disposable
 database snapshot if needed; the current removal command is not a legacy cleanup.
+
+#### Persistent Analysis review runtime
+
+From the repository root:
+
+```sh
+make analysis-review-up
+```
+
+This starts the isolated review site at `http://localhost:8289` and stores its
+`calograph_analysis_v2_test` database in the named Docker volume
+`calograph-analysis-v2-review-postgres-data`. On the first start, the existing
+secret generator creates private review-only secrets, and the existing CLI
+privately prompts for the synthetic bootstrap and demo account passwords.
+Later starts migrate to the current Alembic head and skip seeding when the
+demo account already exists, preserving its data and preferences.
+
+```sh
+make analysis-review-down
+```
+
+This removes only the review containers and networks; the database volume and
+review secrets remain. No production `.env` or `:8288` runtime is used.
 
 ## Limitations
 

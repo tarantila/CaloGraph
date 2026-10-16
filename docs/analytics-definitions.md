@@ -131,12 +131,13 @@ selection returns HTTP 503; it is not represented as an empty catalog. A
 readable provider chain with no nutrient evidence returns HTTP 200 with the
 catalog entries and null totals/series values.
 
-Ranges use inclusive account-local dates and are limited to 31 days. For each
-date, the endpoint selects one whole provider matrix: the first provider with
-complete, resolved evidence for the seven primary daily nutrition metrics and
-at least one usable primary value wins. If no provider meets that rule, the
-first provider's matrix is retained. Nutrients are never filled individually
-from a lower-priority provider.
+Ranges use 1–365 inclusive account-local dates. Provider selection is resolved
+once per request; internal provider reads remain at most 31 days. All required
+chunks finish before totals, coverage, contributor counts, and chronological
+daily series are constructed for one complete response. Any required-chunk
+failure or unsafe conflict fails the full request with the existing HTTP 503
+provider problem; no partial aggregate is returned. This does not establish a
+cross-chunk MVCC snapshot guarantee.
 
 The top-level `selected_provider` is the head of the configured preference
 chain, not a claim that it supplied every date. Each detailed series point names
@@ -180,9 +181,15 @@ or change persisted evidence.
 The authenticated `GET /api/v1/analytics/registry` response lists canonical
 analysis keys, domain/category identifiers, availability, and reader
 capabilities; UI labels, icons, and routes are frontend presentation metadata.
-The authenticated `GET /api/v1/settings/analysis-preferences` returns a user's
-ordered card keys. `PUT` replaces that complete ordered list. An empty list is
-valid, and unknown, duplicate, or unavailable keys are rejected.
+The authenticated `GET /api/v1/settings/analysis-preferences` returns
+`active_card_ids`, the canonical mixed ordered sequence of active Analysis Hub
+cards. Built-in domain cards and available standalone metric cards share this
+sequence and can be reordered together. The canonical `PUT` replaces this
+sequence with `active_card_ids`. The response also includes `analysis_keys` and
+`summary_order` as compatibility projections. Legacy `PUT` requests using
+either or both legacy fields remain accepted and are translated into the
+canonical sequence; they are not the current canonical write contract. A card
+is active only when its ID is present in `active_card_ids`.
 
 `GET /api/v1/analytics/weight` retains its sparse daily `points` and adds a
 summary over those same selected daily readings. `measurement_count` counts
@@ -190,6 +197,27 @@ returned points; `latest` is the last actual point; `change_kg` is the newest
 minus oldest actual value and is null with fewer than two readings. Average,
 minimum, and maximum use actual points only. No value is interpolated for an
 unmeasured day.
+
+### Request period capabilities
+
+Every successful response from trends, general micronutrients, weight, activity
+verification, Analyse nutrition, and Analyse micronutrients explicitly includes
+`period_capabilities: {supports_all_data: false, all_data_start_date: null}`.
+These readers do not expose a reliable earliest date for their complete
+reader-specific data. Neither the first returned point nor another reader's
+metadata establishes that boundary.
+
+Existing inclusive range limits remain unchanged: 3661 days for trends, general
+micronutrients, weight, and activity verification; 365 days for Analyse nutrition
+and Analyse micronutrients. Those maxima are not all-data ranges.
+The registry's static `min_days`, `max_days`, and `custom_range` describe bounded
+requests, not dynamic permission to select all data.
+
+This negative capability does not change Legacy API acceptance of `period=all`,
+its historical start boundary, or its existing achievement effects, including
+`the_big_picture`. Preference-selected trends and general micronutrients retain
+their existing HTTP 422 all-period gates. Daily and weekdays responses remain
+unchanged, including their existing `period=all` acceptance.
 
 ## Micronutrient provider metadata
 
