@@ -18,7 +18,7 @@ from app.google_health.client import (
     NutritionQuantity,
 )
 from app.importers.apple_xml import AppleFoodCorrelation, AppleFoodNutrient
-from app.models import GoogleHealthConnection, User
+from app.models import GoogleHealthConnection, ImportBatch, User, UserAnalysisPreference
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -29,9 +29,12 @@ from app.nutrition.enums import (
 )
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
     NutritionFieldObservation,
     NutritionFoodSnapshot,
     NutritionIngestionRun,
+    NutritionProjectionHead,
     NutritionSourceObservation,
     NutritionSourceTombstone,
 )
@@ -171,6 +174,339 @@ def test_incomplete_primary_falls_back_with_exact_winning_meals_and_next_day_pre
         ("apple_health", "Complete Apple bowl"),
     ]
     assert "Incomplete Apple bowl" not in [meal.display_name for day in response.days for meal in day.meals]
+
+
+def test_current_day_seed_supplement_is_visible_to_analysis_meals(
+    db: Session, user: User,
+) -> None:
+    anchor = TODAY - timedelta(days=5)
+    demo_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=anchor,
+    )
+    account = db.get(User, demo_id)
+    assert account is not None
+    account.active_card_ids = [
+        "nutrition", "activity", "weight", "micronutrients", "dietary_energy_kcal",
+    ]
+    account.summary_order = ["nutrition", "activity", "weight", "micronutrients"]
+    db.commit()
+
+    def protected_base_state():
+        db.expire_all()
+        account = db.get(User, demo_id)
+        batch = db.scalar(select(ImportBatch).where(ImportBatch.user_id == demo_id))
+        base_run = db.scalar(select(NutritionIngestionRun).where(
+            NutritionIngestionRun.user_id == demo_id,
+            NutritionIngestionRun.connector_variant == "analysis-demo-v2",
+        ))
+        assert account is not None and batch is not None and base_run is not None
+        sources = list(db.scalars(select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == demo_id,
+            NutritionSourceObservation.ingestion_run_id == base_run.id,
+        )))
+        projections = list(db.scalars(select(NutritionDailyProjection).where(
+            NutritionDailyProjection.user_id == demo_id,
+            NutritionDailyProjection.local_date <= anchor,
+        )))
+        projection_ids = [item.id for item in projections]
+        facts = list(db.scalars(select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id.in_(projection_ids),
+        )))
+        heads = list(db.scalars(select(NutritionProjectionHead).where(
+            NutritionProjectionHead.user_id == demo_id,
+            NutritionProjectionHead.local_date <= anchor,
+        )))
+        preferences = list(db.scalars(select(UserAnalysisPreference).where(
+            UserAnalysisPreference.user_id == demo_id,
+        )))
+        return (
+            (
+                account.password_hash, account.timezone, tuple(account.active_card_ids),
+                tuple(account.summary_order),
+            ),
+            (batch.id.hex, batch.client_identifier, batch.status, batch.received, batch.inserted),
+            (
+                base_run.id.hex, base_run.status, base_run.requested_start_date,
+                base_run.requested_end_date, tuple(sorted(base_run.provider_metadata.items())),
+            ),
+            tuple(sorted(
+                (item.id.hex, item.source_record_id, item.observation_fingerprint)
+                for item in sources
+            )),
+            tuple(sorted(
+                (item.id.hex, item.local_date, item.input_watermark, item.projection_status)
+                for item in projections
+            )),
+            tuple(sorted(
+                (item.local_date, str(item.current_projection_id))
+                for item in heads
+            )),
+            tuple(sorted(
+                (
+                    item.projection_id.hex, item.metric_key, str(item.value), item.unit,
+                    item.selected_provider_key,
+                )
+                for item in facts
+            )),
+            tuple(sorted((item.analysis_key, item.position) for item in preferences)),
+        )
+    base_state_before = protected_base_state()
+    seeded_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_current_day_supplement=True,
+    )
+    assert seeded_id == demo_id
+    assert protected_base_state() == base_state_before
+    replayed_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_current_day_supplement=True,
+    )
+    assert replayed_id == demo_id
+    assert protected_base_state() == base_state_before
+    assert len(list(db.scalars(select(ImportBatch).where(ImportBatch.user_id == demo_id)))) == 1
+    assert len(list(db.scalars(
+        select(NutritionIngestionRun).where(NutritionIngestionRun.user_id == demo_id)
+    ))) == 2
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    source = demo_source_instance_id(demo_id)
+    selection = NutritionProviderSelection(
+        "analysis_demo", source, (("analysis_demo", source),),
+    )
+
+    result = _read(db, demo, selection, TODAY, TODAY)
+    day = result.days[0]
+
+    assert result.selected_provider.provider_key == "analysis_demo"
+    assert day.provider_key == "analysis_demo"
+    assert [meal.display_name for meal in day.meals] == [
+        "Haferflocken mit Beeren", "Linsensalat", "Lachs mit Kartoffeln",
+    ]
+    assert [meal.meal_type for meal in day.meals] == ["breakfast", "lunch", "dinner"]
+    assert tuple(getattr(day, field) for field in FIELDS) == (
+        Decimal("1575"), Decimal("79"), Decimal("171"), Decimal("57"),
+        Decimal("29"), Decimal("27"), Decimal("10"),
+    )
+
+
+def test_current_day_seed_supplement_recovers_after_projection_interruption(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import analysis_demo_nutrition as nutrition
+
+    anchor = TODAY - timedelta(days=5)
+    demo_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=anchor,
+    )
+    rebuild = nutrition._rebuild_analysis_demo_days
+
+    def interrupt_projection(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated projection interruption")
+
+    monkeypatch.setattr(nutrition, "_rebuild_analysis_demo_days", interrupt_projection)
+    with pytest.raises(RuntimeError, match="simulated projection interruption"):
+        seed_analysis_demo(
+            db, password="synthetic-analysis-test-password", today=TODAY,
+            include_current_day_supplement=True,
+        )
+
+    monkeypatch.setattr(nutrition, "_rebuild_analysis_demo_days", rebuild)
+    seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_current_day_supplement=True,
+    )
+
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    source = demo_source_instance_id(demo_id)
+    selection = NutritionProviderSelection(
+        "analysis_demo", source, (("analysis_demo", source),),
+    )
+    day = _read(db, demo, selection, TODAY, TODAY).days[0]
+
+    assert day.provider_key == "analysis_demo"
+    assert [meal.display_name for meal in day.meals] == [
+        "Haferflocken mit Beeren", "Linsensalat", "Lachs mit Kartoffeln",
+    ]
+
+
+def test_follow_up_supplement_adds_evening_pudding_and_tomorrow_meals(
+    db: Session, user: User,
+) -> None:
+    anchor = TODAY - timedelta(days=5)
+    demo_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=anchor,
+    )
+    seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_current_day_supplement=True,
+    )
+    account = db.get(User, demo_id)
+    assert account is not None
+    account.active_card_ids = [
+        "nutrition", "activity", "weight", "micronutrients", "dietary_energy_kcal",
+    ]
+    account.summary_order = ["nutrition", "activity", "weight", "micronutrients"]
+    db.commit()
+    preference_state = (
+        tuple(account.active_card_ids), tuple(account.summary_order),
+        tuple(sorted(
+            (row.analysis_key, row.position)
+            for row in db.scalars(select(UserAnalysisPreference).where(
+                UserAnalysisPreference.user_id == demo_id,
+            ))
+        )),
+    )
+
+    old_projection = db.scalar(select(NutritionDailyProjection).where(
+        NutritionDailyProjection.user_id == demo_id,
+        NutritionDailyProjection.local_date == TODAY,
+        NutritionDailyProjection.projection_version == 1,
+    ))
+    assert old_projection is not None
+    old_facts = tuple(sorted(
+        (row.id.hex, row.metric_key, str(row.value))
+        for row in db.scalars(select(NutritionDailyProjectionFact).where(
+            NutritionDailyProjectionFact.projection_id == old_projection.id,
+        ))
+    ))
+    old_projection_state = (old_projection.id, old_projection.input_watermark, old_facts)
+
+    seeded_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_follow_up_meals=True,
+    )
+    assert seeded_id == demo_id
+
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    source = demo_source_instance_id(demo_id)
+    selection = NutritionProviderSelection(
+        "analysis_demo", source, (("analysis_demo", source),),
+    )
+    today = _read(db, demo, selection, TODAY, TODAY).days[0]
+    tomorrow = _read(db, demo, selection, TODAY + timedelta(days=1), TODAY + timedelta(days=1)).days[0]
+
+    assert [meal.display_name for meal in today.meals] == [
+        "Haferflocken mit Beeren", "Linsensalat", "Lachs mit Kartoffeln", "Vanillepudding",
+    ]
+    assert [meal.meal_type for meal in today.meals] == ["breakfast", "lunch", "dinner", "snack"]
+    assert tuple(getattr(today, field) for field in FIELDS) == (
+        Decimal("1795"), Decimal("85"), Decimal("203"), Decimal("63"),
+        Decimal("30"), Decimal("51"), Decimal("13"),
+    )
+    assert [meal.display_name for meal in tomorrow.meals] == [
+        "Vollkornbrot mit Ei", "Kichererbsen-Bowl", "Gemüsepfanne mit Reis",
+    ]
+    assert tuple(getattr(tomorrow, field) for field in FIELDS) == (
+        Decimal("1560"), Decimal("64"), Decimal("190"), Decimal("55"),
+        Decimal("33"), Decimal("26"), Decimal("11"),
+    )
+
+    runs = list(db.scalars(select(NutritionIngestionRun).where(
+        NutritionIngestionRun.user_id == demo_id,
+    )))
+    assert len(runs) == 3
+    projection_versions = list(db.scalars(select(NutritionDailyProjection.projection_version).where(
+        NutritionDailyProjection.user_id == demo_id,
+        NutritionDailyProjection.local_date == TODAY,
+    ).order_by(NutritionDailyProjection.projection_version)))
+    assert projection_versions == [1, 2]
+    assert db.scalar(select(NutritionDailyProjection.projection_version).where(
+        NutritionDailyProjection.user_id == demo_id,
+        NutritionDailyProjection.local_date == TODAY + timedelta(days=1),
+    )) == 1
+    db.refresh(old_projection)
+    assert (
+        old_projection.id, old_projection.input_watermark,
+        tuple(sorted(
+            (row.id.hex, row.metric_key, str(row.value))
+            for row in db.scalars(select(NutritionDailyProjectionFact).where(
+                NutritionDailyProjectionFact.projection_id == old_projection.id,
+            ))
+        )),
+    ) == old_projection_state
+    db.refresh(account)
+    assert (
+        tuple(account.active_card_ids), tuple(account.summary_order),
+        tuple(sorted(
+            (row.analysis_key, row.position)
+            for row in db.scalars(select(UserAnalysisPreference).where(
+                UserAnalysisPreference.user_id == demo_id,
+            ))
+        )),
+    ) == preference_state
+
+    replayed_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_follow_up_meals=True,
+    )
+    assert replayed_id == demo_id
+    assert len(list(db.scalars(select(NutritionIngestionRun).where(
+        NutritionIngestionRun.user_id == demo_id,
+    )))) == 3
+    assert len(_read(
+        db, demo, selection, TODAY, TODAY,
+    ).days[0].meals) == 4
+    assert len(_read(
+        db, demo, selection, TODAY + timedelta(days=1), TODAY + timedelta(days=1),
+    ).days[0].meals) == 3
+
+
+def test_follow_up_supplement_recovers_between_day_projections(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import analysis_demo_nutrition as nutrition
+
+    anchor = TODAY - timedelta(days=5)
+    demo_id = seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=anchor,
+    )
+    seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_current_day_supplement=True,
+    )
+    rebuild = nutrition._rebuild_analysis_demo_days
+
+    def interrupt_after_today(*args: object, **kwargs: object) -> None:
+        days = kwargs["days"]
+        assert isinstance(days, set)
+        rebuild(*args, **{**kwargs, "days": {TODAY}})
+        raise RuntimeError("simulated follow-up interruption")
+
+    monkeypatch.setattr(nutrition, "_rebuild_analysis_demo_days", interrupt_after_today)
+    with pytest.raises(RuntimeError, match="simulated follow-up interruption"):
+        seed_analysis_demo(
+            db, password="synthetic-analysis-test-password", today=TODAY,
+            include_follow_up_meals=True,
+        )
+
+    monkeypatch.setattr(nutrition, "_rebuild_analysis_demo_days", rebuild)
+    seed_analysis_demo(
+        db, password="synthetic-analysis-test-password", today=TODAY,
+        include_follow_up_meals=True,
+    )
+    runs = list(db.scalars(select(NutritionIngestionRun).where(
+        NutritionIngestionRun.user_id == demo_id,
+    )))
+    assert len(runs) == 3
+    assert sum(run.status == "completed" for run in runs) == 3
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    source = demo_source_instance_id(demo_id)
+    selection = NutritionProviderSelection(
+        "analysis_demo", source, (("analysis_demo", source),),
+    )
+    assert [meal.display_name for meal in _read(
+        db, demo, selection, TODAY, TODAY,
+    ).days[0].meals] == [
+        "Haferflocken mit Beeren", "Linsensalat", "Lachs mit Kartoffeln", "Vanillepudding",
+    ]
+    assert [meal.display_name for meal in _read(
+        db, demo, selection, TODAY + timedelta(days=1), TODAY + timedelta(days=1),
+    ).days[0].meals] == [
+        "Vollkornbrot mit Ei", "Kichererbsen-Bowl", "Gemüsepfanne mit Reis",
+    ]
 
 
 def test_explicit_zero_is_present_but_missing_day_has_no_provider_or_meals(

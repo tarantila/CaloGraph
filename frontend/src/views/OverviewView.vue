@@ -13,25 +13,37 @@ import {
   PhWarningCircle,
 } from '@phosphor-icons/vue'
 import type { EChartsOption, LineSeriesOption } from 'echarts'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import type { RouteLocationNormalizedLoaded, Router } from 'vue-router'
 
 import { hasActivityCredit, hasActivityCreditAmount } from '../activity'
 import { api, localizeApiError } from '../api'
+import {
+  periodFromQuery, rangeForDays, resolveAllDataRange,
+  type AppliedPeriod, type PeriodLimits,
+} from '../analytics-period'
 import ChartPanel from '../components/ChartPanel.vue'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import { chartColors } from '../chart-theme'
 import { useAuthStore } from '../stores/auth'
 import {
   formatGermanDate,
   formatGermanDateTime,
   formatGermanDayMonth,
+  isoDateInTimeZone,
   isoWeekday,
   shiftIsoDate,
 } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n, roundHalfUp } from '../i18n'
-import type { DailyPoint, ImportBatch, ImportSummary, Target, User, YazioStatus } from '../types'
+import type {
+  DailyPoint, ImportBatch, ImportSummary, ReaderPeriodCapabilities, Target, User, YazioStatus,
+} from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
+const route = useRoute() as RouteLocationNormalizedLoaded | undefined
+const router = useRouter() as Router | undefined
 
 interface Summary {
   today: DailyPoint
@@ -52,20 +64,30 @@ interface Summary {
   data_day_count: number
 }
 
-type PeriodValue = 7 | 30 | 60 | 'all'
-
-const periods = computed((): ReadonlyArray<{ value: PeriodValue; label: string }> => [
-  { value: 7, label: t('overviewUi.period7') },
-  { value: 30, label: t('overviewUi.period30') },
-  { value: 60, label: t('overviewUi.period60') },
-  { value: 'all', label: t('overviewUi.periodAll') },
-])
 const summary = ref<Summary | null>(null)
+const localToday = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+const today = computed(() => summary.value?.today.date ?? localToday)
+const limits: PeriodLimits = { minDays: 1, maxDays: 3661, customRange: true }
+const capability = ref<ReaderPeriodCapabilities | undefined>()
+const allRange = computed(() => resolveAllDataRange(capability.value, today.value, limits))
+const initial = periodFromQuery(route?.query ?? {}, limits, today.value, null)
+const start = ref(initial.start)
+const end = ref(initial.end)
+const period = ref(initial.period)
+let requestedInitialAll = route?.query.period === 'all'
+let periodLoadId = 0
+let periodDisposed = false
 const trends = ref<DailyPoint[]>([])
+const currentWeekTrends = ref<DailyPoint[]>([])
+const currentWeekReady = ref(false)
+let summaryGeneration = 0
+let currentWeekGeneration: number | null = null
+let currentWeekLoadId = 0
+let currentWeekLoadGeneration: number | null = null
+let currentWeekLoad: Promise<void> | null = null
 const targets = ref<Target[]>([])
 const imports = ref<ImportBatch[]>([])
 const yazioStatus = ref<YazioStatus | null>(null)
-const periodDays = ref<PeriodValue>(30)
 const error = ref('')
 const loading = ref(true)
 const syncingYazio = ref(false)
@@ -85,6 +107,102 @@ function addDays(value: string, amount: number) {
   return shiftIsoDate(value, amount)
 }
 
+function weekStartFor(date: string): string | null {
+  const weekday = isoWeekday(date)
+  return weekday == null ? null : addDays(date, -((weekday + 6) % 7))
+}
+
+function acceptSummarySnapshot(value: Summary): void {
+  summaryGeneration += 1
+  currentWeekLoadId += 1
+  currentWeekLoadGeneration = null
+  currentWeekLoad = null
+  currentWeekGeneration = null
+  currentWeekReady.value = false
+  summary.value = value
+}
+
+function rememberCurrentWeekFromTrends(
+  generation: number,
+  requested: AppliedPeriod,
+  points: DailyPoint[],
+  currentDate: string,
+): boolean {
+  const weekStart = weekStartFor(currentDate)
+  if (weekStart && (requested.start > weekStart || requested.end < currentDate)) return false
+  if (generation !== summaryGeneration || periodDisposed) return false
+  if (currentWeekGeneration === generation) return true
+
+  currentWeekLoadId += 1
+  currentWeekLoadGeneration = null
+  currentWeekLoad = null
+  currentWeekTrends.value = weekStart
+    ? points.filter((point) => point.date >= weekStart && point.date <= currentDate)
+    : []
+  currentWeekGeneration = generation
+  currentWeekReady.value = true
+  return true
+}
+
+function loadCurrentWeekTrends(generation: number, currentDate: string): Promise<void> {
+  if (
+    periodDisposed
+    || generation !== summaryGeneration
+    || currentWeekGeneration === generation
+  ) return Promise.resolve()
+  if (currentWeekLoad && currentWeekLoadGeneration === generation) return currentWeekLoad
+
+  const weekStart = weekStartFor(currentDate)
+  if (!weekStart) {
+    rememberCurrentWeekFromTrends(
+      generation,
+      { start: currentDate, end: currentDate, period: 'custom' },
+      [],
+      currentDate,
+    )
+    return Promise.resolve()
+  }
+
+  const requestId = ++currentWeekLoadId
+  const params = new URLSearchParams({
+    start: weekStart,
+    end: currentDate,
+    include_incomplete: 'true',
+  })
+  let pending: Promise<void>
+  pending = api<{ points: DailyPoint[] }>(`/analytics/trends?${params.toString()}`)
+    .then((result) => {
+      if (
+        periodDisposed
+        || generation !== summaryGeneration
+        || requestId !== currentWeekLoadId
+        || currentWeekGeneration === generation
+      ) return
+      currentWeekTrends.value = result.points.filter(
+        (point) => point.date >= weekStart && point.date <= currentDate,
+      )
+      currentWeekGeneration = generation
+      currentWeekReady.value = true
+    })
+    .catch((cause: unknown) => {
+      if (
+        periodDisposed
+        || generation !== summaryGeneration
+        || requestId !== currentWeekLoadId
+        || currentWeekGeneration === generation
+      ) return
+      throw cause
+    })
+    .finally(() => {
+      if (currentWeekLoad === pending) {
+        currentWeekLoad = null
+        currentWeekLoadGeneration = null
+      }
+    })
+  currentWeekLoadGeneration = generation
+  currentWeekLoad = pending
+  return pending
+}
 
 function hasNutritionData(point: DailyPoint) {
   return [point.calories_kcal, point.protein_g, point.carbs_g, point.fat_g].some(
@@ -92,27 +210,112 @@ function hasNutritionData(point: DailyPoint) {
   )
 }
 
-async function loadTrends() {
-  if (!summary.value) return
-  const end = summary.value.today.date
-  const earliestAllowed = shiftIsoDate(end, -(3660 - 1))
-  const requestedStart = summary.value.data_start_date ?? end
-  const start = periodDays.value === 'all'
-    ? (requestedStart > earliestAllowed ? requestedStart : earliestAllowed)
-    : addDays(end, -(periodDays.value - 1))
-  const periodQuery = periodDays.value === 'all' ? '&period=all' : ''
-  const result = await api<{ points: DailyPoint[] }>(
-    `/analytics/trends?start=${start}&end=${end}&include_incomplete=true${periodQuery}`,
-  )
-  trends.value = result.points
+function applyPeriod(value: AppliedPeriod): void {
+  requestedInitialAll = false
+  const selected = periodFromQuery(value, limits, today.value, allRange.value)
+  start.value = selected.start
+  end.value = selected.end
+  period.value = selected.period
+  void loadTrends()
 }
 
-async function selectPeriod(value: PeriodValue) {
-  periodDays.value = value
+watch(
+  () => [route?.query.start, route?.query.end, route?.query.period] as const,
+  ([nextStart, nextEnd, nextPeriod]) => {
+    // Our own replacement must not reinterpret active All while its request is pending.
+    if (nextStart === start.value && nextEnd === end.value && nextPeriod === period.value) return
+    const selected = periodFromQuery(route?.query ?? {}, limits, today.value, allRange.value)
+    if (selected.start === start.value && selected.end === end.value && selected.period === period.value) return
+    requestedInitialAll = false
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    void loadTrends()
+  },
+)
+
+async function loadTrends(errorTarget: 'period' | 'dashboard' | 'sync' = 'period') {
+  if (periodDisposed) return
+  const requestId = ++periodLoadId
+  const generation = summaryGeneration
+  const requested: AppliedPeriod = { start: start.value, end: end.value, period: period.value }
+  const updatesDashboardError = errorTarget !== 'period' || summary.value !== null
+  let trendResponseLoaded = false
+  capability.value = undefined
+  if (updatesDashboardError && currentWeekReady.value) error.value = ''
   try {
-    await loadTrends()
+    await router?.replace({
+      query: { ...route?.query, ...requested },
+      hash: route?.hash,
+    })
+    if (requestId !== periodLoadId || generation !== summaryGeneration) return
+    const params = new URLSearchParams({
+      start: requested.start, end: requested.end, include_incomplete: 'true',
+    })
+    if (requested.period === 'all') params.set('period', 'all')
+    const result = await api<{
+      points: DailyPoint[]
+      period_capabilities?: ReaderPeriodCapabilities
+    }>(`/analytics/trends?${params.toString()}`)
+    if (requestId !== periodLoadId || generation !== summaryGeneration) return
+    capability.value = result.period_capabilities
+    const admitted = resolveAllDataRange(capability.value, today.value, limits)
+    if (requestedInitialAll) {
+      requestedInitialAll = false
+      if (admitted) {
+        start.value = admitted.start
+        end.value = admitted.end
+        period.value = 'all'
+        await loadTrends(errorTarget)
+        return
+      }
+    }
+    if (requested.period === 'all' && !admitted) {
+      const fallback = rangeForDays(today.value, 30)
+      start.value = fallback.start
+      end.value = fallback.end
+      period.value = '30'
+      await loadTrends(errorTarget)
+      return
+    }
+    trends.value = result.points
+    trendResponseLoaded = true
+
+    const currentDate = summary.value?.today.date
+    if (currentDate && currentWeekGeneration !== generation) {
+      const weekStart = weekStartFor(currentDate)
+      if (!weekStart || (requested.start <= weekStart && requested.end >= currentDate)) {
+        rememberCurrentWeekFromTrends(generation, requested, result.points, currentDate)
+      } else {
+        await loadCurrentWeekTrends(generation, currentDate)
+      }
+    }
+    if (requestId !== periodLoadId || generation !== summaryGeneration) return
+    if (updatesDashboardError && currentWeekGeneration === generation) error.value = ''
   } catch (cause) {
-    error.value = localizeApiError(cause, 'overviewUi.periodLoadFailed')
+    if (requestId !== periodLoadId || generation !== summaryGeneration) return
+    requestedInitialAll = false
+    if (!trendResponseLoaded) capability.value = undefined
+    if (errorTarget === 'sync') {
+      syncFailed.value = true
+      syncFeedback.value = localizeApiError(cause, 'overviewUi.syncFailed')
+    } else if (updatesDashboardError) {
+      error.value = localizeApiError(
+        cause,
+        errorTarget === 'dashboard' ? 'overviewUi.dashboardLoadFailed' : 'overviewUi.periodLoadFailed',
+      )
+    }
+  } finally {
+    if (
+      requestId === periodLoadId
+      && generation === summaryGeneration
+      && summary.value
+      && (
+        currentWeekGeneration === generation
+        || error.value !== ''
+        || (errorTarget === 'sync' && syncFailed.value)
+      )
+    ) loading.value = false
   }
 }
 
@@ -123,11 +326,11 @@ async function loadDashboard() {
     api<ImportBatch[]>('/imports'),
     api<YazioStatus>('/yazio/status'),
   ])
-  summary.value = summaryResult
+  acceptSummarySnapshot(summaryResult)
   targets.value = Array.isArray(targetResult) ? targetResult : []
   imports.value = Array.isArray(importResult) ? importResult : []
   yazioStatus.value = yazioResult
-  await loadTrends()
+  await loadTrends('dashboard')
 }
 
 async function reloadDashboard() {
@@ -137,7 +340,6 @@ async function reloadDashboard() {
     await loadDashboard()
   } catch (cause) {
     error.value = localizeApiError(cause, 'overviewUi.dashboardLoadFailed')
-  } finally {
     loading.value = false
   }
 }
@@ -180,6 +382,13 @@ onMounted(() => {
   highlightRetryValue.value = highlightOverBudget.value
   void reloadDashboard()
 })
+onBeforeUnmount(() => {
+  periodDisposed = true
+  periodLoadId += 1
+  currentWeekLoadId += 1
+  currentWeekLoadGeneration = null
+  currentWeekLoad = null
+})
 
 async function syncYazioNow() {
   if (
@@ -199,10 +408,10 @@ async function syncYazioNow() {
       api<ImportBatch[]>('/imports'),
       api<YazioStatus>('/yazio/status'),
     ])
-    summary.value = summaryResult
+    acceptSummarySnapshot(summaryResult)
     imports.value = Array.isArray(importResult) ? importResult : []
     yazioStatus.value = yazioResult
-    await loadTrends()
+    await loadTrends('sync')
   } catch (cause) {
     syncFailed.value = true
     syncFeedback.value = localizeApiError(cause, 'overviewUi.syncFailed')
@@ -341,14 +550,9 @@ const syncScheduleLabel = computed(() => {
   return days == null ? interval : t('overviewUi.lastDays', { interval, days: integer.format(days) })
 })
 
-const currentWeekPoints = computed(() => {
-  if (!summary.value) return []
-  const weekday = isoWeekday(summary.value.today.date)
-  if (weekday == null) return []
-  const mondayBasedWeekday = (weekday + 6) % 7
-  const start = addDays(summary.value.today.date, -mondayBasedWeekday)
-  return trends.value.filter((point) => point.date >= start && point.date <= summary.value!.today.date)
-})
+const currentWeekPoints = computed(() =>
+  currentWeekReady.value ? currentWeekTrends.value : [],
+)
 
 const recordedWeekPoints = computed(() =>
   currentWeekPoints.value.filter((point) => point.calories_kcal != null),
@@ -657,18 +861,18 @@ const macroChart = computed<EChartsOption>(() => {
       <p>{{ dateHeading }}</p>
     </div>
     <div class="dashboard-heading-actions">
-      <div class="period-control" :aria-label="t('overview.selectPeriod')">
-        <button
-          v-for="period in periods"
-          :key="period.value"
-          type="button"
-          :class="{ active: periodDays === period.value }"
-          :aria-pressed="periodDays === period.value"
-          @click="selectPeriod(period.value)"
-        >
-          {{ period.label }}
-        </button>
-      </div>
+      <PeriodPicker
+        :start="start"
+        :end="end"
+        :today="today"
+        :period="period"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :period-capabilities="capability"
+        :all-range="allRange"
+        @apply="applyPeriod"
+      />
       <span class="dashboard-period-range" aria-live="polite">{{ rangeLabel }}</span>
     </div>
   </div>
@@ -793,7 +997,7 @@ const macroChart = computed<EChartsOption>(() => {
           <div><span>{{ t('overviewUi.fat') }}</span><strong>{{ sevenDayFat == null ? '–' : `${integer.format(sevenDayFat)} ${t('common.grams')}` }}</strong></div>
         </div>
       </article>
-      <article class="card summary-card weekly-summary-card">
+      <article class="card summary-card weekly-summary-card" :aria-busy="!currentWeekReady">
         <div class="summary-card-title">
           <div><h2>{{ t('overviewUi.weeklySummary') }}</h2><p>{{ t('overviewUi.runningWeek') }}</p></div>
           <PhChartPieSlice :size="22" weight="duotone" aria-hidden="true" />
@@ -825,7 +1029,7 @@ const macroChart = computed<EChartsOption>(() => {
               <PhCheck :size="19" weight="bold" aria-hidden="true" />
             </span>
             <span class="weekly-summary-label">{{ t('overviewUi.recorded') }}</span>
-            <strong>{{ recordedWeekPoints.length }} {{ t('common.of') }} {{ elapsedWeekDays }} {{ t('common.daysDative') }}</strong>
+            <strong>{{ currentWeekReady ? recordedWeekPoints.length : '–' }} {{ t('common.of') }} {{ elapsedWeekDays }} {{ t('common.daysDative') }}</strong>
           </div>
         </div>
       </article>

@@ -4,6 +4,14 @@ from typing import Literal, TypedDict
 
 from app.micronutrients import MICRONUTRIENTS
 
+DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
+    "weight",
+    "nutrition",
+    "micronutrients",
+    "activity",
+)
+
+
 
 class AnalysisDefinition(TypedDict):
     analysis_key: str
@@ -57,7 +65,7 @@ _ANALYSES: tuple[AnalysisDefinition, ...] = (
             item.metric_type,
             "micronutrients",
             status="available",
-            max_days=31,
+            max_days=365,
             reader_key="analytics.nutrition.micronutrients",
         )
         for item in MICRONUTRIENTS

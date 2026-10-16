@@ -18,6 +18,7 @@ const router = createRouter({
     { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue') },
     { path: '/tage', name: 'daily', component: () => import('./views/DailyView.vue') },
     { path: '/ernaehrung', name: 'nutrition', component: () => import('./views/NutritionView.vue') },
+    { path: '/ernaehrung/eintrag/:eventId', name: 'nutrition-meal-detail', component: () => import('./views/NutritionMealDetailView.vue') },
     { path: '/aktivitaet', name: 'activity', component: () => import('./views/ActivityView.vue') },
     { path: '/gewicht', name: 'weight', component: () => import('./views/WeightView.vue') },
     { path: '/wochen', name: 'weekly', component: () => import('./views/WeeklyView.vue') },
@@ -33,8 +34,8 @@ const router = createRouter({
         { path: '', name: 'analysis-overview', component: () => import('./views/AnalysisOverviewView.vue') },
         { path: 'katalog', name: 'analysis-catalog', component: () => import('./views/AnalysisCatalogView.vue') },
         { path: 'koerper', name: 'analysis-category-body', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'body' } },
-        { path: 'aktivitaet', name: 'analysis-category-activity', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'activity' } },
-        { path: 'ernaehrung', name: 'analysis-category-nutrition', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'nutrition' } },
+        { path: 'aktivitaet', name: 'analysis-category-activity', component: () => import('./views/AnalysisActivityOverviewView.vue') },
+        { path: 'ernaehrung', name: 'analysis-nutrition-overview', component: () => import('./views/AnalysisNutritionOverviewView.vue') },
         { path: 'ernaehrung/:metric', name: 'analysis-nutrition-detail', component: () => import('./views/AnalysisNutritionDetailView.vue') },
         { path: 'mikronaehrstoffe', name: 'analysis-category-micronutrients', component: () => import('./views/AnalysisCatalogView.vue'), props: { categoryKey: 'micronutrients' } },
         { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: () => import('./views/AnalysisWeightDetailView.vue') },
@@ -116,7 +117,7 @@ router.beforeEach(async (to) => {
   }
   if (!(await auth.ensureUser(true))) {
     if (generation !== navigationGeneration) return false
-    if (auth.sessionRestoreUnavailable) return false
+    if (auth.sessionRestoreUnavailable) return true
     return { name: 'login', query: { next: to.fullPath } }
   }
   if (generation !== navigationGeneration) return false

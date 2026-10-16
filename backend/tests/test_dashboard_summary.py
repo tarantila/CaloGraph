@@ -77,7 +77,7 @@ def test_dashboard_preference_serves_canonical_values_for_each_provider_without_
     monkeypatch.setattr(
         analytics_api,
         "_preferred_nutrition_provider",
-        lambda db_arg, user_id: provider_selection.NutritionProviderSelection(
+        lambda db_arg, user_id, **_kwargs: provider_selection.NutritionProviderSelection(
             provider_key, SOURCE_INSTANCE_ID
         ),
     )
@@ -118,7 +118,7 @@ def test_dashboard_canonical_provider_is_not_cross_aggregated(
     seen: list[tuple[str, UUID]] = []
 
     monkeypatch.setattr(analytics_api, "datetime", _fixed_datetime())
-    monkeypatch.setattr(analytics_api, "_preferred_nutrition_provider", lambda *args: selected)
+    monkeypatch.setattr(analytics_api, "_preferred_nutrition_provider", lambda *args, **_kwargs: selected)
     monkeypatch.setattr(
         analytics_api,
         "_read_preferred_daily_points",
@@ -142,7 +142,7 @@ def test_dashboard_without_preference_keeps_legacy_values(monkeypatch, user, db)
     legacy_points = _summary_points()
 
     monkeypatch.setattr(analytics_api, "datetime", _fixed_datetime())
-    monkeypatch.setattr(analytics_api, "_preferred_nutrition_provider", lambda *args: None)
+    monkeypatch.setattr(analytics_api, "_preferred_nutrition_provider", lambda *args, **_kwargs: None)
     monkeypatch.setattr(analytics_api, "daily_points", lambda *args, **kwargs: legacy_points)
     monkeypatch.setattr(
         analytics_api,
@@ -164,7 +164,7 @@ def test_dashboard_empty_canonical_nutrition_returns_no_data_without_legacy_fall
     monkeypatch.setattr(
         analytics_api,
         "_preferred_nutrition_provider",
-        lambda *args: provider_selection.NutritionProviderSelection(
+        lambda *args, **_kwargs: provider_selection.NutritionProviderSelection(
             "apple_health", SOURCE_INSTANCE_ID
         ),
     )
@@ -240,7 +240,7 @@ def test_dashboard_keeps_import_coverage_metadata_separate_from_canonical_values
     monkeypatch.setattr(
         analytics_api,
         "_preferred_nutrition_provider",
-        lambda *args: provider_selection.NutritionProviderSelection(
+        lambda *args, **_kwargs: provider_selection.NutritionProviderSelection(
             "google_health", SOURCE_INSTANCE_ID
         ),
     )

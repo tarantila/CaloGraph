@@ -38,6 +38,7 @@ from app.services.admin_reauth import (
 from app.services.analysis_demo import (
     AnalysisDemoOwnershipError,
     AnalysisDemoUnavailable,
+    ensure_analysis_demo_calendar_target,
     remove_analysis_demo,
     seed_analysis_demo,
 )
@@ -231,9 +232,22 @@ def issue_recovery(args: argparse.Namespace) -> None:
 def seed_analysis_demo_command(args: argparse.Namespace) -> None:
     try:
         with SessionLocal() as db:
-            user_id = seed_analysis_demo(
-                db, password=None, today=datetime.now(ZoneInfo("Europe/Berlin")).date()
-            )
+            include_follow_up = getattr(args, "include_follow_up_meals", False)
+            if getattr(args, "ensure_calendar_target_only", False):
+                if getattr(args, "include_current_day_supplement", False) or include_follow_up:
+                    raise SystemExit(
+                        "Das Kalorienziel kann nicht mit Mahlzeiten-Supplements kombiniert werden."
+                    )
+                user_id = ensure_analysis_demo_calendar_target(db)
+            else:
+                user_id = seed_analysis_demo(
+                    db, password=None,
+                    today=datetime.now(ZoneInfo("Europe/Berlin")).date(),
+                    include_current_day_supplement=(
+                        getattr(args, "include_current_day_supplement", False) or include_follow_up
+                    ),
+                    include_follow_up_meals=include_follow_up,
+                )
     except (AnalysisDemoOwnershipError, AnalysisDemoUnavailable, PasswordPolicyError) as exc:
         raise SystemExit(str(exc)) from exc
     except UserOperationBusy as exc:
@@ -563,6 +577,22 @@ def parser() -> argparse.ArgumentParser:
     recovery.add_argument("--admin-username", default="admin")
     recovery.set_defaults(handler=issue_recovery)
     seed = commands.add_parser("seed-analysis-demo")
+    seed.add_argument(
+        "--include-current-day-supplement",
+        action="store_true",
+        help="Ergänzt den aktuellen Berlin-Tag als einmaligen, auditierbaren Mahlzeiten-Supplement.",
+    )
+    seed.add_argument(
+        "--include-follow-up-meals",
+        action="store_true",
+        help="Ergänzt den Demo-Tag um ein Dessert und drei Mahlzeiten für den Folgetag.",
+    )
+    seed.add_argument(
+        "--ensure-calendar-target-only",
+        action="store_true",
+        help="Ergänzt ausschließlich das deterministische Kalorienziel eines vorhandenen Demo-Kontos.",
+    )
+
     seed.set_defaults(handler=seed_analysis_demo_command)
     remove = commands.add_parser("remove-analysis-demo")
     remove.set_defaults(handler=remove_analysis_demo_command)

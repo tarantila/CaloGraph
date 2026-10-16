@@ -62,8 +62,9 @@ def test_weight_summary_uses_sparse_selected_points_and_preserves_missing_days(
     db: Session,
 ) -> None:
     start = date(2026, 9, 1)
-    _add_weight(db, user, start, "70.0")
-    _add_weight(db, user, start + timedelta(days=2), "69.5")
+    _add_weight(db, user, start, "80.0")
+    _add_weight(db, user, start + timedelta(days=1), "90.0")
+    _add_weight(db, user, start + timedelta(days=3), "82.0")
     db.commit()
     _login(client)
 
@@ -74,17 +75,18 @@ def test_weight_summary_uses_sparse_selected_points_and_preserves_missing_days(
 
     assert response.status_code == 200
     payload = response.json()
-    assert [point["date"] for point in payload["points"]] == [
-        start.isoformat(),
-        (start + timedelta(days=2)).isoformat(),
+    assert [(point["date"], point["weight_kg"]) for point in payload["points"]] == [
+        (start.isoformat(), 80.0),
+        ((start + timedelta(days=1)).isoformat(), 90.0),
+        ((start + timedelta(days=3)).isoformat(), 82.0),
     ]
     assert payload["summary"] == {
-        "measurement_count": 2,
-        "latest": {"date": (start + timedelta(days=2)).isoformat(), "weight_kg": 69.5},
-        "change_kg": -0.5,
-        "average_kg": 69.75,
-        "minimum_kg": 69.5,
-        "maximum_kg": 70.0,
+        "measurement_count": 3,
+        "latest": {"date": (start + timedelta(days=3)).isoformat(), "weight_kg": 82.0},
+        "change_kg": 2.0,
+        "average_kg": 84.0,
+        "minimum_kg": 80.0,
+        "maximum_kg": 90.0,
     }
 
 

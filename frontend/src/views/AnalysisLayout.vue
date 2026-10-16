@@ -25,3 +25,15 @@ watch(() => route.path, () => { void focusAnalysisHeading() }, { flush: 'post' }
     </div>
   </div>
 </template>
+<style scoped>
+@media (min-width: 601px) and (max-width: 800px) {
+  .analysis-layout :deep(.page-heading) {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+@media (min-width: 801px) and (max-width: 900px) {
+  .analysis-layout :deep(.page-heading > div:first-child) { min-width: 0; }
+  .analysis-layout :deep(.page-heading > .analysis-period-picker) { min-width: max-content; }
+}
+</style>

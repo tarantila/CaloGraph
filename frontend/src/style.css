@@ -51,6 +51,10 @@
   --chart-series-budget: #fb923c;
   --chart-series-baseline: #64748b;
   --chart-series-lilac: #d19bff;
+  --analysis-micronutrient-lime: #a3e635;
+  --analysis-micronutrient-orange: var(--chart-series-budget);
+  --analysis-micronutrient-yellow: var(--chart-series-amber);
+  --analysis-micronutrient-rust: #ef6c57;
   --control-height: 2.5rem;
 }
 
@@ -98,6 +102,10 @@
   --chart-series-budget: #d97706;
   --chart-series-baseline: #64748b;
   --chart-series-lilac: #a855f7;
+  --analysis-micronutrient-lime: #4d7c0f;
+  --analysis-micronutrient-orange: color-mix(in srgb, var(--chart-series-budget) 95%, var(--ink));
+  --analysis-micronutrient-yellow: #a16207;
+  --analysis-micronutrient-rust: #b9381f;
 }
 
 
@@ -145,6 +153,10 @@
     --chart-series-budget: #d97706;
     --chart-series-baseline: #64748b;
     --chart-series-lilac: #a855f7;
+    --analysis-micronutrient-lime: #4d7c0f;
+    --analysis-micronutrient-orange: color-mix(in srgb, var(--chart-series-budget) 95%, var(--ink));
+    --analysis-micronutrient-yellow: #a16207;
+    --analysis-micronutrient-rust: #b9381f;
   }
 }
 
@@ -330,7 +342,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .dashboard-heading {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1.5rem;
   margin-bottom: 1.35rem;
@@ -353,31 +365,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-size: .68rem;
   line-height: 1.25;
 }
-.period-control {
-  display: inline-flex;
-  overflow: hidden;
-  width: fit-content;
-  height: var(--control-height);
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: .55rem;
-  background: var(--control-bg);
-}
-.period-control button {
-  height: 100%;
-  min-width: 72px;
-  border: 0;
-  border-radius: .45rem;
-  padding: .5rem .7rem;
-  background: transparent;
-  color: var(--muted-strong);
-  cursor: pointer;
-  font-size: .72rem;
-  font-weight: 600;
-  line-height: 1.5;
-}
-.period-control button:hover { color: var(--ink); }
-.period-control button.active { background: var(--accent); color: #fff; }
 .card {
   border: 1px solid var(--border);
   border-radius: .8rem;
@@ -551,6 +538,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--warning);
   font-size: .84rem;
   font-weight: 600;
+}
+.analysis-card-heading {
+  font-size: .84rem;
+  font-weight: 600;
+  line-height: 1.5;
 }
 .metric-card-label span { color: var(--ink); }
 .metric-card-label.purple { color: var(--accent-hover); }
@@ -830,6 +822,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   gap: 1rem;
   margin-bottom: 1.35rem;
 }
+
+.page-heading--period { align-items: flex-start; }
+
 .page-context {
   flex: 0 0 auto;
   border: 1px solid var(--border);
@@ -847,7 +842,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .analytics-page-heading-content {
   display: flex;
-  align-items: end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
 }
@@ -855,77 +850,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: 1 1 0;
   min-width: 240px;
 }
+.analytics-page-heading-content > .analysis-period-picker {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
 .analytics-page-heading h1 {
   overflow-wrap: anywhere;
-}
-.analytics-page-heading-content > .analytics-period-filter {
-  flex: 0 0 820px;
-  width: 820px;
-  max-width: 100%;
-}
-.analytics-period-filter {
-  container-type: inline-size;
-  container-name: analytics-period;
-  width: 100%;
-  min-width: 0;
-}
-.analytics-period-filter-desktop {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-}
-.analytics-period-filter-desktop > .filters {
-  width: fit-content;
-  max-width: 100%;
-}
-.analytics-period-filter-desktop .date-input {
-  grid-template-columns: minmax(8rem, 1fr) auto;
-}
-.analytics-period-filter-desktop .date-input > input[type="text"] {
-  min-width: 0;
-  width: 8rem;
-}
-.analytics-period-filter-compact { display: none; }
-.analytics-period-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  width: fit-content;
-  max-width: 100%;
-  min-height: var(--control-height);
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: .55rem;
-  background: var(--control-bg);
-}
-.analytics-period-button {
-  min-height: var(--control-height);
-  border: 0;
-  border-radius: .45rem;
-  padding: .5rem .7rem;
-  background: transparent;
-  color: var(--muted-strong);
-  cursor: pointer;
-  font-size: .72rem;
-  font-weight: 600;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-.analytics-period-button:hover { color: var(--ink); }
-.analytics-period-button[aria-pressed="true"] {
-  background: var(--accent);
-  color: #fff;
-}
-.analytics-period-custom-fields {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: .65rem;
-  margin-top: .45rem;
-}
-.analytics-period-custom-fields .field {
-  flex: 1 1 14rem;
-  min-width: 0;
 }
 .analytics-period-error {
   margin: .45rem 0 0;
@@ -941,27 +871,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     width: 100%;
     min-width: 0;
   }
-  .analytics-page-heading-content > .analytics-period-filter {
-    flex: 0 1 auto;
-    width: 100%;
-  }
-  .analytics-page-heading .analytics-period-filter-desktop { display: none; }
-  .analytics-page-heading .analytics-period-filter-compact {
-    display: grid;
-    gap: .45rem;
-  }
-  .analytics-page-heading .analytics-period-presets { width: 100%; }
-  .analytics-page-heading .analytics-period-button { flex: 1 1 auto; }
 }
-@container analytics-period (max-width: 800px) {
-  .analytics-period-filter-desktop { display: none; }
-  .analytics-period-filter-compact {
-    display: grid;
-    gap: .45rem;
+
+@media (min-width: 801px) and (max-width: 880px) {
+  .analytics-page-heading-content > .analysis-period-picker .analysis-period-popover {
+    left: 0;
+    right: auto;
   }
-  .analytics-period-presets { width: 100%; }
-  .analytics-period-button { flex: 1 1 auto; }
 }
+@media (max-width: 600px) {
+  .analytics-page-heading-content > .analysis-period-picker { width: 100%; }
+}
+
 .compact-field { min-width: 220px; }
 .insight-strip {
   display: grid;
@@ -1099,7 +1020,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, var(--surface)
   display: grid;
   grid-template-columns: 34px minmax(130px, auto) 34px;
   align-items: center;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--border);
   border-radius: .58rem;
   background: var(--control-bg);
@@ -1138,7 +1059,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, var(--surface)
   padding: 1rem 1.05rem .85rem;
   border-bottom: 1px solid var(--border);
 }
-.verification-provider-group-header h2 { margin: 0; font-size: .92rem; }
+.verification-provider-group-header h2, .nutrition-food-section-heading { margin: 0; font-size: .92rem; }
 .verification-provider-group-header p { margin: .28rem 0 0; color: var(--muted); font-size: .68rem; }
 .verification-event-row td { vertical-align: top; }
 .verification-event-food { min-width: 13rem; white-space: normal; }
@@ -2800,8 +2721,6 @@ td strong { color: var(--ink); font-weight: 600; }
   .setup-optional-grid { grid-template-columns: 1fr; }
   .quality-card { grid-column: auto; }
   .dashboard-heading-actions { align-items: stretch; flex-direction: column; }
-  .period-control { width: 100%; }
-  .period-control button { flex: 1; min-width: 0; }
   .metric-card { min-height: 128px; }
   .chart-card { padding-inline: .7rem; }
   .chart-card-header { align-items: flex-start; flex-direction: column; }
@@ -2809,13 +2728,7 @@ td strong { color: var(--ink); font-weight: 600; }
   .chart-highlight-toggle { width: 100%; justify-content: flex-start; }
   .average-grid { grid-template-columns: 1fr; }
   .calendar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .page-heading > .analytics-period-filter { flex: 0 1 auto; width: 100%; }
   .page-heading { align-items: flex-start; flex-direction: column; }
-  .page-heading > .analytics-period-filter { width: 100%; }
-  .analytics-period-filter-desktop { display: none; }
-  .analytics-period-filter-compact { display: grid; gap: .45rem; }
-  .analytics-period-presets { width: 100%; }
-  .analytics-period-button { flex: 1 1 auto; }
   .section-card-header { align-items: flex-start; flex-direction: column; }
   .quality-explainer { grid-template-columns: 1fr; }
   .import-upload-card { grid-template-columns: 42px minmax(0, 1fr); }

@@ -1,6 +1,6 @@
 """Offline, scoped Analysis demo nutrition provider behavior in the guarded test DB."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -436,7 +436,7 @@ def test_canonical_demo_activity_ignores_other_demo_source_identifiers(
     assert canonical["source_types"] == all_demo["source_types"] == ["analysis_demo_offline"]
 
 
-def test_legacy_nutrition_verification_preserves_contract_while_analysis_opts_into_demo(
+def test_daily_nutrition_verification_includes_demo_only_in_canonical_view(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fastapi.testclient import TestClient
@@ -456,7 +456,7 @@ def test_legacy_nutrition_verification_preserves_contract_while_analysis_opts_in
     )
     db.flush()
 
-    # A saved demo preference is meaningful only to the two Analysis V2 readers.
+    # Default provider selection stays closed; the verification route opts in behind the demo gate.
     assert resolve_nutrition_provider(db, user_id=demo_id) is None
 
     monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: demo)
@@ -488,12 +488,35 @@ def test_legacy_nutrition_verification_preserves_contract_while_analysis_opts_in
                 "metric_key": "vitamin_a_ug",
             },
         )
+        monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: user)
+        ordinary_user = client.get(
+            "/api/v1/analytics/verification/nutrition",
+            params={"date": populated_day.isoformat(), "view": "canonical"},
+        )
 
     assert canonical.status_code == 200, canonical.text
-    assert canonical.json()["canonical"] is None
+    canonical_group = canonical.json()["canonical"]
+    assert canonical_group is not None
+    assert canonical_group["provider_key"] == "analysis_demo"
+    assert canonical_group["status"] == "available"
+    assert canonical_group["record_count"] == 4
+    assert [event["display_name"] for event in canonical_group["events"]] == [
+        "Haferflocken mit Beeren",
+        "Linsensalat",
+        "Gemüsepfanne mit Reis",
+        "Apfel und Mandeln",
+    ]
     assert canonical.json()["providers"] == []
     assert empty_canonical.status_code == 200, empty_canonical.text
-    assert empty_canonical.json()["canonical"] is None
+    empty_group = empty_canonical.json()["canonical"]
+    assert empty_group is not None
+    assert empty_group["provider_key"] == "analysis_demo"
+    assert empty_group["status"] == "no_data"
+    assert empty_group["record_count"] == 0
+    assert empty_group["events"] == []
+    assert ordinary_user.status_code == 200, ordinary_user.text
+    assert ordinary_user.json()["canonical"] is None
+    assert ordinary_user.json()["providers"] == []
     assert all_sources.status_code == 200, all_sources.text
     assert all_sources.json()["canonical"] is None
     assert all(
@@ -504,6 +527,186 @@ def test_legacy_nutrition_verification_preserves_contract_while_analysis_opts_in
     assert analysis.json()["selected_provider"]["provider_key"] == "analysis_demo"
     assert micronutrients.status_code == 200, micronutrients.text
     assert micronutrients.json()["selected_provider"]["provider_key"] == "analysis_demo"
+
+
+def _freeze_analytics_today(monkeypatch: pytest.MonkeyPatch, day: date) -> None:
+    from app.api import analytics
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(day.year, day.month, day.day, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr(analytics, "datetime", FixedDatetime)
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+def test_overview_reads_same_demo_nutrition_as_analysis_and_writes_no_legacy_samples(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch, environment: str,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api import analytics
+    from app.main import app
+
+    monkeypatch.setattr(settings, "environment", environment)
+    demo_id, source_id = _seed(db)
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    day = START + timedelta(days=10)
+    _freeze_analytics_today(monkeypatch, day)
+    selected = resolve_nutrition_provider(
+        db, user_id=demo_id, include_analysis_demo=True,
+    )
+    assert selected is not None
+    assert selected.provider_key == "analysis_demo"
+    assert selected.source_instance_id == source_id
+
+    monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: demo)
+    monkeypatch.setitem(app.dependency_overrides, analytics.get_db, lambda: db)
+    sample_query = (
+        select(
+            HealthSample.id,
+            HealthSample.metric_type,
+            HealthSample.value,
+            HealthSample.local_date,
+        )
+        .where(HealthSample.user_id == demo_id)
+        .order_by(HealthSample.id)
+    )
+    before_samples = tuple(db.execute(sample_query).all())
+    assert {row.metric_type for row in before_samples} <= {
+        "weight_kg",
+        "active_energy_kcal",
+    }
+
+    with TestClient(app) as client:
+        summary = client.get("/api/v1/dashboard/summary")
+        trends = client.get(
+            "/api/v1/analytics/trends",
+            params={
+                "start": day.isoformat(),
+                "end": day.isoformat(),
+                "include_incomplete": "true",
+            },
+        )
+        analysis = client.get(
+            "/api/v1/analytics/nutrition/analysis",
+            params={"start": day.isoformat(), "end": day.isoformat()},
+        )
+
+    assert summary.status_code == 200, summary.text
+    assert trends.status_code == 200, trends.text
+    assert analysis.status_code == 200, analysis.text
+    summary_day = summary.json()["today"]
+    trend_day = next(
+        point for point in trends.json()["points"]
+        if point["date"] == day.isoformat()
+    )
+    analysis_day = analysis.json()["days"][0]
+    assert analysis_day["provider_key"] == "analysis_demo"
+
+    def nutrition_values(
+        point: dict[str, object],
+        energy_key: str,
+        carbohydrate_key: str,
+    ) -> dict[str, Decimal]:
+        return {
+            "dietary_energy_kcal": Decimal(str(point[energy_key])),
+            "protein_g": Decimal(str(point["protein_g"])),
+            "carbohydrates_g": Decimal(str(point[carbohydrate_key])),
+            "fat_g": Decimal(str(point["fat_g"])),
+        }
+
+    expected = {
+        "dietary_energy_kcal": Decimal("1760"),
+        "protein_g": Decimal("69"),
+        "carbohydrates_g": Decimal("223"),
+        "fat_g": Decimal("61"),
+    }
+    assert nutrition_values(summary_day, "calories_kcal", "carbs_g") == expected
+    assert nutrition_values(trend_day, "calories_kcal", "carbs_g") == expected
+    assert nutrition_values(analysis_day, "dietary_energy_kcal", "carbohydrates_g") == expected
+    assert tuple(db.execute(sample_query).all()) == before_samples
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+def test_overview_does_not_read_demo_nutrition_for_another_user(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch, environment: str,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api import analytics
+    from app.main import app
+
+    monkeypatch.setattr(settings, "environment", environment)
+    demo_id, _source_id = _seed(db)
+    day = START + timedelta(days=10)
+    _freeze_analytics_today(monkeypatch, day)
+    db.add(
+        UserProviderPreference(
+            user_id=user.id,
+            data_area=NUTRITION_DATA_AREA,
+            provider_key="analysis_demo",
+        )
+    )
+    db.flush()
+    assert resolve_nutrition_provider(
+        db, user_id=user.id, include_analysis_demo=True,
+    ) is None
+    monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: user)
+    monkeypatch.setitem(app.dependency_overrides, analytics.get_db, lambda: db)
+
+    with TestClient(app) as client:
+        summary = client.get("/api/v1/dashboard/summary")
+        trends = client.get(
+            "/api/v1/analytics/trends",
+            params={"start": day.isoformat(), "end": day.isoformat()},
+        )
+
+    assert summary.status_code == 200, summary.text
+    assert trends.status_code == 200, trends.text
+    assert summary.json()["today"]["calories_kcal"] is None
+    assert trends.json()["points"][0]["calories_kcal"] is None
+    assert db.scalar(
+        select(HealthSample.id).where(HealthSample.user_id == user.id)
+    ) is None
+    assert db.scalar(
+        select(HealthSample.id).where(HealthSample.user_id == demo_id)
+    ) is not None
+
+
+def test_overview_does_not_read_demo_nutrition_in_production(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api import analytics
+    from app.main import app
+
+    demo_id, _source_id = _seed(db)
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    day = START + timedelta(days=10)
+    _freeze_analytics_today(monkeypatch, day)
+    monkeypatch.setattr(settings, "environment", "production")
+    assert resolve_nutrition_provider(
+        db, user_id=demo_id, include_analysis_demo=True,
+    ) is None
+    monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: demo)
+    monkeypatch.setitem(app.dependency_overrides, analytics.get_db, lambda: db)
+
+    with TestClient(app) as client:
+        summary = client.get("/api/v1/dashboard/summary")
+        trends = client.get(
+            "/api/v1/analytics/trends",
+            params={"start": day.isoformat(), "end": day.isoformat()},
+        )
+
+    assert summary.status_code == 200, summary.text
+    assert trends.status_code == 200, trends.text
+    assert summary.json()["today"]["calories_kcal"] is None
+    assert trends.json()["points"][0]["calories_kcal"] is None
 
 
 def test_weight_reader_ignores_other_demo_source_identifiers(

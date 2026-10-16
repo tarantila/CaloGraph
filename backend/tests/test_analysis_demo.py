@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.api.settings import put_analysis_preferences
 from app.config import settings
 from app.micronutrients import MICRONUTRIENT_BY_METRIC
 from app.models import (
@@ -18,6 +19,7 @@ from app.models import (
     ImportBatch,
     NutritionTarget,
     User,
+    UserAchievement,
     UserAnalysisPreference,
     UserProviderPreference,
     UserUsageDay,
@@ -39,6 +41,8 @@ from app.nutrition.models import (
     NutritionProjectionHead,
     NutritionSourceObservation,
 )
+from app.schemas import AnalysisPreferencesUpdate
+from app.services.achievements import reconcile_achievements
 from app.services.analysis_demo import (
     ANALYSIS_DEMO_SOURCE_TYPE,
     ANALYSIS_DEMO_USERNAME,
@@ -46,6 +50,7 @@ from app.services.analysis_demo import (
     AnalysisDemoUnavailable,
     demo_source_instance_id,
     demo_user_id,
+    ensure_analysis_demo_calendar_target,
     remove_analysis_demo,
     seed_analysis_demo,
 )
@@ -59,6 +64,8 @@ SELECTED_KEYS = (
     "vitamin_a_ug",
     "active_energy_kcal",
 )
+DEMO_SUMMARY_ORDER = ("weight", "nutrition", "micronutrients", "activity")
+DEMO_ACTIVE_CARD_IDS = (*DEMO_SUMMARY_ORDER, "dietary_energy_kcal", "vitamin_a_ug")
 
 
 def _rows(db: Session, model: type, user_id: UUID) -> list:
@@ -132,6 +139,8 @@ def _account_snapshot(db: Session, user_id: UUID) -> tuple:
         account.password_hash,
         account.is_admin,
         account.is_active,
+        tuple(account.active_card_ids) if account.active_card_ids is not None else None,
+        tuple(account.summary_order) if account.summary_order is not None else None,
         _preferences(db, user_id),
         _batches(db, user_id),
         _samples(db, user_id),
@@ -214,6 +223,8 @@ def test_seed_uses_dedicated_stable_non_admin_identity_and_single_completed_anch
     assert account.username == ANALYSIS_DEMO_USERNAME == "calograph-analysis-demo"
     assert account.is_admin is False
     assert account.is_active is True
+    assert account.active_card_ids == list(DEMO_ACTIVE_CARD_IDS)
+    assert account.summary_order == list(DEMO_SUMMARY_ORDER)
     assert account.password_hash != PASSWORD
     assert demo_source_instance_id(seeded_id).version == 5
     assert demo_source_instance_id(seeded_id) == demo_source_instance_id(seeded_id)
@@ -231,11 +242,61 @@ def test_seed_uses_dedicated_stable_non_admin_identity_and_single_completed_anch
     assert all(row.source_identifier == str(demo_source_instance_id(seeded_id)) for row in samples)
     assert len({row.external_sample_id for row in samples}) == len(samples)
     assert len({row.fingerprint for row in samples}) == len(samples)
-    assert _rows(db, NutritionTarget, seeded_id) == []
+    targets = _rows(db, NutritionTarget, seeded_id)
+    assert len(targets) == 1
+    target = targets[0]
+    assert target.valid_from == TODAY - timedelta(days=89)
+    assert target.valid_to is None
+    assert target.calories_kcal == Decimal("1600")
+    assert target.maintenance_kcal is None
+    assert target.protein_g == Decimal("100")
+    assert target.activity_mode == "off"
+    assert target.activity_source_type is None
     assert _rows(db, ApiToken, seeded_id) == []
     assert _rows(db, YazioConnection, seeded_id) == []
     assert _rows(db, GoogleHealthConnection, seeded_id) == []
     assert _rows(db, WithingsConnection, seeded_id) == []
+
+
+def test_existing_seed_restores_missing_analysis_demo_target(db: Session, user: User) -> None:
+    seeded_id = _seed(db)
+    target = _rows(db, NutritionTarget, seeded_id)[0]
+    target_id = target.id
+    db.delete(target)
+    db.commit()
+
+    assert _seed(db) == seeded_id
+
+    targets = _rows(db, NutritionTarget, seeded_id)
+    assert len(targets) == 1
+    assert targets[0].id == target_id
+    assert targets[0].valid_from == TODAY - timedelta(days=89)
+    assert targets[0].calories_kcal == Decimal("1600")
+    assert targets[0].protein_g == Decimal("100")
+
+
+def test_calendar_target_repair_preserves_demo_analysis_preferences(
+    db: Session, user: User
+) -> None:
+    seeded_id = _seed(db)
+    account = db.get(User, seeded_id)
+    assert account is not None
+    custom_summary_order = list(reversed(account.summary_order))
+    account.summary_order = custom_summary_order
+    preferences_before = _preferences(db, seeded_id)
+    target = _rows(db, NutritionTarget, seeded_id)[0]
+    db.delete(target)
+    db.commit()
+
+    assert ensure_analysis_demo_calendar_target(db) == seeded_id
+
+    account = db.get(User, seeded_id)
+    assert account is not None
+    assert account.summary_order == custom_summary_order
+    assert _preferences(db, seeded_id) == preferences_before
+    targets = _rows(db, NutritionTarget, seeded_id)
+    assert len(targets) == 1
+    assert targets[0].calories_kcal == Decimal("1600")
 
 
 def test_seed_keeps_nutrition_out_of_legacy_scalar_health_samples(db: Session, user: User) -> None:
@@ -252,6 +313,90 @@ def test_seed_persists_exact_ordered_analysis_selection(db: Session, user: User)
     assert tuple((key, position) for key, position, *_ in _preferences(db, seeded_id)) == tuple(
         (key, position) for position, key in enumerate(SELECTED_KEYS)
     )
+
+
+@pytest.mark.parametrize("operation", ["seed", "remove"])
+def test_demo_audit_accepts_canonical_preference_api_projection(
+    db: Session, user: User, operation: str
+) -> None:
+    seeded_id = _seed(db)
+    account = db.get(User, seeded_id)
+    assert account is not None
+    result = put_analysis_preferences(
+        AnalysisPreferencesUpdate(active_card_ids=list(DEMO_ACTIVE_CARD_IDS)),
+        user=account,
+        db=db,
+    )
+    assert result.active_card_ids == list(DEMO_ACTIVE_CARD_IDS)
+    assert result.summary_order == list(DEMO_SUMMARY_ORDER)
+    assert tuple((key, position) for key, position, *_ in _preferences(db, seeded_id)) == (
+        ("dietary_energy_kcal", 0),
+        ("vitamin_a_ug", 1),
+    )
+    before = _account_snapshot(db, seeded_id)
+
+    if operation == "seed":
+        assert seed_analysis_demo(db, password=PASSWORD, today=TODAY + timedelta(days=1)) == seeded_id
+        assert _account_snapshot(db, seeded_id) == before
+    else:
+        assert remove_analysis_demo(db) is True
+        assert db.get(User, seeded_id) is None
+
+
+@pytest.mark.parametrize("operation", ["seed", "remove"])
+def test_precanonical_demo_default_card_state_remains_owned(
+    db: Session, user: User, operation: str
+) -> None:
+    seeded_id = _seed(db)
+    account = db.get(User, seeded_id)
+    assert account is not None
+    account.active_card_ids = list(DEMO_SUMMARY_ORDER)
+    db.commit()
+    before = _account_snapshot(db, seeded_id)
+
+    if operation == "seed":
+        assert seed_analysis_demo(db, password=PASSWORD, today=TODAY + timedelta(days=1)) == seeded_id
+        assert _account_snapshot(db, seeded_id) == before
+    else:
+        assert remove_analysis_demo(db) is True
+        assert db.get(User, seeded_id) is None
+
+
+@pytest.mark.parametrize("operation", ["seed", "remove"])
+@pytest.mark.parametrize("field", ["active-order", "active-membership", "summary-order"])
+def test_changed_canonical_demo_preferences_refuse_without_mutation(
+    db: Session, user: User, operation: str, field: str
+) -> None:
+    seeded_id = _seed(db)
+    account = db.get(User, seeded_id)
+    assert account is not None
+    if field == "active-order":
+        account.active_card_ids = list(reversed(DEMO_ACTIVE_CARD_IDS))
+    elif field == "active-membership":
+        account.active_card_ids = list(DEMO_ACTIVE_CARD_IDS[:-1])
+    else:
+        account.summary_order = list(reversed(DEMO_SUMMARY_ORDER))
+    db.commit()
+    before = _account_snapshot(db, seeded_id)
+
+    with pytest.raises(AnalysisDemoOwnershipError):
+        if operation == "seed":
+            seed_analysis_demo(db, password=PASSWORD, today=TODAY + timedelta(days=1))
+        else:
+            remove_analysis_demo(db)
+    assert _account_snapshot(db, seeded_id) == before
+
+
+def test_null_active_card_ids_accept_only_exact_legacy_demo_projection(db: Session, user: User) -> None:
+    seeded_id = _seed(db)
+    account = db.get(User, seeded_id)
+    assert account is not None
+    account.active_card_ids = None
+    db.commit()
+    before = _account_snapshot(db, seeded_id)
+
+    assert seed_analysis_demo(db, password=PASSWORD, today=TODAY + timedelta(days=1)) == seeded_id
+    assert _account_snapshot(db, seeded_id) == before
 
 
 def test_samples_cover_last_seven_thirty_and_ninety_days_with_zero_distinct_from_absent(
@@ -324,6 +469,35 @@ def test_remove_demo_after_authenticated_usage_day_is_recorded(db: Session, user
     assert db.get(User, seeded_id) is None
     assert _rows(db, UserUsageDay, seeded_id) == []
     assert remove_analysis_demo(db) is False
+
+
+def test_repeat_and_remove_demo_after_usage_achievement_is_reconciled(
+    db: Session, user: User
+) -> None:
+    demo_id = _seed(db)
+    demo = db.get(User, demo_id)
+    assert demo is not None
+    db.add_all(
+        UserUsageDay(user_id=demo_id, activity_date=TODAY - timedelta(days=offset))
+        for offset in range(7)
+    )
+    other_achievement = UserAchievement(user_id=user.id, achievement_key="first_day")
+    db.add(other_achievement)
+    db.commit()
+
+    _, newly_unlocked = reconcile_achievements(
+        db, demo, now=datetime(TODAY.year, TODAY.month, TODAY.day, tzinfo=UTC)
+    )
+    assert "one_week_in" in {item.key for item in newly_unlocked}
+    assert sum(row.achievement_key == "one_week_in" for row in _rows(db, UserAchievement, demo_id)) == 1
+
+    assert seed_analysis_demo(db, password=PASSWORD, today=TODAY) == demo_id
+    assert sum(row.achievement_key == "one_week_in" for row in _rows(db, UserAchievement, demo_id)) == 1
+    assert remove_analysis_demo(db) is True
+    assert _rows(db, UserAchievement, demo_id) == []
+    assert [(row.id, row.achievement_key) for row in _rows(db, UserAchievement, user.id)] == [
+        (other_achievement.id, "first_day")
+    ]
 
 
 def test_repeat_seed_preserves_demo_after_legacy_provider_preferences_table_is_dropped(

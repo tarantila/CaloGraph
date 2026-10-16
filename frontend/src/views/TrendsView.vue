@@ -8,20 +8,23 @@ import {
   PhWarningCircle,
 } from '@phosphor-icons/vue'
 import type { EChartsOption, LineSeriesOption } from 'echarts'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { RouteLocationNormalizedLoaded, Router } from 'vue-router'
 
 import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
-import { parseAnalyticsCompactPreset, type AnalyticsCompactPreset } from '../analytics-period'
-import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
+import {
+  periodFromQuery, rangeForDays, resolveAllDataRange,
+  type AppliedPeriod, type PeriodLimits,
+} from '../analytics-period'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
-import { formatGermanDate, formatGermanDayMonth, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { formatGermanDate, formatGermanDayMonth, isoDateInTimeZone } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
-import type { DailyPoint } from '../types'
+import type { DailyPoint, ReaderPeriodCapabilities } from '../types'
 interface BudgetBalance {
   tracked_days: number
   within_budget_days: number
@@ -35,38 +38,16 @@ const route = useRoute() as RouteLocationNormalizedLoaded | undefined
 const router = useRouter() as Router | undefined
 const auth = useAuthStore()
 const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-const defaultStart = shiftIsoDate(today, -89)
-
-function queryValue(value: unknown): string | null {
-  return typeof value === 'string' ? value : null
-}
-
-function validIsoDate(value: string | null): value is string {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
-  const parsed = new Date(`${value}T00:00:00Z`)
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
-}
-
-const queryStart = queryValue(route?.query.start)
-const queryEnd = queryValue(route?.query.end)
-const hasValidQueryRange = validIsoDate(queryStart) && validIsoDate(queryEnd) && queryStart <= queryEnd
-const start = ref(hasValidQueryRange ? queryStart : defaultStart)
-const end = ref(hasValidQueryRange ? queryEnd : today)
-const compactPresets: AnalyticsCompactPreset[] = ['30', '90', '180', 'year', 'all']
-const queryPeriod = parseAnalyticsCompactPreset(route?.query.period, compactPresets)
-
-function periodMatchesRange(value: AnalyticsCompactPreset | undefined, rangeStart: string, rangeEnd: string, hasRange: boolean) {
-  if (!value || !hasRange) return undefined
-  if (value === 'custom' || value === 'all') return value
-  const expectedStart = value === 'year'
-    ? `${rangeEnd.slice(0, 4)}-01-01`
-    : shiftIsoDate(rangeEnd, -(Number(value) - 1))
-  return rangeStart === expectedStart ? value : undefined
-}
-
-const period = ref<AnalyticsCompactPreset | undefined>(
-  periodMatchesRange(queryPeriod, start.value, end.value, hasValidQueryRange),
-)
+const limits: PeriodLimits = { minDays: 1, maxDays: 3661, customRange: true }
+const capability = ref<ReaderPeriodCapabilities | undefined>()
+const allRange = computed(() => resolveAllDataRange(capability.value, today, limits))
+const initial = periodFromQuery(route?.query ?? {}, limits, today, null)
+const start = ref(initial.start)
+const end = ref(initial.end)
+const period = ref(initial.period)
+let requestedInitialAll = route?.query.period === 'all'
+let periodLoadId = 0
+let periodDisposed = false
 const points = ref<DailyPoint[]>([])
 const budgetBalance = ref<BudgetBalance | null>(null)
 const loading = ref(true)
@@ -74,72 +55,88 @@ const error = ref('')
 const kcal = createKcalFormatter()
 const decimal = createNumberFormatter({ maximumFractionDigits: 1 })
 
-function selectPeriod(value: AnalyticsCompactPreset) {
-  period.value = value
+
+function applyPeriod(value: AppliedPeriod): void {
+  requestedInitialAll = false
+  const selected = periodFromQuery(value, limits, today, allRange.value)
+  start.value = selected.start
+  end.value = selected.end
+  period.value = selected.period
+  void load()
 }
 
-const rangePreset = computed(() => {
-  if (start.value === shiftIsoDate(end.value, -29)) return '30'
-  if (start.value === shiftIsoDate(end.value, -89)) return '90'
-  if (start.value === shiftIsoDate(end.value, -179)) return '180'
-  if (start.value === `${end.value.slice(0, 4)}-01-01`) return 'year'
-  return 'custom'
-})
-
 watch(
-  () => [
-    queryValue(route?.query.start),
-    queryValue(route?.query.end),
-    queryValue(route?.query.period),
-  ] as const,
+  () => [route?.query.start, route?.query.end, route?.query.period] as const,
   ([nextStart, nextEnd, nextPeriod]) => {
-    const hasValidRange =
-      validIsoDate(nextStart) && validIsoDate(nextEnd) && nextStart <= nextEnd
-    const resolvedStart = hasValidRange ? nextStart : defaultStart
-    const resolvedEnd = hasValidRange ? nextEnd : today
-    const resolvedPeriod = periodMatchesRange(
-      parseAnalyticsCompactPreset(nextPeriod, compactPresets),
-      resolvedStart,
-      resolvedEnd,
-      hasValidRange,
-    )
-    if (resolvedPeriod !== period.value) period.value = resolvedPeriod
-    if (resolvedStart === start.value && resolvedEnd === end.value) return
-    start.value = resolvedStart
-    end.value = resolvedEnd
+    // Our own replacement must not reinterpret active All while its request is pending.
+    if (nextStart === start.value && nextEnd === end.value && nextPeriod === period.value) return
+    const selected = periodFromQuery(route?.query ?? {}, limits, today, allRange.value)
+    if (selected.start === start.value && selected.end === end.value && selected.period === period.value) return
+    requestedInitialAll = false
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
     void load()
   },
 )
 
-
 async function load() {
-  if (!validIsoDate(start.value) || !validIsoDate(end.value) || start.value > end.value) {
-    error.value = t('settingsUi.invalidRange')
-    points.value = []
-    budgetBalance.value = null
-    loading.value = false
-    return
-  }
+  if (periodDisposed) return
+  const requestId = ++periodLoadId
+  const requested: AppliedPeriod = { start: start.value, end: end.value, period: period.value }
+  capability.value = undefined
   loading.value = true
   error.value = ''
-  await router?.replace({
-    query: { ...route?.query, start: start.value, end: end.value, period: period.value || undefined },
-  })
   try {
-    const params = new URLSearchParams({ start: start.value, end: end.value })
-    if (period.value === 'all') params.set('period', 'all')
-    const response = await api<{ points: DailyPoint[]; budget_balance: BudgetBalance }>(
-      `/analytics/trends?${params.toString()}`,
-    )
+    await router?.replace({
+      query: { ...route?.query, ...requested },
+      hash: route?.hash,
+    })
+    if (requestId !== periodLoadId) return
+    const params = new URLSearchParams({ start: requested.start, end: requested.end })
+    if (requested.period === 'all') params.set('period', 'all')
+    const response = await api<{
+      points: DailyPoint[]
+      budget_balance?: BudgetBalance | null
+      period_capabilities?: ReaderPeriodCapabilities
+    }>(`/analytics/trends?${params.toString()}`)
+    if (requestId !== periodLoadId) return
+    capability.value = response.period_capabilities
+    const admitted = resolveAllDataRange(capability.value, today, limits)
+    if (requestedInitialAll) {
+      requestedInitialAll = false
+      if (admitted) {
+        start.value = admitted.start
+        end.value = admitted.end
+        period.value = 'all'
+        await load()
+        return
+      }
+    }
+    if (requested.period === 'all' && !admitted) {
+      const fallback = rangeForDays(today, 30)
+      start.value = fallback.start
+      end.value = fallback.end
+      period.value = '30'
+      await load()
+      return
+    }
     points.value = response.points
     budgetBalance.value = response.budget_balance ?? null
   } catch (cause) {
+    if (requestId !== periodLoadId) return
+    requestedInitialAll = false
+    capability.value = undefined
     error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
-    loading.value = false
+    if (requestId === periodLoadId) loading.value = false
   }
 }
 onMounted(() => { void load() })
+onBeforeUnmount(() => {
+  periodDisposed = true
+  periodLoadId += 1
+})
 
 const latestNutrition = computed(() =>
   [...points.value].reverse().find((item) => item.calories_kcal != null),
@@ -391,14 +388,17 @@ const nutritionOption = computed<EChartsOption>(() => {
   <div class="page-heading analytics-page-heading">
     <div class="analytics-page-heading-content">
       <div><h1>{{ t('trends.title') }}</h1><p>{{ t('trends.description') }}</p></div>
-      <AnalyticsPeriodFilter
-        v-model:start="start"
-        v-model:end="end"
-        :initial-preset="rangePreset"
-        :compact-presets="compactPresets"
-        :compact-preset="period"
-        @preset="selectPeriod"
-        @apply="load"
+      <PeriodPicker
+        :start="start"
+        :end="end"
+        :today="today"
+        :period="period"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :period-capabilities="capability"
+        :all-range="allRange"
+        @apply="applyPeriod"
       />
     </div>
   </div>

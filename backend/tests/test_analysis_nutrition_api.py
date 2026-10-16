@@ -1,10 +1,11 @@
 """HTTP contract for source-coherent, read-only Analysis nutrition days and meals."""
 
 from datetime import date, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,10 +23,12 @@ from app.nutrition.models import (
     NutritionIngestionRun,
     NutritionProjectionHead,
     NutritionSourceObservation,
+    NutritionSourceTombstone,
 )
 from app.services.analysis_demo import seed_analysis_demo
 
 PATH = "/api/v1/analytics/nutrition/analysis"
+
 TODAY = date(2026, 9, 29)
 START = TODAY - timedelta(days=89)
 FIELDS = (
@@ -221,3 +224,217 @@ def test_stale_configured_source_failure_is_503_not_a_missing_evidence_day(
 
     assert response.status_code == 503
     assert response.json()["type"]
+
+
+def test_meal_detail_uses_persisted_event_and_shared_daily_identity(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _demo_client(db, user, monkeypatch)
+    day = START + timedelta(days=10)
+    analysis = _get(client, day, day)
+    assert analysis.status_code == 200, analysis.text
+    meal = analysis.json()["days"][0]["meals"][0]
+    event_id = meal["event_id"]
+
+    detail = client.get(f"/api/v1/analytics/nutrition/analysis/meals/{event_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["event_id"] == event_id
+    assert body["local_date"] == day.isoformat()
+    assert body["display_name"] == "Haferflocken mit Beeren"
+    assert body["serving_amount"] is not None
+    assert body["serving_unit"]
+    assert body["dietary_energy_kcal"] == meal["dietary_energy_kcal"]
+    assert body["protein_g"] == meal["protein_g"]
+    assert body["carbohydrates_g"] == meal["carbohydrates_g"]
+    assert body["fat_g"] == meal["fat_g"]
+    assert body["fiber_g"] == meal["fiber_g"]
+    assert body["sugar_g"] == meal["sugar_g"]
+    assert body["saturated_fat_g"] == meal["saturated_fat_g"]
+
+    daily = client.get(
+        "/api/v1/analytics/verification/nutrition",
+        params={"date": day.isoformat(), "view": "canonical"},
+    )
+    assert daily.status_code == 200, daily.text
+    daily_meal = next(
+        item for item in daily.json()["canonical"]["events"]
+        if item["event_id"] == event_id
+    )
+    assert daily_meal["detail_available"] is True
+
+
+def test_meal_detail_hides_events_from_other_users(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _demo_client(db, user, monkeypatch)
+    day = START + timedelta(days=10)
+    analysis = _get(client, day, day)
+    assert analysis.status_code == 200, analysis.text
+    event_id = analysis.json()["days"][0]["meals"][0]["event_id"]
+    monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: user)
+
+    response = client.get(f"/api/v1/analytics/nutrition/analysis/meals/{event_id}")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["event_lineage", "source_lineage", "missing_name", "tombstone", "stale_event", "stale_source"],
+)
+def test_meal_detail_hides_unsafe_or_stale_evidence_and_disables_daily_links(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch, unsafe: str,
+) -> None:
+    client = _demo_client(db, user, monkeypatch)
+    day = START + timedelta(days=10)
+    analysis = _get(client, day, day)
+    assert analysis.status_code == 200, analysis.text
+    event_id = analysis.json()["days"][0]["meals"][0]["event_id"]
+    item = db.get(NutritionConsumptionEvent, UUID(event_id))
+    assert item is not None
+    source = db.get(NutritionSourceObservation, item.source_observation_id)
+    assert source is not None
+    if unsafe == "event_lineage":
+        item.lineage_state = "unknown"
+    elif unsafe == "source_lineage":
+        source.lineage_state = "unknown"
+    elif unsafe == "missing_name":
+        snapshot = db.get(NutritionFoodSnapshot, item.food_snapshot_id)
+        assert snapshot is not None
+        snapshot.is_deleted = True
+    elif unsafe == "tombstone":
+        db.add(NutritionSourceTombstone(
+            user_id=item.user_id,
+            provider_key=item.provider_key,
+            source_instance_id=item.source_instance_id,
+            source_namespace=source.source_namespace,
+            source_observation_id=source.id,
+            tombstone_kind="deleted",
+        ))
+    else:
+        model = NutritionConsumptionEvent if unsafe == "stale_event" else NutritionSourceObservation
+        original = item if unsafe == "stale_event" else source
+        if unsafe == "stale_event":
+            assert item.logical_event_key is not None
+        else:
+            assert source.source_record_id is not None
+        values = dict(db.execute(
+            select(model.__table__).where(model.id == original.id),
+        ).mappings().one())
+        revision_key = "revision" if unsafe == "stale_event" else "source_revision"
+        values.update(id=uuid4(), **{revision_key: values[revision_key] + 1})
+        db.execute(model.__table__.insert().values(**values))
+    db.commit()
+
+    response = client.get(f"{PATH}/meals/{event_id}")
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Eintrag nicht verfügbar"
+    daily = client.get(
+        "/api/v1/analytics/verification/nutrition",
+        params={"date": day.isoformat(), "view": "canonical"},
+    )
+    assert daily.status_code == 200, daily.text
+    matches = [
+        row for row in daily.json()["canonical"]["events"] if row["event_id"] == event_id
+    ]
+    if unsafe != "stale_event":
+        assert len(matches) == 1
+        assert matches[0]["detail_available"] is False
+    else:
+        assert matches == []
+
+
+def test_meal_detail_keeps_unsafe_individual_nutrients_null(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _demo_client(db, user, monkeypatch)
+    day = START + timedelta(days=10)
+    analysis = _get(client, day, day)
+    assert analysis.status_code == 200, analysis.text
+    meal = analysis.json()["days"][0]["meals"][0]
+    item = db.get(NutritionConsumptionEvent, UUID(meal["event_id"]))
+    assert item is not None
+    field = db.scalar(select(NutritionFieldObservation).where(
+        NutritionFieldObservation.source_observation_id == item.source_observation_id,
+        NutritionFieldObservation.metric_key == "protein_g",
+    ))
+    assert field is not None
+    field.lineage_state = "unknown"
+    db.commit()
+
+    response = client.get(f"{PATH}/meals/{meal['event_id']}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["protein_g"] is None
+    assert body["dietary_energy_kcal"] == 420
+    assert body["serving_amount"] == meal["serving_amount"]
+    assert body["serving_unit"] == meal["serving_unit"]
+    assert "ingredients" not in body
+    assert "photo" not in body
+
+
+def test_meal_detail_missing_and_malformed_ids_share_neutral_not_found(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _demo_client(db, user, monkeypatch)
+    for event_id in (str(uuid4()), "not-a-uuid"):
+        response = client.get(f"{PATH}/meals/{event_id}")
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "Eintrag nicht verfügbar"
+
+
+def test_meal_detail_requires_authentication(client: TestClient, user: User) -> None:
+    response = client.get(f"{PATH}/meals/{uuid4()}")
+    assert response.status_code == 401
+
+
+def test_daily_detail_eligibility_reads_all_events_in_one_bounded_batch(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.analytics.nutrition_analysis import nutrition_detail_available_ids
+
+    _demo_client(db, user, monkeypatch)
+    demo = db.scalar(select(User).where(User.username == "calograph-analysis-demo"))
+    assert demo is not None
+    day = START + timedelta(days=10)
+    events = list(db.scalars(select(NutritionConsumptionEvent).where(
+        NutritionConsumptionEvent.user_id == demo.id,
+        NutritionConsumptionEvent.local_date == day,
+    )))
+    assert len(events) == 4
+    queries: list[str] = []
+
+    def count_query(_connection, _cursor, statement, _parameters, _context, _executemany):
+        queries.append(statement)
+
+    connection = db.connection()
+    sqlalchemy_event.listen(connection, "before_cursor_execute", count_query)
+    try:
+        eligible = nutrition_detail_available_ids(db, user_id=demo.id, events=events)
+    finally:
+        sqlalchemy_event.remove(connection, "before_cursor_execute", count_query)
+    assert eligible == {item.id for item in events}
+    assert len(queries) <= 3
+
+
+def test_meal_detail_rejects_a_previously_selected_source_that_is_no_longer_permitted(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.analytics import verification
+
+    client = _demo_client(db, user, monkeypatch)
+    day = START + timedelta(days=10)
+    analysis = _get(client, day, day)
+    assert analysis.status_code == 200, analysis.text
+    event_id = analysis.json()["days"][0]["meals"][0]["event_id"]
+    # The demo is not a daily all-provider source; withdrawing its current
+    # Analysis selection therefore removes it from the allowed server-side union.
+    monkeypatch.setattr(verification, "resolve_nutrition_provider", lambda *_args, **_kwargs: None)
+
+    response = client.get(
+        f"{PATH}/meals/{event_id}",
+        params={"user_id": str(user.id), "source": "analysis_demo", "date": day.isoformat()},
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Eintrag nicht verfügbar"

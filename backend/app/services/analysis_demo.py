@@ -19,6 +19,8 @@ from app.models import (
     HealthSample,
     ImportBatch,
     ImportError,
+    NutritionTarget,
+    NutritionTargetActivitySource,
     RawImportPayload,
     User,
     UserAnalysisPreference,
@@ -43,6 +45,8 @@ from app.nutrition.models import (
 from app.services.analysis_demo_nutrition import (
     audit_analysis_demo_nutrition,
     ensure_analysis_demo_policy,
+    persist_analysis_demo_current_day_supplement,
+    persist_analysis_demo_follow_up_meals,
     persist_analysis_demo_nutrition,
 )
 from app.services.user_operation_lock import (
@@ -56,6 +60,8 @@ ANALYSIS_DEMO_PROVIDER = "analysis_demo"
 ANALYSIS_DEMO_SOURCE_TYPE = "analysis_demo_offline"
 _ANCHOR_PREFIX = "analysis-demo:v2:"
 _CONNECTOR_VARIANT = "analysis-demo-v2"
+_DEMO_TARGET_CALORIES_KCAL = Decimal("1600")
+_DEMO_TARGET_PROTEIN_G = Decimal("100")
 _DEMO_TIMEZONE = "Europe/Berlin"
 _DEMO_KEYS = (
     "weight_kg",
@@ -63,9 +69,18 @@ _DEMO_KEYS = (
     "vitamin_a_ug",
     "active_energy_kcal",
 )
+_DEMO_SUMMARY_ORDER = ("weight", "nutrition", "micronutrients", "activity")
+_DEMO_ACTIVE_CARD_IDS = (*_DEMO_SUMMARY_ORDER, "dietary_energy_kcal", "vitamin_a_ug")
+_DEMO_LEGACY_ANALYSIS_PREFERENCES = tuple(sorted(
+    (key, position) for position, key in enumerate(_DEMO_KEYS)
+))
+_DEMO_CANONICAL_ANALYSIS_PREFERENCES = (
+    ("dietary_energy_kcal", 0),
+    ("vitamin_a_ug", 1),
+)
 _NAMESPACE = UUID("cd99db78-a22a-49b6-9ad3-5db3d2e9b1ea")
-# Seed rows, login sessions, and usage-day records may cascade. Security audit
-# events survive deletion by their SET NULL foreign keys; they are not demo-owned data.
+# Seed rows, login sessions, usage-day records, and app-managed achievements may cascade.
+# Security audit events survive deletion by their SET NULL foreign keys; they are not demo-owned data.
 _OWNED_USER_TABLES = frozenset(
     {
         "user_analysis_preferences",
@@ -74,6 +89,7 @@ _OWNED_USER_TABLES = frozenset(
         "health_samples",
         "user_sessions",
         "user_usage_days",
+        "user_achievements",
     }
 )
 _NUTRITION_OWNED_TABLES = frozenset({
@@ -84,6 +100,7 @@ _NUTRITION_OWNED_TABLES = frozenset({
     "nutrition_daily_projections", "nutrition_daily_projection_facts",
     "nutrition_daily_projection_lineage", "nutrition_projection_heads",
     "source_priority_policies", "source_priority_rules",
+    "nutrition_targets", "nutrition_target_activity_sources",
 })
 _PRESERVED_AUDIT_COLUMNS = frozenset({"actor_user_id", "target_user_id"})
 
@@ -135,6 +152,13 @@ def is_owned_analysis_demo_account(db: Session, user_id: UUID) -> bool:
 
 def _batch_id(user_id: UUID, anchor: date) -> UUID:
     return uuid5(_NAMESPACE, f"analysis-demo:batch:v2:{user_id}:{anchor.isoformat()}")
+
+
+def _nutrition_target_id(user_id: UUID, valid_from: date) -> UUID:
+    return uuid5(
+        _NAMESPACE,
+        f"analysis-demo:nutrition-target:v2:{user_id}:{valid_from.isoformat()}",
+    )
 
 
 def _sample_id(user_id: UUID, external_id: str | None) -> UUID:
@@ -321,7 +345,7 @@ def _audit_foreign_sources(db: Session, user_id: UUID) -> None:
         raise AnalysisDemoOwnershipError("Fremde Demo-Ernährungsreferenz.")
 
 
-def _audit_account(db: Session, user: User) -> ImportBatch:
+def _audit_account_identity(db: Session, user: User) -> UUID:
     user_id = demo_user_id()
     if (
         user.id != user_id
@@ -334,13 +358,89 @@ def _audit_account(db: Session, user: User) -> ImportBatch:
     onboarding = db.get(UserOnboarding, user_id)
     if onboarding is None or onboarding.current_step != "completed" or onboarding.completed_at is None:
         raise AnalysisDemoOwnershipError("Demo-Onboarding wurde verändert.")
+    return user_id
+
+
+def _audit_analysis_preferences(db: Session, user: User, user_id: UUID) -> None:
     preferences = list(
         db.scalars(select(UserAnalysisPreference).where(UserAnalysisPreference.user_id == user_id))
     )
-    if sorted((row.analysis_key, row.position) for row in preferences) != sorted(
-        (key, position) for position, key in enumerate(_DEMO_KEYS)
-    ):
+    preference_projection = tuple(sorted((row.analysis_key, row.position) for row in preferences))
+    if user.summary_order != list(_DEMO_SUMMARY_ORDER):
         raise AnalysisDemoOwnershipError("Demo-Analyseauswahl wurde verändert.")
+    if user.active_card_ids is None:
+        preferences_are_owned = preference_projection == _DEMO_LEGACY_ANALYSIS_PREFERENCES
+    else:
+        preferences_are_owned = (
+            (
+                user.active_card_ids == list(_DEMO_ACTIVE_CARD_IDS)
+                and preference_projection
+                in (_DEMO_LEGACY_ANALYSIS_PREFERENCES, _DEMO_CANONICAL_ANALYSIS_PREFERENCES)
+            )
+            or (
+                user.active_card_ids == list(_DEMO_SUMMARY_ORDER)
+                and preference_projection == _DEMO_LEGACY_ANALYSIS_PREFERENCES
+            )
+        )
+    if not preferences_are_owned:
+        raise AnalysisDemoOwnershipError("Demo-Analyseauswahl wurde verändert.")
+
+
+def _audit_analysis_demo_target(db: Session, user_id: UUID, anchor: date) -> bool:
+    targets = list(db.scalars(select(NutritionTarget).where(NutritionTarget.user_id == user_id)))
+    has_activity_sources = db.scalar(
+        select(NutritionTargetActivitySource.target_id)
+        .where(NutritionTargetActivitySource.user_id == user_id)
+        .limit(1)
+    ) is not None
+    if not targets:
+        if has_activity_sources:
+            raise AnalysisDemoOwnershipError("Demo-Kalorienziel enthält fremde Aktivitätsquellen.")
+        return False
+
+    valid_from = anchor - timedelta(days=89)
+    target = targets[0]
+    if len(targets) != 1 or has_activity_sources or not (
+        target.id == _nutrition_target_id(user_id, valid_from)
+        and target.valid_from == valid_from
+        and target.valid_to is None
+        and target.calories_kcal == _DEMO_TARGET_CALORIES_KCAL
+        and target.maintenance_kcal is None
+        and target.target_weight_min_kg is None
+        and target.target_weight_max_kg is None
+        and target.activity_mode == "off"
+        and target.activity_source_type is None
+        and target.protein_g == _DEMO_TARGET_PROTEIN_G
+        and target.carbs_g is None
+        and target.fat_g is None
+        and target.fiber_g is None
+        and target.water_ml is None
+    ):
+        raise AnalysisDemoOwnershipError("Demo-Kalorienziel wurde verändert.")
+    return True
+
+
+def _ensure_analysis_demo_target(db: Session, user_id: UUID, anchor: date) -> None:
+    if _audit_analysis_demo_target(db, user_id, anchor):
+        return
+    valid_from = anchor - timedelta(days=89)
+    db.add(
+        NutritionTarget(
+            id=_nutrition_target_id(user_id, valid_from),
+            user_id=user_id,
+            valid_from=valid_from,
+            valid_to=None,
+            calories_kcal=_DEMO_TARGET_CALORIES_KCAL,
+            maintenance_kcal=None,
+            activity_mode="off",
+            activity_source_type=None,
+            protein_g=_DEMO_TARGET_PROTEIN_G,
+        )
+    )
+    db.flush()
+
+
+def _audit_seed_evidence(db: Session, user_id: UUID) -> ImportBatch:
     batches = list(db.scalars(select(ImportBatch).where(ImportBatch.user_id == user_id)))
     if len(batches) != 1:
         raise AnalysisDemoOwnershipError("Demo-Importanker fehlt oder ist nicht exklusiv.")
@@ -372,6 +472,7 @@ def _audit_account(db: Session, user: User) -> ImportBatch:
         and batch.error_message is None
     ):
         raise AnalysisDemoOwnershipError("Demo-Importanker wurde verändert.")
+    _audit_analysis_demo_target(db, user_id, anchor)
     _audit_foreign_sources(db, user_id)
     _audit_other_references(db, user_id, batch.id)
     _audit_samples(db, user_id, batch, expected)
@@ -379,6 +480,18 @@ def _audit_account(db: Session, user: User) -> ImportBatch:
         db, user_id=user_id, start=anchor - timedelta(days=89), end=anchor,
     )
     return batch
+
+
+def _audit_account_evidence(db: Session, user: User) -> ImportBatch:
+    """Verify demo ownership and immutable seed evidence, not user preferences."""
+    return _audit_seed_evidence(db, _audit_account_identity(db, user))
+
+
+def _audit_account(db: Session, user: User) -> ImportBatch:
+    """Strictly audit demo ownership, seed evidence, and seed-owned preferences."""
+    user_id = _audit_account_identity(db, user)
+    _audit_analysis_preferences(db, user, user_id)
+    return _audit_seed_evidence(db, user_id)
 
 
 def _find_account(db: Session) -> User | None:
@@ -392,17 +505,33 @@ def _find_account(db: Session) -> User | None:
     return by_id
 
 
-def seed_analysis_demo(db: Session, *, password: str | None, today: date) -> UUID:
-    """Create once; audit existing evidence and resume only unfinished projections."""
+def seed_analysis_demo(
+    db: Session, *, password: str | None, today: date,
+    include_current_day_supplement: bool = False,
+    include_follow_up_meals: bool = False,
+) -> UUID:
+    """Create or audit the demo account and optionally seed synthetic meals."""
     _require_disposable_environment()
     try:
         with exclusive_initial_user_operation(db):
             user = _find_account(db)
+            if user is None and include_follow_up_meals:
+                raise AnalysisDemoOwnershipError("Ein Demo-Folgelauf benötigt einen bestehenden Demo-Seed.")
             if user is not None:
                 with exclusive_user_lifecycle_operation(db, user.id):
-                    batch = _audit_account(db, user)
+                    batch = (
+                        _audit_account_evidence(db, user)
+                        if include_current_day_supplement or include_follow_up_meals
+                        else _audit_account(db, user)
+                    )
+                    marker = batch.client_identifier
+                    if marker is None:
+                        raise AnalysisDemoOwnershipError("Demo-Importanker fehlt.")
+                    anchor = date.fromisoformat(marker[len(_ANCHOR_PREFIX) :])
+                    _ensure_analysis_demo_target(db, user.id, anchor)
                     run = db.scalar(select(NutritionIngestionRun).where(
                         NutritionIngestionRun.user_id == user.id,
+                        NutritionIngestionRun.connector_variant == _CONNECTOR_VARIANT,
                     ))
                     if run is not None and run.status == "running":
                         marker = batch.client_identifier
@@ -418,6 +547,22 @@ def seed_analysis_demo(db: Session, *, password: str | None, today: date) -> UUI
                         )
                     else:
                         db.commit()
+                    if include_current_day_supplement or include_follow_up_meals:
+                        marker = batch.client_identifier
+                        if marker is None:
+                            raise AnalysisDemoOwnershipError("Demo-Importanker fehlt.")
+                        anchor = date.fromisoformat(marker[len(_ANCHOR_PREFIX):])
+                        start = anchor - timedelta(days=89)
+                        source_instance_id = demo_source_instance_id(user.id)
+                        persist_analysis_demo_current_day_supplement(
+                            db, user_id=user.id, source_instance_id=source_instance_id,
+                            start=start, end=anchor, target_day=today,
+                        )
+                        if include_follow_up_meals:
+                            persist_analysis_demo_follow_up_meals(
+                                db, user_id=user.id, source_instance_id=source_instance_id,
+                                start=start, end=anchor, target_day=today,
+                            )
                     return user.id
             user_id = demo_user_id()
             if db.scalar(select(User.id).where(User.id != user_id).limit(1)) is None:
@@ -435,6 +580,8 @@ def seed_analysis_demo(db: Session, *, password: str | None, today: date) -> UUI
                     password_hash=hash_password(new_password),
                     timezone=_DEMO_TIMEZONE,
                     is_admin=False,
+                    active_card_ids=list(_DEMO_ACTIVE_CARD_IDS),
+                    summary_order=list(_DEMO_SUMMARY_ORDER),
                 )
                 samples = _samples(user_id, today)
                 now = datetime.now(UTC)
@@ -485,11 +632,40 @@ def seed_analysis_demo(db: Session, *, password: str | None, today: date) -> UUI
                     for sample in samples
                 )
                 ensure_analysis_demo_policy(db, user_id=user_id, start=today - timedelta(days=89))
+                _ensure_analysis_demo_target(db, user_id, today)
                 persist_analysis_demo_nutrition(
                     db, user_id=user_id, source_instance_id=demo_source_instance_id(user_id),
                     start=today - timedelta(days=89), end=today,
                 )
+                if include_current_day_supplement:
+                    persist_analysis_demo_current_day_supplement(
+                        db, user_id=user_id,
+                        source_instance_id=demo_source_instance_id(user_id),
+                        start=today - timedelta(days=89), end=today, target_day=today,
+                    )
                 return user_id
+    except Exception:
+        db.rollback()
+        raise
+
+
+def ensure_analysis_demo_calendar_target(db: Session) -> UUID:
+    """Add only the canonical target to an existing, audited review demo."""
+    _require_disposable_environment()
+    try:
+        with exclusive_initial_user_operation(db):
+            user = _find_account(db)
+            if user is None:
+                raise AnalysisDemoOwnershipError("Das reservierte Analyse-Demokonto fehlt.")
+            with exclusive_user_lifecycle_operation(db, user.id):
+                batch = _audit_account_evidence(db, user)
+                marker = batch.client_identifier
+                if marker is None:
+                    raise AnalysisDemoOwnershipError("Demo-Importanker fehlt.")
+                anchor = date.fromisoformat(marker[len(_ANCHOR_PREFIX) :])
+                _ensure_analysis_demo_target(db, user.id, anchor)
+                db.commit()
+                return user.id
     except Exception:
         db.rollback()
         raise
@@ -521,6 +697,12 @@ def remove_analysis_demo(db: Session) -> bool:
             db.execute(delete(NutritionIngestionRun).where(NutritionIngestionRun.user_id == user.id))
             db.execute(delete(SourcePriorityRule).where(SourcePriorityRule.user_id == user.id))
             db.execute(delete(SourcePriorityPolicy).where(SourcePriorityPolicy.user_id == user.id))
+            db.execute(
+                delete(NutritionTargetActivitySource).where(
+                    NutritionTargetActivitySource.user_id == user.id
+                )
+            )
+            db.execute(delete(NutritionTarget).where(NutritionTarget.user_id == user.id))
             db.execute(delete(HealthSample).where(HealthSample.user_id == user.id))
             db.execute(delete(ImportBatch).where(ImportBatch.id == batch.id))
             db.execute(delete(User).where(User.id == user.id))

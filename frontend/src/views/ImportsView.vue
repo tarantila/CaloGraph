@@ -9,8 +9,13 @@ import {
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import { ApiError, api, ensureCsrfToken, localizeApiError } from '../api'
-import DateInput from '../components/DateInput.vue'
+import {
+  AUTH_SESSION_CHANGED_PROBLEM,
+  captureAuthIdentity,
+  isAuthIdentityCurrent,
+} from '../auth-session'
 import StatusBadge from '../components/StatusBadge.vue'
+import DateInput from '../components/DateInput.vue'
 import { formatGermanDate, formatGermanDateTime } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -121,7 +126,8 @@ async function upload() {
   message.value = ''
   messageIsError.value = false
   try {
-    const csrf = await ensureCsrfToken()
+    const identitySnapshot = captureAuthIdentity()
+    const csrf = await ensureCsrfToken(identitySnapshot)
     const form = new FormData()
     form.append('file', selected.value)
     const xhr = new XMLHttpRequest()
@@ -135,6 +141,11 @@ async function upload() {
       if (event.lengthComputable) progress.value = Math.round((event.loaded / event.total) * 100)
     }
     xhr.onload = async () => {
+      if (!isAuthIdentityCurrent(identitySnapshot)) {
+        uploading.value = false
+        selected.value = null
+        return
+      }
       uploading.value = false
       if (xhr.status >= 200 && xhr.status < 300) {
         const result = JSON.parse(xhr.responseText) as {
@@ -176,6 +187,15 @@ async function upload() {
       uploading.value = false
       messageIsError.value = true
       message.value = t('importsExtras.networkFailed')
+    }
+    if (!isAuthIdentityCurrent(identitySnapshot)) {
+      throw new ApiError(
+        'Authentication session changed',
+        409,
+        undefined,
+        undefined,
+        AUTH_SESSION_CHANGED_PROBLEM,
+      )
     }
     xhr.send(form)
   } catch (cause) {

@@ -20,7 +20,7 @@ const weekdays = [
   mean_protein_g: 120 + weekday * 3,
 }))
 
-test('daily averages, weekday ranges, and sidebar order stay consistent', async ({ page }) => {
+test('daily averages, weekday content, and sidebar order stay consistent', async ({ page }) => {
   let profileLanguage: 'de' | 'en' = 'de'
   const browserErrors: string[] = []
   page.on('console', (message) => {
@@ -201,12 +201,6 @@ test('daily averages, weekday ranges, and sidebar order stay consistent', async 
   const weekdayRows = page.locator('table tbody tr')
   await expect(weekdayRows).toHaveCount(7)
   await expect(weekdayRows.locator('td:first-child')).toHaveText(weekdays.map((item) => item.label))
-  const rangeSelect = page.locator('.analytics-period-filter-desktop select')
-  await expect(rangeSelect).toContainText('Aktuelle Woche')
-  await expect(rangeSelect).toContainText('Letzte Woche')
-  await expect(rangeSelect).toContainText('6 Monate')
-  await rangeSelect.selectOption('last-week')
-  await expect(page).toHaveURL(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/)
   await page.goto('/konto/allgemeine-einstellungen')
   await expect(page.getByRole('heading', { name: 'Allgemeine Einstellungen' })).toBeVisible()
   await expect(page.locator('.sidebar-utility-navigation a.active')).toHaveAttribute('href', '/konto/persoenliche-daten')

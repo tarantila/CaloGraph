@@ -1,11 +1,21 @@
 import type { ApiProblem, BackupStatus } from './types'
 import { i18n } from './i18n'
+import {
+  AUTH_SESSION_CHANGED_PROBLEM,
+  captureAuthIdentity,
+  isAuthIdentityCurrent,
+  type AuthIdentitySnapshot,
+} from './auth-session'
 
 let csrfToken: string | null =
   typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem('calograph_csrf')
-let authenticationSessionGeneration = 0
+let csrfTokenGeneration = 0
 let authenticationExpiredHandler: (() => void) | null = null
-let csrfRefreshEntry: { generation: number; promise: Promise<string> } | null = null
+let csrfRefreshEntry: {
+  csrfGeneration: number
+  identityGeneration: number | null
+  promise: Promise<string>
+} | null = null
 const publicAuthenticationPaths: Record<string, true> = {
   '/auth/login': true,
   '/auth/mfa/totp/verify': true,
@@ -22,6 +32,7 @@ const CSRF_VALIDATION_FAILED_PROBLEM = 'urn:calograph:problem:csrf-validation-fa
 const apiProblemMessages: Record<string, string> = {
   'urn:calograph:problem:invalid-credentials': 'errors.invalidCredentials',
   [SESSION_EXPIRED_PROBLEM]: 'errors.sessionExpired',
+  [AUTH_SESSION_CHANGED_PROBLEM]: 'errors.sessionExpired',
   'urn:calograph:problem:invalid-mfa-code': 'errors.invalidMfa',
   'urn:calograph:problem:invalid-invitation': 'errors.invalidInvitation',
   'urn:calograph:problem:username-taken': 'errors.usernameTaken',
@@ -118,7 +129,7 @@ export function localizeApiError(
 }
 
 export function setCsrfToken(value: string | null): void {
-  if (value !== csrfToken) authenticationSessionGeneration += 1
+  if (value !== csrfToken) csrfTokenGeneration += 1
   csrfToken = value
   if (typeof sessionStorage === 'undefined') return
   if (value) sessionStorage.setItem('calograph_csrf', value)
@@ -133,7 +144,39 @@ export function notifyAuthenticationExpired(): void {
   authenticationExpiredHandler?.()
 }
 
-async function requestCsrf(requestSessionGeneration: number): Promise<string> {
+function authSessionChangedError(): ApiError {
+  return new ApiError(
+    'Authentication session changed',
+    409,
+    undefined,
+    undefined,
+    AUTH_SESSION_CHANGED_PROBLEM,
+  )
+}
+
+function assertAuthIdentity(snapshot: AuthIdentitySnapshot, requireUser = false): void {
+  if (!isAuthIdentityCurrent(snapshot) || (requireUser && !snapshot.userId)) {
+    throw authSessionChangedError()
+  }
+}
+
+async function verifyServerIdentity(snapshot: AuthIdentitySnapshot): Promise<void> {
+  assertAuthIdentity(snapshot, true)
+  const response = await fetchWithTransportRetry(
+    '/api/v1/auth/me',
+    { credentials: 'include' },
+    'GET',
+  )
+  if (!response.ok) throw authSessionChangedError()
+  const user = (await response.json()) as { id?: unknown }
+  if (user.id !== snapshot.userId) throw authSessionChangedError()
+  assertAuthIdentity(snapshot, true)
+}
+
+async function requestCsrf(
+  requestCsrfGeneration: number,
+  identitySnapshot?: AuthIdentitySnapshot,
+): Promise<string> {
   const response = await fetchWithTransportRetry(
     '/api/v1/auth/csrf',
     { credentials: 'include' },
@@ -141,7 +184,11 @@ async function requestCsrf(requestSessionGeneration: number): Promise<string> {
   )
   if (!response.ok) {
     const expired = response.status === 401
-    if (expired && requestSessionGeneration === authenticationSessionGeneration) {
+    if (
+      expired
+      && requestCsrfGeneration === csrfTokenGeneration
+      && (!identitySnapshot || isAuthIdentityCurrent(identitySnapshot))
+    ) {
       notifyAuthenticationExpired()
     }
     throw new ApiError(
@@ -154,18 +201,22 @@ async function requestCsrf(requestSessionGeneration: number): Promise<string> {
     )
   }
   const data = (await response.json()) as { csrf_token: string }
-  if (requestSessionGeneration !== authenticationSessionGeneration) {
-    throw new ApiError('Session expired', 401, undefined, undefined, SESSION_EXPIRED_PROBLEM, undefined)
+  if (requestCsrfGeneration !== csrfTokenGeneration) {
+    throw new ApiError('Session expired', 401, undefined, undefined, SESSION_EXPIRED_PROBLEM)
   }
-  setCsrfToken(data.csrf_token)
+  if (identitySnapshot) assertAuthIdentity(identitySnapshot)
   return data.csrf_token
 }
 
-function refreshCsrf(): Promise<string> {
-  const generation = authenticationSessionGeneration
-  if (csrfRefreshEntry?.generation === generation) return csrfRefreshEntry.promise
-  const promise = requestCsrf(generation)
-  csrfRefreshEntry = { generation, promise }
+function refreshCsrf(identitySnapshot?: AuthIdentitySnapshot): Promise<string> {
+  const csrfGeneration = csrfTokenGeneration
+  const identityGeneration = identitySnapshot?.generation ?? null
+  if (
+    csrfRefreshEntry?.csrfGeneration === csrfGeneration
+    && csrfRefreshEntry.identityGeneration === identityGeneration
+  ) return csrfRefreshEntry.promise
+  const promise = requestCsrf(csrfGeneration, identitySnapshot)
+  csrfRefreshEntry = { csrfGeneration, identityGeneration, promise }
   void promise.then(
     () => {
       if (csrfRefreshEntry?.promise === promise) csrfRefreshEntry = null
@@ -177,8 +228,30 @@ function refreshCsrf(): Promise<string> {
   return promise
 }
 
-export async function ensureCsrfToken(): Promise<string> {
-  return csrfToken ?? refreshCsrf()
+function installRefreshedCsrfToken(
+  token: string,
+  requestCsrfGeneration: number,
+  identitySnapshot: AuthIdentitySnapshot,
+): void {
+  assertAuthIdentity(identitySnapshot)
+  if (requestCsrfGeneration === csrfTokenGeneration) {
+    setCsrfToken(token)
+    return
+  }
+  if (csrfToken === token) return
+  throw new ApiError('Session expired', 401, undefined, undefined, SESSION_EXPIRED_PROBLEM)
+}
+
+export async function ensureCsrfToken(
+  identitySnapshot: AuthIdentitySnapshot = captureAuthIdentity(),
+): Promise<string> {
+  assertAuthIdentity(identitySnapshot, true)
+  if (csrfToken) return csrfToken
+  const requestCsrfGeneration = csrfTokenGeneration
+  const token = await refreshCsrf(identitySnapshot)
+  await verifyServerIdentity(identitySnapshot)
+  installRefreshedCsrfToken(token, requestCsrfGeneration, identitySnapshot)
+  return csrfToken ?? token
 }
 function isReplayableBody(body: BodyInit | null | undefined): boolean {
   return body == null || typeof body === 'string'
@@ -195,12 +268,14 @@ async function readApiProblem(response: Response): Promise<ApiProblem> {
 function createApiError(
   response: Response,
   problem: ApiProblem,
-  requestSessionGeneration: number,
+  requestCsrfGeneration: number,
   path: string,
+  identitySnapshot?: AuthIdentitySnapshot,
 ): ApiError {
   if (
     response.status === 401
-    && requestSessionGeneration === authenticationSessionGeneration
+    && requestCsrfGeneration === csrfTokenGeneration
+    && (!identitySnapshot || isAuthIdentityCurrent(identitySnapshot))
     && path !== '/auth/me'
     && !publicAuthenticationPaths[path]
   ) {
@@ -216,9 +291,7 @@ function createApiError(
   )
 }
 
-
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  let requestSessionGeneration = authenticationSessionGeneration
   const method = (options.method ?? 'GET').toUpperCase()
   const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(method)
   const publicMutation =
@@ -230,18 +303,31 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     path === '/auth/invitation/exchange' ||
     path === '/auth/recovery/complete' ||
     path === '/auth/bootstrap'
+  const identitySnapshot = mutating && !publicMutation ? captureAuthIdentity() : undefined
+  let requestCsrfGeneration = csrfTokenGeneration
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  if (mutating && !publicMutation) {
-    headers.set('X-CSRF-Token', csrfToken ?? (await refreshCsrf()))
-    requestSessionGeneration = authenticationSessionGeneration
+  if (identitySnapshot) {
+    assertAuthIdentity(identitySnapshot)
+    let requestToken = csrfToken
+    if (!requestToken) {
+      const refreshGeneration = csrfTokenGeneration
+      requestToken = await refreshCsrf(identitySnapshot)
+      if (identitySnapshot.userId) await verifyServerIdentity(identitySnapshot)
+      installRefreshedCsrfToken(requestToken, refreshGeneration, identitySnapshot)
+    }
+    assertAuthIdentity(identitySnapshot)
+    headers.set('X-CSRF-Token', requestToken)
+    requestCsrfGeneration = csrfTokenGeneration
   }
+  if (identitySnapshot) assertAuthIdentity(identitySnapshot)
   let response = await fetchWithTransportRetry(
     `/api/v1${path}`,
     { ...options, headers, credentials: 'include' },
     method,
   )
 
+  if (identitySnapshot) assertAuthIdentity(identitySnapshot)
   if (!response.ok) {
     let problem = await readApiProblem(response)
     const canSelfHeal =
@@ -251,21 +337,30 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       && response.status === 403
       && problem.type === CSRF_VALIDATION_FAILED_PROBLEM
     if (canSelfHeal) {
+      if (!identitySnapshot) throw authSessionChangedError()
+      assertAuthIdentity(identitySnapshot, true)
       setCsrfToken(null)
-      const refreshed = await refreshCsrf()
+      const refreshGeneration = csrfTokenGeneration
+      const refreshed = await refreshCsrf(identitySnapshot)
+      await verifyServerIdentity(identitySnapshot)
+      assertAuthIdentity(identitySnapshot, true)
+      installRefreshedCsrfToken(refreshed, refreshGeneration, identitySnapshot)
       headers.set('X-CSRF-Token', refreshed)
-      requestSessionGeneration = authenticationSessionGeneration
+      requestCsrfGeneration = csrfTokenGeneration
+      assertAuthIdentity(identitySnapshot, true)
       response = await fetchWithTransportRetry(
         `/api/v1${path}`,
         { ...options, headers, credentials: 'include' },
         method,
       )
+      if (identitySnapshot) assertAuthIdentity(identitySnapshot)
       if (!response.ok) problem = await readApiProblem(response)
     }
     if (!response.ok) {
-      throw createApiError(response, problem, requestSessionGeneration, path)
+      throw createApiError(response, problem, requestCsrfGeneration, path, identitySnapshot)
     }
   }
+  if (identitySnapshot) assertAuthIdentity(identitySnapshot)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }

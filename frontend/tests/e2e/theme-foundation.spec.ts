@@ -173,7 +173,7 @@ test('shared controls, status surfaces, and calendar follow the selected theme',
     document.body.insertAdjacentHTML('beforeend', `
       <label class="field">Provider<select id="theme-select"><option>Local</option></select></label>
       <div class="date-input" id="theme-date"><input aria-label="Date" value="2026-01-01" /></div>
-      <div class="period-control" id="theme-period"><button class="active" aria-pressed="true">Month</button></div>
+      <button class="button" id="theme-selected-button" type="button" aria-pressed="true">Selected action</button>
       <div class="verification-date-navigation" id="theme-verification"><strong>January 2026</strong></div>
       <button class="button" id="theme-disabled" type="button" disabled>Unavailable</button>
       <section class="card"><p class="error" id="theme-error">Unavailable state</p></section>
@@ -197,13 +197,11 @@ test('shared controls, status surfaces, and calendar follow the selected theme',
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
   const state = await page.evaluate(() => {
     const style = (selector: string) => getComputedStyle(document.querySelector<HTMLElement>(selector)!)
-    const selected = document.querySelector<HTMLButtonElement>('#theme-period button')!
     return {
       controlBackground: style('#theme-control-swatch').backgroundColor,
       surfaceBackground: style('#theme-surface-swatch').backgroundColor,
       selectBackground: style('#theme-select').backgroundColor,
       dateBackground: style('#theme-date').backgroundColor,
-      periodBackground: style('#theme-period').backgroundColor,
       verificationBackground: style('#theme-verification').backgroundColor,
       disabledOpacity: style('#theme-disabled').opacity,
       disabledColor: style('#theme-disabled').color,
@@ -216,19 +214,14 @@ test('shared controls, status surfaces, and calendar follow the selected theme',
       calendarTextColor: style('#theme-calendar b').color,
       expectedInk: style('#theme-ink-swatch').color,
       dialogHeadingColor: style('#theme-dialog h2').color,
-      selectedPressed: selected.getAttribute('aria-pressed'),
-      selectedActive: selected.classList.contains('active'),
-      selectedBackground: style('#theme-period button').backgroundColor,
-      selectedInk: style('#theme-period button').color,
+      selectedBackground: style('#theme-selected-button').backgroundColor,
+      selectedInk: style('#theme-selected-button').color,
     }
   })
 
   expect(state.selectBackground).toBe(state.controlBackground)
   expect(state.dateBackground).toBe(state.controlBackground)
-  expect(state.periodBackground).toBe(state.controlBackground)
   expect(state.verificationBackground).toBe(state.controlBackground)
-  expect(state.selectedPressed).toBe('true')
-  expect(state.selectedActive).toBe(true)
   expect(state.selectedBackground).not.toBe('rgba(0, 0, 0, 0)')
   expect(contrastRatio(state.selectedInk, state.selectedBackground)).toBeGreaterThanOrEqual(4.5)
   expect(state.disabledOpacity).toBe('1')
@@ -262,7 +255,7 @@ test('analysis card and overflow controls use semantic theme ink', async ({ page
         current_step: 'completed',
       },
       '/achievements/reconcile': { achievements: [], newly_unlocked: [] },
-      '/settings/analysis-preferences': { analysis_keys: ['weight_kg'] },
+      '/settings/analysis-preferences': { active_card_ids: ['weight'] },
       '/analytics/registry': {
         analyses: [{
           analysis_key: 'weight_kg',
@@ -298,8 +291,8 @@ test('analysis card and overflow controls use semantic theme ink', async ({ page
   })
 
   await page.goto('/analyse')
-  await expect(page.locator('.analysis-card-kpi strong')).toHaveText('42 kg')
-  await page.locator('.analysis-overflow summary').click()
+  await expect(page.locator('.analysis-metric-value').first()).toHaveText('42 kg')
+  await page.locator('.analysis-overflow-trigger').first().click()
   await page.evaluate(() => {
     document.documentElement.style.setProperty('--text', '#ff00ff')
     document.documentElement.dataset.theme = 'light'
@@ -309,7 +302,7 @@ test('analysis card and overflow controls use semantic theme ink', async ({ page
   const state = await page.evaluate(() => {
     const root = getComputedStyle(document.documentElement)
     const card = document.querySelector<HTMLElement>('.analysis-card')!
-    const kpi = document.querySelector<HTMLElement>('.analysis-card-kpi strong')!
+    const kpi = document.querySelector<HTMLElement>('.analysis-metric-value')!
     const dragHandle = document.querySelector<HTMLButtonElement>('.analysis-drag-handle')!
     const popover = document.querySelector<HTMLElement>('.analysis-overflow-menu')!
     const menuButton = popover.querySelector<HTMLButtonElement>('button:not(:disabled)')!
@@ -318,14 +311,16 @@ test('analysis card and overflow controls use semantic theme ink', async ({ page
     ink.style.color = 'var(--ink)'
     document.body.append(ink)
     const expectedInk = getComputedStyle(ink).color
+    ink.style.color = 'var(--muted)'
+    const expectedMuted = getComputedStyle(ink).color
     ink.remove()
     return {
       cardBackground: getComputedStyle(card).backgroundColor,
       kpiColor: getComputedStyle(kpi).color,
       dragColor: getComputedStyle(dragHandle).color,
-      dragBackground: getComputedStyle(dragHandle).backgroundColor,
       popoverBackground: getComputedStyle(popover).backgroundColor,
       expectedInk,
+      expectedMuted,
       menuColor: getComputedStyle(menuButton).color,
       disabledMenuColor: getComputedStyle(disabledMenuButton).color,
       scheme: root.colorScheme,
@@ -334,10 +329,10 @@ test('analysis card and overflow controls use semantic theme ink', async ({ page
 
   expect(state.scheme).toBe('light')
   expect(state.kpiColor).toBe(state.expectedInk)
-  expect(state.dragColor).toBe(state.expectedInk)
+  expect(state.dragColor).toBe(state.expectedMuted)
   expect(state.menuColor).toBe(state.expectedInk)
   expect(contrastRatio(state.kpiColor, state.cardBackground)).toBeGreaterThanOrEqual(4.5)
-  expect(contrastRatio(state.dragColor, state.dragBackground)).toBeGreaterThanOrEqual(4.5)
+  expect(contrastRatio(state.dragColor, state.cardBackground)).toBeGreaterThanOrEqual(4.5)
   expect(contrastRatio(state.disabledMenuColor, state.popoverBackground)).toBeGreaterThanOrEqual(4.5)
 })
 

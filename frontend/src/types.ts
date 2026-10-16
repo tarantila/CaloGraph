@@ -29,8 +29,8 @@ export type ActivitySourceType =
   | 'withings_activity_v2'
 
 export type VerificationView = 'canonical' | 'all'
-export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health'
-export type VerificationActivityProviderKey = VerificationProviderKey | 'withings' | 'analysis_demo'
+export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health' | 'analysis_demo'
+export type VerificationActivityProviderKey = VerificationProviderKey | 'withings'
 export type VerificationRecordStatus = 'available' | 'no_data' | 'unavailable'
 export type VerificationActivitySourceType =
   | 'google_health_activity_v4'
@@ -54,9 +54,15 @@ export interface VerificationActivityDayResponse {
   providers: VerificationActivityProviderRecord[]
 }
 
+export interface ReaderPeriodCapabilities {
+  supports_all_data: boolean
+  all_data_start_date: string | null
+}
+
 export interface VerificationActivityResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   view: VerificationView
   days: VerificationActivityDayResponse[]
 }
@@ -79,7 +85,11 @@ export interface AnalysisRegistryResponse {
 }
 
 export interface AnalysisPreferencesResponse {
-  analysis_keys: string[]
+  active_card_ids: string[]
+}
+
+export interface AnalysisPreferencesUpdate {
+  active_card_ids: string[]
 }
 
 export interface AnalysisWeightSummary {
@@ -116,6 +126,7 @@ export interface AnalysisMicronutrientDay {
 export interface AnalysisMicronutrientResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   selected_provider: { provider_key: string }
   period_days: number
   metrics: AnalysisMicronutrientMetric[]
@@ -142,6 +153,10 @@ export interface AnalysisNutritionValues {
 }
 
 export interface AnalysisNutritionMeal extends AnalysisNutritionValues {
+  event_id: string
+  local_date: string
+  serving_amount: number | null
+  serving_unit: string | null
   provider_key: string
   local_time: string | null
   meal_type: string | null
@@ -157,6 +172,7 @@ export interface AnalysisNutritionDay extends AnalysisNutritionValues {
 export interface AnalysisNutritionResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   selected_provider: { provider_key: string }
   period_days: number
   days: AnalysisNutritionDay[]
@@ -170,6 +186,8 @@ export interface VerificationNutritionSummary {
 }
 
 export interface VerificationNutritionEvent {
+  event_id: string
+  detail_available: boolean
   provider_key: VerificationProviderKey
   local_time: string | null
   meal_type: string | null
@@ -229,6 +247,7 @@ export interface WeightPoint {
 export interface WeightResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   selected_provider: { provider_key: string } | null
   points: WeightPoint[]
   summary: AnalysisWeightSummary

@@ -39,6 +39,8 @@ from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA
 from app.schemas import VerificationActivityResponse, VerificationNutritionResponse
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 
+NO_ALL = {"supports_all_data": False, "all_data_start_date": None}
+
 
 def test_activity_contract_accepts_canonical_day_records_and_serializes_numeric_values() -> None:
     response = VerificationActivityResponse(
@@ -64,6 +66,7 @@ def test_activity_contract_accepts_canonical_day_records_and_serializes_numeric_
         "start_date": "2026-09-14",
         "end_date": "2026-09-14",
         "view": "canonical",
+        "period_capabilities": NO_ALL,
         "days": [
             {
                 "date": "2026-09-14",

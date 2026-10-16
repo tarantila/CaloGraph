@@ -24,7 +24,10 @@ from app.schemas import (
     AnalysisMicronutrientMetricResponse,
     AnalysisMicronutrientResponse,
     AnalysisSelectedProviderResponse,
+    ReaderPeriodCapabilities,
 )
+
+MAX_ANALYSIS_MICRONUTRIENT_DAYS = 365
 
 
 class AnalysisMicronutrientReadError(RuntimeError):
@@ -71,8 +74,8 @@ def read_analysis_micronutrients(
     end: date,
     metric_key: str | None,
 ) -> AnalysisMicronutrientResponse:
-    if start > end or (end - start).days >= MAX_PROVIDER_PERIOD_DAYS:
-        raise AnalysisMicronutrientReadError("canonical range exceeds one chunk")
+    if start > end or (end - start).days >= MAX_ANALYSIS_MICRONUTRIENT_DAYS:
+        raise AnalysisMicronutrientReadError("canonical range exceeds analysis limit")
     if metric_key is not None and metric_key not in MICRONUTRIENT_BY_METRIC:
         raise AnalysisMicronutrientReadError("noncatalog metric")
 
@@ -83,39 +86,43 @@ def read_analysis_micronutrients(
     if not sources or len({provider_key for provider_key, _ in sources}) != len(sources):
         raise AnalysisMicronutrientReadError("invalid canonical provider source chain")
 
-    selected: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
-    first: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
-    for provider_key, source_instance_id in sources:
-        if len(selected) == len(dates):
-            break
-        remaining = tuple(day for day in dates if day not in selected)
-        try:
-            matrix = resolve_provider_period(
-                db,
-                provider_key=provider_key,
-                user_id=user_id,
-                source_instance_id=source_instance_id,
-                start=remaining[0],
-                end=remaining[-1],
-                metric_keys=metric_keys,
-            )
-        except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
-            raise AnalysisMicronutrientReadError("canonical provider period is unreadable") from exc
-
-        for current in remaining:
-            candidates = matrix[current]
-            first.setdefault(current, (provider_key, candidates))
-            for key in metric_keys:
-                _usable(candidates[key])
-            if _has_primary_evidence(candidates):
-                selected[current] = (provider_key, candidates)
-
     winning: list[tuple[str, Mapping[str, ProviderCandidate]]] = []
-    for current in dates:
-        winner = selected.get(current) or first.get(current)
-        if winner is None:
-            raise AnalysisMicronutrientReadError("canonical provider returned no requested date")
-        winning.append(winner)
+    try:
+        for offset in range(0, len(dates), MAX_PROVIDER_PERIOD_DAYS):
+            chunk_dates = dates[offset : offset + MAX_PROVIDER_PERIOD_DAYS]
+            selected: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
+            first: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
+            for provider_key, source_instance_id in sources:
+                if len(selected) == len(chunk_dates):
+                    break
+                remaining = tuple(day for day in chunk_dates if day not in selected)
+                matrix = resolve_provider_period(
+                    db,
+                    provider_key=provider_key,
+                    user_id=user_id,
+                    source_instance_id=source_instance_id,
+                    start=remaining[0],
+                    end=remaining[-1],
+                    metric_keys=metric_keys,
+                )
+                for current in remaining:
+                    candidates = matrix[current]
+                    first.setdefault(current, (provider_key, candidates))
+                    for key in metric_keys:
+                        _usable(candidates[key])
+                    if _has_primary_evidence(candidates):
+                        selected[current] = (provider_key, candidates)
+            for current in chunk_dates:
+                winner = selected.get(current) or first.get(current)
+                if winner is None:
+                    raise AnalysisMicronutrientReadError(
+                        "canonical provider returned no requested date"
+                    )
+                winning.append(winner)
+    except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
+        raise AnalysisMicronutrientReadError(
+            "canonical provider period is unreadable"
+        ) from exc
 
     values_by_metric: dict[str, list[Decimal | None]] = {
         item.metric_type: [_usable(candidates[item.metric_type]) for _, candidates in winning]
@@ -165,5 +172,9 @@ def read_analysis_micronutrients(
             ]
             if metric_key is not None
             else []
+        ),
+        # The requested matrix does not establish a complete reader start boundary.
+        period_capabilities=ReaderPeriodCapabilities(
+            supports_all_data=False, all_data_start_date=None,
         ),
     )

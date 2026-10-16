@@ -1,52 +1,43 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisRangeWithinDays } from '../analytics-period'
-import { analysisHubQuery, analysisRangeDayCount, normalizeAnalysisPeriodForCapability, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
-import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
+import { analysisRangeWithinDays, periodFromQuery, resolveAllDataRange, type AppliedPeriod, type PeriodLimits, type PeriodRange } from '../analytics-period'
+import { AnalysisIcon, analysisHubQuery } from '../analysis-v2'
+import AnalysisReadingsDisclosure from '../components/AnalysisReadingsDisclosure.vue'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import WeightHistoryChart from '../components/WeightHistoryChart.vue'
 import { formatGermanDate, isoDateInTimeZone } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type { WeightResponse } from '../types'
 
-type WeightPreset = AnalysisPeriodSelection
 const maxDays = 3661
-const presets = supportedAnalysisPeriods(maxDays, true)
 const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+const today = computed(() => isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
 const response = ref<WeightResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
 const loadId = ref(0)
 
-function queryString(value: unknown): string | null {
-  if (typeof value === 'string') return value
-  return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
-}
-
-const initialSelection = normalizeAnalysisPeriodForCapability(
-  parseAnalysisPeriodSelection(queryString(route.query.period)),
-  queryString(route.query.start) && queryString(route.query.end)
-    ? { start: queryString(route.query.start)!, end: queryString(route.query.end)! } : null,
-  maxDays, today,
-)
-const start = ref(initialSelection.range.start)
-const end = ref(initialSelection.range.end)
-const period = ref<WeightPreset>(initialSelection.period)
+const limits = computed<PeriodLimits>(() => ({ minDays: 1, maxDays, customRange: true, maxDate: today.value }))
+const weightPeriodPresets = ['3661'] as const
+const capability = computed(() => response.value?.period_capabilities)
+const allRange = computed(() => resolveAllDataRange(capability.value, response.value?.end_date ?? today.value, limits.value))
+const committedAllRange = ref<PeriodRange | null>(null)
+let requestedInitialAll = route.query.period === 'all'
+const initialSelection = periodFromQuery(route.query, limits.value, today.value, null, weightPeriodPresets)
+const start = ref(initialSelection.start)
+const end = ref(initialSelection.end)
+const period = ref(initialSelection.period)
 const points = computed(() => [...(response.value?.points ?? [])].sort((left, right) => left.date.localeCompare(right.date)))
 const summary = computed(() => response.value?.summary ?? null)
 const change = computed(() => points.value.length >= 2 ? summary.value?.change_kg ?? null : null)
-const periodDays = computed(() => analysisRangeDayCount({ start: start.value, end: end.value }))
-const measuredDays = computed(() => new Set(points.value
-  .filter((point) => point.date >= start.value && point.date <= end.value)
-  .map((point) => point.date)).size)
 
 function formatWeight(value: number | null | undefined): string {
   return value === null || value === undefined ? '–' : `${number.format(value)} kg`
@@ -64,7 +55,14 @@ async function syncQuery(): Promise<void> {
 
 async function load(): Promise<void> {
   const requestId = ++loadId.value
-  if (!analysisRangeWithinDays(start.value, end.value, maxDays) || end.value > today) {
+  const userId = auth.user?.id
+  if (!userId) {
+    response.value = null
+    error.value = ''
+    loading.value = false
+    return
+  }
+  if (!analysisRangeWithinDays(start.value, end.value, maxDays) || end.value > today.value) {
     response.value = null
     error.value = t('analysisV2.invalidRange')
     loading.value = false
@@ -74,51 +72,99 @@ async function load(): Promise<void> {
   error.value = ''
   response.value = null
   await syncQuery()
-  if (requestId !== loadId.value) return
+  if (requestId !== loadId.value || auth.user?.id !== userId) return
   const params = new URLSearchParams({ start: start.value, end: end.value })
   try {
     const result = await api<WeightResponse>(`/analytics/weight?${params.toString()}`)
-    if (requestId === loadId.value) response.value = result
+    if (requestId !== loadId.value || auth.user?.id !== userId) return
+    response.value = result
+    const admitted = allRange.value
+    if (requestedInitialAll) {
+      requestedInitialAll = false
+      if (admitted) {
+        applyPeriod({ ...admitted, period: 'all' })
+        return
+      }
+    }
+    if (period.value === 'all' && !admitted) {
+      committedAllRange.value = null
+      applyPeriod(periodFromQuery({ period: '30' }, limits.value, today.value, null))
+    }
   } catch (cause) {
-    if (requestId === loadId.value) error.value = localizeApiError(cause, 'analysisV2.loadFailed')
+    if (requestId === loadId.value && auth.user?.id === userId) {
+      requestedInitialAll = false
+      error.value = localizeApiError(cause, 'analysisV2.loadFailed')
+    }
   } finally {
-    if (requestId === loadId.value) loading.value = false
+    if (requestId === loadId.value && auth.user?.id === userId) loading.value = false
   }
 }
 
-function applyPeriod(value: { start: string; end: string; period: WeightPreset }): void {
-  const normalized = normalizeAnalysisPeriodForCapability(
-    value.period, value.period === 'custom' ? value : null, maxDays, today,
-  )
-  period.value = normalized.period
-  start.value = normalized.range.start
-  end.value = normalized.range.end
+function applyPeriod(value: AppliedPeriod): void {
+  requestedInitialAll = false
+  const selected = periodFromQuery(value, limits.value, today.value, allRange.value, weightPeriodPresets)
+  committedAllRange.value = selected.period === 'all'
+    ? { start: selected.start, end: selected.end } : null
+  period.value = selected.period
+  start.value = selected.start
+  end.value = selected.end
   void load()
 }
 
 watch(
   () => [route.query.start, route.query.end, route.query.period] as const,
   ([nextStart, nextEnd, nextPeriod]) => {
-    const requested = parseAnalysisPeriodSelection(nextPeriod)
-    const queryStart = queryString(nextStart)
-    const queryEnd = queryString(nextEnd)
-    const normalized = normalizeAnalysisPeriodForCapability(
-      requested, requested === 'custom' && queryStart && queryEnd
-        ? { start: queryStart, end: queryEnd } : null, maxDays, today,
+    const currentQuery = analysisHubQuery(period.value, { start: start.value, end: end.value })
+    if (nextPeriod === currentQuery.period && nextStart === currentQuery.start && nextEnd === currentQuery.end) return
+    requestedInitialAll = false
+    const selected = periodFromQuery(
+      route.query,
+      limits.value,
+      today.value,
+      period.value === 'all' ? committedAllRange.value : allRange.value,
+      weightPeriodPresets,
     )
-    const nextPreset = normalized.period
-    const nextRange = normalized.range
-    const rangeChanged = nextRange.start !== start.value || nextRange.end !== end.value
-    const presetChanged = nextPreset !== period.value
-    start.value = nextRange.start
-    end.value = nextRange.end
-    period.value = nextPreset
-    if (rangeChanged || presetChanged) void load()
+    const changed = selected.start !== start.value || selected.end !== end.value || selected.period !== period.value
+    committedAllRange.value = selected.period === 'all'
+      ? { start: selected.start, end: selected.end } : null
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    if (changed) void load()
     else void syncQuery()
   },
 )
 
+watch(
+  () => [auth.user?.id ?? null, auth.user?.timezone ?? 'UTC'] as const,
+  ([userId, timezone], [previousUserId, previousTimezone]) => {
+    if (userId === previousUserId && timezone === previousTimezone) return
+    const accountChanged = userId !== previousUserId
+    loadId.value += 1
+    response.value = null
+    error.value = ''
+    if (accountChanged) committedAllRange.value = null
+    requestedInitialAll = route.query.period === 'all'
+    if (!userId) {
+      loading.value = false
+      return
+    }
+    const selected = periodFromQuery(
+      route.query, limits.value, today.value,
+      accountChanged ? null : committedAllRange.value,
+      weightPeriodPresets,
+    )
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    loading.value = true
+    void load()
+  },
+  { flush: 'sync' },
+)
+
 onMounted(() => { void load() })
+onBeforeUnmount(() => { loadId.value += 1 })
 </script>
 
 <template>
@@ -128,19 +174,23 @@ onMounted(() => { void load() })
       <span aria-hidden="true">›</span>
       <RouterLink :to="{ path: '/analyse/koerper', query: analysisHubQuery(period, { start, end }) }">{{ t('analysisV2.categories.body') }}</RouterLink>
     </nav>
-    <div class="page-heading">
+    <div class="page-heading page-heading--period">
       <div>
-        <h1 class="analysis-detail-title"><span class="analysis-detail-icon analysis-detail-icon--weight" aria-hidden="true">◉</span>{{ t('analysisV2.weightTitle') }}</h1>
+        <h1 class="analysis-detail-title"><span class="analysis-detail-icon analysis-detail-icon--weight" aria-hidden="true"><AnalysisIcon icon="scale" /></span>{{ t('analysisV2.weightTitle') }}</h1>
         <p>{{ t('analysisV2.weightDescription') }}</p>
       </div>
-      <AnalysisPeriodPicker
+      <PeriodPicker
         :start="start"
         :end="end"
         :today="today"
         :period="period"
-        :presets="presets"
-        :custom-range="true"
-        :max-days="3661"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :max-date="today"
+        :period-capabilities="capability"
+        :all-range="allRange"
+        :additional-presets="weightPeriodPresets"
         @apply="applyPeriod"
       />
     </div>
@@ -151,82 +201,81 @@ onMounted(() => { void load() })
       <button class="button secondary" type="button" @click="load">{{ t('analysisV2.retry') }}</button>
     </section>
     <template v-else-if="response && summary">
-      <section class="weight-summary-grid" :aria-label="t('analysisV2.weightHistory')">
-        <article class="card weight-summary-primary">
+      <section class="card weight-summary-primary">
+        <div class="weight-summary-current">
           <h2>{{ t('analysisV2.latestMeasurement') }}</h2>
           <strong>{{ formatWeight(summary.latest?.weight_kg) }}</strong>
           <time v-if="summary.latest" :datetime="summary.latest.date">{{ formatGermanDate(summary.latest.date) }}</time>
-          <div class="weight-summary-meta">
-            <span>
-              <span class="weight-summary-meta-label">{{ t('analysisV2.change') }}</span>
-              <strong>{{ change === null ? '–' : formatWeight(change) }}</strong>
-              <span v-if="points.length < 2">{{ t('analysisV2.changeUnavailable') }}</span>
-            </span>
-            <span>
-              <span class="weight-summary-meta-label">{{ t('analysisV2.measurementCount', { count: number.format(summary.measurement_count) }) }}</span>
-              <span class="weight-period-range">{{ t('analysisV2.daysCoverage', {
-                count: number.format(measuredDays), total: number.format(periodDays),
-              }) }}</span>
-              <span class="weight-period-range">{{ formatGermanDate(start) }} – {{ formatGermanDate(end) }}</span>
-            </span>
-          </div>
-        </article>
-        <div class="weight-summary-secondary">
-          <article class="card">
-            <h2>{{ t('analysisV2.average') }}</h2>
-            <strong>{{ formatWeight(summary.average_kg) }}</strong>
-          </article>
-          <article class="card">
-            <h2>{{ t('analysisV2.minimum') }}</h2>
-            <strong>{{ formatWeight(summary.minimum_kg) }}</strong>
-          </article>
-          <article class="card">
-            <h2>{{ t('analysisV2.maximum') }}</h2>
-            <strong>{{ formatWeight(summary.maximum_kg) }}</strong>
-          </article>
+        </div>
+        <div class="weight-summary-meta">
+          <span>
+            <span class="weight-summary-meta-label">{{ t('analysisV2.change') }}</span>
+            <strong>{{ change === null ? '–' : formatWeight(change) }}</strong>
+            <span v-if="points.length < 2">{{ t('analysisV2.changeUnavailable') }}</span>
+          </span>
         </div>
       </section>
       <p v-if="!points.length" class="card empty" role="status">{{ t('analysisV2.weightEmpty') }}</p>
-      <template v-else>
-        <WeightHistoryChart :points="points" />
-        <section class="card weight-reading-list">
-          <h2>{{ t('analysisV2.weightReadings') }}</h2>
-          <ul :aria-label="t('analysisV2.weightReadings')">
-            <li v-for="point in points" :key="point.date">
-              <time :datetime="point.date">{{ formatGermanDate(point.date) }}</time>
-              <strong>{{ formatWeight(point.weight_kg) }}</strong>
-            </li>
-          </ul>
-        </section>
-      </template>
+      <WeightHistoryChart v-else :points="points" />
+      <section class="weight-summary-secondary">
+        <article class="card">
+          <h2>{{ t('analysisV2.average') }}</h2>
+          <strong>{{ formatWeight(summary.average_kg) }}</strong>
+        </article>
+        <article class="card">
+          <h2>{{ t('analysisV2.minimum') }}</h2>
+          <strong>{{ formatWeight(summary.minimum_kg) }}</strong>
+        </article>
+        <article class="card">
+          <h2>{{ t('analysisV2.maximum') }}</h2>
+          <strong>{{ formatWeight(summary.maximum_kg) }}</strong>
+        </article>
+      </section>
+      <AnalysisReadingsDisclosure
+        v-if="points.length"
+        :key="route.path"
+        class="card weight-reading-list"
+        heading-id="weight-readings-title"
+        :title="t('analysisV2.weightReadingsCount', { count: number.format(points.length) })"
+      >
+        <div class="table-scroll">
+          <table aria-labelledby="weight-readings-title">
+            <thead class="sr-only"><tr><th scope="col">{{ t('common.date') }}</th><th scope="col" class="number">{{ t('analysisV2.weightTitle') }}</th></tr></thead>
+            <tbody>
+              <tr v-for="point in points" :key="point.date">
+                <td><time :datetime="point.date">{{ formatGermanDate(point.date) }}</time></td>
+                <td class="number">{{ formatWeight(point.weight_kg) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </AnalysisReadingsDisclosure>
     </template>
   </div>
 </template>
 
 <style scoped>
-.analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-detail-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 .analysis-detail-page > .page-heading { margin-bottom: 0; }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
-.weight-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: .8rem; }
-.weight-summary-grid article { display: grid; align-content: start; gap: .35rem; min-width: 0; }
-.weight-summary-primary, .weight-reading-list { padding: .9rem; }
-.weight-summary-grid h2 { margin: 0; color: var(--muted); font-size: .92rem; }
-.weight-summary-primary > strong { color: var(--chart-series-violet); font-size: 1.5rem; overflow-wrap: anywhere; }
-.weight-summary-grid time, .weight-summary-grid article > span, .weight-summary-meta-label, .weight-period-range { color: var(--muted); font-size: .9rem; }
-.weight-summary-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .35rem; padding-top: .65rem; border-top: 1px solid var(--border); }
-.weight-summary-meta > span { display: grid; gap: .15rem; min-width: 0; }
-.weight-summary-meta strong { font-size: 1.05rem; }
+.weight-summary-primary { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 0; min-width: 0; padding: 0; }
+.weight-summary-primary h2, .weight-summary-secondary h2 { margin: 0; color: var(--muted); font-size: .92rem; }
+.weight-summary-current, .weight-summary-meta { display: grid; align-content: start; gap: .35rem; min-width: 0; padding: .9rem; }
+.weight-summary-primary > .weight-summary-meta { border-left: 1px solid var(--border); }
+.weight-reading-list { padding: .9rem; }
+.weight-summary-current > strong { color: var(--chart-series-violet); font-size: 1.2rem; overflow-wrap: anywhere; }
+.weight-summary-current time { color: var(--muted); font-size: .9rem; }
+.weight-summary-meta-label { color: var(--muted); font-size: .92rem; }
+.weight-summary-meta > span { display: grid; gap: .35rem; min-width: 0; }
+.weight-summary-meta strong { font-size: 1.2rem; overflow-wrap: anywhere; }
 .weight-summary-secondary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
-.weight-summary-secondary article { padding: .9rem; }
+.weight-summary-secondary article { display: grid; align-content: start; gap: .35rem; min-width: 0; padding: .9rem; }
 .weight-summary-secondary strong { font-size: 1.15rem; overflow-wrap: anywhere; }
-.weight-reading-list h2 { margin-top: 0; font-size: 1.05rem; }
-.weight-reading-list ul { list-style: none; margin: 0; padding: 0; }
-.weight-reading-list li { display: flex; justify-content: space-between; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--border); }
-@media (max-width: 900px) {
-  .weight-summary-grid { grid-template-columns: 1fr; }
-}
 @media (max-width: 680px) {
+  .weight-summary-primary { grid-template-columns: minmax(0, 1fr); }
+  .weight-summary-current { border-bottom: 1px solid var(--border); }
+  .weight-summary-primary > .weight-summary-meta { border-left: 0; }
   .weight-summary-secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 440px) {

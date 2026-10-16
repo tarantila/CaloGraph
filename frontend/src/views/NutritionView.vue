@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { formatDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { groupNutritionMealOccasions } from '../analysis-nutrition-overview'
+import NutritionDatePicker from '../components/NutritionDatePicker.vue'
+import { isoDateInTimeZone, shiftIsoDate } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import type {
@@ -14,13 +17,34 @@ import type {
 
 const t = i18n.global.t.bind(i18n.global)
 const auth = useAuthStore()
-const selectedDate = ref(isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
+const route = useRoute()
+const router = useRouter()
+function validQueryDate(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value) || value.startsWith('0000-')) {
+    return null
+  }
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+    ? value
+    : null
+}
+
+const today = ref(isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
+const selectedDate = ref(validQueryDate(route.query.date) ?? today.value)
+
+watch(() => auth.user?.timezone ?? 'UTC', (timezone) => {
+  today.value = isoDateInTimeZone(timezone)
+}, { immediate: true })
+
+
+
 const view = ref<VerificationView>('canonical')
 const response = ref<VerificationNutritionResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
 const kcal = createKcalFormatter()
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
+let latestLoadId = 0
 
 const displayedGroups = computed<VerificationNutritionProviderGroup[]>(() => {
   if (!response.value) return []
@@ -39,28 +63,105 @@ function formatGrams(value: number | null): string {
   return value == null ? '–' : `${number.format(value)} ${t('common.grams')}`
 }
 
+function formatMealType(value: string | null | undefined): string {
+  if (!value) return '—'
+  switch (value) {
+    case 'breakfast':
+      return t('nutritionVerification.mealTypes.breakfast')
+    case 'lunch':
+      return t('nutritionVerification.mealTypes.lunch')
+    case 'dinner':
+      return t('nutritionVerification.mealTypes.dinner')
+    case 'snack':
+      return t('nutritionVerification.mealTypes.snack')
+    default:
+      return value
+  }
+}
+
+function groupMealEvents(events: readonly VerificationNutritionEvent[]) {
+  return groupNutritionMealOccasions(events.map((event) => ({
+    ...event,
+    id: event.event_id,
+    time: event.local_time,
+    type: event.meal_type,
+    name: event.display_name,
+    energy: event.calories_kcal,
+  })))
+}
+
 function formatServing(event: VerificationNutritionEvent): string {
   if (event.serving_amount == null || !event.serving_unit) return '–'
-  return `${number.format(event.serving_amount)} ${event.serving_unit}`
+  const unit = event.serving_unit.toLowerCase() === 'portion'
+    ? t('nutritionVerification.portionUnit', event.serving_amount)
+    : event.serving_unit
+  return `${number.format(event.serving_amount)} ${unit}`
+}
+
+function openMealDetail(event: VerificationNutritionEvent): void {
+  if (event.detail_available !== true) return
+  void router.push({
+    path: `/ernaehrung/eintrag/${event.event_id}`,
+    query: { from: 'daily', date: selectedDate.value },
+  })
 }
 
 async function load(): Promise<void> {
+  const requestId = ++latestLoadId
+  const requestUserId = auth.user?.id ?? null
+  if (!requestUserId) {
+    response.value = null
+    error.value = ''
+    loading.value = false
+    return
+  }
+  const date = selectedDate.value
+  const selectedView = view.value
   loading.value = true
   error.value = ''
   const params = new URLSearchParams({
-    date: selectedDate.value,
-    view: view.value,
+    date,
+    view: selectedView,
   })
   try {
-    response.value = await api<VerificationNutritionResponse>(
+    const result = await api<VerificationNutritionResponse>(
       `/analytics/verification/nutrition?${params.toString()}`,
     )
+    if (requestId === latestLoadId && auth.user?.id === requestUserId) response.value = result
   } catch (cause) {
-    error.value = localizeApiError(cause, 'nutritionVerification.loadFailed')
+    if (requestId === latestLoadId && auth.user?.id === requestUserId) {
+      error.value = localizeApiError(cause, 'nutritionVerification.loadFailed')
+    }
   } finally {
-    loading.value = false
+    if (requestId === latestLoadId && auth.user?.id === requestUserId) loading.value = false
   }
 }
+
+watch(() => auth.user?.id ?? null, (userId, previousUserId) => {
+  if (previousUserId === undefined) return
+  latestLoadId += 1
+  response.value = null
+  error.value = ''
+  if (userId) {
+    loading.value = true
+    void load()
+  } else {
+    loading.value = false
+  }
+}, { flush: 'sync' })
+
+watch(() => route.query.date, (value) => {
+  const queryDate = validQueryDate(value)
+  if (value !== undefined && queryDate === null) {
+    const query = { ...route.query }
+    delete query.date
+    void router.replace({ query })
+  }
+  const nextDate = queryDate ?? today.value
+  if (selectedDate.value === nextDate) return
+  selectedDate.value = nextDate
+  void load()
+})
 
 function selectView(nextView: VerificationView): void {
   if (view.value === nextView) return
@@ -68,19 +169,34 @@ function selectView(nextView: VerificationView): void {
   void load()
 }
 
+function setSelectedDate(date: string): void {
+  if (selectedDate.value !== date) {
+    selectedDate.value = date
+    void load()
+  }
+  if (validQueryDate(route.query.date) !== date) {
+    void router.replace({ query: { ...route.query, date } })
+  }
+}
+
 function shiftDay(days: number): void {
-  selectedDate.value = shiftIsoDate(selectedDate.value, days)
-  void load()
+  setSelectedDate(shiftIsoDate(selectedDate.value, days))
 }
 
 function returnToToday(): void {
-  const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-  if (selectedDate.value === today) return
-  selectedDate.value = today
-  void load()
+  today.value = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
+  setSelectedDate(today.value)
 }
 
-onMounted(() => { void load() })
+onMounted(() => {
+  if (route.query.date !== undefined && validQueryDate(route.query.date) === null) {
+    const query = { ...route.query }
+    delete query.date
+    void router.replace({ query })
+  }
+  void load()
+})
+
 </script>
 
 <template>
@@ -120,7 +236,7 @@ onMounted(() => { void load() })
       >
         <span aria-hidden="true">‹</span>
       </button>
-      <strong>{{ formatDate(selectedDate) }}</strong>
+      <NutritionDatePicker :selected-date="selectedDate" :today="today" @select="setSelectedDate" />
       <button
         type="button"
         :aria-label="t('nutritionVerification.nextDay')"
@@ -165,61 +281,165 @@ onMounted(() => { void load() })
         </div>
       </div>
 
-      <div class="table-scroll">
-        <table :aria-label="t('nutritionVerification.summary')">
+      <dl class="nutrition-day-summary" :aria-label="t('nutritionVerification.summary')">
+        <div class="nutrition-day-summary-item nutrition-day-summary-item--energy">
+          <dt class="nutrition-day-summary-label">{{ t('nutritionVerification.energy') }}</dt>
+          <dd class="nutrition-day-summary-value">{{ formatCalories(group.summary.calories_kcal) }}</dd>
+        </div>
+        <div class="nutrition-day-summary-item nutrition-day-summary-item--protein">
+          <dt class="nutrition-day-summary-label">{{ t('nutritionVerification.protein') }}</dt>
+          <dd class="nutrition-day-summary-value">{{ formatGrams(group.summary.protein_g) }}</dd>
+        </div>
+        <div class="nutrition-day-summary-item nutrition-day-summary-item--carbohydrates">
+          <dt class="nutrition-day-summary-label">{{ t('nutritionVerification.carbohydrates') }}</dt>
+          <dd class="nutrition-day-summary-value">{{ formatGrams(group.summary.carbohydrates_g) }}</dd>
+        </div>
+        <div class="nutrition-day-summary-item nutrition-day-summary-item--fat">
+          <dt class="nutrition-day-summary-label">{{ t('nutritionVerification.fat') }}</dt>
+          <dd class="nutrition-day-summary-value">{{ formatGrams(group.summary.fat_g) }}</dd>
+        </div>
+      </dl>
+
+      <div class="table-scroll nutrition-food-table-scroll">
+        <table class="nutrition-food-table" :aria-label="t('nutritionVerification.foodName')">
+          <colgroup>
+            <col class="nutrition-food-column--food" />
+            <col class="nutrition-food-column--serving" />
+            <col class="nutrition-food-column--calories" />
+            <col class="nutrition-food-column--protein" />
+            <col class="nutrition-food-column--carbohydrates" />
+            <col class="nutrition-food-column--fat" />
+          </colgroup>
           <thead>
             <tr>
-              <th>{{ t('nutritionVerification.calories') }}</th>
-              <th>{{ t('nutritionVerification.protein') }}</th>
-              <th>{{ t('nutritionVerification.carbohydrates') }}</th>
-              <th>{{ t('nutritionVerification.fat') }}</th>
+              <th scope="col">
+                <h2 class="nutrition-food-section-heading">{{ t('nutritionVerification.foodName') }}</h2>
+              </th>
+              <th scope="col">{{ t('nutritionVerification.serving') }}</th>
+              <th scope="col">{{ t('nutritionVerification.calories') }}</th>
+              <th scope="col">{{ t('nutritionVerification.protein') }}</th>
+              <th scope="col">{{ t('nutritionVerification.carbohydrates') }}</th>
+              <th scope="col">{{ t('nutritionVerification.fat') }}</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td class="number">{{ formatCalories(group.summary.calories_kcal) }}</td>
-              <td class="number">{{ formatGrams(group.summary.protein_g) }}</td>
-              <td class="number">{{ formatGrams(group.summary.carbohydrates_g) }}</td>
-              <td class="number">{{ formatGrams(group.summary.fat_g) }}</td>
+          <tbody
+            v-for="occasion in groupMealEvents(group.events)"
+            :key="occasion.key"
+            class="verification-meal-occasion"
+            :data-meal-type="occasion.type ?? ''"
+          >
+            <tr class="verification-meal-occasion-heading">
+              <th colspan="6" scope="rowgroup" class="verification-meal-occasion-title">
+                {{ formatMealType(occasion.type) }}
+              </th>
+            </tr>
+            <tr
+              v-for="event in occasion.entries"
+              :key="event.event_id"
+              class="verification-event-row"
+              :class="{ 'verification-event-row--navigable': event.detail_available === true }"
+              :tabindex="event.detail_available === true ? 0 : undefined"
+              :aria-keyshortcuts="event.detail_available === true ? 'Enter' : undefined"
+              @click="openMealDetail(event)"
+              @keydown.enter.stop.prevent="openMealDetail(event)"
+            >
+              <td class="verification-event-food"><strong>{{ event.display_name }}</strong></td>
+              <td :data-label="t('nutritionVerification.serving')">{{ formatServing(event) }}</td>
+              <td class="number" :data-label="t('nutritionVerification.calories')">{{ formatCalories(event.calories_kcal) }}</td>
+              <td class="number" :data-label="t('nutritionVerification.protein')">{{ formatGrams(event.protein_g) }}</td>
+              <td class="number" :data-label="t('nutritionVerification.carbohydrates')">{{ formatGrams(event.carbohydrates_g) }}</td>
+              <td class="number" :data-label="t('nutritionVerification.fat')">{{ formatGrams(event.fat_g) }}</td>
+            </tr>
+            <tr v-if="occasion.entries.length > 1 && occasion.totalEnergy !== null" class="verification-meal-subtotal">
+              <th colspan="2" scope="row">{{ t('analysisV2.nutritionOccasionTotal', { type: formatMealType(occasion.type) }) }}</th>
+              <td class="number">{{ formatCalories(occasion.totalEnergy) }}</td>
+              <td colspan="3"></td>
             </tr>
           </tbody>
-        </table>
-      </div>
-
-      <div class="verification-provider-group-header">
-        <div><h2>{{ t('nutritionVerification.events') }}</h2></div>
-      </div>
-      <div class="table-scroll">
-        <table :aria-label="t('nutritionVerification.events')">
-          <thead>
-            <tr>
-              <th>{{ t('nutritionVerification.occurredAt') }}</th>
-              <th>{{ t('nutritionVerification.mealType') }}</th>
-              <th>{{ t('nutritionVerification.foodName') }}</th>
-              <th>{{ t('nutritionVerification.serving') }}</th>
-              <th>{{ t('nutritionVerification.calories') }}</th>
-              <th>{{ t('nutritionVerification.protein') }}</th>
-              <th>{{ t('nutritionVerification.carbohydrates') }}</th>
-              <th>{{ t('nutritionVerification.fat') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(event, eventIndex) in group.events" :key="`${group.provider_key}-${event.local_time}-${event.display_name}-${eventIndex}`" class="verification-event-row">
-              <td>{{ event.local_time || '—' }}</td>
-              <td>{{ event.meal_type || '—' }}</td>
-              <td class="verification-event-food"><strong>{{ event.display_name }}</strong></td>
-              <td>{{ formatServing(event) }}</td>
-              <td class="number">{{ formatCalories(event.calories_kcal) }}</td>
-              <td class="number">{{ formatGrams(event.protein_g) }}</td>
-              <td class="number">{{ formatGrams(event.carbohydrates_g) }}</td>
-              <td class="number">{{ formatGrams(event.fat_g) }}</td>
-            </tr>
-            <tr v-if="!group.events.length">
-              <td colspan="8" class="empty">{{ t('verification.status.no_data') }}</td>
-            </tr>
+          <tbody v-if="!group.events.length">
+            <tr><td colspan="6" class="empty">{{ t('verification.status.no_data') }}</td></tr>
           </tbody>
         </table>
       </div>
     </section>
   </section>
 </template>
+
+<style scoped>
+.nutrition-day-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: .85rem 1.05rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); }
+.nutrition-day-summary-item--energy { --nutrition-summary-color: var(--chart-series-violet); }
+.nutrition-day-summary-item--protein { --nutrition-summary-color: var(--chart-series-teal); }
+.nutrition-day-summary-item--carbohydrates { --nutrition-summary-color: var(--chart-series-blue); }
+.nutrition-day-summary-item--fat { --nutrition-summary-color: var(--chart-series-amber); }
+.nutrition-day-summary-item .nutrition-day-summary-label { color: var(--nutrition-summary-color); }
+.nutrition-day-summary-item { min-width: 0; padding: .65rem .75rem; }
+.nutrition-day-summary-item + .nutrition-day-summary-item { border-left: 1px solid var(--border); }
+.nutrition-day-summary-label { color: var(--muted-strong); font-size: .65rem; line-height: 1.4; overflow-wrap: anywhere; }
+.nutrition-day-summary-value { margin: .25rem 0 0; color: var(--ink); font-size: .95rem; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.nutrition-food-table-scroll { min-width: 0; width: 100%; max-width: 100%; container-type: inline-size; container-name: nutrition-food-table; }
+.nutrition-food-table { width: 100%; max-width: 100%; table-layout: fixed; }
+.nutrition-food-table > colgroup > .nutrition-food-column--food { width: 31.25%; }
+.nutrition-food-table > colgroup > .nutrition-food-column--serving { width: 13.07%; }
+.nutrition-food-table > colgroup > .nutrition-food-column--calories { width: 13.73%; }
+.nutrition-food-table > colgroup > .nutrition-food-column--protein { width: 12.47%; }
+.nutrition-food-table > colgroup > .nutrition-food-column--carbohydrates { width: 20.36%; }
+.nutrition-food-table > colgroup > .nutrition-food-column--fat { width: 9.12%; }
+.nutrition-food-table > thead th { background: var(--surface); text-align: left; }
+.nutrition-food-table > thead th:first-child {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 55%, var(--border));
+  text-transform: none;
+  letter-spacing: normal;
+}
+.nutrition-food-table .verification-event-row > td { text-align: left; }
+.nutrition-food-table .verification-event-food { min-width: 0; }
+.nutrition-food-section-heading { border-left: 0; padding-left: 0; color: var(--ink); text-transform: none; letter-spacing: normal; }
+@container nutrition-food-table (max-width: 700px) {
+  .nutrition-food-table > colgroup { display: none; }
+  .nutrition-food-table,
+  .nutrition-food-table > thead,
+  .nutrition-food-table > tbody { display: block; width: 100%; max-width: 100%; }
+  .nutrition-food-table > thead > tr,
+  .nutrition-food-table > tbody > tr { display: block; }
+  .nutrition-food-table > thead > tr > th { display: block; }
+  .nutrition-food-table > thead > tr > th:first-child { width: 100%; padding: .7rem .75rem; }
+  .nutrition-food-table > thead > tr > th:not(:first-child) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .nutrition-food-table .verification-meal-occasion-heading th { display: block; width: 100%; white-space: normal; }
+  .nutrition-food-table .verification-event-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+  .nutrition-food-table .verification-event-row > td { display: block; min-width: 0; padding: .5rem .75rem; border-bottom: 0; white-space: normal; overflow-wrap: anywhere; }
+  .nutrition-food-table .verification-event-row > .verification-event-food { grid-column: 1 / -1; }
+  .nutrition-food-table .verification-event-row > td.number,
+  .nutrition-food-table .verification-event-row > td:nth-child(2) { white-space: nowrap; }
+  .nutrition-food-table .verification-event-row > td[data-label] { display: flex; justify-content: space-between; align-items: baseline; gap: .4rem; }
+  .nutrition-food-table .verification-event-row > td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: .66rem; font-weight: 400; text-align: left; }
+  .nutrition-food-table .verification-meal-subtotal { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .nutrition-food-table .verification-meal-subtotal th { text-align: left; }
+  .nutrition-food-table .verification-meal-subtotal td { text-align: right; }
+  .nutrition-food-table .verification-meal-subtotal td:empty { display: none; }
+}
+@media (max-width: 480px) {
+  .nutrition-day-summary { margin: .75rem; }
+  .nutrition-day-summary-item { padding: .6rem .4rem; }
+  .nutrition-day-summary-value { font-size: .8rem; }
+}
+.verification-event-row--navigable { cursor: pointer; }
+.verification-event-row--navigable:hover > td { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+:global(:root[data-theme='dark'] .nutrition-food-table .verification-event-row--navigable:hover > td),
+:global(:root[data-theme='dark'] .nutrition-food-table .verification-event-row--navigable:focus-visible > td) {
+  background-color: color-mix(in srgb, var(--accent) 30%, var(--surface) 70%);
+}
+.verification-event-row--navigable:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -2px; }
+.verification-meal-occasion-heading th { text-align: left; color: var(--muted-strong); font-weight: 600; background: var(--surface-soft); }
+.verification-meal-subtotal { border-top: 1px solid var(--border); }
+.verification-meal-subtotal th { color: var(--muted-strong); text-align: right; }
+</style>

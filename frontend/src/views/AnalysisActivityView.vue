@@ -2,13 +2,13 @@
 import { MarkPointComponent } from 'echarts/components'
 import { use } from 'echarts/core'
 import type { EChartsOption } from 'echarts'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
-import { analysisRangeWithinDays } from '../analytics-period'
-import { analysisHubQuery, analysisRangeDayCount, normalizeAnalysisPeriodForCapability, parseAnalysisPeriodSelection, supportedAnalysisPeriods, type AnalysisPeriodSelection } from '../analysis-v2'
-import AnalysisPeriodPicker from '../components/AnalysisPeriodPicker.vue'
+import { analysisRangeWithinDays, periodFromQuery, resolveAllDataRange, type AppliedPeriod, type PeriodLimits, type PeriodRange } from '../analytics-period'
+import { analysisHubQuery, analysisRangeDayCount } from '../analysis-v2'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import { chartColors } from '../chart-theme'
 import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
@@ -21,34 +21,27 @@ const t = i18n.global.t.bind(i18n.global)
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const today = isoDateInTimeZone(auth.user?.timezone ?? 'UTC')
-const number = createNumberFormatter({ maximumFractionDigits: 1 })
-
-function queryString(value: unknown): string | null {
-  if (typeof value === 'string') return value
-  return Array.isArray(value) && typeof value[0] === 'string' ? value[0] : null
-}
+const today = computed(() => isoDateInTimeZone(auth.user?.timezone ?? 'UTC'))
+const number = createNumberFormatter({ maximumFractionDigits: 0 })
 
 const maxDays = 3661
-const presets = supportedAnalysisPeriods(maxDays, true)
-const initialQueryPeriod: AnalysisPeriodSelection = route.query.period == null
-  ? '7' : parseAnalysisPeriodSelection(route.query.period)
-const initialSelection = normalizeAnalysisPeriodForCapability(
-  initialQueryPeriod,
-  initialQueryPeriod === 'custom' && queryString(route.query.start) && queryString(route.query.end)
-    ? { start: queryString(route.query.start)!, end: queryString(route.query.end)! } : null,
-  maxDays, today,
-)
-const period = ref<AnalysisPeriodSelection>(initialSelection.period)
-const customRange = ref<{ start: string; end: string } | null>(
-  initialSelection.period === 'custom' ? initialSelection.range : null,
-)
-const normalizedSelection = computed(() => normalizeAnalysisPeriodForCapability(
-  period.value, customRange.value, maxDays, today,
-))
-const range = computed(() => normalizedSelection.value.range)
-const periodDays = computed(() => analysisRangeDayCount(range.value))
+const limits = computed<PeriodLimits>(() => ({ minDays: 1, maxDays, customRange: true, maxDate: today.value }))
 const response = ref<VerificationActivityResponse | null>(null)
+const capability = computed(() => response.value?.period_capabilities)
+const allRange = computed(() => resolveAllDataRange(capability.value, response.value?.end_date ?? today.value, limits.value))
+const committedAllRange = ref<PeriodRange | null>(null)
+let requestedInitialAll = route.query.period === 'all'
+const initialSelection = periodFromQuery(route.query, limits.value, today.value, null)
+const period = ref(initialSelection.period)
+const customRange = ref<PeriodRange | null>({ start: initialSelection.start, end: initialSelection.end })
+const normalizedSelection = computed(() => periodFromQuery(
+  { ...(customRange.value ?? {}), period: period.value }, limits.value, today.value,
+  period.value === 'all' ? committedAllRange.value : allRange.value,
+))
+const range = computed<PeriodRange>(() => ({
+  start: normalizedSelection.value.start, end: normalizedSelection.value.end,
+}))
+const periodDays = computed(() => analysisRangeDayCount(range.value))
 const loading = ref(true)
 const error = ref('')
 let latestLoadId = 0
@@ -59,14 +52,9 @@ const readings = computed(() => (response.value?.days ?? []).flatMap((day) => {
     || !Number.isFinite(canonical.active_energy_kcal)) return []
   return [{ date: day.date, value: canonical.active_energy_kcal }]
 }).sort((left, right) => left.date.localeCompare(right.date)))
-const coverage = computed(() => t('analysisV2.activityCoverage', {
-  count: number.format(readings.value.length),
-  total: number.format(periodDays.value),
-}))
 const average = computed(() => readings.value.length
   ? readings.value.reduce((sum, reading) => sum + reading.value, 0) / readings.value.length
   : null)
-const coverageIsComplete = computed(() => readings.value.length === periodDays.value)
 const chartDates = computed(() => Array.from(
   { length: periodDays.value },
   (_, index) => shiftIsoDate(range.value.start, index),
@@ -81,6 +69,8 @@ const chartOption = computed<EChartsOption>(() => {
       backgroundColor: palette.tooltipBackground,
       borderColor: palette.tooltipBorder,
       textStyle: { color: palette.tooltipInk },
+      valueFormatter: (value) => typeof value === 'number' && Number.isFinite(value)
+        ? `${number.format(value)} kcal` : '–',
     },
     xAxis: {
       type: 'category',
@@ -95,7 +85,7 @@ const chartOption = computed<EChartsOption>(() => {
       axisLine: { lineStyle: { color: palette.axis } },
       name: 'kcal',
       nameTextStyle: { color: palette.label },
-      axisLabel: { color: palette.label },
+      axisLabel: { color: palette.label, formatter: (value: string | number) => number.format(Number(value)) },
       splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
     },
     series: [{
@@ -129,7 +119,14 @@ async function syncQuery(): Promise<void> {
 
 async function load(): Promise<void> {
   const requestId = ++latestLoadId
-  if (!analysisRangeWithinDays(range.value.start, range.value.end, maxDays) || range.value.end > today) {
+  const userId = auth.user?.id
+  if (!userId) {
+    response.value = null
+    error.value = ''
+    loading.value = false
+    return
+  }
+  if (!analysisRangeWithinDays(range.value.start, range.value.end, maxDays) || range.value.end > today.value) {
     response.value = null
     error.value = t('analysisV2.invalidRange')
     loading.value = false
@@ -139,7 +136,7 @@ async function load(): Promise<void> {
   error.value = ''
   response.value = null
   await syncQuery()
-  if (requestId !== latestLoadId) return
+  if (requestId !== latestLoadId || auth.user?.id !== userId) return
   const params = new URLSearchParams({
     start: range.value.start,
     end: range.value.end,
@@ -149,48 +146,91 @@ async function load(): Promise<void> {
     const result = await api<VerificationActivityResponse>(
       `/analytics/verification/activity?${params.toString()}`,
     )
-    if (requestId === latestLoadId) response.value = result
+    if (requestId !== latestLoadId || auth.user?.id !== userId) return
+    response.value = result
+    const admitted = allRange.value
+    if (requestedInitialAll) {
+      requestedInitialAll = false
+      if (admitted) {
+        applyPeriod({ ...admitted, period: 'all' })
+        return
+      }
+    }
+    if (period.value === 'all' && !admitted) {
+      committedAllRange.value = null
+      applyPeriod(periodFromQuery({ period: '30' }, limits.value, today.value, null))
+    }
   } catch (cause) {
-    if (requestId === latestLoadId) error.value = localizeApiError(cause, 'analysisV2.loadFailed')
+    if (requestId === latestLoadId && auth.user?.id === userId) {
+      requestedInitialAll = false
+      error.value = localizeApiError(cause, 'analysisV2.loadFailed')
+    }
   } finally {
-    if (requestId === latestLoadId) loading.value = false
+    if (requestId === latestLoadId && auth.user?.id === userId) loading.value = false
   }
 }
 
-function applyPeriod(value: { period: AnalysisPeriodSelection; start: string; end: string }): void {
-  const normalized = normalizeAnalysisPeriodForCapability(
-    value.period, value.period === 'custom' ? value : null, maxDays, today,
-  )
-  const changed = normalized.range.start !== range.value.start || normalized.range.end !== range.value.end
-    || normalized.period !== period.value
-  period.value = normalized.period
-  customRange.value = normalized.period === 'custom' ? normalized.range : null
+function applyPeriod(value: AppliedPeriod): void {
+  requestedInitialAll = false
+  const selected = periodFromQuery(value, limits.value, today.value, allRange.value)
+  const changed = selected.start !== range.value.start || selected.end !== range.value.end
+    || selected.period !== period.value
+  committedAllRange.value = selected.period === 'all'
+    ? { start: selected.start, end: selected.end } : null
+  period.value = selected.period
+  customRange.value = selected.period === 'all' ? null : selected
   if (changed) void load()
 }
 
 watch(
   () => [route.query.start, route.query.end, route.query.period] as const,
   ([nextStart, nextEnd, nextPeriod]) => {
-    const start = queryString(nextStart)
-    const end = queryString(nextEnd)
-    const requested = nextPeriod == null ? '7' : parseAnalysisPeriodSelection(nextPeriod)
-    const normalized = normalizeAnalysisPeriodForCapability(
-      requested, requested === 'custom' && start && end ? { start, end } : null,
-      maxDays, today,
+    const currentQuery = analysisHubQuery(period.value, range.value)
+    if (nextPeriod === currentQuery.period && nextStart === currentQuery.start && nextEnd === currentQuery.end) return
+    requestedInitialAll = false
+    const selected = periodFromQuery(
+      route.query, limits.value, today.value,
+      period.value === 'all' ? committedAllRange.value : allRange.value,
     )
-    const nextPeriodValue = normalized.period
-    const nextCustomRange = nextPeriodValue === 'custom' ? normalized.range : null
-    const nextRange = normalized.range
-    const changed = nextPeriodValue !== period.value
-      || nextRange.start !== range.value.start || nextRange.end !== range.value.end
-    period.value = nextPeriodValue
-    customRange.value = nextCustomRange
+    const changed = selected.period !== period.value
+      || selected.start !== range.value.start || selected.end !== range.value.end
+    committedAllRange.value = selected.period === 'all'
+      ? { start: selected.start, end: selected.end } : null
+    period.value = selected.period
+    customRange.value = selected.period === 'all' ? null : selected
     if (changed) void load()
     else void syncQuery()
   },
 )
 
+watch(
+  () => [auth.user?.id ?? null, auth.user?.timezone ?? 'UTC'] as const,
+  ([userId, timezone], [previousUserId, previousTimezone]) => {
+    if (userId === previousUserId && timezone === previousTimezone) return
+    const accountChanged = userId !== previousUserId
+    latestLoadId += 1
+    response.value = null
+    error.value = ''
+    if (accountChanged) committedAllRange.value = null
+    requestedInitialAll = route.query.period === 'all'
+    if (!userId) {
+      loading.value = false
+      return
+    }
+    const selected = periodFromQuery(
+      route.query, limits.value, today.value,
+      accountChanged ? null : committedAllRange.value,
+    )
+    period.value = selected.period
+    customRange.value = selected.period === 'all' ? null : selected
+    loading.value = true
+    void load()
+  },
+  { flush: 'sync' },
+)
+
 onMounted(() => { void load() })
+onBeforeUnmount(() => { latestLoadId += 1 })
 </script>
 
 <template>
@@ -202,19 +242,22 @@ onMounted(() => { void load() })
       <span aria-hidden="true">›</span>
       <span aria-current="page">{{ t('analysisV2.activeEnergyTitle') }}</span>
     </nav>
-    <div class="page-heading">
+    <div class="page-heading page-heading--period">
       <div>
         <h1 class="analysis-detail-title"><span class="analysis-detail-icon analysis-detail-icon--activity" aria-hidden="true">↗</span>{{ t('analysisV2.activeEnergyTitle') }}</h1>
         <p>{{ t('analysisV2.activeEnergyDescription') }}</p>
       </div>
-      <AnalysisPeriodPicker
+      <PeriodPicker
         :start="range.start"
         :end="range.end"
         :today="today"
         :period="period"
-        :presets="presets"
-        :custom-range="true"
-        :max-days="maxDays"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :max-date="today"
+        :period-capabilities="capability"
+        :all-range="allRange"
         @apply="applyPeriod"
       />
     </div>
@@ -229,14 +272,6 @@ onMounted(() => { void load() })
         <div class="activity-summary-primary">
           <h2>{{ t('analysisV2.activeEnergyTitle') }}</h2>
           <strong>{{ average === null ? '–' : `${number.format(average)} kcal` }}</strong>
-          <span
-            class="activity-coverage"
-            :class="coverageIsComplete ? 'activity-coverage--complete' : 'activity-coverage--incomplete'"
-            :data-coverage-status="coverageIsComplete ? 'complete' : 'incomplete'"
-          >
-            <span class="activity-coverage-icon" aria-hidden="true">{{ coverageIsComplete ? '✓' : '!' }}</span>
-            {{ coverage }}
-          </span>
         </div>
         <span class="activity-range">{{ formatGermanDate(range.start) }} – {{ formatGermanDate(range.end) }}</span>
       </section>
@@ -258,7 +293,7 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
-.analysis-detail-page { display: grid; gap: 1rem; }
+.analysis-detail-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 .analysis-detail-page > .page-heading { margin-bottom: 0; }
 .analysis-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; }
 .analysis-breadcrumbs a { color: inherit; }
@@ -267,10 +302,6 @@ onMounted(() => { void load() })
 .activity-summary-primary { display: grid; gap: .3rem; }
 .activity-summary h2 { margin: 0; color: var(--muted); font-size: .95rem; }
 .activity-summary strong { font-size: 1.5rem; }
-.activity-coverage { display: inline-flex; align-items: center; gap: .35rem; font-size: .9rem; }
-.activity-coverage--complete { color: var(--success); }
-.activity-coverage--incomplete { color: var(--warning); }
-.activity-coverage-icon { font-weight: 750; }
 .activity-range { color: var(--muted); }
 .activity-reading-list h2 { margin-top: 0; font-size: 1.05rem; }
 .activity-reading-list ul { list-style: none; margin: 0; padding: 0; }

@@ -59,7 +59,7 @@ onBeforeUnmount(disposeChart)
 <template>
   <section class="card chart-card">
     <div class="chart-card-header">
-      <h2>{{ title }}</h2>
+      <h2><slot name="title">{{ title }}</slot></h2>
       <slot name="header-actions"></slot>
     </div>
     <div v-if="empty" class="empty">{{ t('charts.empty') }}</div>

@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
-import { analysisHref, analysisHubQuery, analysisIconSymbol, type AnalysisPeriodSelection, type LocalizedAnalysisPresentation } from '../analysis-v2'
+import {
+  AnalysisIcon, analysisHref, analysisHubQuery, canonicalAnalysisCardId,
+  type LocalizedAnalysisPresentation,
+} from '../analysis-v2'
+import type { PeriodSelection } from '../analytics-period'
 import { createNumberFormatter, i18n } from '../i18n'
 import type { AnalysisMicronutrientResponse, AnalysisRegistryEntry } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
+const route = useRoute()
 
 interface CatalogEntry {
   entry: AnalysisRegistryEntry
@@ -17,16 +22,20 @@ interface CatalogEntry {
 const props = withDefaults(defineProps<{
   entries: readonly CatalogEntry[]
   selectedKeys: readonly string[]
-  period: AnalysisPeriodSelection
+  period: PeriodSelection
   saving: boolean
   periodRange: { start: string; end: string }
   periodDays: number
   micronutrients?: AnalysisMicronutrientResponse | null
+  hubPresentation?: boolean
   limit?: number
-}>(), { limit: Number.POSITIVE_INFINITY, micronutrients: null })
+}>(), { limit: Number.POSITIVE_INFINITY, micronutrients: null, hubPresentation: false })
 
-const emit = defineEmits<{ add: [key: string] }>()
+const emit = defineEmits<{ add: [key: string]; remove: [key: string] }>()
 const shownEntries = computed(() => props.entries.slice(0, props.limit))
+function isSelected(entry: AnalysisRegistryEntry): boolean {
+  return props.selectedKeys.includes(canonicalAnalysisCardId(entry.analysis_key))
+}
 
 const categoryPath: Record<AnalysisRegistryEntry['category_key'], string> = {
   body: '/analyse/koerper',
@@ -43,7 +52,11 @@ function entryPath({ entry, presentation }: CatalogEntry): string {
 }
 
 function entryQuery() {
-  return analysisHubQuery(props.period, props.periodRange)
+  return {
+    ...route.query, ...analysisHubQuery(props.period, props.periodRange),
+    start: props.period === 'custom' ? props.periodRange.start : undefined,
+    end: props.period === 'custom' ? props.periodRange.end : undefined,
+  }
 }
 
 function iconRole(entry: AnalysisRegistryEntry): string {
@@ -55,7 +68,13 @@ function iconRole(entry: AnalysisRegistryEntry): string {
   if (entry.status === 'coming_soon') return 'slate'
   return 'slate'
 }
-type CoverageStatus = { text: string; status: 'complete' | 'incomplete' }
+type CoverageStatus = { text: string; status?: 'complete' | 'incomplete' }
+
+function hubMicronutrientDataBasis(days: number): string {
+  if (days === 0) return t('analysisV2.hubNoDataPeriod')
+  const key = days === 1 ? 'analysisV2.hubMicronutrientDataDay' : 'analysisV2.hubMicronutrientDataDays'
+  return t(key, { count: number.format(days) })
+}
 
 const micronutrientCoverage = computed(() => {
   const byKey = new Map<string, CoverageStatus>()
@@ -64,15 +83,17 @@ const micronutrientCoverage = computed(() => {
     if (entry.category_key !== 'micronutrients') continue
     const metric = metrics.find((item) => item.metric_key === entry.analysis_key)
     if (!metric) continue
-    byKey.set(entry.analysis_key, {
-      text: metric.days_with_data === 0
-        ? t('analysisV2.noDataPeriod')
-        : t('analysisV2.daysCoverage', {
-          count: number.format(metric.days_with_data),
-          total: number.format(props.periodDays),
-        }),
-      status: metric.days_with_data === props.periodDays ? 'complete' : 'incomplete',
-    })
+    byKey.set(entry.analysis_key, props.hubPresentation
+      ? { text: hubMicronutrientDataBasis(metric.days_with_data) }
+      : {
+        text: metric.days_with_data === 0
+          ? t('analysisV2.noDataPeriod')
+          : t('analysisV2.daysCoverage', {
+            count: number.format(metric.days_with_data),
+            total: number.format(props.periodDays),
+          }),
+        status: metric.days_with_data === props.periodDays ? 'complete' : 'incomplete',
+      })
   }
   return byKey
 })
@@ -89,13 +110,13 @@ const micronutrientCoverage = computed(() => {
       :aria-disabled="entry.status === 'coming_soon' ? 'true' : undefined"
     >
       <span class="analysis-catalog-icon" :class="`analysis-catalog-icon--${iconRole(entry)}`" aria-hidden="true">
-        {{ analysisIconSymbol(presentation.icon) }}
+        <AnalysisIcon :icon="presentation.icon" />
       </span>
       <div class="analysis-catalog-copy">
         <h3 class="analysis-catalog-title">
           <RouterLink
             v-if="entry.status === 'available' && entry.detail_capable"
-            :to="{ path: entryPath({ entry, presentation }), query: entryQuery() }"
+            :to="{ path: entryPath({ entry, presentation }), query: entryQuery(), hash: entry.category_key === 'fluid' ? '#analysis-category-fluid' : route.hash }"
           >
             {{ presentation.label }}
           </RouterLink>
@@ -104,31 +125,47 @@ const micronutrientCoverage = computed(() => {
         <span v-if="entry.status === 'coming_soon'" class="analysis-catalog-status">
           {{ t('analysisV2.comingSoon') }}
         </span>
-        <span v-else-if="selectedKeys.includes(entry.analysis_key)" class="analysis-catalog-selected" :data-analysis-selected="entry.analysis_key" role="status">
+        <span v-else-if="isSelected(entry)" class="analysis-catalog-selected" :data-analysis-selected="canonicalAnalysisCardId(entry.analysis_key)" role="status">
           <span aria-hidden="true">✓</span> {{ t('analysisV2.inMyAnalyses') }}
         </span>
         <span
           v-else-if="entry.category_key === 'micronutrients' && micronutrientCoverage.has(entry.analysis_key)"
           class="analysis-catalog-status"
-          :class="`analysis-catalog-status--${micronutrientCoverage.get(entry.analysis_key)?.status}`"
+          :class="micronutrientCoverage.get(entry.analysis_key)?.status
+            ? `analysis-catalog-status--${micronutrientCoverage.get(entry.analysis_key)?.status}`
+            : undefined"
           :data-coverage-status="micronutrientCoverage.get(entry.analysis_key)?.status"
         >
-          <span class="analysis-catalog-status-icon" aria-hidden="true">
+          <span
+            v-if="micronutrientCoverage.get(entry.analysis_key)?.status"
+            class="analysis-catalog-status-icon"
+            aria-hidden="true"
+          >
             {{ micronutrientCoverage.get(entry.analysis_key)?.status === 'complete' ? '✓' : '!' }}
           </span>
           {{ micronutrientCoverage.get(entry.analysis_key)?.text }}
         </span>
       </div>
       <button
-        v-if="entry.status === 'available' && entry.card_capable && !selectedKeys.includes(entry.analysis_key)"
+        v-if="entry.status === 'available' && entry.card_capable && !isSelected(entry)"
         class="button secondary analysis-catalog-action"
         type="button"
         :data-analysis-add="entry.analysis_key"
         :aria-label="t('analysisV2.addCard', { label: presentation.label })"
         :disabled="saving"
-        @click="emit('add', entry.analysis_key)"
+        @click="emit('add', canonicalAnalysisCardId(entry.analysis_key))"
       >
         <span aria-hidden="true">+</span> {{ t('analysisV2.add') }}
+      </button>
+      <button
+        v-else-if="isSelected(entry)"
+        class="button secondary analysis-catalog-action"
+        type="button"
+        :aria-label="t('analysisV2.removeCard', { label: presentation.label })"
+        :disabled="saving"
+        @click="emit('remove', canonicalAnalysisCardId(entry.analysis_key))"
+      >
+        <span aria-hidden="true">−</span> {{ t('analysisV2.remove') }}
       </button>
     </article>
   </div>

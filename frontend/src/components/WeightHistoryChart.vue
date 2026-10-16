@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { EChartsOption } from 'echarts'
+import { graphic, type EChartsOption } from 'echarts'
 import { computed } from 'vue'
 
 import { chartColors } from '../chart-theme'
@@ -15,6 +15,33 @@ const props = withDefaults(defineProps<{
   dateRange?: { start: string; end: string }
 }>(), { title: undefined, height: 300, dateRange: undefined })
 const t = i18n.global.t.bind(i18n.global)
+function withAlpha(color: string, alpha: number): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(color)
+  if (!match) return color
+  const value = Number.parseInt(match[1]!, 16)
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`
+}
+
+const chartData = computed<Array<[number, number]>>(() => {
+  const dateRange = props.dateRange
+  return props.points
+    .filter((point) => !dateRange || (point.date >= dateRange.start && point.date <= dateRange.end))
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((point): [number, number] => [
+      Date.parse(`${point.date}T00:00:00Z`), point.weight_kg,
+    ])
+})
+const yDomain = computed(() => {
+  let minimum = Number.POSITIVE_INFINITY
+  let maximum = Number.NEGATIVE_INFINITY
+  for (const [, value] of chartData.value) {
+    minimum = Math.min(minimum, value)
+    maximum = Math.max(maximum, value)
+  }
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return null
+  const padding = Math.max((maximum - minimum) * 0.12, 0.5)
+  return { minimum: minimum - padding, maximum: maximum + padding }
+})
 const chartOption = computed<EChartsOption>(() => {
   const palette = chartColors.value
   return {
@@ -43,6 +70,8 @@ const chartOption = computed<EChartsOption>(() => {
       axisLine: { lineStyle: { color: palette.axis } },
       name: 'kg',
       scale: true,
+      min: yDomain.value?.minimum,
+      max: yDomain.value?.maximum,
       nameTextStyle: { color: palette.label },
       axisLabel: { color: palette.label },
       splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
@@ -50,14 +79,22 @@ const chartOption = computed<EChartsOption>(() => {
     series: [{
       name: t('analysisV2.weightTitle'),
       type: 'line',
-      smooth: false,
+      smooth: 0.4,
+      smoothMonotone: 'x',
+      connectNulls: true,
       showSymbol: true,
       symbol: 'circle',
       symbolSize: 8,
-      data: props.points.map((point) => [Date.parse(`${point.date}T00:00:00Z`), point.weight_kg]),
-      lineStyle: { color: palette.violet, width: 2 },
+      data: chartData.value,
+      lineStyle: { color: palette.violet, width: 2, cap: 'round', join: 'round' },
       itemStyle: { color: palette.violet },
-      areaStyle: { color: palette.violet, opacity: 0.12 },
+      areaStyle: {
+        color: new graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: withAlpha(palette.violet, 0.24) },
+          { offset: 0.6, color: withAlpha(palette.violet, 0.14) },
+          { offset: 1, color: withAlpha(palette.violet, 0.04) },
+        ], false),
+      },
     }],
   }
 })

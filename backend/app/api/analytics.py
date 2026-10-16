@@ -32,8 +32,10 @@ from app.analytics.nutrition_analysis import (
     MAX_ANALYSIS_NUTRITION_DAYS,
     AnalysisNutritionReadError,
     read_analysis_nutrition,
+    read_nutrition_meal_detail,
 )
 from app.analytics.nutrition_micronutrients import (
+    MAX_ANALYSIS_MICRONUTRIENT_DAYS,
     AnalysisMicronutrientReadError,
     read_analysis_micronutrients,
 )
@@ -62,7 +64,11 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.analytics.trends_canonical import run_trends_canonical_read
-from app.analytics.verification import read_activity_verification, read_nutrition_verification
+from app.analytics.verification import (
+    nutrition_meal_detail_sources,
+    read_activity_verification,
+    read_nutrition_verification,
+)
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
@@ -77,7 +83,6 @@ from app.models import (
     WithingsConnection,
     YazioConnection,
 )
-from app.nutrition.resolution import MAX_PROVIDER_PERIOD_DAYS
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
 from app.problem_types import (
@@ -88,6 +93,7 @@ from app.problem_types import (
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
     AnalysisMicronutrientResponse,
+    AnalysisNutritionMealResponse,
     AnalysisNutritionResponse,
     AnalysisPeriodCapability,
     AnalysisRegistryEntryResponse,
@@ -212,7 +218,10 @@ def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
 
 
 def _preferred_nutrition_provider(
-    db: Session, user_id: UUID
+    db: Session,
+    user_id: UUID,
+    *,
+    include_analysis_demo: bool = False,
 ) -> NutritionProviderSelection | None:
     if (
         resolve_nutrition_provider is _DEFAULT_RESOLVE_NUTRITION_PROVIDER
@@ -220,7 +229,11 @@ def _preferred_nutrition_provider(
     ):
         return None
     try:
-        return resolve_nutrition_provider(db, user_id=user_id)
+        return resolve_nutrition_provider(
+            db,
+            user_id=user_id,
+            include_analysis_demo=include_analysis_demo,
+        )
     except AttributeError:
         if not hasattr(db, "get"):
             return None
@@ -373,8 +386,14 @@ def analysis_nutrition_micronutrients(
     db: Session = Depends(get_db),
 ) -> AnalysisMicronutrientResponse:
     start, end = _range(start, end, user.timezone, default_days=30)
-    if (end - start).days >= MAX_PROVIDER_PERIOD_DAYS:
-        raise HTTPException(status_code=422, detail="Datumsbereich darf höchstens 31 Tage umfassen")
+    if (end - start).days >= MAX_ANALYSIS_MICRONUTRIENT_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Datumsbereich darf höchstens "
+                f"{MAX_ANALYSIS_MICRONUTRIENT_DAYS} Tage umfassen"
+            ),
+        )
     if metric_key is not None and metric_key not in MICRONUTRIENT_BY_METRIC:
         raise HTTPException(status_code=422, detail="Unbekannter Mikronährstoff")
 
@@ -414,6 +433,30 @@ def analysis_nutrition_micronutrients(
             detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
+
+
+@router.get(
+    "/analytics/nutrition/analysis/meals/{event_id}",
+    response_model=AnalysisNutritionMealResponse,
+)
+def nutrition_meal_detail(
+    event_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisNutritionMealResponse:
+    try:
+        persisted_id = UUID(event_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Eintrag nicht verfügbar") from None
+    meal = read_nutrition_meal_detail(
+        db,
+        user_id=user.id,
+        event_id=persisted_id,
+        allowed_sources=nutrition_meal_detail_sources(db, user.id),
+    )
+    if meal is None:
+        raise HTTPException(status_code=404, detail="Eintrag nicht verfügbar")
+    return meal
 
 
 @router.get(
@@ -578,6 +621,11 @@ def weight(
                 "minimum_kg": None,
                 "maximum_kg": None,
             },
+            # No complete reader start boundary is available for all-data selection.
+            "period_capabilities": {
+                "supports_all_data": False,
+                "all_data_start_date": None,
+            },
         }
     provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
     source_identifier: str | None = None
@@ -695,6 +743,11 @@ def weight(
         "selected_provider": {"provider_key": selection.provider_key},
         "points": point_payload,
         "summary": summary,
+        # The requested window does not establish a complete reader start boundary.
+        "period_capabilities": {
+            "supports_all_data": False,
+            "all_data_start_date": None,
+        },
     }
 
 @router.get(
@@ -867,6 +920,11 @@ def micronutrients(
                 enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
+    # No complete reader start boundary; Legacy period=all acceptance is separate.
+    response["period_capabilities"] = {
+        "supports_all_data": False,
+        "all_data_start_date": None,
+    }
     return response
 
 
@@ -875,7 +933,9 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     today = datetime.now(ZoneInfo(user.timezone)).date()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
-    selection = _preferred_nutrition_provider(db, user.id)
+    selection = _preferred_nutrition_provider(
+        db, user.id, include_analysis_demo=True,
+    )
     if selection is None:
         points = _legacy_daily_points(db, user, week_start - timedelta(days=7), week_end)
     else:
@@ -1136,7 +1196,9 @@ def trends(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
-    selection = _preferred_nutrition_provider(db, user.id)
+    selection = _preferred_nutrition_provider(
+        db, user.id, include_analysis_demo=True,
+    )
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
         points = _legacy_daily_points(db, user, start, end)
@@ -1204,6 +1266,11 @@ def trends(
         "points": output,
         "incomplete_included": include_incomplete,
         "budget_balance": historical_budget_balance,
+        # No complete reader start boundary; Legacy period=all acceptance is separate.
+        "period_capabilities": {
+            "supports_all_data": False,
+            "all_data_start_date": None,
+        },
     }
 
 

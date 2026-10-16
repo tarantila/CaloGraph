@@ -42,6 +42,7 @@ from app.schemas import (
     AnalysisNutritionMealResponse,
     AnalysisNutritionResponse,
     AnalysisSelectedProviderResponse,
+    ReaderPeriodCapabilities,
 )
 
 MAX_ANALYSIS_NUTRITION_DAYS = 365
@@ -196,6 +197,178 @@ def _safe_field(
     )
 
 
+def _read_safe_meals(
+    db: Session,
+    *,
+    user_id: UUID,
+    days_by_source: Mapping[tuple[str, UUID], list[date]],
+    event_ids: set[UUID] | None = None,
+) -> list[AnalysisNutritionMealResponse]:
+    """Read named event evidence in one batch, using the Analysis safety contract."""
+    if not days_by_source or event_ids == set():
+        return []
+    event = NutritionConsumptionEvent
+    source = NutritionSourceObservation
+    snapshot_source = aliased(NutritionSourceObservation)
+    scopes = or_(*(
+        and_(event.provider_key == provider_key, event.source_instance_id == source_id,
+             event.local_date.in_(days))
+        for (provider_key, source_id), days in days_by_source.items()
+    ))
+    event_rows = db.execute(
+        select(event, source, NutritionFoodSnapshot, snapshot_source)
+        .join(source, and_(
+            event.source_observation_id == source.id,
+            event.user_id == source.user_id,
+            event.provider_key == source.provider_key,
+            event.source_instance_id == source.source_instance_id,
+        ))
+        .outerjoin(NutritionFoodSnapshot, and_(
+            event.food_snapshot_id == NutritionFoodSnapshot.id,
+            event.user_id == NutritionFoodSnapshot.user_id,
+        ))
+        .outerjoin(snapshot_source, and_(
+            NutritionFoodSnapshot.source_observation_id == snapshot_source.id,
+            NutritionFoodSnapshot.user_id == snapshot_source.user_id,
+            event.provider_key == snapshot_source.provider_key,
+            event.source_instance_id == snapshot_source.source_instance_id,
+            not_(exists(select(1).where(
+                NutritionSourceTombstone.user_id == snapshot_source.user_id,
+                NutritionSourceTombstone.provider_key == snapshot_source.provider_key,
+                NutritionSourceTombstone.source_instance_id == snapshot_source.source_instance_id,
+                or_(
+                    NutritionSourceTombstone.source_observation_id == snapshot_source.id,
+                    and_(
+                        NutritionSourceTombstone.source_observation_id.is_(None),
+                        NutritionSourceTombstone.source_namespace == snapshot_source.source_namespace,
+                        NutritionSourceTombstone.source_record_id.is_not(None),
+                        NutritionSourceTombstone.source_record_id == snapshot_source.source_record_id,
+                    ),
+                ),
+            ))),
+        ))
+        .where(
+            event.user_id == user_id,
+            source.user_id == user_id,
+            scopes,
+            event.id.in_(event_ids) if event_ids is not None else True,
+            event.presence_state.in_(_PRESENT),
+            event.resolution_state == ResolutionState.RESOLVED.value,
+            event.lineage_state.in_(_SAFE_LINEAGE),
+            event.coverage_state.in_((CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)),
+            source.presence_state.in_(_PRESENT),
+            source.resolution_state == ResolutionState.RESOLVED.value,
+            source.lineage_state.in_(_SAFE_LINEAGE),
+            source.coverage_state.in_((CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)),
+            _current_event_condition(event),
+            _current_source_condition(source),
+            _not_tombstoned(event, source),
+        )
+        .order_by(event.local_date, event.canonical_start_at, event.id)
+    ).all()
+    if not event_rows:
+        return []
+    source_ids = {source_row.id for _, source_row, _, _ in event_rows}
+    fields = db.execute(
+        select(NutritionFieldObservation, source)
+        .join(source, and_(
+            NutritionFieldObservation.source_observation_id == source.id,
+            NutritionFieldObservation.user_id == source.user_id,
+        ))
+        .where(
+            NutritionFieldObservation.user_id == user_id,
+            source.user_id == user_id,
+            source.id.in_(source_ids),
+            or_(*(
+                and_(source.provider_key == provider_key,
+                     source.source_instance_id == source_id)
+                for provider_key, source_id in days_by_source
+            )),
+            NutritionFieldObservation.metric_key.in_(DAILY_PROJECTION_METRICS),
+        )
+        .order_by(NutritionFieldObservation.created_at, NutritionFieldObservation.id)
+    ).all()
+    parent_ids = {
+        field.derived_from_field_observation_id
+        for field, _ in fields if field.derived_from_field_observation_id is not None
+    }
+    parents: dict[UUID, NutritionFieldObservation] = {}
+    if parent_ids:
+        parent_source = aliased(NutritionSourceObservation)
+        parents = {
+            field.id: field
+            for field in db.scalars(
+                select(NutritionFieldObservation)
+                .join(parent_source, and_(
+                    NutritionFieldObservation.source_observation_id == parent_source.id,
+                    NutritionFieldObservation.user_id == parent_source.user_id,
+                ))
+                .where(
+                    NutritionFieldObservation.user_id == user_id,
+                    parent_source.user_id == user_id,
+                    NutritionFieldObservation.id.in_(parent_ids),
+                    or_(*(
+                        and_(parent_source.provider_key == provider_key,
+                             parent_source.source_instance_id == source_id)
+                        for provider_key, source_id in days_by_source
+                    )),
+                )
+            )
+        }
+    fields_by_source: dict[UUID, list[NutritionFieldObservation]] = defaultdict(list)
+    for field, _ in fields:
+        fields_by_source[field.source_observation_id].append(field)
+    meals: list[AnalysisNutritionMealResponse] = []
+    for item, observation, snapshot, snapshot_observation in event_rows:
+        # A foreign-source or deleted snapshot cannot supply a meal name.
+        name = (
+            snapshot.name.strip()
+            if snapshot is not None and snapshot_observation is not None
+            and snapshot.name and snapshot.name.strip()
+            and snapshot.is_deleted is not True
+            else None
+        )
+        if name is None:
+            metadata_key = (
+                "food_display_name" if item.provider_key == "google_health"
+                else "food_name" if item.provider_key == "apple_health"
+                else None
+            )
+            if metadata_key is not None:
+                name = _metadata_text(observation.provider_metadata or {}, metadata_key)
+        if name is None:
+            continue
+        values: dict[str, Decimal] = {}
+        for field in fields_by_source[item.source_observation_id]:
+            if (
+                _safe_field(field, observation, item, snapshot, parents)
+                and field.metric_key is not None
+                and field.canonical_value is not None
+            ):
+                values.setdefault(field.metric_key, field.canonical_value)
+        meal_type = _normalized_meal_type(item.provider_key, item.daytime)
+        if meal_type is None and item.daytime is None:
+            meal_type = _normalized_meal_type(
+                item.provider_key, _metadata_text(observation.provider_metadata or {}, "meal_type"),
+            )
+        serving_is_safe = (
+            item.amount is not None and item.amount >= 0
+            and item.amount_unit is not None and bool(item.amount_unit.strip())
+        )
+        meals.append(AnalysisNutritionMealResponse(
+            event_id=item.id,
+            local_date=item.local_date,
+            serving_amount=item.amount if serving_is_safe else None,
+            serving_unit=item.amount_unit if serving_is_safe else None,
+            provider_key=item.provider_key,
+            local_time=_nutrition_local_time(item),
+            meal_type=meal_type,
+            display_name=name,
+            **{key: values.get(key) for key in DAILY_PROJECTION_METRICS},
+        ))
+    return meals
+
+
 def _named_meals(
     db: Session,
     *,
@@ -206,9 +379,6 @@ def _named_meals(
 ) -> dict[date, list[AnalysisNutritionMealResponse]]:
     """Read only winning event scopes, in bounded windows and without N+1 queries."""
     meals: dict[date, list[AnalysisNutritionMealResponse]] = defaultdict(list)
-    event = NutritionConsumptionEvent
-    source = NutritionSourceObservation
-    snapshot_source = aliased(NutritionSourceObservation)
     cursor = start
     while cursor <= end:
         chunk_end = (
@@ -221,166 +391,61 @@ def _named_meals(
             if day in winners:
                 provider_key, source_id, _ = winners[day]
                 days_by_source[provider_key, source_id].append(day)
-        if not days_by_source:
-            if chunk_end == end:
-                break
-            cursor = chunk_end + timedelta(days=1)
-            continue
-        scopes = or_(*(
-            and_(event.provider_key == provider_key, event.source_instance_id == source_id,
-                 event.local_date.in_(days))
-            for (provider_key, source_id), days in days_by_source.items()
-        ))
-        event_rows = db.execute(
-            select(event, source, NutritionFoodSnapshot, snapshot_source)
-            .join(source, and_(
-                event.source_observation_id == source.id,
-                event.user_id == source.user_id,
-                event.provider_key == source.provider_key,
-                event.source_instance_id == source.source_instance_id,
-            ))
-            .outerjoin(NutritionFoodSnapshot, and_(
-                event.food_snapshot_id == NutritionFoodSnapshot.id,
-                event.user_id == NutritionFoodSnapshot.user_id,
-            ))
-            .outerjoin(snapshot_source, and_(
-                NutritionFoodSnapshot.source_observation_id == snapshot_source.id,
-                NutritionFoodSnapshot.user_id == snapshot_source.user_id,
-                event.provider_key == snapshot_source.provider_key,
-                event.source_instance_id == snapshot_source.source_instance_id,
-                not_(exists(select(1).where(
-                    NutritionSourceTombstone.user_id == snapshot_source.user_id,
-                    NutritionSourceTombstone.provider_key == snapshot_source.provider_key,
-                    NutritionSourceTombstone.source_instance_id == snapshot_source.source_instance_id,
-                    or_(
-                        NutritionSourceTombstone.source_observation_id == snapshot_source.id,
-                        and_(
-                            NutritionSourceTombstone.source_observation_id.is_(None),
-                            NutritionSourceTombstone.source_namespace == snapshot_source.source_namespace,
-                            NutritionSourceTombstone.source_record_id.is_not(None),
-                            NutritionSourceTombstone.source_record_id == snapshot_source.source_record_id,
-                        ),
-                    ),
-                ))),
-            ))
-            .where(
-                event.user_id == user_id,
-                source.user_id == user_id,
-                event.local_date >= cursor,
-                event.local_date <= chunk_end,
-                scopes,
-                event.presence_state.in_(_PRESENT),
-                event.resolution_state == ResolutionState.RESOLVED.value,
-                event.lineage_state.in_(_SAFE_LINEAGE),
-                event.coverage_state.in_((CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)),
-                source.presence_state.in_(_PRESENT),
-                source.resolution_state == ResolutionState.RESOLVED.value,
-                source.lineage_state.in_(_SAFE_LINEAGE),
-                source.coverage_state.in_((CoverageState.COMPLETE.value, CoverageState.PARTIAL.value)),
-                _current_event_condition(event),
-                _current_source_condition(source),
-                _not_tombstoned(event, source),
-            )
-            .order_by(event.local_date, event.canonical_start_at, event.id)
-        ).all()
-        if not event_rows:
-            if chunk_end == end:
-                break
-            cursor = chunk_end + timedelta(days=1)
-            continue
-        source_ids = {source_row.id for _, source_row, _, _ in event_rows}
-        fields = db.execute(
-            select(NutritionFieldObservation, source)
-            .join(source, and_(
-                NutritionFieldObservation.source_observation_id == source.id,
-                NutritionFieldObservation.user_id == source.user_id,
-            ))
-            .where(
-                NutritionFieldObservation.user_id == user_id,
-                source.user_id == user_id,
-                source.id.in_(source_ids),
-                or_(*(
-                    and_(source.provider_key == provider_key,
-                         source.source_instance_id == source_id)
-                    for provider_key, source_id in days_by_source
-                )),
-                NutritionFieldObservation.metric_key.in_(DAILY_PROJECTION_METRICS),
-            )
-            .order_by(NutritionFieldObservation.created_at, NutritionFieldObservation.id)
-        ).all()
-        parent_ids = {
-            field.derived_from_field_observation_id
-            for field, _ in fields if field.derived_from_field_observation_id is not None
-        }
-        parents: dict[UUID, NutritionFieldObservation] = {}
-        if parent_ids:
-            parent_source = aliased(NutritionSourceObservation)
-            parents = {
-                field.id: field
-                for field in db.scalars(
-                    select(NutritionFieldObservation)
-                    .join(parent_source, and_(
-                        NutritionFieldObservation.source_observation_id == parent_source.id,
-                        NutritionFieldObservation.user_id == parent_source.user_id,
-                    ))
-                    .where(
-                        NutritionFieldObservation.user_id == user_id,
-                        parent_source.user_id == user_id,
-                        NutritionFieldObservation.id.in_(parent_ids),
-                        or_(*(
-                            and_(parent_source.provider_key == provider_key,
-                                 parent_source.source_instance_id == source_id)
-                            for provider_key, source_id in days_by_source
-                        )),
-                    )
-                )
-            }
-        fields_by_source: dict[UUID, list[NutritionFieldObservation]] = defaultdict(list)
-        for field, _ in fields:
-            fields_by_source[field.source_observation_id].append(field)
-        for item, observation, snapshot, snapshot_observation in event_rows:
-            # A foreign-source or deleted snapshot cannot supply a meal name.
-            name = (
-                snapshot.name.strip()
-                if snapshot is not None and snapshot_observation is not None
-                and snapshot.name and snapshot.name.strip()
-                and snapshot.is_deleted is not True
-                else None
-            )
-            if name is None:
-                metadata_key = (
-                    "food_display_name" if item.provider_key == "google_health"
-                    else "food_name" if item.provider_key == "apple_health"
-                    else None
-                )
-                if metadata_key is not None:
-                    name = _metadata_text(observation.provider_metadata or {}, metadata_key)
-            if name is None:
-                continue
-            values: dict[str, Decimal] = {}
-            for field in fields_by_source[item.source_observation_id]:
-                if (
-                    _safe_field(field, observation, item, snapshot, parents)
-                    and field.metric_key is not None
-                    and field.canonical_value is not None
-                ):
-                    values.setdefault(field.metric_key, field.canonical_value)
-            meal_type = _normalized_meal_type(item.provider_key, item.daytime)
-            if meal_type is None and item.daytime is None:
-                meal_type = _normalized_meal_type(
-                    item.provider_key, _metadata_text(observation.provider_metadata or {}, "meal_type"),
-                )
-            meals[item.local_date].append(AnalysisNutritionMealResponse(
-                provider_key=item.provider_key,
-                local_time=_nutrition_local_time(item),
-                meal_type=meal_type,
-                display_name=name,
-                **{key: values.get(key) for key in DAILY_PROJECTION_METRICS},
-            ))
+        for meal in _read_safe_meals(db, user_id=user_id, days_by_source=days_by_source):
+            meals[meal.local_date].append(meal)
         if chunk_end == end:
             break
         cursor = chunk_end + timedelta(days=1)
     return meals
+
+
+def read_nutrition_meal_detail(
+    db: Session,
+    *,
+    user_id: UUID,
+    event_id: UUID,
+    allowed_sources: tuple[tuple[str, UUID], ...],
+) -> AnalysisNutritionMealResponse | None:
+    """Resolve exactly one owned, currently permitted event; never infer identity."""
+    item = db.scalar(select(NutritionConsumptionEvent).where(
+        NutritionConsumptionEvent.id == event_id,
+        NutritionConsumptionEvent.user_id == user_id,
+    ))
+    if item is None:
+        return None
+    pair = (item.provider_key, item.source_instance_id)
+    if pair not in allowed_sources:
+        return None
+    meals = _read_safe_meals(
+        db,
+        user_id=user_id,
+        days_by_source={pair: [item.local_date]},
+        event_ids={event_id},
+    )
+    return meals[0] if meals else None
+
+
+def nutrition_detail_available_ids(
+    db: Session,
+    *,
+    user_id: UUID,
+    events: list[NutritionConsumptionEvent],
+) -> set[UUID]:
+    """Apply the exact detail eligibility to all daily diagnostic rows at once."""
+    days_by_source: dict[tuple[str, UUID], list[date]] = defaultdict(list)
+    for item in events:
+        pair = (item.provider_key, item.source_instance_id)
+        if item.local_date not in days_by_source[pair]:
+            days_by_source[pair].append(item.local_date)
+    return {
+        meal.event_id
+        for meal in _read_safe_meals(
+            db,
+            user_id=user_id,
+            days_by_source=days_by_source,
+            event_ids={item.id for item in events},
+        )
+    }
 
 
 def read_analysis_nutrition(
@@ -434,4 +499,8 @@ def read_analysis_nutrition(
             for day in dates
             for winner in (winners.get(day),)
         ],
+        # The requested window does not establish a complete reader start boundary.
+        period_capabilities=ReaderPeriodCapabilities(
+            supports_all_data=False, all_data_start_date=None,
+        ),
     )

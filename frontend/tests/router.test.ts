@@ -208,13 +208,13 @@ describe('first-run target routing', () => {
 
     expect(router.currentRoute.value.name).toBe('overview')
   })
-  it('leitet bei Fresh-Load-Transportfehler nicht zum Login um', async () => {
+  it('lässt die geschützte Route bei nicht verfügbarem Session-Restore für den Fehlerzustand bereit', async () => {
     const auth = useAuthStore()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'))
 
     await router.push('/tage')
 
-    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.name).toBe('daily')
     expect(auth.user).toBeNull()
     expect(auth.sessionRestoreUnavailable).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -281,10 +281,11 @@ describe('first-run target routing', () => {
       ['/analyse/katalog', 'analysis-catalog'],
       ['/analyse/koerper', 'analysis-category-body'],
       ['/analyse/aktivitaet', 'analysis-category-activity'],
-      ['/analyse/ernaehrung', 'analysis-category-nutrition'],
+      ['/analyse/ernaehrung', 'analysis-nutrition-overview'],
       ['/analyse/mikronaehrstoffe', 'analysis-category-micronutrients'],
       ['/analyse/koerper/gewicht', 'analysis-weight-detail'],
       ['/analyse/aktivitaet/aktive-energie', 'analysis-active-energy'],
+      ['/analyse/ernaehrung/protein_g', 'analysis-nutrition-detail'],
       ['/analyse/mikronaehrstoffe/vitamin_a_ug', 'analysis-micronutrient-detail'],
     ] as const) {
       const resolved = router.resolve(path)

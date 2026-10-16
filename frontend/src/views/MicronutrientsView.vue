@@ -6,21 +6,22 @@ import {
   PhInfo,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, localizeApiError } from '../api'
 import {
-  analyticsPresetMatchesRange,
-  inferDesktopPreset,
-  parseAnalyticsCompactPreset,
-  resolveAnalyticsRange,
-  type AnalyticsCompactPreset,
+  periodFromQuery,
+  rangeForDays,
+  resolveAllDataRange,
+  type AppliedPeriod,
+  type PeriodLimits,
 } from '../analytics-period'
-import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
-import { formatGermanDateTime, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import PeriodPicker from '../components/PeriodPicker.vue'
+import { formatGermanDateTime, isoDateInTimeZone } from '../date-format'
 import { createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 
+import type { ReaderPeriodCapabilities } from '../types'
 const t = i18n.global.t.bind(i18n.global)
 type NutrientStatus =
   | 'no_data'
@@ -56,6 +57,7 @@ interface MicronutrientResponse {
   start_date: string
   end_date: string
   source: string | null
+  period_capabilities: ReaderPeriodCapabilities
   recorded_days: number
   last_updated_at: string | null
   available_sources: Array<{ source_type: string; last_updated_at: string | null }>
@@ -71,34 +73,20 @@ interface MicronutrientResponse {
 const route = useRoute()
 const router = useRouter()
 const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
-const before = shiftIsoDate(today, -29)
-const defaultRange = { start: before, end: today }
+const limits: PeriodLimits = { minDays: 1, maxDays: 3661, customRange: true }
+const capability = ref<ReaderPeriodCapabilities | undefined>()
+const allRange = computed(() => resolveAllDataRange(capability.value, today, limits))
 const explicitSource = route.query.source
 const source = ref(
   typeof explicitSource === 'string' && explicitSource.length > 0 ? explicitSource : undefined,
 )
-const unsupportedCanonicalAll = !source.value && route.query.period === 'all'
-const initialRange = unsupportedCanonicalAll
-  ? defaultRange
-  : resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
-const start = ref(initialRange.start)
-const end = ref(initialRange.end)
-const compactPresets = computed<AnalyticsCompactPreset[]>(() => [
-  '7',
-  '30',
-  '60',
-  '90',
-  '180',
-  'year',
-  ...(source.value ? ['all' as const] : []),
-])
-const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets.value)
-const period = ref<AnalyticsCompactPreset | undefined>(
-  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
-    ? periodCandidate
-    : undefined,
-)
-const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
+const initial = periodFromQuery(route.query, limits, today, null)
+const start = ref(initial.start)
+const end = ref(initial.end)
+const period = ref(initial.period)
+let requestedInitialAll = route.query.period === 'all'
+let latestLoadId = 0
+let disposed = false
 const result = ref<MicronutrientResponse | null>(null)
 const error = ref('')
 const loading = ref(true)
@@ -106,8 +94,13 @@ const syncingHistory = ref(false)
 const syncMessage = ref('')
 const syncError = ref('')
 
-function selectPeriod(value: AnalyticsCompactPreset) {
-  period.value = value
+function applyPeriod(value: AppliedPeriod): void {
+  requestedInitialAll = false
+  const selected = periodFromQuery(value, limits, today, allRange.value)
+  start.value = selected.start
+  end.value = selected.end
+  period.value = selected.period
+  void load()
 }
 
 const number = createNumberFormatter({ maximumFractionDigits: 2 })
@@ -138,31 +131,90 @@ function responseSourceLabel(value: MicronutrientResponse) {
     : sourceLabel(value.source)
 }
 
+watch(
+  () => [route.query.start, route.query.end, route.query.period, route.query.source] as const,
+  ([nextStart, nextEnd, nextPeriod, nextSource]) => {
+    const selectedSource = typeof nextSource === 'string' && nextSource.length > 0
+      ? nextSource : undefined
+    // Ignore our own canonical replacement, including All while capability is pending.
+    if (
+      nextStart === start.value && nextEnd === end.value && nextPeriod === period.value
+      && selectedSource === source.value
+    ) return
+    const sourceChanged = selectedSource !== source.value
+    const wasAll = period.value === 'all'
+    if (sourceChanged) {
+      capability.value = undefined
+      result.value = null
+    }
+    const selected = sourceChanged && (wasAll || nextPeriod === 'all')
+      ? { ...rangeForDays(today, 30), period: '30' as const }
+      : periodFromQuery(route.query, limits, today, allRange.value)
+    requestedInitialAll = false
+    source.value = selectedSource
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    void load()
+  },
+)
+
 async function load() {
+  if (disposed) return
+  const requestId = ++latestLoadId
+  const request = {
+    start: start.value, end: end.value, period: period.value, source: source.value,
+  }
+  capability.value = undefined
   error.value = ''
   loading.value = true
-  await router.replace({
-    query: {
-      start: start.value,
-      end: end.value,
-      period: period.value || undefined,
-      source: source.value,
-    },
-  })
   try {
-    const params = new URLSearchParams({ start: start.value, end: end.value })
-    if (period.value === 'all') params.set('period', 'all')
-    if (source.value) params.set('source', source.value)
+    await router.replace({
+      query: { ...route.query, ...request },
+      hash: route.hash,
+    })
+    if (requestId !== latestLoadId) return
+    const params = new URLSearchParams({ start: request.start, end: request.end })
+    if (request.period === 'all') params.set('period', 'all')
+    if (request.source) params.set('source', request.source)
     const response = await api<MicronutrientResponse>(`/analytics/micronutrients?${params}`)
+    if (requestId !== latestLoadId) return
+    capability.value = response.period_capabilities
+    const admitted = resolveAllDataRange(capability.value, today, limits)
+    if (requestedInitialAll) {
+      requestedInitialAll = false
+      if (admitted) {
+        start.value = admitted.start
+        end.value = admitted.end
+        period.value = 'all'
+        await load()
+        return
+      }
+    }
+    if (request.period === 'all' && !admitted) {
+      const fallback = rangeForDays(today, 30)
+      start.value = fallback.start
+      end.value = fallback.end
+      period.value = '30'
+      await load()
+      return
+    }
     result.value = response
   } catch (cause) {
+    if (requestId !== latestLoadId) return
+    requestedInitialAll = false
+    capability.value = undefined
     error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
-    loading.value = false
+    if (requestId === latestLoadId) loading.value = false
   }
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  disposed = true
+  latestLoadId += 1
+})
 
 const available = computed(
   () => result.value?.nutrients.filter((item) => item.average_daily != null) ?? [],
@@ -256,14 +308,17 @@ async function syncYazioHistory() {
         <h1>{{ t('micronutrients.title') }}</h1>
         <p>{{ t('micronutrients.description') }}</p>
       </div>
-      <AnalyticsPeriodFilter
-        v-model:start="start"
-        v-model:end="end"
-        :initial-preset="desktopPreset"
-        :compact-presets="compactPresets"
-        :compact-preset="period"
-        @preset="selectPeriod"
-        @apply="load()"
+      <PeriodPicker
+        :start="start"
+        :end="end"
+        :period="period"
+        :today="today"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :period-capabilities="capability"
+        :all-range="allRange"
+        @apply="applyPeriod"
       />
     </div>
   </div>

@@ -247,7 +247,11 @@ def test_trends_public_wire_contract_and_decimal_serialization(
         db=object(),
     )
 
-    assert set(result) == {"points", "incomplete_included", "budget_balance"}
+    assert set(result) == {"points", "incomplete_included", "budget_balance", "period_capabilities"}
+    assert result["period_capabilities"] == {
+        "supports_all_data": False,
+        "all_data_start_date": None,
+    }
     assert result["points"][0]["calories_kcal"] == "1234.567"
     assert result["points"][0]["average_7d"] == 1234.567
 

@@ -1,5 +1,11 @@
+import {
+  PhAtom, PhAvocado, PhBarbell, PhBowlFood, PhBread, PhCarrot, PhCube, PhDiamond, PhDrop, PhEgg, PhFire,
+  PhFootprints, PhForkKnife, PhLeaf, PhLightning, PhPersonSimpleRun, PhScales,
+} from '@phosphor-icons/vue'
+import { defineComponent, h, type Component } from 'vue'
+
 import analysisPresentationMap from './analysis-presentation.json'
-import { analysisRangeWithinDays } from './analytics-period'
+import type { PeriodRange, PeriodSelection } from './analytics-period'
 import { i18n, type SupportedLocale } from './i18n'
 import type { AnalysisCategoryKey, AnalysisNutritionMetricKey } from './types'
 
@@ -18,15 +24,22 @@ export interface LocalizedAnalysisPresentation {
 }
 
 export const analysisPresentation = analysisPresentationMap as Record<string, AnalysisPresentation>
+const nutritionMetricIcons: Record<string, string> = {
+  protein_g: 'protein',
+  carbohydrates_g: 'carbohydrates',
+  fat_g: 'fat',
+  fiber_g: 'fiber',
+  saturated_fat_g: 'fat',
+}
 
 export function localizedAnalysisPresentation(key: string): LocalizedAnalysisPresentation | undefined {
-  const presentation = analysisPresentation[key]
+  const presentation = Object.hasOwn(analysisPresentation, key) ? analysisPresentation[key] : undefined
   if (!presentation) return undefined
   const locale = i18n.global.locale.value as SupportedLocale
   return {
     label: presentation.label[locale],
     description: presentation.description[locale],
-    icon: presentation.icon,
+    icon: Object.hasOwn(nutritionMetricIcons, key) ? nutritionMetricIcons[key]! : presentation.icon,
     route: presentation.route,
   }
 }
@@ -38,51 +51,31 @@ export const analysisCategories: readonly { key: AnalysisCategoryKey; labelKey: 
   { key: 'fluid', labelKey: 'analysisV2.categories.fluid' },
 ]
 
-export type AnalysisHubPeriod = '7' | '30' | '90' | '180' | '365' | 'all'
-export type AnalysisPeriodSelection = AnalysisHubPeriod | 'custom'
+export const DEFAULT_ACTIVE_CARD_IDS: readonly string[] = [
+  'weight',
+  'nutrition',
+  'micronutrients',
+  'activity',
+]
 
-export function parseAnalysisHubPeriod(value: unknown): AnalysisHubPeriod {
-  return ['7', '30', '90', '180', '365', 'all'].includes(String(value))
-    ? value as AnalysisHubPeriod
-    : '30'
+export function canonicalAnalysisCardId(key: string): string {
+  if (key === 'weight_kg') return 'weight'
+  if (key === 'active_energy_kcal') return 'activity'
+  return key
 }
 
-export function parseAnalysisPeriodSelection(value: unknown): AnalysisPeriodSelection {
-  return value === 'custom' ? 'custom' : parseAnalysisHubPeriod(value)
+export function addAnalysisPreference(keys: readonly string[], key: string): string[] {
+  const canonicalKey = canonicalAnalysisCardId(key)
+  return keys.includes(canonicalKey) ? [...keys] : [...keys, canonicalKey]
 }
 
 export function analysisHubQuery(
-  value: unknown,
-  range?: { start: string; end: string },
-): { period: AnalysisPeriodSelection; start?: string; end?: string } {
-  const period = parseAnalysisPeriodSelection(value)
+  period: PeriodSelection,
+  range?: PeriodRange,
+): { period: PeriodSelection; start?: string; end?: string } {
   return period === 'custom' && range
     ? { period, start: range.start, end: range.end }
     : { period }
-}
-
-export function supportedAnalysisPeriods(maxDays: number, includeAll: boolean): AnalysisHubPeriod[] {
-  const periods = (['7', '30', '90', '365'] as AnalysisHubPeriod[])
-    .filter((period) => Number(period) <= maxDays)
-  if (includeAll && maxDays >= 3661) periods.push('all')
-  return periods
-}
-
-export function normalizeAnalysisPeriodForCapability(
-  selection: AnalysisPeriodSelection,
-  customRange: { start: string; end: string } | null,
-  maxDays: number,
-  today: string,
-): { period: AnalysisPeriodSelection; range: { start: string; end: string } } {
-  const available = supportedAnalysisPeriods(maxDays, true)
-  if (selection === 'custom' && customRange
-    && customRange.end <= today
-    && analysisRangeWithinDays(customRange.start, customRange.end, maxDays)) {
-    return { period: 'custom', range: customRange }
-  }
-  const fallback = available.at(available.at(-1) === 'all' ? -2 : -1) ?? '30'
-  const period = available.includes(selection as AnalysisHubPeriod) ? selection : fallback
-  return { period, range: analysisRangeForDays(today, period === 'all' ? maxDays : Number(period)) }
 }
 
 export function analysisRangeDayCount(range: { start: string; end: string }): number {
@@ -91,10 +84,43 @@ export function analysisRangeDayCount(range: { start: string; end: string }): nu
   ) + 1
 }
 
-export function analysisRangeForDays(today: string, days: number): { start: string; end: string } {
-  const date = new Date(`${today}T00:00:00Z`)
-  date.setUTCDate(date.getUTCDate() - days + 1)
-  return { start: date.toISOString().slice(0, 10), end: today }
+export const HUB_MINI_CHART_MIN_LINE_VALUES = 4
+export const HUB_MINI_CHART_MIN_LINE_COVERAGE = 0.5
+export const HUB_MINI_CHART_MAX_BAR_WIDTH = 5
+export const HUB_MINI_CHART_BAR_WIDTH_RATIO = 0.65
+
+export function hubMiniChartVariant(
+  values: readonly (number | null)[],
+  dates: readonly (string | null)[] = [],
+): 'line' | 'bars' {
+  let count = 0
+  let firstIndex = -1
+  let lastIndex = -1
+  let firstTimestamp = Number.POSITIVE_INFINITY
+  let lastTimestamp = Number.NEGATIVE_INFINITY
+  let allValuesHaveDates = true
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    count += 1
+    if (firstIndex === -1) firstIndex = index
+    lastIndex = index
+    const date = dates[index]?.slice(0, 10)
+    const timestamp = date ? Date.parse(`${date}T00:00:00Z`) : Number.NaN
+    if (Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === date) {
+      firstTimestamp = Math.min(firstTimestamp, timestamp)
+      lastTimestamp = Math.max(lastTimestamp, timestamp)
+    } else {
+      allValuesHaveDates = false
+    }
+  }
+
+  if (count < HUB_MINI_CHART_MIN_LINE_VALUES) return 'bars'
+  const actualSpan = allValuesHaveDates
+    ? Math.floor((lastTimestamp - firstTimestamp) / 86_400_000) + 1
+    : lastIndex - firstIndex + 1
+  return count / actualSpan >= HUB_MINI_CHART_MIN_LINE_COVERAGE ? 'line' : 'bars'
 }
 
 export const nutritionAnalysisKeys: readonly AnalysisNutritionMetricKey[] = [
@@ -107,7 +133,7 @@ export function isNutritionAnalysisKey(key: string): key is AnalysisNutritionMet
 }
 
 export function analysisHref(key: string): string {
-  const presentation = analysisPresentation[key]
+  const presentation = Object.hasOwn(analysisPresentation, key) ? analysisPresentation[key] : undefined
   if (!presentation) return '/analyse/katalog'
   switch (presentation.route) {
     case 'weight': return '/analyse/koerper/gewicht'
@@ -119,14 +145,41 @@ export function analysisHref(key: string): string {
   }
 }
 
-export function analysisIconSymbol(icon: string): string {
-  switch (icon) {
-    case 'scale': return '◉'
-    case 'fire': return '↗'
-    case 'leaf': return '⌁'
-    case 'drop': return '◯'
-    case 'activity': return '↗'
-    case 'nutrition': return '⌁'
-    default: return '⊙'
-  }
+const analysisIcons: Record<string, Component> = {
+  scale: PhScales,
+  nutrition: PhForkKnife,
+  energy: PhLightning,
+  protein: PhEgg,
+  carbohydrates: PhBread,
+  fat: PhAvocado,
+  fiber: PhLeaf,
+  bowl: PhBowlFood,
+  cube: PhCube,
+  leaf: PhLeaf,
+  atom: PhAtom,
+  carrot: PhCarrot,
+  diamond: PhDiamond,
+  fire: PhFire,
+  activity: PhPersonSimpleRun,
+  steps: PhFootprints,
+  barbell: PhBarbell,
+  drop: PhDrop,
 }
+
+export const AnalysisIcon = defineComponent({
+  name: 'AnalysisIcon',
+  props: {
+    icon: { type: String, required: true },
+  },
+  setup(props) {
+    return () => {
+      const icon = Object.hasOwn(analysisIcons, props.icon) ? analysisIcons[props.icon]! : PhAtom
+      return h(icon, {
+        size: '1em',
+        weight: 'bold',
+        color: 'currentColor',
+        'aria-hidden': 'true',
+      })
+    }
+  },
+})
