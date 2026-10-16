@@ -20,8 +20,8 @@
     "@fontsource/inter": "5.3.0",
     "@phosphor-icons/vue": "2.2.1",
     "echarts": "6.1.0",
-    "pinia": "4.0.3",
-    "vue": "3.5.42",
+    "pinia": "4.1.0",
+    "vue": "3.5.44",
     "vue-i18n": "10.0.8",
     "vue-router": "5.3.1"
   },
