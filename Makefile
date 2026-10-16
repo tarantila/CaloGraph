@@ -1,4 +1,4 @@
-.PHONY: dev up down logs migrate test lint typecheck frontend-test e2e build backup backup-secrets backup-test update
+.PHONY: dev up down logs migrate analysis-review-up analysis-review-down test lint typecheck frontend-test e2e build backup backup-secrets backup-test update
 TEST_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.test.yml
 
 dev:
@@ -15,6 +15,12 @@ logs:
 
 migrate:
 	docker compose run --rm backend alembic upgrade head
+
+analysis-review-up:
+	sh ./scripts/analysis-review.sh up
+
+analysis-review-down:
+	sh ./scripts/analysis-review.sh down
 
 test:
 	$(TEST_COMPOSE) run --rm --build backend-ci pytest
