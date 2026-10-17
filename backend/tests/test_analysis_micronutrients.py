@@ -234,7 +234,7 @@ def test_reader_rejects_unsafe_candidates_and_ranges(monkeypatch: pytest.MonkeyP
             object(), user_id=USER_ID, selection=selection, start=DAY,
             end=DAY + timedelta(days=31), metric_key="vitamin_a_ug",
         )
-def test_reader_returns_empty_catalog_for_readable_chain_and_accepts_31_days(
+def test_reader_accepts_31_days_and_rejects_366_days(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selection = NutritionProviderSelection("yazio", SOURCE_B, (("yazio", SOURCE_B),))
@@ -270,7 +270,7 @@ def test_reader_returns_empty_catalog_for_readable_chain_and_accepts_31_days(
     with pytest.raises(nutrition_micronutrients.AnalysisMicronutrientReadError):
         nutrition_micronutrients.read_analysis_micronutrients(
             object(), user_id=USER_ID, selection=selection, start=DAY,
-            end=end + timedelta(days=1), metric_key=None,
+            end=DAY + timedelta(days=365), metric_key=None,
         )
 
 
@@ -322,9 +322,12 @@ def test_analysis_micronutrient_api_fails_closed_without_provider(
 
     calls = 0
 
-    def no_selection(_db: object, *, user_id: UUID):
+    def no_selection(
+        _db: object, *, user_id: UUID, include_analysis_demo: bool = False
+    ):
         nonlocal calls
         assert user_id is not None
+        assert include_analysis_demo is True
         calls += 1
         return None
 
@@ -371,7 +374,7 @@ def test_analysis_micronutrient_api_bounds_readable_provider_period(
 
     too_long = client.get(
         "/api/v1/analytics/nutrition/micronutrients",
-        params={"start": "2026-03-01", "end": "2026-04-01"},
+        params={"start": "2026-03-01", "end": "2027-03-01"},
     )
     assert too_long.status_code == 422
     inverted = client.get(
