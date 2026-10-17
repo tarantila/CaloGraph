@@ -247,9 +247,20 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   await expect(nutrientSummary.locator('.analysis-nutrient-trends > li')).toHaveCount(0)
   await expect(nutrientSummary.locator('.analysis-drag-handle')).toHaveCount(1)
   await expect(nutrientSummary.locator('.analysis-overflow-trigger')).toHaveCount(1)
-  const nutrition = cards.locator('[data-card-key="nutrition"]')
-  await expect(nutrition.locator('.analysis-metric-value')).toHaveCount(0)
-  await expect(nutrition.locator('svg[role="img"]')).toHaveCount(0)
+  const macroKpis = nutrition.locator('.analysis-nutrition-kpi')
+  await expect(macroKpis).toHaveCount(3)
+  await expect(macroKpis.locator('.analysis-nutrition-kpi-label'))
+    .toHaveText(['Eiweiß', 'Kohlenhydrate', 'Fett'])
+  const macroValues = macroKpis.locator('.analysis-metric-value')
+  await expect(macroValues).toHaveCount(3)
+  for (let index = 0; index < 3; index += 1) {
+    await expect(macroValues.nth(index)).toBeVisible()
+  }
+  const macroCharts = nutrition.locator('.analysis-nutrition-macro-trend-chart[role="img"]')
+  await expect(macroCharts).toHaveCount(3)
+  for (let index = 0; index < 3; index += 1) {
+    await expect(macroCharts.nth(index)).toBeVisible()
+  }
   for (const key of ['dietary_energy_kcal', 'protein_g', 'carbohydrates_g', 'fat_g']) {
     await expect(cards.locator(`[data-card-key="${key}"] .analysis-metric-value`)).toBeVisible()
   }
@@ -648,7 +659,7 @@ test('Analysis Hub uses fixed card geometry', async ({ page }) => {
         labelWeight: getComputedStyle(label).fontWeight,
         linkCount: weight.querySelectorAll('a').length,
         weightCardText: weight.textContent?.replace(/\s+/g, ' ').trim(),
-        areaFill: weight.querySelector('.analysis-mini-chart polygon')?.getAttribute('fill'),
+        areaFill: weight.querySelector('.analysis-mini-chart__area')?.getAttribute('fill'),
         gradientCount: weight.querySelectorAll('.analysis-mini-chart linearGradient').length,
       }
     })

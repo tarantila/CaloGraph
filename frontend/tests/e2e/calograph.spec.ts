@@ -56,7 +56,7 @@ test('login, idempotent import and dashboard', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'Wochenbudget', exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Analyse', exact: true }).click()
   await expect(page).toHaveURL((url) => url.pathname === '/analyse')
-  await page.goto('/analyse/mikronaehrstoffe')
+  await page.goto('/analyse/mikronaehrstoffe?period=custom&start=2026-07-18&end=2026-07-18')
   await expect(page).toHaveURL((url) => url.pathname === '/analyse/mikronaehrstoffe')
   await expect(page.getByRole('heading', { name: 'Mikronährstoffe', exact: true })).toBeVisible()
   await expect(page.getByText('Vitamin D', { exact: true })).toBeVisible()
