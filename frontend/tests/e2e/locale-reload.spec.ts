@@ -14,13 +14,13 @@ async function login(page: Page) {
   await page.locator('input[autocomplete="username"]').fill(username)
   await page.locator('input[autocomplete="current-password"]').fill(password)
   await page.getByRole('button', { name: /^(Sign in|Anmelden)$/ }).click()
-  await expect(page).toHaveURL(/\/(einrichtung)?$/)
-  if (page.url().endsWith('/einrichtung')) {
+  await expect(page).toHaveURL((url) => url.pathname === '/' || url.pathname === '/einrichtung')
+  if (new URL(page.url()).pathname === '/einrichtung') {
     await page.locator('input[name="calories-kcal"]').fill('2100')
     await page.locator('input[name="protein-g"]').fill('135')
     await page.locator('form.setup-form button[type="submit"]').click()
   }
-  await expect(page).toHaveURL(/\/$/)
+  await expect(page).toHaveURL((url) => url.pathname === '/')
 }
 
 async function setLocale(page: Page, locale: 'de' | 'en') {

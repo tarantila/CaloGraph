@@ -180,21 +180,17 @@ test('daily averages, weekday content, and sidebar order stay consistent', async
   expect(primaryNavigation).toEqual([
     'Übersicht',
     'Tagesverlauf',
-    'Ernährung',
-    'Aktivität',
-    'Gewicht',
+    'Analyse',
     'Wochenbudget',
     'Wochentage',
     'Kalender',
-    'Trends',
-    'Mikronährstoffe',
     'Erfolge',
   ])
   const utilityNavigation = (await page.locator('.sidebar-utility-navigation a').allTextContents()).map((label) =>
     label.trim(),
   )
   expect(utilityNavigation).toEqual(['Konto'])
-  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(12)
+  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(8)
   expect(page.locator('.sidebar nav a.active')).toHaveCount(1)
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()

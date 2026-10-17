@@ -179,6 +179,7 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   const layout = async () => cards.evaluate((grid) => ({
     columns: getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length,
     cardWidths: Array.from(grid.querySelectorAll<HTMLElement>(':scope > li[data-card-key]'))
+      .filter((card) => card.getClientRects().length > 0)
       .map((card) => Math.round(card.getBoundingClientRect().width)),
     cardKeys: Array.from(grid.querySelectorAll<HTMLElement>(':scope > li[data-card-key]'))
       .map((card) => card.dataset.cardKey),
@@ -205,16 +206,23 @@ test('Analysis cards stay readable across viewports and detail cards have useful
     expect(currentLayout.columns).toBe(4)
     expect(currentLayout.cardKeys).toEqual(expectedOrder)
     const geometry = await cards.evaluate((grid) => {
-      const heights = Array.from(grid.querySelectorAll<HTMLElement>(':scope > li'))
-        .map((item) => Math.round(item.getBoundingClientRect().height))
+      const visibleCards = Array.from(
+        grid.querySelectorAll<HTMLElement>(':scope > li[data-card-key]'),
+      ).filter((item) => item.getClientRects().length > 0)
+      const heights = visibleCards.map((item) => Math.round(item.getBoundingClientRect().height))
+      const addTile = grid.querySelector<HTMLElement>(':scope > li[data-analysis-add-card]')!
       return {
         heightCount: new Set(heights).size,
         cardHeight: heights[0],
+        addTileHeight: Math.round(addTile.getBoundingClientRect().height),
         addTileLast: grid.lastElementChild?.matches('[data-analysis-add-card]') ?? false,
       }
     })
     expect(geometry.heightCount).toBe(1)
     expect(geometry.addTileLast).toBe(true)
+    expect(geometry.addTileHeight).toBeGreaterThanOrEqual(90)
+    expect(geometry.addTileHeight).toBeLessThanOrEqual(120)
+    expect(geometry.cardHeight).toBeGreaterThan(geometry.addTileHeight)
     desktopHeights.push(geometry.cardHeight!)
     const alignment = await page.evaluate(() => {
       const picker = document.querySelector('.analysis-period-picker')!.getBoundingClientRect()
@@ -616,8 +624,10 @@ test('Analysis Hub uses fixed card geometry', async ({ page }) => {
       const picker = document.querySelector('.analysis-period-picker')!.getBoundingClientRect()
       const grid = document.querySelector('.analysis-card-list')!
       const bounds = grid.getBoundingClientRect()
-      const items = Array.from(grid.querySelectorAll<HTMLElement>(':scope > li'))
+      const items = Array.from(grid.querySelectorAll<HTMLElement>(':scope > li[data-card-key]'))
+        .filter((item) => item.getClientRects().length > 0)
       const heights = items.map((item) => Math.round(item.getBoundingClientRect().height))
+      const addTile = grid.querySelector<HTMLElement>(':scope > li[data-analysis-add-card]')!
       const weight = document.querySelector<HTMLElement>('[data-card-key="weight"]')!
       const heading = weight.querySelector<HTMLElement>('.analysis-card-heading')!
       const value = weight.querySelector<HTMLElement>('.analysis-metric-value')!
@@ -628,6 +638,7 @@ test('Analysis Hub uses fixed card geometry', async ({ page }) => {
         documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
         equalCardHeights: new Set(heights).size === 1,
         cardHeight: heights[0],
+        addTileHeight: Math.round(addTile.getBoundingClientRect().height),
         addTileLast: grid.lastElementChild?.matches('[data-analysis-add-card]') ?? false,
         weightSectionCount: document.querySelectorAll('.analysis-weight-section').length,
         descriptionCount: document.querySelectorAll('.analysis-heading-copy p').length,
@@ -645,6 +656,9 @@ test('Analysis Hub uses fixed card geometry', async ({ page }) => {
     expect(geometry.documentFits).toBe(true)
     expect(geometry.equalCardHeights).toBe(true)
     expect(geometry.addTileLast).toBe(true)
+    expect(geometry.addTileHeight).toBeGreaterThanOrEqual(90)
+    expect(geometry.addTileHeight).toBeLessThanOrEqual(120)
+    expect(geometry.cardHeight).toBeGreaterThan(geometry.addTileHeight)
     expect(geometry.weightSectionCount).toBe(0)
     expect(geometry.descriptionCount).toBe(0)
     expect(geometry.titleTag).toBe('A')
@@ -676,7 +690,11 @@ test('Weight detail shows readings and keeps the URL-backed 3661-day preset', as
   await expect(page.locator('.weight-summary-secondary')).toContainText('Durchschnitt')
   await expect(page.locator('.weight-summary-secondary')).toContainText('Minimum')
   await expect(page.locator('.weight-summary-secondary')).toContainText('Maximum')
-  await expect(page.getByRole('heading', { name: 'Messwerte (2)' })).toBeVisible()
+  const readingsToggle = page.getByRole('button', { name: 'Messwerte (2)', exact: true })
+  await expect(readingsToggle).toBeVisible()
+  await expect(readingsToggle).toHaveAttribute('aria-expanded', 'false')
+  await readingsToggle.click()
+  await expect(readingsToggle).toHaveAttribute('aria-expanded', 'true')
   const readings = page.getByRole('table', { name: 'Messwerte (2)' }).getByRole('row')
   await expect(readings).toHaveCount(3)
   await expect(readings.nth(1)).toContainText('22.09.2026')
