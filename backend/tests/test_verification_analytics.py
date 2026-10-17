@@ -127,6 +127,7 @@ def test_activity_contract_accepts_all_source_provider_records() -> None:
     ]
 
 def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
+    event_id = uuid4()
     response = VerificationNutritionResponse(
         date=date(2026, 9, 14),
         view="canonical",
@@ -142,6 +143,8 @@ def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
             },
             "events": [
                 {
+                    "event_id": event_id,
+                    "detail_available": True,
                     "provider_key": "yazio",
                     "local_time": "12:00",
                     "meal_type": "lunch",
@@ -170,6 +173,8 @@ def test_nutrition_contract_accepts_canonical_summary_and_events() -> None:
         },
         "events": [
             {
+                "event_id": str(event_id),
+                "detail_available": True,
                 "provider_key": "yazio",
                 "local_time": "12:00",
                 "meal_type": "lunch",
@@ -829,7 +834,7 @@ def test_nutrition_canonical_returns_selected_provider_summary_and_events(
     day = date(2026, 9, 14)
     google_source = _nutrition_provider_source(db, user, "google_health")
     yazio_source = _nutrition_provider_source(db, user, "yazio")
-    _nutrition_event(
+    google_event = _nutrition_event(
         db,
         user,
         provider_key="google_health",
@@ -843,6 +848,8 @@ def test_nutrition_canonical_returns_selected_provider_summary_and_events(
             "protein_g": Decimal("5"),
         },
     )
+    expected_detail_available = google_event.food_snapshot_id is not None
+
     _nutrition_event(
         db,
         user,
@@ -894,6 +901,8 @@ def test_nutrition_canonical_returns_selected_provider_summary_and_events(
         },
         "events": [
             {
+                "event_id": google_event.id,
+                "detail_available": expected_detail_available,
                 "provider_key": "google_health",
                 "local_time": "12:00",
                 "meal_type": "breakfast",
