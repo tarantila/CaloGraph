@@ -161,8 +161,8 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 320px; min-height: 100%; background: var(--page); }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--page); color: var(--ink); }
+html { min-width: min(320px, 100%); min-height: 100%; scrollbar-gutter: stable; background: var(--page); }
+body { margin: 0; min-width: min(320px, 100%); min-height: 100vh; background: var(--page); color: var(--ink); }
 button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
@@ -187,14 +187,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .skip-link:focus { top: 1rem; }
 
-.app-shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
+.app-shell { --sidebar-width: 236px; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: 100vh; }
 .sidebar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
   z-index: 30;
   display: flex;
   flex-direction: column;
   height: 100vh;
+  width: var(--sidebar-width);
   padding: 1.25rem .9rem 1rem;
   border-right: 1px solid var(--border);
   background: var(--sidebar);
@@ -263,7 +265,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .sidebar-signout:hover { background: var(--surface-soft); color: var(--ink); }
 
-.main-column { min-width: 0; }
+.main-column { grid-column: 2; min-width: 0; }
 .topbar { display: none; }
 .mobile-brand { display: none; }
 .page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 1.7rem 1.7rem 2rem; }
