@@ -1717,16 +1717,16 @@ td strong { color: var(--ink); font-weight: 600; }
 .calendar-calorie-progress::-webkit-progress-bar { border-radius: 999px; background: var(--surface-soft); }
 .calendar-calorie-progress::-webkit-progress-value,
 .calendar-calorie-progress::-moz-progress-bar { border-radius: 999px; background: linear-gradient(90deg, var(--chart-series-violet), var(--chart-series-lilac)); }
-.calendar-day.under_budget { border-color: var(--success); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+.calendar-day.under_budget, .calendar-status--under_budget { --calendar-status-border: var(--success); --calendar-status-background: color-mix(in srgb, var(--success) 8%, var(--surface)); border-color: var(--calendar-status-border); background: var(--calendar-status-background); }
 .calendar-day.under_budget::before { background: var(--success); }
-.calendar-day.over_budget { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
+.calendar-day.over_budget, .calendar-status--over_budget { --calendar-status-border: var(--warning); --calendar-status-background: color-mix(in srgb, var(--warning) 8%, var(--surface)); border-color: var(--calendar-status-border); background: var(--calendar-status-background); }
 .calendar-day.over_budget::before { background: var(--warning); }
-.calendar-day.above_maintenance { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.calendar-day.above_maintenance, .calendar-status--above_maintenance { --calendar-status-border: var(--danger); --calendar-status-background: color-mix(in srgb, var(--danger) 8%, var(--surface)); border-color: var(--calendar-status-border); background: var(--calendar-status-background); }
 .calendar-day.above_maintenance::before { background: var(--danger); }
-.calendar-day.probably_incomplete { border-style: dashed; border-color: var(--warning); }
+.calendar-day.probably_incomplete, .calendar-status--probably_incomplete { --calendar-status-border: var(--warning); --calendar-status-border-style: dashed; border-style: var(--calendar-status-border-style); border-color: var(--calendar-status-border); }
 .calendar-day.probably_incomplete::before { background: var(--warning); }
-.calendar-day.no_target { border-style: dashed; }
-.calendar-day.no_data { opacity: .74; }
+.calendar-day.no_target, .calendar-status--no_target { --calendar-status-border-style: dashed; border-style: var(--calendar-status-border-style); }
+.calendar-day.no_data, .calendar-status--no_data { opacity: .74; }
 
 .quality-explainer {
   display: grid;
