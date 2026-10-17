@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, not_, or_, select
+from sqlalchemy import and_, exists, not_, or_, select, true
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -251,7 +251,7 @@ def _read_safe_meals(
             event.user_id == user_id,
             source.user_id == user_id,
             scopes,
-            event.id.in_(event_ids) if event_ids is not None else True,
+            event.id.in_(event_ids) if event_ids is not None else true(),
             event.presence_state.in_(_PRESENT),
             event.resolution_state == ResolutionState.RESOLVED.value,
             event.lineage_state.in_(_SAFE_LINEAGE),
@@ -416,6 +416,8 @@ def read_nutrition_meal_detail(
     pair = (item.provider_key, item.source_instance_id)
     if pair not in allowed_sources:
         return None
+    if item.local_date is None:
+        return None
     meals = _read_safe_meals(
         db,
         user_id=user_id,
@@ -434,6 +436,8 @@ def nutrition_detail_available_ids(
     """Apply the exact detail eligibility to all daily diagnostic rows at once."""
     days_by_source: dict[tuple[str, UUID], list[date]] = defaultdict(list)
     for item in events:
+        if item.local_date is None:
+            continue
         pair = (item.provider_key, item.source_instance_id)
         if item.local_date not in days_by_source[pair]:
             days_by_source[pair].append(item.local_date)
