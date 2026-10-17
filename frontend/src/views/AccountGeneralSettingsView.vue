@@ -12,6 +12,13 @@ import {
   weightUnitToUnitSystem,
   type UnitSystem,
 } from '../units'
+import {
+  effectiveTheme,
+  setThemePreference,
+  themePreference,
+  type ThemePreference,
+} from '../theme'
+
 const t = i18n.global.t.bind(i18n.global)
 const { profile, loaded, load, save, invalidate } = useProfilePreferences()
 const unitSystem = computed<UnitSystem>({
@@ -119,61 +126,79 @@ const unitSystems: readonly UnitSystem[] = ['metric', 'imperial']
     </div>
   </div>
 
-  <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">
-    {{ t('accountGeneral.loading') }}
+  <div class="account-page-stack">
+    <div v-if="loading" class="dashboard-loading" role="status" aria-live="polite">
+      {{ t('accountGeneral.loading') }}
+    </div>
+    <template v-else>
+      <section v-if="error && !loaded" class="card account-feedback error" role="alert" aria-live="assertive">
+        <p>{{ error }}</p>
+        <button class="button compact-action" type="button" @click="loadProfile">{{ t('accountGeneral.retry') }}</button>
+      </section>
+
+      <section v-if="loaded" class="card form-card account-form-card" :aria-busy="saving">
+        <h2>{{ t('accountGeneral.formTitle') }}</h2>
+        <p>{{ t('accountGeneral.formDescription') }}</p>
+        <form class="form-grid account-form-grid" @submit.prevent="saveProfile">
+          <label class="field">
+            <span>{{ t('accountGeneral.language') }}</span>
+            <select v-model="profile.language" name="language" :disabled="saving">
+              <option v-for="value in languages" :key="value" :value="value">
+                {{ t(`accountGeneral.languageOptions.${value}`) }}
+              </option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>{{ t('accountGeneral.timezone') }}</span>
+            <select v-model="profile.timezone" name="timezone" required :disabled="saving">
+              <option v-for="timezone in timezoneOptions" :key="timezone" :value="timezone">
+                {{ timezone.replaceAll('_', ' ') }}
+              </option>
+            </select>
+            <small>{{ t('accountGeneral.timezoneHelp') }}</small>
+          </label>
+
+          <label class="field">
+            <span>{{ t('accountGeneral.weekStartsOn') }}</span>
+            <select v-model.number="profile.week_starts_on" name="week_starts_on" :disabled="saving">
+              <option :value="0">{{ t('accountGeneral.weekDays.monday') }}</option>
+              <option :value="6">{{ t('accountGeneral.weekDays.sunday') }}</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>{{ t('accountGeneral.unitSystem') }}</span>
+            <select v-model="unitSystem" name="unit_system" :disabled="saving">
+              <option v-for="value in unitSystems" :key="value" :value="value">
+                {{ t(`accountGeneral.unitSystemOptions.${value}`) }}
+              </option>
+            </select>
+          </label>
+
+          <div v-if="error" class="account-form-error" role="alert" aria-live="assertive">{{ error }}</div>
+          <p v-if="message" class="account-form-success" role="status" aria-live="polite">{{ message }}</p>
+          <button class="button compact-action account-submit" type="submit" :disabled="saving">
+            {{ saving ? t('accountGeneral.saving') : t('accountGeneral.save') }}
+          </button>
+        </form>
+      </section>
+    </template>
+    <section class="card form-card account-appearance-card">
+      <h2>{{ t('accountGeneral.appearance.title') }}</h2>
+      <label class="field">
+        <span>{{ t('accountGeneral.appearance.mode') }}</span>
+        <select
+          name="theme_preference"
+          :value="themePreference"
+          @change="setThemePreference(($event.target as HTMLSelectElement).value as ThemePreference)"
+        >
+          <option value="system">{{ t('accountGeneral.appearance.system') }}</option>
+          <option value="light">{{ t('accountGeneral.appearance.light') }}</option>
+          <option value="dark">{{ t('accountGeneral.appearance.dark') }}</option>
+        </select>
+      </label>
+      <p>{{ t('accountGeneral.appearance.help', { mode: t(`accountGeneral.appearance.${effectiveTheme}`) }) }}</p>
+    </section>
   </div>
-  <template v-else>
-    <section v-if="error && !loaded" class="card account-feedback error" role="alert" aria-live="assertive">
-      <p>{{ error }}</p>
-      <button class="button compact-action" type="button" @click="loadProfile">{{ t('accountGeneral.retry') }}</button>
-    </section>
-
-    <section v-if="loaded" class="card form-card account-form-card" :aria-busy="saving">
-      <h2>{{ t('accountGeneral.formTitle') }}</h2>
-      <p>{{ t('accountGeneral.formDescription') }}</p>
-      <form class="form-grid account-form-grid" @submit.prevent="saveProfile">
-        <label class="field">
-          <span>{{ t('accountGeneral.language') }}</span>
-          <select v-model="profile.language" name="language" :disabled="saving">
-            <option v-for="value in languages" :key="value" :value="value">
-              {{ t(`accountGeneral.languageOptions.${value}`) }}
-            </option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>{{ t('accountGeneral.timezone') }}</span>
-          <select v-model="profile.timezone" name="timezone" required :disabled="saving">
-            <option v-for="timezone in timezoneOptions" :key="timezone" :value="timezone">
-              {{ timezone.replaceAll('_', ' ') }}
-            </option>
-          </select>
-          <small>{{ t('accountGeneral.timezoneHelp') }}</small>
-        </label>
-
-        <label class="field">
-          <span>{{ t('accountGeneral.weekStartsOn') }}</span>
-          <select v-model.number="profile.week_starts_on" name="week_starts_on" :disabled="saving">
-            <option :value="0">{{ t('accountGeneral.weekDays.monday') }}</option>
-            <option :value="6">{{ t('accountGeneral.weekDays.sunday') }}</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>{{ t('accountGeneral.unitSystem') }}</span>
-          <select v-model="unitSystem" name="unit_system" :disabled="saving">
-            <option v-for="value in unitSystems" :key="value" :value="value">
-              {{ t(`accountGeneral.unitSystemOptions.${value}`) }}
-            </option>
-          </select>
-        </label>
-
-        <div v-if="error" class="account-form-error" role="alert" aria-live="assertive">{{ error }}</div>
-        <p v-if="message" class="account-form-success" role="status" aria-live="polite">{{ message }}</p>
-        <button class="button compact-action account-submit" type="submit" :disabled="saving">
-          {{ saving ? t('accountGeneral.saving') : t('accountGeneral.save') }}
-        </button>
-      </form>
-    </section>
-  </template>
 </template>

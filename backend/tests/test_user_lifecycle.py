@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from app import security_events
 from app.auth.security import create_api_token, create_session
-from app.cli import configure_yazio, create_token, disable_yazio, seed_demo
+from app.cli import configure_yazio, create_token, disable_yazio
 from app.database import SessionLocal
 from app.importers.json_adapter import AdapterResult
 from app.models import (
@@ -692,8 +692,6 @@ def test_inactive_user_is_rejected_by_all_operator_mutation_paths(
     monkeypatch.setattr("app.cli.SessionLocal", SessionLocal)
     with pytest.raises(SystemExit, match="inaktiven Benutzer"):
         create_token(argparse.Namespace(username=target.username, label="blocked"))
-    with pytest.raises(SystemExit, match="keine Demodaten"):
-        seed_demo(argparse.Namespace(username=target.username))
     with pytest.raises(SystemExit, match="nicht deaktiviert"):
         disable_yazio(argparse.Namespace(username=target.username))
     db.refresh(connection)

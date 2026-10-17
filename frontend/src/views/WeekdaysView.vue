@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import { PhBarbell, PhCalendarBlank, PhChartBar, PhWarningCircle } from '@phosphor-icons/vue'
 import type { EChartsOption } from 'echarts'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
 import {
-  analyticsPresetMatchesRange,
-  inferDesktopPreset,
-  parseAnalyticsCompactPreset,
-  resolveAnalyticsRange,
-  type AnalyticsCompactPreset,
+  periodFromQuery,
+  type AppliedPeriod,
+  type PeriodLimits,
+  type PeriodRange,
 } from '../analytics-period'
-import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import ChartPanel from '../components/ChartPanel.vue'
+import { chartColors } from '../chart-theme'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
+import { isoDateInTimeZone } from '../date-format'
+import { useAuthStore } from '../stores/auth'
+import type { ReaderPeriodCapabilities } from '../types'
 
 interface Weekday {
   weekday: number
@@ -32,35 +35,30 @@ const t = i18n.global.t.bind(i18n.global)
 const locale = i18n.global.locale
 const route = useRoute()
 const router = useRouter()
-const currentDate = new Date()
-const defaultStartDate = new Date(currentDate)
-defaultStartDate.setDate(currentDate.getDate() - 179)
-const iso = (value: Date) => {
-  const year = value.getFullYear()
-  const month = `${value.getMonth() + 1}`.padStart(2, '0')
-  const day = `${value.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
+const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
+const limits: PeriodLimits = { minDays: 1, maxDays: 3661, customRange: true }
+const readerCapability: ReaderPeriodCapabilities = {
+  supports_all_data: false, all_data_start_date: null,
 }
-const defaultRange = { start: iso(defaultStartDate), end: iso(currentDate) }
-const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
-const start = ref(initialRange.start)
-const end = ref(initialRange.end)
-const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', '180', 'all']
-const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
-const period = ref<AnalyticsCompactPreset | undefined>(
-  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
-    ? periodCandidate
-    : undefined,
-)
-const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
+const allRange: PeriodRange | null = null
+const initial = periodFromQuery(route.query, limits, today, allRange)
+const start = ref(initial.start)
+const end = ref(initial.end)
+const period = ref(initial.period)
+let latestLoadId = 0
+let disposed = false
 const weekdays = ref<Weekday[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 0 })
 const kcal = createKcalFormatter()
 
-function selectPeriod(value: AnalyticsCompactPreset) {
-  period.value = value
+function applyPeriod(value: AppliedPeriod): void {
+  const selected = periodFromQuery(value, limits, today, allRange)
+  start.value = selected.start
+  end.value = selected.end
+  period.value = selected.period
+  void load()
 }
 
 function weekdayLabel(day: number) {
@@ -74,16 +72,33 @@ function numericValue(value: number | null) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+watch(
+  () => [route.query.start, route.query.end, route.query.period] as const,
+  ([nextStart, nextEnd, nextPeriod]) => {
+    if (nextStart === start.value && nextEnd === end.value && nextPeriod === period.value) return
+    const selected = periodFromQuery(route.query, limits, today, allRange)
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    void load()
+  },
+)
+
 async function load() {
+  if (disposed) return
+  const requestId = ++latestLoadId
+  const request: AppliedPeriod = { start: start.value, end: end.value, period: period.value }
   error.value = ''
   loading.value = true
-  await router.replace({
-    query: { start: start.value, end: end.value, period: period.value || undefined },
-  })
   try {
-    const params = new URLSearchParams({ start: start.value, end: end.value })
-    if (period.value === 'all') params.set('period', 'all')
+    await router.replace({
+      query: { ...route.query, ...request },
+      hash: route.hash,
+    })
+    if (requestId !== latestLoadId) return
+    const params = new URLSearchParams({ start: request.start, end: request.end })
     const result = await api<{ weekdays: Weekday[] }>(`/analytics/weekdays?${params}`)
+    if (requestId !== latestLoadId) return
     weekdays.value = result.weekdays.map((item) => ({
       ...item,
       count: Number(item.count),
@@ -95,12 +110,17 @@ async function load() {
       mean_protein_g: numericValue(item.mean_protein_g),
     }))
   } catch (cause) {
+    if (requestId !== latestLoadId) return
     error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
-    loading.value = false
+    if (requestId === latestLoadId) loading.value = false
   }
 }
 onMounted(load)
+onBeforeUnmount(() => {
+  disposed = true
+  latestLoadId += 1
+})
 
 const recorded = computed(() => weekdays.value.filter((item) => item.count > 0))
 const highestDay = computed(() =>
@@ -114,55 +134,60 @@ const proteinDay = computed(() =>
 )
 const totalDays = computed(() => recorded.value.reduce((sum, item) => sum + item.count, 0))
 
-const option = computed<EChartsOption>(() => ({
-  animationDuration: 500,
-  tooltip: {
-    trigger: 'axis',
-    backgroundColor: '#111d30',
-    borderColor: '#324157',
-    textStyle: { color: '#f3f6fb' },
-    valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
-  },
-  legend: {
-    top: 0,
-    right: 0,
-    data: [t('weekdays.mean'), t('weekdays.median')],
-    textStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  grid: { left: 58, right: 18, top: 48, bottom: 38 },
-  xAxis: {
-    type: 'category',
-    data: weekdays.value.map((item) => weekdayLabel(item.weekday).slice(0, 2)),
-    axisLine: { lineStyle: { color: '#263449' } },
-    axisTick: { show: false },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter' },
-  },
-  yAxis: {
-    type: 'value',
-    name: t('common.kcal'),
-    nameTextStyle: { color: '#98a5b9', fontFamily: 'Inter' },
-    axisLabel: { color: '#98a5b9', fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
-    splitLine: { lineStyle: { color: '#263449', type: 'dashed' } },
-  },
-  series: [
-    {
-      name: t('weekdays.mean'),
-      type: 'bar',
-      barMaxWidth: 42,
-      data: weekdays.value.map((item) => item.mean_kcal),
-      itemStyle: { color: '#8b5cf6', borderRadius: [5, 5, 0, 0] },
+const option = computed<EChartsOption>(() => {
+  const palette = chartColors.value
+  return {
+    backgroundColor: palette.background,
+    animationDuration: 500,
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipInk },
+      valueFormatter: (value) => `${kcal.format(Number(value))} ${t('common.kcal')}`,
     },
-    {
-      name: t('weekdays.median'),
-      type: 'line',
-      showSymbol: true,
-      symbolSize: 7,
-      data: weekdays.value.map((item) => item.median_kcal),
-      lineStyle: { color: '#2dd4bf', width: 2 },
-      itemStyle: { color: '#2dd4bf' },
+    legend: {
+      top: 0,
+      right: 0,
+      data: [t('weekdays.mean'), t('weekdays.median')],
+      textStyle: { color: palette.label, fontFamily: 'Inter' },
     },
-  ],
-}))
+    grid: { left: 58, right: 18, top: 48, bottom: 38 },
+    xAxis: {
+      type: 'category',
+      data: weekdays.value.map((item) => weekdayLabel(item.weekday).slice(0, 2)),
+      axisLine: { lineStyle: { color: palette.axis } },
+      axisTick: { show: false },
+      axisLabel: { color: palette.label, fontFamily: 'Inter' },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: palette.axis } },
+      name: t('common.kcal'),
+      nameTextStyle: { color: palette.label, fontFamily: 'Inter' },
+      axisLabel: { color: palette.label, fontFamily: 'Inter', formatter: (value: number) => kcal.format(value) },
+      splitLine: { lineStyle: { color: palette.grid, type: 'dashed' } },
+    },
+    series: [
+      {
+        name: t('weekdays.mean'),
+        type: 'bar',
+        barMaxWidth: 42,
+        data: weekdays.value.map((item) => item.mean_kcal),
+        itemStyle: { color: palette.violet, borderRadius: [5, 5, 0, 0] },
+      },
+      {
+        name: t('weekdays.median'),
+        type: 'line',
+        showSymbol: true,
+        symbolSize: 7,
+        data: weekdays.value.map((item) => item.median_kcal),
+        lineStyle: { color: palette.teal, width: 2 },
+        itemStyle: { color: palette.teal },
+      },
+    ],
+  }
+})
 
 </script>
 
@@ -170,14 +195,17 @@ const option = computed<EChartsOption>(() => ({
   <div class="page-heading analytics-page-heading">
     <div class="analytics-page-heading-content">
       <div><h1>{{ t('weekdays.title') }}</h1><p>{{ t('weekdays.description') }}</p></div>
-      <AnalyticsPeriodFilter
-        v-model:start="start"
-        v-model:end="end"
-        :initial-preset="desktopPreset"
-        :compact-presets="compactPresets"
-        :compact-preset="period"
-        @preset="selectPeriod"
-        @apply="load"
+      <PeriodPicker
+        :start="start"
+        :end="end"
+        :period="period"
+        :today="today"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :period-capabilities="readerCapability"
+        :all-range="allRange"
+        @apply="applyPeriod"
       />
     </div>
   </div>

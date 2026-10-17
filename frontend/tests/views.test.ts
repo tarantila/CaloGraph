@@ -3,9 +3,10 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-const { apiMock, authExpiredMock, withingsTestStatus } = vi.hoisted(() => ({
+const { apiMock, authExpiredMock, csrfTokenMock, withingsTestStatus } = vi.hoisted(() => ({
   apiMock: vi.fn(),
   authExpiredMock: vi.fn(),
+  csrfTokenMock: vi.fn().mockResolvedValue('csrf'),
   withingsTestStatus: {
     available: false,
     configured: false,
@@ -35,7 +36,7 @@ vi.mock('../src/api', () => ({
     })
   },
   notifyAuthenticationExpired: authExpiredMock,
-  ensureCsrfToken: vi.fn().mockResolvedValue('csrf'),
+  ensureCsrfToken: csrfTokenMock,
   ApiError: class ApiError extends Error {},
   localizeApiError: () => 'The request could not be processed.',
 }))
@@ -47,6 +48,7 @@ import DailyView from '../src/views/DailyView.vue'
 import ImportsView from '../src/views/ImportsView.vue'
 import MicronutrientsView from '../src/views/MicronutrientsView.vue'
 import OverviewView from '../src/views/OverviewView.vue'
+import PeriodPicker from '../src/components/PeriodPicker.vue'
 import QualityView from '../src/views/QualityView.vue'
 import AccountDataPrivacyView from '../src/views/AccountDataPrivacyView.vue'
 import AccountIntegrationsView from '../src/views/AccountIntegrationsView.vue'
@@ -56,7 +58,10 @@ import TrendsView from '../src/views/TrendsView.vue'
 import WeekdaysView from '../src/views/WeekdaysView.vue'
 import WeeklyView from '../src/views/WeeklyView.vue'
 import { DEFAULT_LOCALE, setLocale } from '../src/i18n'
+import { publishAuthSessionChange } from '../src/auth-session'
 import { useAuthStore } from '../src/stores/auth'
+import { setThemePreference } from '../src/theme'
+import type { DailyPoint, ReaderPeriodCapabilities } from '../src/types'
 
 const user = {
   id: 'user-1',
@@ -70,22 +75,87 @@ const user = {
   deactivated_at: null,
   highlight_over_budget: false,
 }
+let originalWindowXMLHttpRequest: typeof XMLHttpRequest | null = null
+
+function stubImportRequest() {
+  const instances: MockXMLHttpRequest[] = []
+  class MockXMLHttpRequest {
+    upload = {}
+    open = vi.fn()
+    setRequestHeader = vi.fn()
+    send = vi.fn()
+    status = 201
+    responseText = JSON.stringify({ status: 'completed', inserted: 1, updated: 0, skipped: 0, failed: 0 })
+    onload: XMLHttpRequest['onload'] = null
+
+    constructor() {
+      instances.push(this)
+    }
+  }
+  class MockFormData {
+    append = vi.fn()
+  }
+
+  originalWindowXMLHttpRequest = window.XMLHttpRequest
+  window.XMLHttpRequest = MockXMLHttpRequest as unknown as typeof XMLHttpRequest
+  vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+  vi.stubGlobal('FormData', MockFormData)
+  return instances
+}
+
+const chartThemeValues: Record<string, readonly [string, string]> = {
+  '--chart-background': ['#111d2f', '#ffffff'],
+  '--chart-grid': ['#263449', '#d6deea'],
+  '--chart-axis': ['#60738d', '#64748b'],
+  '--chart-label': ['#bac5d3', '#475569'],
+  '--chart-tooltip-bg': ['#111d30', '#ffffff'],
+  '--chart-tooltip-border': ['#324157', '#bac5d5'],
+  '--chart-tooltip-ink': ['#f3f6fb', '#182132'],
+  '--chart-series-violet': ['#8b5cf6', '#7c3aed'],
+  '--chart-series-teal': ['#2dd4bf', '#278979'],
+  '--chart-series-blue': ['#5b8ff9', '#2563eb'],
+  '--chart-series-amber': ['#f6c445', '#d97706'],
+  '--chart-series-emerald': ['#34d399', '#047857'],
+  '--chart-series-budget': ['#fb923c', '#d97706'],
+  '--chart-series-baseline': ['#64748b', '#64748b'],
+  '--chart-series-lilac': ['#d19bff', '#a855f7'],
+}
+
+function installChartThemeStyles() {
+  vi.stubGlobal('getComputedStyle', (element: Element) => ({
+    getPropertyValue: (name: string) => {
+      const colors = chartThemeValues[name]
+      if (!colors) return ''
+      return colors[element.getAttribute('data-theme') === 'light' ? 1 : 0]
+    },
+  }) as CSSStyleDeclaration)
+}
 
 describe('main views', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    csrfTokenMock.mockReset().mockResolvedValue('csrf')
     authExpiredMock.mockReset()
     setActivePinia(createPinia())
     setLocale(DEFAULT_LOCALE)
     config.global.stubs = {
       RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
     }
+    installChartThemeStyles()
+    setThemePreference('dark')
   })
   afterEach(() => {
+    if (originalWindowXMLHttpRequest) window.XMLHttpRequest = originalWindowXMLHttpRequest
+    originalWindowXMLHttpRequest = null
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    setThemePreference('system')
     setLocale(DEFAULT_LOCALE)
   })
 
   it('loads the dashboard summary and renders empty trend data safely', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-07-19T12:00:00Z'))
     apiMock.mockImplementation((path: string) => {
       if (path === '/dashboard/summary') {
         return Promise.resolve({
@@ -114,6 +184,8 @@ describe('main views', () => {
       }
       return Promise.resolve({ points: [] })
     })
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(OverviewView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Ernährungsüberblick')
@@ -127,22 +199,300 @@ describe('main views', () => {
     expect(apiMock).toHaveBeenCalledWith(
       '/analytics/trends?start=2026-06-20&end=2026-07-19&include_incomplete=true',
     )
-    const periodControl = wrapper.get('.period-control')
-    expect(periodControl.findAll('button')).toHaveLength(4)
-    expect(periodControl.findAll('button.active')).toHaveLength(1)
-    expect(periodControl.text()).toContain('7 Tage')
-    expect(periodControl.text()).toContain('30 Tage')
-    expect(periodControl.text()).toContain('60 Tage')
-    expect(periodControl.text()).toContain('Alle')
-    const allButton = wrapper.findAll('button').find((button) => button.text() === 'Alle')
-    expect(allButton).toBeDefined()
-    await allButton!.trigger('click')
+
+    type ChartOption = {
+      backgroundColor: string
+      tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
+      series: Array<{ data: unknown[]; itemStyle?: { color?: string }; lineStyle?: { color?: string } }>
+    }
+    const charts = wrapper.findAllComponents(ChartPanel)
+    expect(charts).toHaveLength(2)
+    const before = charts.map((chart) => chart.props('option') as ChartOption)
+    const apiCallCount = apiMock.mock.calls.length
+
+    setThemePreference('light')
     await flushPromises()
-    expect(apiMock).toHaveBeenCalledWith(
-      '/analytics/trends?start=2026-06-01&end=2026-07-19&include_incomplete=true&period=all',
-    )
+
+    const after = charts.map((chart) => chart.props('option') as ChartOption)
+    expect(after.map((option) => option.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((option) => option.tooltip.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((option) => option.tooltip.borderColor)).toEqual(['#bac5d5', '#bac5d5'])
+    expect(after.map((option) => option.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
+    expect(after.map((option) => option.series.map((series) => series.data)))
+      .toEqual(before.map((option) => option.series.map((series) => series.data)))
+    expect(after[0].series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(after[1].series[0].itemStyle?.color).toBe('#278979')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
-  it('zeigt bei dauerhaftem Dashboard-Transportfehler einen lokalisierten Retry-Zustand', async () => {
+
+  describe('Overview period selection', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-01T12:00:00Z'))
+      useAuthStore().user = { ...user }
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function trendPoint(date: string, calories: number): DailyPoint {
+      return {
+        date, calories_kcal: calories, target_kcal: 2200, maintenance_kcal: null,
+        deviation_kcal: calories - 2200, activity_mode: 'off', activity_source_type: null,
+        active_energy_kcal: null, activity_credit_kcal: 0, activity_data_status: 'disabled',
+        effective_budget_kcal: 2200, effective_maintenance_kcal: null,
+        effective_deviation_kcal: calories - 2200, protein_g: 120, carbs_g: 200, fat_g: 70,
+        tracking_status: 'complete', tracking_score: 8, tracking_reasons: [],
+        average_7d: null, average_14d: null, average_28d: null,
+      }
+    }
+
+    function mockOverviewTrends(
+      capability: ReaderPeriodCapabilities,
+      points: DailyPoint[] = [],
+      shouldRejectTrendPath?: (path: string) => boolean,
+    ) {
+      apiMock.mockImplementation((path: string) => {
+        if (path === '/dashboard/summary') {
+          return Promise.resolve({
+            today: trendPoint('2026-10-01', 1777),
+            week: {
+              consumed_kcal: 7000, budget_kcal: 15400, deviation_kcal: -8400,
+              remaining_kcal: 8400, activity_credit_kcal: 0, effective_budget_kcal: 15400,
+              effective_deviation_kcal: -8400, effective_remaining_kcal: 8400,
+            },
+            protein_7d_average_g: 125, last_import_at: null,
+            data_start_date: '2025-01-01', data_end_date: '2026-10-01', data_day_count: 120,
+          })
+        }
+        if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
+        if (path === '/yazio/status') {
+          return Promise.resolve({
+            available: false, configured: false, scheduler_enabled: false, sync_enabled: false,
+            sync_interval_minutes: null, sync_days: null, last_attempt_at: null,
+            last_success_at: null, next_sync_at: null, last_error: null,
+          })
+        }
+        if (path.startsWith('/analytics/trends?')) {
+          const query = new URL(path, 'https://calograph.test').searchParams
+          if (shouldRejectTrendPath?.(path)) return Promise.reject(new Error('Synthetic trend failure'))
+          return Promise.resolve({
+            points: points.filter((point) => point.date >= query.get('start')! && point.date <= query.get('end')!),
+            budget_balance: null,
+            period_capabilities: capability,
+          })
+        }
+        throw new Error(`Unexpected Overview request: ${path}`)
+      })
+    }
+
+    async function mountOverview(path = '/overview') {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: '/overview', name: 'overview', component: OverviewView }],
+      })
+      await router.push(path)
+      await router.isReady()
+      const wrapper = mount(OverviewView, {
+        global: { plugins: [router], stubs: { ChartPanel: true } },
+      })
+      await flushPromises()
+      return { wrapper, router }
+    }
+
+    it.each([
+      { name: 'false Trends capability', capability: { supports_all_data: false, all_data_start_date: null } },
+      { name: 'true Trends capability without reader boundary', capability: { supports_all_data: true, all_data_start_date: null } },
+    ])('does not use Summary coverage to grant All with $name', async ({ capability }) => {
+      mockOverviewTrends(capability)
+      const { wrapper, router } = await mountOverview('/overview?source=yazio#nutrition')
+      const picker = wrapper.getComponent(PeriodPicker)
+      await picker.get('.analysis-period-custom-button').trigger('click')
+      expect(picker.find('.analysis-period-option[data-period="all"]').exists()).toBe(false)
+      expect(router.currentRoute.value.query).toEqual({
+        start: '2026-09-02', end: '2026-10-01', period: '30', source: 'yazio',
+      })
+      expect(router.currentRoute.value.hash).toBe('#nutrition')
+      expect(apiMock.mock.calls.filter(([path]) => path.startsWith('/analytics/trends?'))
+        .some(([path]) => new URL(path, 'https://calograph.test').searchParams.get('period') === 'all')).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('changes rendered Trends range to 90 days without changing Summary-backed Today and weekly information', async () => {
+      mockOverviewTrends({ supports_all_data: false, all_data_start_date: null }, [
+        trendPoint('2026-07-04', 1400), trendPoint('2026-09-02', 1800),
+        trendPoint('2026-09-28', 2100), trendPoint('2026-10-01', 3000),
+      ])
+      const { wrapper, router } = await mountOverview('/overview?source=yazio&include_incomplete=true#nutrition')
+      const caloriePanel = wrapper.findAllComponents(ChartPanel)
+        .find((panel) => panel.props('title') === 'Kalorienaufnahme')!
+      type CalorieOption = { series: Array<{ name: string; data: Array<number | null> }> }
+      expect(wrapper.get('.dashboard-period-range').text()).toBe('02.09. – 01.10.2026 · 3/3 mit Daten')
+      expect((caloriePanel.props('option') as CalorieOption)
+        .series.find((series) => series.name === 'Aufnahme')!.data).toEqual([1800, 2100, 3000])
+      const stats = wrapper.get('.dashboard-stats')
+      expect(stats.findAll('.metric-card-value')[0]!.text()).toContain('1.777')
+      expect(stats.findAll('.metric-card-value')[3]!.text()).toContain('8.400')
+      expect(stats.text()).toContain('15.400')
+      const beforeSummaryMetrics = stats.findAll('.metric-card-value').map((metric) => metric.text())
+      const beforeWeeklySummary = wrapper.get('.weekly-summary-card').text()
+
+      await wrapper.getComponent(PeriodPicker).get('.analysis-period-strip [data-period="90"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.get('.dashboard-period-range').text()).toBe('04.07. – 01.10.2026 · 4/4 mit Daten')
+      expect((caloriePanel.props('option') as CalorieOption)
+        .series.find((series) => series.name === 'Aufnahme')!.data).toEqual([1400, 1800, 2100, 3000])
+      expect(router.currentRoute.value.query).toEqual({
+        start: '2026-07-04', end: '2026-10-01', period: '90', source: 'yazio', include_incomplete: 'true',
+      })
+      expect(router.currentRoute.value.hash).toBe('#nutrition')
+      expect(stats.findAll('.metric-card-value').map((metric) => metric.text())).toEqual(beforeSummaryMetrics)
+      expect(wrapper.get('.weekly-summary-card').text()).toBe(beforeWeeklySummary)
+      expect(apiMock.mock.calls.filter(([path]) => path === '/dashboard/summary')).toHaveLength(1)
+      expect(apiMock).toHaveBeenLastCalledWith('/analytics/trends?start=2026-07-04&end=2026-10-01&include_incomplete=true')
+      wrapper.unmount()
+    })
+    it('behält Wochen-KPIs bei historischer Auswahl über „Individuell“ unverändert', async () => {
+      mockOverviewTrends(
+        { supports_all_data: false, all_data_start_date: null },
+        [
+          trendPoint('2026-07-04', 1400), trendPoint('2026-07-05', 1800),
+          trendPoint('2026-09-28', 2100), trendPoint('2026-09-29', 2200),
+          trendPoint('2026-10-01', 3000),
+        ],
+      )
+      const { wrapper, router } = await mountOverview('/overview?source=yazio#nutrition')
+      const weeklySummary = wrapper.get('.weekly-summary-card')
+      const beforeWeeklySummary = weeklySummary.text()
+      const picker = wrapper.getComponent(PeriodPicker)
+
+      await picker.get('.analysis-period-custom-button').trigger('click')
+      const dateFields = picker.findAll<HTMLInputElement>('input[type="text"]')
+      await dateFields[0]!.setValue('04.07.2026')
+      await dateFields[1]!.setValue('10.07.2026')
+      await dateFields[0]!.trigger('blur')
+      await dateFields[1]!.trigger('blur')
+      await picker.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(router.currentRoute.value.query).toEqual({
+        start: '2026-07-04', end: '2026-07-10', period: 'custom', source: 'yazio',
+      })
+      expect(router.currentRoute.value.hash).toBe('#nutrition')
+      expect(wrapper.get('.dashboard-period-range').text())
+        .toBe('04.07. – 05.07.2026 · 2/2 mit Daten')
+      expect(weeklySummary.text()).toBe(beforeWeeklySummary)
+      wrapper.unmount()
+    })
+
+    it('lädt aktuelle Wochen-KPIs auch bei direktem historischem „Individuell“-Aufruf', async () => {
+      mockOverviewTrends(
+        { supports_all_data: false, all_data_start_date: null },
+        [
+          trendPoint('2026-07-04', 1400), trendPoint('2026-07-05', 1800),
+          trendPoint('2026-09-28', 2100), trendPoint('2026-09-29', 2200),
+          trendPoint('2026-10-01', 3000),
+        ],
+      )
+      const { wrapper, router } = await mountOverview(
+        '/overview?start=2026-07-04&end=2026-07-10&period=custom&source=yazio#nutrition',
+      )
+
+      const weeklySummary = wrapper.get('.weekly-summary-card').text()
+      expect(weeklySummary).toContain('2.433 kcal')
+      expect(weeklySummary).toContain('2 von 3 Tagen')
+      expect(weeklySummary).toContain('3 von 4 Tagen')
+      expect(wrapper.get('.dashboard-period-range').text())
+        .toBe('04.07. – 05.07.2026 · 2/2 mit Daten')
+      expect(router.currentRoute.value.query).toEqual({
+        start: '2026-07-04', end: '2026-07-10', period: 'custom', source: 'yazio',
+      })
+
+      const trendRequests = apiMock.mock.calls
+        .map(([path]) => path)
+        .filter((path) => path.startsWith('/analytics/trends?'))
+      expect(trendRequests).toContain(
+        '/analytics/trends?start=2026-09-28&end=2026-10-01&include_incomplete=true',
+      )
+      expect(trendRequests.some((path) =>
+        new URL(path, 'https://calograph.test').searchParams.get('period') === 'all',
+      )).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('lädt die komplette laufende Woche bei direktem Today-only-„Individuell“-Aufruf', async () => {
+      mockOverviewTrends(
+        { supports_all_data: false, all_data_start_date: null },
+        [
+          trendPoint('2026-07-04', 1400), trendPoint('2026-07-05', 1800),
+          trendPoint('2026-09-28', 2100), trendPoint('2026-09-29', 2200),
+          trendPoint('2026-10-01', 3000),
+        ],
+      )
+      const { wrapper, router } = await mountOverview(
+        '/overview?start=2026-10-01&end=2026-10-01&period=custom&source=yazio#nutrition',
+      )
+
+      const weeklySummary = wrapper.get('.weekly-summary-card').text()
+      expect(weeklySummary).toContain('2.433 kcal')
+      expect(weeklySummary).toContain('2 von 3 Tagen')
+      expect(weeklySummary).toContain('3 von 4 Tagen')
+      expect(wrapper.get('.dashboard-period-range').text())
+        .toBe('01.10. – 01.10.2026 · 1/1 mit Daten')
+      expect(router.currentRoute.value.query).toEqual({
+        start: '2026-10-01', end: '2026-10-01', period: 'custom', source: 'yazio',
+      })
+
+      const trendRequests = apiMock.mock.calls
+        .map(([path]) => path)
+        .filter((path) => path.startsWith('/analytics/trends?'))
+      expect(trendRequests).toContain(
+        '/analytics/trends?start=2026-09-28&end=2026-10-01&include_incomplete=true',
+      )
+      expect(trendRequests.some((path) =>
+        new URL(path, 'https://calograph.test').searchParams.get('period') === 'all',
+      )).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('behält den Dashboard-Retry bei fehlgeschlagener Wochenabfrage für einen historischen Direktaufruf', async () => {
+      let failCurrentWeek = true
+      mockOverviewTrends(
+        { supports_all_data: false, all_data_start_date: null },
+        [
+          trendPoint('2026-07-04', 1400), trendPoint('2026-07-05', 1800),
+          trendPoint('2026-09-28', 2100), trendPoint('2026-09-29', 2200),
+          trendPoint('2026-10-01', 3000),
+        ],
+        (path) => failCurrentWeek
+          && path === '/analytics/trends?start=2026-09-28&end=2026-10-01&include_incomplete=true',
+      )
+      const { wrapper } = await mountOverview(
+        '/overview?start=2026-07-04&end=2026-07-10&period=custom',
+      )
+
+      const alert = wrapper.get('[role="alert"]')
+      expect(alert.text()).toContain('The request could not be processed.')
+      expect(alert.find('button').exists()).toBe(true)
+      expect(wrapper.find('.weekly-summary-card').exists()).toBe(false)
+
+      failCurrentWeek = false
+      await alert.get('button').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(wrapper.get('.weekly-summary-card').text()).toContain('2.433 kcal')
+      expect(apiMock.mock.calls.filter(([path]) =>
+        path === '/analytics/trends?start=2026-09-28&end=2026-10-01&include_incomplete=true',
+      )).toHaveLength(2)
+      wrapper.unmount()
+    })
+  })
+  it('bewahrt nach einem Dashboard-Transportfehler den Retry beim erfolgreichen Periodenwechsel', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-07-19T12:00:00Z'))
     const auth = useAuthStore()
     auth.user = user
     let failed = true
@@ -155,6 +505,15 @@ describe('main views', () => {
       data_end_date: null,
       data_day_count: 0,
     }
+    const trend: DailyPoint = {
+      date: '2026-07-19', calories_kcal: 1777, target_kcal: 2200, maintenance_kcal: null,
+      deviation_kcal: -423, activity_mode: 'off', activity_source_type: null,
+      active_energy_kcal: null, activity_credit_kcal: 0, activity_data_status: 'disabled',
+      effective_budget_kcal: 2200, effective_maintenance_kcal: null,
+      effective_deviation_kcal: -423, protein_g: 120, carbs_g: 200, fat_g: 70,
+      tracking_status: 'complete', tracking_score: 8, tracking_reasons: [],
+      average_7d: null, average_14d: null, average_28d: null,
+    }
     apiMock.mockImplementation((path: string) => {
       if (path === '/dashboard/summary' && failed) {
         failed = false
@@ -163,6 +522,12 @@ describe('main views', () => {
       if (path === '/dashboard/summary') return Promise.resolve(summary)
       if (path === '/settings/targets' || path === '/imports') return Promise.resolve([])
       if (path === '/yazio/status') return Promise.resolve({ available: false, configured: false })
+      if (path.startsWith('/analytics/trends?')) {
+        return Promise.resolve({
+          points: [trend],
+          period_capabilities: { supports_all_data: false, all_data_start_date: null },
+        })
+      }
       return Promise.resolve({ points: [] })
     })
 
@@ -171,12 +536,24 @@ describe('main views', () => {
     expect(wrapper.text()).toContain('The request could not be processed.')
     expect(wrapper.findAll('button').some((button) => button.text() === 'Erneut versuchen')).toBe(true)
     expect(auth.user).toEqual(user)
+    expect(wrapper.find('.dashboard-stats').exists()).toBe(false)
+
+    await wrapper.getComponent(PeriodPicker).get('.analysis-period-strip [data-period="90"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.dashboard-period-range').text()).toContain('1/1')
+    expect(wrapper.find('.dashboard-stats').exists()).toBe(false)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    expect(wrapper.get('[role="alert"]').text()).toContain('The request could not be processed.')
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Erneut versuchen')).toBe(true)
 
     await wrapper.findAll('button').find((button) => button.text() === 'Erneut versuchen')!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('Ernährungsüberblick')
     expect(wrapper.text()).not.toContain('The request could not be processed.')
+    expect(wrapper.find('.dashboard-stats').exists()).toBe(true)
     expect(auth.user).toEqual(user)
+    wrapper.unmount()
   })
 
   it('renders the central overview in English after a locale switch', async () => {
@@ -463,6 +840,11 @@ describe('main views', () => {
     expect(dailyBudgetSeries?.step).toBe('middle')
     expect(dailyBudgetSeries?.lineStyle).toEqual({ color: '#fb923c', width: 2, type: 'dashed' })
     expect(dailyBudgetSeries?.itemStyle).toEqual({ color: '#fb923c' })
+    const macroOption = wrapper.findAllComponents(ChartPanel)[1]!.props('option') as {
+      series: Array<{ name: string; itemStyle?: { color?: string } }>
+    }
+    expect(macroOption.series.find((series) => series.name === 'Fett')?.itemStyle?.color).toBe('#f6c445')
+    expect(wrapper.find('.metric-card-label.violet').exists()).toBe(true)
     expect(option.series.find((series) => series.name === 'Basisbudget')).toBeUndefined()
     expect(option.series.find((series) => series.name === 'Effektives Budget')).toBeUndefined()
     expect(wrapper.get('.dashboard-period-range').text()).toBe(
@@ -859,6 +1241,8 @@ describe('main views', () => {
       ],
     })
 
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(TrendsView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
 
@@ -872,7 +1256,7 @@ describe('main views', () => {
         barMaxWidth?: number
         itemStyle?: { color?: string; borderColor?: string; borderWidth?: number }
       }>
-      tooltip: { formatter: (params: unknown) => string }
+      tooltip: { formatter: (params: unknown) => string; backgroundColor: string; borderColor: string }
     }
     expect(option.legend.data).toContain('Aktivitätsgutschrift')
     const barSeries = option.series.filter((series) => series.type === 'bar')
@@ -883,8 +1267,8 @@ describe('main views', () => {
     const activitySeries = option.series.find((series) => series.name === 'Aktivitätsgutschrift')
     expect(activitySeries?.data).toEqual([310, null, null, null])
     expect(activitySeries?.itemStyle).toMatchObject({
-      color: '#f6c445',
-      borderColor: '#ffe08a',
+      color: '#8b5cf6',
+      borderColor: '#8b5cf6',
       borderWidth: 1,
     })
     expect(activitySeries?.itemStyle?.color).not.toBe('#fb923c')
@@ -912,6 +1296,29 @@ describe('main views', () => {
     }])
     expect(missingActivityTooltip).toContain('Tagesbudget: 1.580 kcal')
     expect(missingActivityTooltip).not.toContain('Aktivitätsgutschrift')
+
+    type ThemeOption = {
+      backgroundColor: string
+      tooltip: { backgroundColor: string; borderColor: string; textStyle: { color: string } }
+      series: Array<{ data: unknown[]; itemStyle?: { color?: string }; lineStyle?: { color?: string } }>
+    }
+    const charts = wrapper.findAllComponents(ChartPanel)
+    const before = charts.map((chart) => chart.props('option') as ThemeOption)
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
+    await flushPromises()
+    const after = charts.map((chart) => chart.props('option') as ThemeOption)
+
+    expect(after.map((chart) => chart.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((chart) => chart.tooltip.backgroundColor)).toEqual(['#ffffff', '#ffffff'])
+    expect(after.map((chart) => chart.tooltip.textStyle.color)).toEqual(['#182132', '#182132'])
+    expect(after.map((chart) => chart.series.map((series) => series.data)))
+      .toEqual(before.map((chart) => chart.series.map((series) => series.data)))
+    expect(after[0].series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(after[0].series[1].itemStyle?.color).toBe('#7c3aed')
+    expect(after[1].series[0].lineStyle?.color).toBe('#278979')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
 
   it('does not backfill historical days with the current calorie target', async () => {
@@ -983,12 +1390,26 @@ describe('main views', () => {
   })
 
   it('renders an empty weekly budget without converting missing data to zero days', async () => {
+    installChartThemeStyles()
+    setThemePreference('dark')
     apiMock.mockResolvedValue({ weeks: [] })
     const wrapper = mount(WeeklyView, { global: { stubs: { ChartPanel: true } } })
     await flushPromises()
     expect(wrapper.text()).toContain('Wochenbudget')
     expect(wrapper.text()).toContain('Noch keine Wochenwerte vorhanden.')
     expect(wrapper.text()).not.toContain('0 kcal')
+
+    const chart = wrapper.findComponent(ChartPanel)
+    const before = chart.props('option') as { backgroundColor: string; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
+    await flushPromises()
+    const after = chart.props('option') as { backgroundColor: string; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    expect(after.backgroundColor).toBe('#ffffff')
+    expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
+    expect(after.series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
   it('uses the configured Sunday week start in weekly range labels', async () => {
     apiMock.mockResolvedValue({
@@ -1543,7 +1964,7 @@ describe('main views', () => {
   })
 
 
-  it('filters weekday analysis by week or a custom date range', async () => {
+  it('updates weekday chart theme without reloading analytics data', async () => {
     apiMock.mockResolvedValue({
       weekdays: [
         {
@@ -1566,22 +1987,30 @@ describe('main views', () => {
     await router.push('/')
     await router.isReady()
 
+    installChartThemeStyles()
+    setThemePreference('dark')
     const wrapper = mount(WeekdaysView, {
       global: { plugins: [router], stubs: { ChartPanel: true } },
     })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Aktuelle Woche')
-    expect(wrapper.text()).toContain('Letzte Woche')
-    expect(wrapper.text()).toContain('6 Monate')
     expect(apiMock.mock.calls[0][0]).toMatch(
       /^\/analytics\/weekdays\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}$/,
     )
-    const initialPath = apiMock.mock.calls[0][0]
-    await wrapper.find('select').setValue('last-week')
+
+    type WeekdayOption = { backgroundColor: string; tooltip: { backgroundColor: string }; series: Array<{ data: unknown[]; itemStyle?: { color?: string } }> }
+    const chart = wrapper.findComponent(ChartPanel)
+    const before = chart.props('option') as WeekdayOption
+    const apiCallCount = apiMock.mock.calls.length
+    setThemePreference('light')
     await flushPromises()
-    expect(apiMock).toHaveBeenCalledTimes(2)
-    expect(apiMock.mock.calls[1][0]).not.toBe(initialPath)
+    const after = chart.props('option') as WeekdayOption
+    expect(after.backgroundColor).toBe('#ffffff')
+    expect(after.tooltip.backgroundColor).toBe('#ffffff')
+    expect(after.series.map((series) => series.data)).toEqual(before.series.map((series) => series.data))
+    expect(after.series[0].itemStyle?.color).toBe('#7c3aed')
+    expect(apiMock.mock.calls).toHaveLength(apiCallCount)
+    wrapper.unmount()
   })
 
   it('renders import batch errors and status counts', async () => {
@@ -1604,6 +2033,67 @@ describe('main views', () => {
     await details!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('Messwert ist keine gültige Zahl')
+  })
+  it('does not send an import when the auth identity changes during CSRF acquisition', async () => {
+    apiMock.mockImplementation((path: string) => Promise.resolve(path === '/imports' ? [] : {}))
+    const auth = useAuthStore()
+    auth.user = { ...user }
+    publishAuthSessionChange(user.id)
+    const xhrInstances = stubImportRequest()
+    let resolveCsrfToken!: (token: string) => void
+    csrfTokenMock.mockReturnValue(new Promise<string>((resolve) => { resolveCsrfToken = resolve }))
+    const wrapper = mount(ImportsView)
+    await flushPromises()
+
+    const input = wrapper.get<HTMLInputElement>('.import-file-picker input')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['synthetic import'], 'review.xml', { type: 'application/xml' })],
+    })
+    await input.trigger('change')
+    await wrapper.get('.import-submit').trigger('click')
+
+    auth.user = { ...user, id: 'user-2' }
+    resolveCsrfToken('csrf-account-a')
+    await flushPromises()
+
+    expect(xhrInstances).toHaveLength(1)
+    expect(xhrInstances[0]!.send).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('does not reconcile a completed import after the auth identity changes', async () => {
+    apiMock.mockImplementation((path: string) => Promise.resolve(path === '/imports' ? [] : {}))
+    const auth = useAuthStore()
+    auth.user = { ...user }
+    publishAuthSessionChange(user.id)
+    auth.onboardingStatus = { mode: 'full', required: false, completed: true, current_step: 'completed' }
+    const xhrInstances = stubImportRequest()
+    const wrapper = mount(ImportsView)
+    await flushPromises()
+
+    const input = wrapper.get<HTMLInputElement>('.import-file-picker input')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['synthetic import'], 'review.xml', { type: 'application/xml' })],
+    })
+    await input.trigger('change')
+    await flushPromises()
+    expect(wrapper.get('.selected-file').text()).toContain('review.xml')
+    await wrapper.get('.import-submit').trigger('click')
+    await flushPromises()
+    const xhr = xhrInstances[0]!
+    expect(xhr.send).toHaveBeenCalledOnce()
+
+    auth.user = { ...user, id: 'user-2' }
+    const onload = xhr.onload
+    expect(onload).toBeTypeOf('function')
+    await onload!.call(xhr as unknown as XMLHttpRequest, new ProgressEvent('load'))
+    await flushPromises()
+
+    expect(apiMock.mock.calls.some(([path, options]) =>
+      path === '/achievements/reconcile' && options?.method === 'POST',
+    )).toBe(false)
+    wrapper.unmount()
   })
 
 
@@ -1767,6 +2257,7 @@ describe('main views', () => {
       start_date: '2026-07-01',
       end_date: '2026-07-23',
       source: 'yazio_export_v1',
+      period_capabilities: { supports_all_data: false, all_data_start_date: null },
       recorded_days: 20,
       last_updated_at: '2026-07-23T10:30:00Z',
       available_sources: [
@@ -1815,7 +2306,7 @@ describe('main views', () => {
     await router.isReady()
 
     const wrapper = mount(MicronutrientsView, {
-      global: { plugins: [router], stubs: { DateFilter: true } },
+      global: { plugins: [router], stubs: { PeriodPicker: false } },
     })
     await flushPromises()
 

@@ -1,11 +1,9 @@
 import argparse
 import getpass
 import logging
-import random
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,11 +22,8 @@ from app.config import (
     warn_legacy_yazio_provider,
 )
 from app.database import SessionLocal
-from app.importers.common import CanonicalSample
-from app.importers.json_adapter import AdapterResult
 from app.models import (
     InstanceBootstrap,
-    NutritionTarget,
     TrackingQualitySettings,
     User,
     UserOnboarding,
@@ -40,11 +35,18 @@ from app.services.admin_reauth import (
     AdminReauthenticationRejected,
     verify_admin_reauthentication,
 )
+from app.services.analysis_demo import (
+    AnalysisDemoOwnershipError,
+    AnalysisDemoUnavailable,
+    ensure_analysis_demo_calendar_target,
+    remove_analysis_demo,
+    seed_analysis_demo,
+)
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     generate_credential_key,
 )
-from app.services.import_service import persist_import, purge_expired_raw_payloads
+from app.services.import_service import purge_expired_raw_payloads
 from app.services.passkeys import purge_expired_webauthn_challenges
 from app.services.rate_limit import RateLimitExceeded, purge_expired_rate_limit_buckets
 from app.services.security_audit import purge_expired_security_audit_events
@@ -227,115 +229,41 @@ def issue_recovery(args: argparse.Namespace) -> None:
     print(raw_token)
 
 
-def seed_demo(args: argparse.Namespace) -> None:
+def seed_analysis_demo_command(args: argparse.Namespace) -> None:
     try:
         with SessionLocal() as db:
-            stored_user = db.scalar(select(User).where(User.username == args.username))
-            if not stored_user:
-                raise SystemExit("Benutzer nicht gefunden. Zuerst create-user ausführen.")
-            with shared_user_operation(db, stored_user.id) as user:
-                start = date(2026, 2, 15)
-                change_day = start + timedelta(days=60)
-                existing_target = db.scalar(
-                    select(NutritionTarget).where(
-                        NutritionTarget.user_id == user.id,
-                        NutritionTarget.valid_from == start,
+            include_follow_up = getattr(args, "include_follow_up_meals", False)
+            if getattr(args, "ensure_calendar_target_only", False):
+                if getattr(args, "include_current_day_supplement", False) or include_follow_up:
+                    raise SystemExit(
+                        "Das Kalorienziel kann nicht mit Mahlzeiten-Supplements kombiniert werden."
                     )
+                user_id = ensure_analysis_demo_calendar_target(db)
+            else:
+                user_id = seed_analysis_demo(
+                    db, password=None,
+                    today=datetime.now(ZoneInfo("Europe/Berlin")).date(),
+                    include_current_day_supplement=(
+                        getattr(args, "include_current_day_supplement", False) or include_follow_up
+                    ),
+                    include_follow_up_meals=include_follow_up,
                 )
-                if not existing_target:
-                    current = db.scalar(
-                        select(NutritionTarget)
-                        .where(
-                            NutritionTarget.user_id == user.id,
-                            NutritionTarget.valid_to.is_(None),
-                        )
-                        .order_by(NutritionTarget.valid_from.desc())
-                    )
-                    if current and current.valid_from < start:
-                        current.valid_to = start
-                    db.add(
-                        NutritionTarget(
-                            user_id=user.id,
-                            valid_from=start,
-                            valid_to=change_day,
-                            calories_kcal=Decimal("2200"),
-                            protein_g=Decimal("140"),
-                        )
-                    )
-                    db.add(
-                        NutritionTarget(
-                            user_id=user.id,
-                            valid_from=change_day,
-                            calories_kcal=Decimal("2050"),
-                            protein_g=Decimal("150"),
-                        )
-                    )
-                    db.flush()
-                result = _demo_samples(user.timezone, start, 120)
-                summary = persist_import(
-                    db,
-                    user,
-                    result,
-                    None,
-                    "application/x-synthetic",
-                    "seed-demo-data",
-                )
-    except InactiveUserOperation as exc:
-        raise SystemExit(
-            "Für einen inaktiven Benutzer können keine Demodaten angelegt werden."
-        ) from exc
+    except (AnalysisDemoOwnershipError, AnalysisDemoUnavailable, PasswordPolicyError) as exc:
+        raise SystemExit(str(exc)) from exc
     except UserOperationBusy as exc:
-        raise SystemExit("Für diesen Benutzer läuft gerade eine administrative Operation.") from exc
-    print(
-        f"Demo-Import abgeschlossen: {summary.inserted} neu, "
-        f"{summary.updated} aktualisiert, {summary.skipped} unverändert."
-    )
+        raise SystemExit("Für dieses Benutzerkonto läuft gerade eine andere Operation.") from exc
+    print(f"Analyse-Demokonto bereit: {user_id}")
 
 
-def _demo_samples(timezone: str, start: date, days: int) -> AdapterResult:
-    randomizer = random.Random(20260329)
-    zone = ZoneInfo(timezone)
-    samples: list[CanonicalSample] = []
-    for offset in range(days):
-        day = start + timedelta(days=offset)
-        if offset % 23 == 0:
-            continue
-        target = Decimal("2200") if offset < 60 else Decimal("2050")
-        weekend = Decimal("260") if day.weekday() >= 5 else Decimal()
-        calories = target + weekend + Decimal(randomizer.randint(-280, 260))
-        small_day = offset % 17 == 0
-        if small_day:
-            calories = Decimal(randomizer.randint(250, 700))
-        protein = (calories * Decimal("0.27") / Decimal(4)).quantize(Decimal("0.1"))
-        carbs = (calories * Decimal("0.43") / Decimal(4)).quantize(Decimal("0.1"))
-        fat = (calories * Decimal("0.30") / Decimal(9)).quantize(Decimal("0.1"))
-        at = datetime(day.year, day.month, day.day, 12, tzinfo=zone)
-        metrics = [
-            ("dietary_energy_kcal", calories, "kcal"),
-            ("protein_g", protein, "g"),
-            ("carbohydrates_g", carbs, "g"),
-            ("fat_g", fat, "g"),
-        ]
-        if small_day:
-            metrics = metrics[:2]
-        for metric, value, unit in metrics:
-            samples.append(
-                CanonicalSample(
-                    metric_type=metric,
-                    value=value,
-                    unit=unit,
-                    original_value=value,
-                    original_unit=unit,
-                    start_at=at,
-                    end_at=at,
-                    timezone=timezone,
-                    source_type="synthetic_demo",
-                    source_name="CaloGraph Seed",
-                    source_identifier="seed-v1",
-                    external_sample_id=f"demo-{day.isoformat()}-{metric}",
-                )
-            )
-    return AdapterResult(source_type="synthetic_demo", samples=samples, received=len(samples))
+def remove_analysis_demo_command(_: argparse.Namespace) -> None:
+    try:
+        with SessionLocal() as db:
+            removed = remove_analysis_demo(db)
+    except (AnalysisDemoOwnershipError, AnalysisDemoUnavailable) as exc:
+        raise SystemExit(str(exc)) from exc
+    except UserOperationBusy as exc:
+        raise SystemExit("Für dieses Benutzerkonto läuft gerade eine andere Operation.") from exc
+    print("Analyse-Demokonto entfernt." if removed else "Kein Analyse-Demokonto vorhanden.")
 
 
 def purge_raw(_: argparse.Namespace) -> None:
@@ -648,9 +576,26 @@ def parser() -> argparse.ArgumentParser:
     recovery.add_argument("--username")
     recovery.add_argument("--admin-username", default="admin")
     recovery.set_defaults(handler=issue_recovery)
-    seed = commands.add_parser("seed-demo-data")
-    seed.add_argument("--username", default="admin")
-    seed.set_defaults(handler=seed_demo)
+    seed = commands.add_parser("seed-analysis-demo")
+    seed.add_argument(
+        "--include-current-day-supplement",
+        action="store_true",
+        help="Ergänzt den aktuellen Berlin-Tag als einmaligen, auditierbaren Mahlzeiten-Supplement.",
+    )
+    seed.add_argument(
+        "--include-follow-up-meals",
+        action="store_true",
+        help="Ergänzt den Demo-Tag um ein Dessert und drei Mahlzeiten für den Folgetag.",
+    )
+    seed.add_argument(
+        "--ensure-calendar-target-only",
+        action="store_true",
+        help="Ergänzt ausschließlich das deterministische Kalorienziel eines vorhandenen Demo-Kontos.",
+    )
+
+    seed.set_defaults(handler=seed_analysis_demo_command)
+    remove = commands.add_parser("remove-analysis-demo")
+    remove.set_defaults(handler=remove_analysis_demo_command)
     purge = commands.add_parser("purge-raw-imports")
     purge.set_defaults(handler=purge_raw)
     yazio = commands.add_parser(

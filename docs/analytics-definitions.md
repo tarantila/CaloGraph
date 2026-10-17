@@ -71,6 +71,9 @@ Days without measurements remain `null`. They are not interpreted as zero
 calories or automatically treated as complete fasting days. Rolling 7-, 14-,
 and 28-calendar-day averages use only recorded days with a status of `complete`
 or `probably_complete` by default.
+Analysis Nutrition trends may serialize macro measurements as JSON numbers or
+decimal strings. `null` remains missing data; numeric zero is a present value.
+
 
 A user without a nutrition target still receives ordinary analytics data, but
 target, maintenance, deviation, and budget values remain `null`; calendar
@@ -114,6 +117,107 @@ recorded days, and status are calculated once for the complete requested range.
 `period=all` remains unsupported for canonical preference requests and returns
 HTTP 422. Explicit legacy `source` requests retain their existing range and
 aggregation semantics.
+
+The existing `GET /api/v1/analytics/micronutrients` endpoint keeps its established
+legacy-source selection, aggregation, coverage, and reference-status behavior.
+The Analyse workspace uses the separate canonical-only
+`GET /api/v1/analytics/nutrition/micronutrients` endpoint instead.
+
+### Canonical Analyse series
+
+The Analyse endpoint requires an authenticated account with a readable,
+user-scoped nutrition-provider selection. A missing, unavailable, or unreadable
+selection returns HTTP 503; it is not represented as an empty catalog. A
+readable provider chain with no nutrient evidence returns HTTP 200 with the
+catalog entries and null totals/series values.
+
+Ranges use 1–365 inclusive account-local dates. Provider selection is resolved
+once per request; internal provider reads remain at most 31 days. All required
+chunks finish before totals, coverage, contributor counts, and chronological
+daily series are constructed for one complete response. Any required-chunk
+failure or unsafe conflict fails the full request with the existing HTTP 503
+provider problem; no partial aggregate is returned. This does not establish a
+cross-chunk MVCC snapshot guarantee.
+
+The top-level `selected_provider` is the head of the configured preference
+chain, not a claim that it supplied every date. Each detailed series point names
+its actual daily winner in `provider_key`. Metric totals, `days_with_data`, and
+contributor counts derive from those same winning matrices. Explicit zero is
+evidence and contributes to totals and coverage; missing or unusable values
+remain `null`. The optional EU reference value is secondary context only; this
+endpoint does not calculate percentages or assign a health-status label.
+
+### Canonical Analyse nutrition days and meals
+
+`GET /api/v1/analytics/nutrition/analysis` is authenticated and reads one
+inclusive account-local range of 1–365 days. Internally, each provider period
+is read in chunks of at most 31 days; chunk boundaries do not change day
+selection. Invalid or reversed ranges return HTTP 422. Missing, unavailable
+or unreadable configured sources return a provider problem (HTTP 503), not
+empty evidence.
+
+The configured `selected_provider` describes the head of the ordered source
+chain. For each date independently, the first source with all seven primary
+daily nutrition metrics complete and resolved, and at least one supplied value
+(including explicit zero), wins the **whole day**. Daily totals and named meals
+come only from that winning provider/source instance; no individual metric
+or meal is filled from another provider. A date without such a winner returns
+HTTP 200 with `provider_key: null`, seven null metrics and `meals: []`.
+`null` means absent or unusable evidence; numeric zero is a present value,
+never a missing-day substitute. Unsafe conflicts or duplicate candidates
+fail closed.
+
+Meals are current, non-tombstoned consumption events from the winning
+account/provider/source only, with real persisted food-snapshot names or
+allowlisted provider names (Google Health `food_display_name`, Apple Health
+`food_name`). Unnamed entries are omitted, not labeled with invented food
+names. Their seven optional nutrient values come solely from safe event
+fields, not a division of the day's totals. Reads never import, project
+or change persisted evidence.
+
+
+## Analysis registry and sparse weight summary
+
+The authenticated `GET /api/v1/analytics/registry` response lists canonical
+analysis keys, domain/category identifiers, availability, and reader
+capabilities; UI labels, icons, and routes are frontend presentation metadata.
+The authenticated `GET /api/v1/settings/analysis-preferences` returns
+`active_card_ids`, the canonical mixed ordered sequence of active Analysis Hub
+cards. Built-in domain cards and available standalone metric cards share this
+sequence and can be reordered together. The canonical `PUT` replaces this
+sequence with `active_card_ids`. The response also includes `analysis_keys` and
+`summary_order` as compatibility projections. Legacy `PUT` requests using
+either or both legacy fields remain accepted and are translated into the
+canonical sequence; they are not the current canonical write contract. A card
+is active only when its ID is present in `active_card_ids`.
+
+`GET /api/v1/analytics/weight` retains its sparse daily `points` and adds a
+summary over those same selected daily readings. `measurement_count` counts
+returned points; `latest` is the last actual point; `change_kg` is the newest
+minus oldest actual value and is null with fewer than two readings. Average,
+minimum, and maximum use actual points only. No value is interpolated for an
+unmeasured day.
+
+### Request period capabilities
+
+Every successful response from trends, general micronutrients, weight, activity
+verification, Analyse nutrition, and Analyse micronutrients explicitly includes
+`period_capabilities: {supports_all_data: false, all_data_start_date: null}`.
+These readers do not expose a reliable earliest date for their complete
+reader-specific data. Neither the first returned point nor another reader's
+metadata establishes that boundary.
+
+Existing inclusive range limits remain unchanged: 3661 days for trends, general
+micronutrients, weight, and activity verification; 365 days for Analyse nutrition
+and Analyse micronutrients. Those maxima are not all-data ranges.
+The registry's static `min_days`, `max_days`, and `custom_range` describe bounded
+requests, not dynamic permission to select all data.
+
+This negative capability does not change Legacy API acceptance of `period=all`,
+its historical start boundary, or its existing achievement effects, including
+`the_big_picture`. Preference-selected trends and general micronutrients retain
+their existing HTTP 422 all-period gates. Daily and weekdays responses remain
+unchanged, including their existing `period=all` acceptance.
 
 ## Micronutrient provider metadata
 

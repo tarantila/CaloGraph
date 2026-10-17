@@ -8,10 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.activity import (
-    ACTIVE_ENERGY_METRIC,
-    ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS,
-)
+from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.config import settings
 from app.google_health.constants import GOOGLE_HEALTH_REQUIRED_SCOPES
 from app.google_health.credentials import resolve_google_health_credentials
@@ -124,6 +121,11 @@ def resolve_provider_source_type(
     configured: str | Sequence[str] | None = None,
     fallback: str | None = None,
 ) -> str:
+    if provider_key == "analysis_demo":
+        from app.services.analysis_demo import demo_user_id
+
+        if settings.environment not in {"development", "test"} or user_id != demo_user_id():
+            raise ValueError("analysis demo provider is unavailable")
     source_types = _source_types(data_area, provider_key, configured)
     evidence = _transport_evidence(
         db,
@@ -164,7 +166,18 @@ def _nutrition_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailab
         "google_health": google_status,
         "yazio": yazio_status,
     }
-    return _availability(NUTRITION_DATA_AREA, statuses)
+    availability = _availability(NUTRITION_DATA_AREA, statuses)
+    from app.nutrition.models import NutritionSourceObservation
+    from app.services.analysis_demo import demo_source_instance_id, is_owned_analysis_demo_account
+
+    if not is_owned_analysis_demo_account(db, user_id):
+        return availability
+    owned = db.scalar(select(NutritionSourceObservation.id).where(
+        NutritionSourceObservation.user_id == user_id,
+        NutritionSourceObservation.provider_key == "analysis_demo",
+        NutritionSourceObservation.source_instance_id == demo_source_instance_id(user_id),
+    ).limit(1))
+    return (*availability, ProviderAvailability("analysis_demo", owned is not None, "available" if owned is not None else "no_data"))
 
 
 def _sample_provider_statuses(
@@ -326,7 +339,8 @@ def _weight_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabili
         source_type=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS["withings"][0],
         include_zero=False,
     )
-    return _availability(WEIGHT_DATA_AREA, statuses)
+    availability = _availability(WEIGHT_DATA_AREA, statuses)
+    return _demo_scalar_availability(db, user_id, WEIGHT_METRIC, availability, include_zero=False)
 
 
 def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailability, ...]:
@@ -352,9 +366,34 @@ def _activity_availability(db: Session, user_id: UUID) -> tuple[ProviderAvailabi
         source_type=ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS["withings"][0],
         include_zero=True,
     )
-    return _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)
+    availability = _availability(ACTIVITY_ENERGY_DATA_AREA, statuses)
+    return _demo_scalar_availability(db, user_id, ACTIVE_ENERGY_METRIC, availability, include_zero=True)
 
 
+
+
+def _demo_scalar_availability(
+    db: Session, user_id: UUID, metric: str,
+    availability: tuple[ProviderAvailability, ...], *, include_zero: bool,
+) -> tuple[ProviderAvailability, ...]:
+    from app.services.analysis_demo import (
+        ANALYSIS_DEMO_SOURCE_TYPE,
+        demo_source_instance_id,
+        is_owned_analysis_demo_account,
+    )
+
+    if not is_owned_analysis_demo_account(db, user_id):
+        return availability
+    evidence = db.scalar(select(HealthSample.id).where(
+        HealthSample.user_id == user_id,
+        HealthSample.source_type == ANALYSIS_DEMO_SOURCE_TYPE,
+        HealthSample.source_identifier == str(demo_source_instance_id(user_id)),
+        HealthSample.metric_type == metric,
+        HealthSample.value >= 0 if include_zero else HealthSample.value > 0,
+    ).limit(1))
+    return (*availability, ProviderAvailability(
+        "analysis_demo", evidence is not None, "available" if evidence is not None else "no_data",
+    ))
 
 
 def provider_availability(

@@ -208,13 +208,13 @@ describe('first-run target routing', () => {
 
     expect(router.currentRoute.value.name).toBe('overview')
   })
-  it('leitet bei Fresh-Load-Transportfehler nicht zum Login um', async () => {
+  it('lässt die geschützte Route bei nicht verfügbarem Session-Restore für den Fehlerzustand bereit', async () => {
     const auth = useAuthStore()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'))
 
     await router.push('/tage')
 
-    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.name).toBe('daily')
     expect(auth.user).toBeNull()
     expect(auth.sessionRestoreUnavailable).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -273,6 +273,33 @@ describe('first-run target routing', () => {
       await router.push(path)
       expect(router.currentRoute.value.name).toBe('overview')
       expect(router.currentRoute.value.path).toBe('/')
+    }
+  })
+  it('registers protected Analysis V2 category and detail destinations, retaining legacy bookmarks', () => {
+    for (const [path, name] of [
+      ['/analyse', 'analysis-overview'],
+      ['/analyse/katalog', 'analysis-catalog'],
+      ['/analyse/koerper', 'analysis-category-body'],
+      ['/analyse/aktivitaet', 'analysis-category-activity'],
+      ['/analyse/ernaehrung', 'analysis-nutrition-overview'],
+      ['/analyse/mikronaehrstoffe', 'analysis-category-micronutrients'],
+      ['/analyse/koerper/gewicht', 'analysis-weight-detail'],
+      ['/analyse/aktivitaet/aktive-energie', 'analysis-active-energy'],
+      ['/analyse/ernaehrung/protein_g', 'analysis-nutrition-detail'],
+      ['/analyse/mikronaehrstoffe/vitamin_a_ug', 'analysis-micronutrient-detail'],
+    ] as const) {
+      const resolved = router.resolve(path)
+      expect(resolved.name).toBe(name)
+      expect(resolved.meta.public).not.toBe(true)
+    }
+    for (const [path, name] of [
+      ['/ernaehrung?date=2026-03-01', 'nutrition'],
+      ['/aktivitaet?view=all', 'activity'],
+      ['/gewicht?start=2026-03-01', 'weight'],
+      ['/trends?start=2026-03-01', 'trends'],
+      ['/mikronaehrstoffe?source=apple_health_xml', 'micronutrients'],
+    ] as const) {
+      expect(router.resolve(path).name).toBe(name)
     }
   })
 })

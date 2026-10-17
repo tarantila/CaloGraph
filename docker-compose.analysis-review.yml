@@ -1,0 +1,154 @@
+name: calograph-analysis-v2-review
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: calograph_analysis_v2_test
+      POSTGRES_USER: calograph
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    stop_grace_period: 1m
+
+  backend:
+    image: calograph-analysis-v2-review-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-runtime
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: test
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: calograph_analysis_v2_test
+      DATABASE_USER: calograph
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+      RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
+      CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
+      MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
+      BACKUP_AGENT_ENABLED: "false"
+      GOOGLE_HEALTH_ENABLED: "false"
+      INITIAL_ADMIN_SETUP_ENABLED: "false"
+      CALOGRAPH_PUBLIC_URL: http://localhost:8289
+      COOKIE_SECURE: "false"
+      TRUSTED_HOSTS: localhost,127.0.0.1
+      TRUSTED_ORIGINS: http://localhost:8289,http://127.0.0.1:8289
+      TRUSTED_PROXY_NETWORKS: 10.252.0.10/32
+      ENABLE_API_DOCS: "false"
+      ENABLE_HSTS: "false"
+      RUN_MIGRATIONS: "false"
+    secrets:
+      - postgres_password
+      - session_secret
+      - rate_limit_secret
+      - credential_encryption_key
+      - mfa_encryption_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - edge
+      - data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    stop_grace_period: 30s
+
+  frontend:
+    image: calograph-analysis-v2-review-frontend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-runtime
+    restart: unless-stopped
+    environment:
+      ENABLE_HSTS: "false"
+      HSTS_INCLUDE_SUBDOMAINS: "false"
+      NGINX_MAX_UPLOAD_BYTES: "536870912"
+      CALOGRAPH_EDGE_GATEWAY_IP: 10.252.0.1
+    ports:
+      - 127.0.0.1:8289:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      edge:
+        ipv4_address: 10.252.0.10
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    init: true
+    stop_grace_period: 30s
+
+networks:
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.252.0.0/24
+          gateway: 10.252.0.1
+  data:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.252.1.0/24
+
+volumes:
+  postgres-data:
+    name: calograph-analysis-v2-review-postgres-data
+
+secrets:
+  postgres_password:
+    file: ${ANALYSIS_REVIEW_SECRETS_DIR:?Use make analysis-review-up}/postgres_password
+  session_secret:
+    file: ${ANALYSIS_REVIEW_SECRETS_DIR:?Use make analysis-review-up}/session_secret
+  rate_limit_secret:
+    file: ${ANALYSIS_REVIEW_SECRETS_DIR:?Use make analysis-review-up}/rate_limit_secret
+  credential_encryption_key:
+    file: ${ANALYSIS_REVIEW_SECRETS_DIR:?Use make analysis-review-up}/credential_encryption_key
+  mfa_encryption_key:
+    file: ${ANALYSIS_REVIEW_SECRETS_DIR:?Use make analysis-review-up}/mfa_encryption_key

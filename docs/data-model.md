@@ -4,10 +4,21 @@
   unit, administrator flag, and lifecycle state. `is_active=true` requires
   `deactivated_at=NULL`; an inactive account requires a UTC deactivation
   timestamp.
-- `user_provider_preferences`: at most one provider key per user and
-  functional data area (`nutrition`, `weight`, or `activity_energy`). The
-  composite primary key is `(user_id, data_area)`; the table stores provider
-  identity only, never source-instance identifiers.
+- `user_provider_priorities`: ordered per-user providers by functional data
+  area; composite primary key `(user_id, data_area, priority)`. Versioned,
+  effective-dated `source_priority_policies` and `source_priority_rules`
+  preserve the source chain used for historical resolution.
+- Historical `user_provider_preferences` is migration input only; revision
+  `20260918_0031` moves those choices and removes the table from the current schema.
+- `users.active_card_ids`: canonical ordered Analysis Hub membership, including
+  built-in domain cards (`weight`, `nutrition`, `micronutrients`, `activity`),
+  `meals_today`, and available standalone metric IDs. New users default to the
+  four domain cards; `meals_today` is inactive. Revision `20261006_0039`
+  backfills each account from its prior summary order and selected metric rows.
+- `user_analysis_preferences`: compatibility projection containing only
+  active standalone metric keys in canonical order; built-in cards are not
+  represented as rows. The `users.active_card_ids` JSON list is the source of
+  truth for membership and order.
 - `user_profiles`: optional one-to-one personal information for a user:
   display name, gender, birth date, height, diet, voluntary health notes, and
   intolerances. All content fields are nullable; the user foreign key is the
@@ -58,3 +69,16 @@ user-owned profile, provider-preference, authentication, recovery, import,
 nutrition, target, tracking, and YAZIO rows. Related rate-limit buckets use
 HMAC keys rather than foreign keys and are removed explicitly by the lifecycle
 service in the same transaction.
+
+## Analysis demo data
+
+The dedicated non-admin `calograph-analysis-demo` account owns the demo's
+synthetic `health_samples` with source type `analysis_demo_offline`, import
+batches, nutrition rows, projections, and ordinary per-user priority policy.
+Authenticated use can create `user_usage_days` and `user_achievements`; those
+per-user rows belong to the demo account and are removed with it.
+The demo-only source/provider identity is `analysis_demo`; these rows use the
+normal user-isolation boundary rather than a separate analytics data model.
+Removal audits exclusive seed ownership before deleting demo-owned rows and
+the account. Security audit events survive, with account references cleared
+through `SET NULL` where applicable.

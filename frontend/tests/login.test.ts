@@ -1,4 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -7,6 +8,7 @@ import {
   setAuthenticationExpiredHandler,
   setCsrfToken,
 } from '../src/api'
+import { setAuthenticatedIdentity } from '../src/auth-session'
 import { i18n, PUBLIC_LOCALE, setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 
@@ -15,6 +17,7 @@ describe('authentication store', () => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     setActivePinia(createPinia())
+    setAuthenticatedIdentity(null)
     setCsrfToken(null)
     setAuthenticationExpiredHandler(null)
     setLocale(PUBLIC_LOCALE)
@@ -127,7 +130,8 @@ describe('authentication store', () => {
     expect(expired).toHaveBeenCalledOnce()
   })
 
-  it('stores the user returned by login', async () => {
+  it('stores and publishes the user returned by login', async () => {
+    const previousRevision = localStorage.getItem('calograph_auth_session_revision')
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -144,6 +148,7 @@ describe('authentication store', () => {
     expect(i18n.global.locale.value).toBe('de')
     expect(document.documentElement.lang).toBe('de')
     expect(sessionStorage.getItem('calograph_csrf')).toBe('csrf')
+    expect(localStorage.getItem('calograph_auth_session_revision')).not.toBe(previousRevision)
   })
   it('invalidates profile updates when login enters MFA', async () => {
     const auth = useAuthStore()
@@ -341,7 +346,10 @@ describe('authentication store', () => {
       current_step: 'targets',
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
-    await expect(request).rejects.toThrow('stale onboarding response')
+    await expect(request).rejects.toMatchObject({
+      status: 409,
+      problemType: 'urn:calograph:problem:auth-session-changed',
+    })
     expect(auth.onboardingStatus).toBeNull()
   })
   it('behält die Session bei einem Reconcile-Rate-Limit', async () => {
@@ -493,6 +501,115 @@ describe('authentication store', () => {
     expect(auth.needsTargetSetup).toBeNull()
     expect(await auth.ensureUser()).toBe(true)
     expect(auth.needsTargetSetup).toBe(true)
+  })
+  it('reloads onboarding when session restoration detects another account', async () => {
+    const firstUser = {
+      id: 'first',
+      username: 'first',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: false,
+      is_active: true,
+      deactivated_at: null,
+    }
+    const secondUser = { ...firstUser, id: 'second', username: 'second' }
+    const firstStatus = {
+      mode: 'full' as const, required: false, completed: true, current_step: 'completed' as const,
+    }
+    const secondStatus = {
+      mode: 'full' as const, required: true, completed: false, current_step: 'targets' as const,
+    }
+    const auth = useAuthStore()
+    auth.user = firstUser
+    auth.onboardingStatus = firstStatus
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (input === '/api/v1/auth/me') {
+        return new Response(JSON.stringify(secondUser), { status: 200 })
+      }
+      if (input === '/api/v1/settings/onboarding') {
+        return new Response(JSON.stringify(secondStatus), { status: 200 })
+      }
+      throw new Error(`Unexpected request ${String(input)}`)
+    })
+
+    await expect(auth.ensureUser()).resolves.toBe(true)
+    expect(auth.user?.id).toBe('second')
+    expect(auth.onboardingStatus).toEqual(secondStatus)
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual([
+      '/api/v1/auth/me',
+      '/api/v1/settings/onboarding',
+    ])
+  })
+
+  it('does not commit old onboarding data after account restoration switches identity', async () => {
+    const firstUser = {
+      id: 'first',
+      username: 'first',
+      language: 'de',
+      timezone: 'Europe/Berlin',
+      week_starts_on: 0,
+      raw_payload_retention_days: 0,
+      is_admin: false,
+      is_active: true,
+      deactivated_at: null,
+    }
+    const secondUser = { ...firstUser, id: 'second', username: 'second' }
+    const firstStatus = {
+      mode: 'full' as const, required: false, completed: true, current_step: 'completed' as const,
+    }
+    const secondStatus = {
+      mode: 'full' as const, required: true, completed: false, current_step: 'targets' as const,
+    }
+    let resolveOldOnboarding!: (response: Response) => void
+    const oldOnboarding = new Promise<Response>((resolve) => {
+      resolveOldOnboarding = resolve
+    })
+    let markOldRequestStarted!: () => void
+    let markNewRequestStarted!: () => void
+    const oldRequestStarted = new Promise<void>((resolve) => { markOldRequestStarted = resolve })
+    const newRequestStarted = new Promise<void>((resolve) => { markNewRequestStarted = resolve })
+    let authMeCalls = 0
+    let onboardingCalls = 0
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (input === '/api/v1/auth/me') {
+        authMeCalls += 1
+        return new Response(JSON.stringify(authMeCalls === 1 ? firstUser : secondUser), { status: 200 })
+      }
+      if (input === '/api/v1/settings/onboarding') {
+        onboardingCalls += 1
+        if (onboardingCalls === 1) {
+          markOldRequestStarted()
+          return oldOnboarding
+        }
+        markNewRequestStarted()
+        return new Response(JSON.stringify(secondStatus), { status: 200 })
+      }
+      throw new Error(`Unexpected request ${String(input)}`)
+    })
+    const auth = useAuthStore()
+    auth.user = firstUser
+    const oldRestore = auth.ensureUser()
+    await oldRequestStarted
+
+    auth.clearSession({ notifyOtherTabs: false })
+    const newRestore = auth.ensureUser()
+    await newRequestStarted
+    await flushPromises()
+    expect(auth.user?.id).toBe('second')
+    expect(auth.onboardingStatus).toEqual(secondStatus)
+    resolveOldOnboarding(new Response(JSON.stringify(firstStatus), { status: 200 }))
+    await Promise.all([oldRestore, newRestore])
+    await flushPromises()
+
+    expect(auth.onboardingStatus).toEqual(secondStatus)
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual([
+      '/api/v1/auth/me',
+      '/api/v1/settings/onboarding',
+      '/api/v1/auth/me',
+      '/api/v1/settings/onboarding',
+    ])
   })
 
   it('revalidates and clears a cached user after the server session expires', async () => {
@@ -706,6 +823,7 @@ describe('authentication store', () => {
   })
 
   it('requires the second factor before storing a user', async () => {
+    const previousRevision = localStorage.getItem('calograph_auth_session_revision')
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ mfa_required: true }), {
@@ -739,6 +857,7 @@ describe('authentication store', () => {
     expect(auth.user).toBeNull()
     expect(i18n.global.locale.value).toBe('de')
     expect(document.documentElement.lang).toBe('de')
+    expect(localStorage.getItem('calograph_auth_session_revision')).toBe(previousRevision)
     expect(sessionStorage.getItem('calograph_csrf')).toBeNull()
 
     await auth.verifyMfa('123456')
@@ -892,7 +1011,8 @@ describe('authentication store', () => {
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has('X-CSRF-Token')).toBe(false)
   })
 
-  it('returns to the public German locale on logout', async () => {
+  it('returns to the public German locale and publishes logout', async () => {
+    const previousRevision = localStorage.getItem('calograph_auth_session_revision')
     const auth = useAuthStore()
     auth.user = {
       id: '1',
@@ -914,6 +1034,7 @@ describe('authentication store', () => {
     expect(auth.user).toBeNull()
     expect(i18n.global.locale.value).toBe('de')
     expect(document.documentElement.lang).toBe('de')
+    expect(localStorage.getItem('calograph_auth_session_revision')).not.toBe(previousRevision)
   })
 
 })

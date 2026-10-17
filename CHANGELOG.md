@@ -5,6 +5,10 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Theme
+
+- Globale Darstellung: System, Hell und Dunkel in Konto → Allgemeine Einstellungen; die Auswahl wird lokal im Browser gespeichert und Diagramme wechseln ohne Neuladen mit.
+
 ### YAZIO synchronization
 
 - Restored the versioned YAZIO SDK mobile-client credential defaults. Normal
@@ -19,6 +23,40 @@ follows [Semantic Versioning](https://semver.org/).
 - Accounts without a saved preference retain the existing registry fallback
   during the migration period.
 
+
+### Analysis
+
+- Added a protected six-route Analyse workspace for nutrition trends,
+  micronutrients, activity, and weight while preserving existing routes.
+- Added the authenticated canonical micronutrient period and daily-series API,
+  with per-day provider provenance and null-versus-zero coverage semantics.
+- Analysis V2 cards and detail surfaces now use semantic energy/fat and coverage colors, discrete measured weight points, and responsive drag/keyboard interactions.
+- Analysis V2 card visuals now use domain-specific weight violet, active-energy amber, and micronutrient emerald roles. Reordered card content emphasizes the current KPI and trend chart, with a compact metric rail and subtle drag insertion marker.
+- All configurable product ranges now share the same reader-aware picker: the desktop `7 days | 30 days | 90 days | Individuell` bar keeps unsupported presets disabled in place, while mobile offers only supported choices. The default is 30 days; six months and one year are 180 and 365 inclusive rolling days. Existing reader limits and API all-data semantics are unchanged.
+- The Overview's running-week summary remains independent of its selected chart range: it reuses a trends response only when the requested bounds cover the current week, otherwise loading that bounded week separately.
+- In development/test, only the exact reserved demo account can use canonical
+  `analysis_demo` nutrition in Overview Summary and Trends; other users,
+  production, provider preferences, other readers, and Legacy `HealthSample`
+  rows are unchanged.
+- Weight summaries and details connect only actual, date-spaced measurements with violet lines, point markers, and subtle areas. Missing dates never synthesize weight samples or break the line; activity retains amber zero-based bars and missing-day gaps, while micronutrient metric details retain their existing Emerald trends and actual series gaps.
+- Added localized analysis catalogue filtering and an explicit no-results state.
+- The micronutrient overview uses semi-transparent daily bars beneath same-color, gap-aware trend lines and point markers, with subtle fades and a wide responsive chart lane; real gaps, recorded zeros, and period-preserving detail links remain intact.
+- The Analysis hub presents four removable domain defaults and optional available metrics in one persisted mixed-order `Meine Analysen` list. A grouped manager adds and removes cards; card titles navigate while drag and overflow controls remain separate.
+- The Analysis hub keeps equal desktop card rows, places its add tile last, and lets long meal names wrap when no calories are available.
+- The disposable Analysis demo seeds the canonical mixed-card baseline and
+  audits only exact pre-canonical, migrated-legacy, and API-projected preference states.
+
+- Analysis hub coverage labels use domain-specific counts without repeated
+  calendar denominators or completeness grades; coverage calculations and API
+  contracts are unchanged.
+- The Activity card reports canonical Active Energy only. Steps and BMI remain unavailable without canonical readers; `Mahlzeiten heute` uses the existing nutrition reader and account-local date.
+- Weight and activity details show measured-day values and period coverage
+  without filling missing days with zero.
+- Analysis cards support accessible reordering with keyboard controls.
+- Analysis cards place the domain icon above the accessible drag handle, keep
+  the title beside the left rail, and use available container width for the
+  responsive card grid. Weight detail now orders its KPI, chart, period
+  statistics, coverage, and measurements in that sequence.
 
 ## [0.6.5] - 2026-09-07
 

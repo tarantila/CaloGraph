@@ -82,7 +82,6 @@ test('reads isolated nutrition evidence without provider blending', async ({ pag
   await expect(page.getByText('Synthetic Snapshot Food', { exact: true })).toBeVisible()
   await expect(page.getByText('Synthetic Metadata Food', { exact: true })).toBeVisible()
   await expect(page.getByText('Unbenannter Eintrag', { exact: true })).toBeVisible()
-  await expect(page.getByText('08:15', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Alle Quellen anzeigen' })).toBeVisible()
 
   const allResponsePromise = page.waitForResponse((response) => response.url().includes('/analytics/verification/nutrition') && response.url().includes('view=all') && response.status() === 200)

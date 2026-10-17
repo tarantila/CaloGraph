@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.importers.common import decimal_value
-from app.micronutrients import MICRONUTRIENT_BY_YAZIO_ID
+from app.micronutrients import MICRONUTRIENT_BY_METRIC, MICRONUTRIENT_BY_YAZIO_ID
 from app.nutrition.enums import (
     ConsumptionEventKind,
     CoverageState,
@@ -181,7 +181,11 @@ def _presence(value: Decimal | None) -> str:
 
 
 def _canonical_value(nutrient: str, value: Decimal | None, *, supported: bool = True) -> Decimal | None:
-    return value if supported and (nutrient in _UNITS or nutrient in _METRIC_KEYS.values()) else None
+    return value if supported and (
+        nutrient in _UNITS
+        or nutrient in _METRIC_KEYS.values()
+        or nutrient in MICRONUTRIENT_BY_METRIC
+    ) else None
 
 
 def _additional_canonicalization(
@@ -244,7 +248,11 @@ def _nutrient_unit(provider_key: str) -> str | None:
 
 
 def _provider_key(metric_key: str) -> str | None:
-    return next((key for key, value in _METRIC_KEYS.items() if value == metric_key), None)
+    macro = next((key for key, value in _METRIC_KEYS.items() if value == metric_key), None)
+    if macro is not None:
+        return macro
+    micronutrient = MICRONUTRIENT_BY_METRIC.get(metric_key)
+    return micronutrient.yazio_id if micronutrient is not None else None
 
 def _nutrient_data(nutrients: YazioNutrientValues) -> dict[str, Any]:
     return {

@@ -27,8 +27,8 @@ test('serves consistent security headers for documents and static assets', async
   expect(trustedLocalResponse.headers()['cross-origin-opener-policy']).toBe('same-origin')
 
   const document = await documentResponse.text()
-  const scriptPath = document.match(/<script[^>]+src="([^"]+)"/)?.[1]
-  expect(scriptPath).toBeTruthy()
+  const moduleScript = document.match(/<script\b[^>]*\btype="module"[^>]*>/u)?.[0]
+  const scriptPath = moduleScript?.match(/\bsrc="([^"]+)"/u)?.[1]
 
   const assetResponse = await request.get(scriptPath!)
   const assetHeaders = assetResponse.headers()
@@ -49,6 +49,15 @@ test('serves consistent security headers for documents and static assets', async
   expect(apiHeaders).toMatchObject(baselineHeaders)
   expect(apiHeaders['cache-control']).toBe('private, no-store')
   expect(apiHeaders['x-request-id']).toMatch(/^[a-f0-9]{32}$/)
+})
+
+test('does not mark the synchronous theme bootstrap as immutable', async ({ request }) => {
+  const response = await request.get('/theme-bootstrap.js')
+  const headers = response.headers()
+
+  expect(response.ok()).toBe(true)
+  expect(headers).toMatchObject(baselineHeaders)
+  expect(headers['cache-control']).toBe('private, no-store')
 })
 
 test('ignores forwarded HTTPS from an untrusted peer', async ({ request }) => {

@@ -29,7 +29,7 @@ export type ActivitySourceType =
   | 'withings_activity_v2'
 
 export type VerificationView = 'canonical' | 'all'
-export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health'
+export type VerificationProviderKey = 'google_health' | 'yazio' | 'apple_health' | 'analysis_demo'
 export type VerificationActivityProviderKey = VerificationProviderKey | 'withings'
 export type VerificationRecordStatus = 'available' | 'no_data' | 'unavailable'
 export type VerificationActivitySourceType =
@@ -38,6 +38,7 @@ export type VerificationActivitySourceType =
   | 'apple_health_xml'
   | 'health_auto_export_v2'
   | 'withings_activity_v2'
+  | 'analysis_demo_offline'
 
 export interface VerificationActivityProviderRecord {
   provider_key: VerificationActivityProviderKey
@@ -53,11 +54,128 @@ export interface VerificationActivityDayResponse {
   providers: VerificationActivityProviderRecord[]
 }
 
+export interface ReaderPeriodCapabilities {
+  supports_all_data: boolean
+  all_data_start_date: string | null
+}
+
 export interface VerificationActivityResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   view: VerificationView
   days: VerificationActivityDayResponse[]
+}
+export type AnalysisCategoryKey = 'body' | 'activity' | 'nutrition' | 'micronutrients' | 'fluid'
+export type AnalysisRegistryStatus = 'available' | 'coming_soon'
+
+export interface AnalysisRegistryEntry {
+  analysis_key: string
+  category_key: AnalysisCategoryKey
+  domain_key: string
+  status: AnalysisRegistryStatus
+  card_capable: boolean
+  detail_capable: boolean
+  reader_key: string | null
+  period_capability: { min_days: number; max_days: number; custom_range: boolean } | null
+}
+
+export interface AnalysisRegistryResponse {
+  analyses: AnalysisRegistryEntry[]
+}
+
+export interface AnalysisPreferencesResponse {
+  active_card_ids: string[]
+}
+
+export interface AnalysisPreferencesUpdate {
+  active_card_ids: string[]
+}
+
+export interface AnalysisWeightSummary {
+  measurement_count: number
+  latest: WeightPoint | null
+  change_kg: number | null
+  average_kg: number | null
+  minimum_kg: number | null
+  maximum_kg: number | null
+}
+
+export interface AnalysisMicronutrientContributor {
+  provider_key: string
+  days_with_data: number
+}
+
+export interface AnalysisMicronutrientMetric {
+  metric_key: string
+  label: string
+  category: 'vitamin' | 'mineral'
+  unit: 'mg' | 'ug'
+  eu_nrv: number | null
+  total: number | null
+  days_with_data: number
+  contributors: AnalysisMicronutrientContributor[]
+}
+
+export interface AnalysisMicronutrientDay {
+  date: string
+  provider_key: string
+  value: number | null
+}
+
+export interface AnalysisMicronutrientResponse {
+  start_date: string
+  end_date: string
+  period_capabilities: ReaderPeriodCapabilities
+  selected_provider: { provider_key: string }
+  period_days: number
+  metrics: AnalysisMicronutrientMetric[]
+  series: AnalysisMicronutrientDay[]
+}
+
+export type AnalysisNutritionMetricKey =
+  | 'dietary_energy_kcal'
+  | 'protein_g'
+  | 'carbohydrates_g'
+  | 'fat_g'
+  | 'fiber_g'
+  | 'sugar_g'
+  | 'saturated_fat_g'
+
+export interface AnalysisNutritionValues {
+  dietary_energy_kcal: number | null
+  protein_g: number | null
+  carbohydrates_g: number | null
+  fat_g: number | null
+  fiber_g: number | null
+  sugar_g: number | null
+  saturated_fat_g: number | null
+}
+
+export interface AnalysisNutritionMeal extends AnalysisNutritionValues {
+  event_id: string
+  local_date: string
+  serving_amount: number | null
+  serving_unit: string | null
+  provider_key: string
+  local_time: string | null
+  meal_type: string | null
+  display_name: string | null
+}
+
+export interface AnalysisNutritionDay extends AnalysisNutritionValues {
+  date: string
+  provider_key: string | null
+  meals: AnalysisNutritionMeal[]
+}
+
+export interface AnalysisNutritionResponse {
+  start_date: string
+  end_date: string
+  period_capabilities: ReaderPeriodCapabilities
+  selected_provider: { provider_key: string }
+  period_days: number
+  days: AnalysisNutritionDay[]
 }
 
 export interface VerificationNutritionSummary {
@@ -68,6 +186,8 @@ export interface VerificationNutritionSummary {
 }
 
 export interface VerificationNutritionEvent {
+  event_id: string
+  detail_available: boolean
   provider_key: VerificationProviderKey
   local_time: string | null
   meal_type: string | null
@@ -127,8 +247,10 @@ export interface WeightPoint {
 export interface WeightResponse {
   start_date: string
   end_date: string
+  period_capabilities: ReaderPeriodCapabilities
   selected_provider: { provider_key: string } | null
   points: WeightPoint[]
+  summary: AnalysisWeightSummary
 }
 
 

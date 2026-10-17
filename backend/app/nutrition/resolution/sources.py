@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderSourceInstance:
@@ -136,12 +138,41 @@ class GoogleHealthSourceInstanceResolver:
         )
 
 
+class AnalysisDemoSourceInstanceResolver:
+    provider_key = "analysis_demo"
+
+    def resolve_source_instance_id(self, db: Session, *, user_id: UUID) -> UUID | None:
+        from app.services.analysis_demo import (
+            demo_source_instance_id,
+            is_owned_analysis_demo_account,
+        )
+        if not is_owned_analysis_demo_account(db, user_id):
+            return None
+        return demo_source_instance_id(user_id)
+
+    def owns_source_instance_id(
+        self, db: Session, *, user_id: UUID, source_instance_id: UUID,
+    ) -> bool:
+        return self.resolve_source_instance_id(db, user_id=user_id) == source_instance_id
+
+
 DEFAULT_SOURCE_RESOLVERS: Mapping[str, ProviderSourceResolver] = MappingProxyType(
     {
         "yazio": YazioSourceInstanceResolver(),
         "google_health": GoogleHealthSourceInstanceResolver(),
     }
 )
+_DEMO_SOURCE_RESOLVER = AnalysisDemoSourceInstanceResolver()
+
+
+def _source_resolver(
+    provider_key: str, registry: Mapping[str, ProviderSourceResolver] | None,
+) -> ProviderSourceResolver | None:
+    if provider_key == "analysis_demo":
+        return _DEMO_SOURCE_RESOLVER if settings.environment in {"development", "test"} else None
+    return (DEFAULT_SOURCE_RESOLVERS if registry is None else registry).get(provider_key)
+
+
 
 
 
@@ -165,7 +196,7 @@ def resolve_default_provider_sources(
     resolved: list[ProviderSourceInstance] = []
     for provider_key in provider_keys:
         normalized_provider_key = provider_key.strip().lower()
-        resolver = registry.get(normalized_provider_key)
+        resolver = _source_resolver(normalized_provider_key, registry)
         if resolver is None:
             continue
         source_instance_id = resolver.resolve_source_instance_id(db, user_id=user_id)
@@ -182,7 +213,9 @@ def validate_provider_source_bindings(
     resolver_registry: Mapping[str, object] | None = None,
 ) -> None:
     for binding in bindings:
-        resolver = DEFAULT_SOURCE_RESOLVERS.get(binding.provider_key)
+        if binding.provider_key == "analysis_demo" and settings.environment not in {"development", "test"}:
+            raise ValueError("analysis demo source is unavailable")
+        resolver = _source_resolver(binding.provider_key, DEFAULT_SOURCE_RESOLVERS)
         if resolver is None:
             if resolver_registry is None:
                 raise ValueError("provider source resolver is not configured")

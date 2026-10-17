@@ -113,6 +113,7 @@ jobs:
           tests/test_user_profiles_migration_postgres.py
           tests/test_target_weight_range_migration_postgres.py
           tests/test_user_onboarding_migration_postgres.py
+          tests/test_analysis_preferences_migration_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

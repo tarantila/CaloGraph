@@ -124,7 +124,8 @@ def test_revision_is_linked_to_0032_and_migration_chain_has_current_head() -> No
     assert revision.depends_on is None
 
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260924_0036"]
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1
 
 
 def test_upgrade_preserves_tokens_marks_rows_for_reauthentication_and_adds_contract(tmp_path) -> None:

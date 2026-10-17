@@ -8,10 +8,11 @@ from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.analysis_registry import analysis_registry_entries
 from app.analytics.calendar_canonical import run_calendar_canonical_read
 from app.analytics.daily_canonical import (
     DailyCanonicalState,
@@ -26,6 +27,17 @@ from app.analytics.micronutrient_shadow import (
     read_legacy_micronutrient_period,
     run_micronutrient_canonical_read,
     run_micronutrient_shadow,
+)
+from app.analytics.nutrition_analysis import (
+    MAX_ANALYSIS_NUTRITION_DAYS,
+    AnalysisNutritionReadError,
+    read_analysis_nutrition,
+    read_nutrition_meal_detail,
+)
+from app.analytics.nutrition_micronutrients import (
+    MAX_ANALYSIS_MICRONUTRIENT_DAYS,
+    AnalysisMicronutrientReadError,
+    read_analysis_micronutrients,
 )
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
 from app.analytics.provider_selection import (
@@ -52,12 +64,17 @@ from app.analytics.service import (
     serialize_decimal,
 )
 from app.analytics.trends_canonical import run_trends_canonical_read
-from app.analytics.verification import read_activity_verification, read_nutrition_verification
+from app.analytics.verification import (
+    nutrition_meal_detail_sources,
+    read_activity_verification,
+    read_nutrition_verification,
+)
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
+from app.micronutrients import MICRONUTRIENT_BY_METRIC
 from app.models import (
     GoogleHealthConnection,
     HealthSample,
@@ -75,6 +92,12 @@ from app.problem_types import (
 )
 from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
+    AnalysisMicronutrientResponse,
+    AnalysisNutritionMealResponse,
+    AnalysisNutritionResponse,
+    AnalysisPeriodCapability,
+    AnalysisRegistryEntryResponse,
+    AnalysisRegistryResponse,
     DailyPoint,
     MicronutrientResponse,
     VerificationActivityResponse,
@@ -86,6 +109,36 @@ from app.services.achievements import unlock_achievement_keys
 from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 router = APIRouter(tags=["Analytics"])
+@router.get("/analytics/registry", response_model=AnalysisRegistryResponse)
+def analysis_registry(
+    user: User = Depends(current_user),
+) -> AnalysisRegistryResponse:
+    del user
+    entries = []
+    for definition in analysis_registry_entries():
+        max_days = definition["max_days"]
+        entries.append(
+            AnalysisRegistryEntryResponse(
+                analysis_key=definition["analysis_key"],
+                category_key=definition["category_key"],
+                domain_key=definition["domain_key"],
+                status=definition["status"],
+                card_capable=definition["card_capable"],
+                detail_capable=definition["detail_capable"],
+                reader_key=definition["reader_key"],
+                period_capability=(
+                    AnalysisPeriodCapability(
+                        min_days=1,
+                        max_days=max_days,
+                        custom_range=True,
+                    )
+                    if max_days is not None
+                    else None
+                ),
+            )
+        )
+    return AnalysisRegistryResponse(analyses=entries)
+
 _DEFAULT_RESOLVE_NUTRITION_PROVIDER = resolve_nutrition_provider
 
 
@@ -165,7 +218,10 @@ def _historical_budget_balance(db: Session, user: User) -> dict[str, int]:
 
 
 def _preferred_nutrition_provider(
-    db: Session, user_id: UUID
+    db: Session,
+    user_id: UUID,
+    *,
+    include_analysis_demo: bool = False,
 ) -> NutritionProviderSelection | None:
     if (
         resolve_nutrition_provider is _DEFAULT_RESOLVE_NUTRITION_PROVIDER
@@ -173,7 +229,11 @@ def _preferred_nutrition_provider(
     ):
         return None
     try:
-        return resolve_nutrition_provider(db, user_id=user_id)
+        return resolve_nutrition_provider(
+            db,
+            user_id=user_id,
+            include_analysis_demo=include_analysis_demo,
+        )
     except AttributeError:
         if not hasattr(db, "get"):
             return None
@@ -314,6 +374,138 @@ def nutrition_verification(
             problem_type=PROVIDER_SELECTION_NOT_READY,
         ) from exc
 
+@router.get(
+    "/analytics/nutrition/micronutrients",
+    response_model=AnalysisMicronutrientResponse,
+)
+def analysis_nutrition_micronutrients(
+    start: date | None = None,
+    end: date | None = None,
+    metric_key: str | None = Query(default=None, min_length=1, max_length=64),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisMicronutrientResponse:
+    start, end = _range(start, end, user.timezone, default_days=30)
+    if (end - start).days >= MAX_ANALYSIS_MICRONUTRIENT_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Datumsbereich darf höchstens "
+                f"{MAX_ANALYSIS_MICRONUTRIENT_DAYS} Tage umfassen"
+            ),
+        )
+    if metric_key is not None and metric_key not in MICRONUTRIENT_BY_METRIC:
+        raise HTTPException(status_code=422, detail="Unbekannter Mikronährstoff")
+
+    try:
+        selection = resolve_nutrition_provider(db, user_id=user.id, include_analysis_demo=True)
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+    if selection is None:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Kein konfigurierter Nutrition-Provider ist verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        )
+
+    try:
+        return read_analysis_micronutrients(
+            db,
+            user_id=user.id,
+            selection=selection,
+            start=start,
+            end=end,
+            metric_key=metric_key,
+        )
+    except AnalysisMicronutrientReadError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
+@router.get(
+    "/analytics/nutrition/analysis/meals/{event_id}",
+    response_model=AnalysisNutritionMealResponse,
+)
+def nutrition_meal_detail(
+    event_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisNutritionMealResponse:
+    try:
+        persisted_id = UUID(event_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Eintrag nicht verfügbar") from None
+    meal = read_nutrition_meal_detail(
+        db,
+        user_id=user.id,
+        event_id=persisted_id,
+        allowed_sources=nutrition_meal_detail_sources(db, user.id),
+    )
+    if meal is None:
+        raise HTTPException(status_code=404, detail="Eintrag nicht verfügbar")
+    return meal
+
+
+@router.get(
+    "/analytics/nutrition/analysis",
+    response_model=AnalysisNutritionResponse,
+)
+def analysis_nutrition(
+    start: date | None = None,
+    end: date | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisNutritionResponse:
+    start, end = _range(start, end, user.timezone, default_days=30)
+    if (end - start).days >= MAX_ANALYSIS_NUTRITION_DAYS:
+        raise HTTPException(status_code=422, detail="Datumsbereich darf höchstens 365 Tage umfassen")
+
+    try:
+        selection = resolve_nutrition_provider(db, user_id=user.id, include_analysis_demo=True)
+    except NutritionProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except NutritionProviderNotReady as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+    if selection is None:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Kein konfigurierter Nutrition-Provider ist verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        )
+
+    try:
+        return read_analysis_nutrition(
+            db, user_id=user.id, selection=selection, start=start, end=end,
+        )
+    except AnalysisNutritionReadError as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+
+
 @router.get("/analytics/daily", response_model=list[DailyPoint])
 def daily(
     start: date | None = None,
@@ -421,6 +613,19 @@ def weight(
             "end_date": end,
             "selected_provider": None,
             "points": [],
+            "summary": {
+                "measurement_count": 0,
+                "latest": None,
+                "change_kg": None,
+                "average_kg": None,
+                "minimum_kg": None,
+                "maximum_kg": None,
+            },
+            # No complete reader start boundary is available for all-data selection.
+            "period_capabilities": {
+                "supports_all_data": False,
+                "all_data_start_date": None,
+            },
         }
     provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
     source_identifier: str | None = None
@@ -460,6 +665,10 @@ def weight(
         ]
         if provider_key == "yazio":
             source_filter.append(HealthSample.source_identifier == source_identifier)
+        elif provider_key == "analysis_demo":
+            from app.services.analysis_demo import demo_source_instance_id
+
+            source_filter.append(HealthSample.source_identifier == str(demo_source_instance_id(user.id)))
         elif provider_key == "google_health":
             source_filter.append(
                 HealthSample.source_identifier
@@ -505,14 +714,40 @@ def weight(
         for (sample_provider, sample_day), sample in latest_by_provider_day.items():
             if sample_provider == provider_key and sample_day not in latest_by_day:
                 latest_by_day[sample_day] = sample
+    ordered_points = sorted(latest_by_day.items())
+    weights = [sample.value for _, sample in ordered_points]
+    point_payload = [
+        {"date": day, "weight_kg": float(sample.value)}
+        for day, sample in ordered_points
+    ]
+    latest_point = point_payload[-1] if point_payload else None
+    summary = {
+        "measurement_count": len(point_payload),
+        "latest": latest_point,
+        "change_kg": (
+            float(weights[-1] - weights[0])
+            if len(weights) >= 2
+            else None
+        ),
+        "average_kg": (
+            float(sum(weights, Decimal("0")) / len(weights))
+            if weights
+            else None
+        ),
+        "minimum_kg": float(min(weights)) if weights else None,
+        "maximum_kg": float(max(weights)) if weights else None,
+    }
     return {
         "start_date": start,
         "end_date": end,
         "selected_provider": {"provider_key": selection.provider_key},
-        "points": [
-            {"date": day, "weight_kg": float(sample.value)}
-            for day, sample in sorted(latest_by_day.items())
-        ],
+        "points": point_payload,
+        "summary": summary,
+        # The requested window does not establish a complete reader start boundary.
+        "period_capabilities": {
+            "supports_all_data": False,
+            "all_data_start_date": None,
+        },
     }
 
 @router.get(
@@ -685,6 +920,11 @@ def micronutrients(
                 enabled=settings.analytics_micronutrients_metadata_shadow_enabled,
                 max_days=settings.analytics_micronutrients_shadow_max_days,
             )
+    # No complete reader start boundary; Legacy period=all acceptance is separate.
+    response["period_capabilities"] = {
+        "supports_all_data": False,
+        "all_data_start_date": None,
+    }
     return response
 
 
@@ -693,7 +933,9 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)) -
     today = datetime.now(ZoneInfo(user.timezone)).date()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
-    selection = _preferred_nutrition_provider(db, user.id)
+    selection = _preferred_nutrition_provider(
+        db, user.id, include_analysis_demo=True,
+    )
     if selection is None:
         points = _legacy_daily_points(db, user, week_start - timedelta(days=7), week_end)
     else:
@@ -954,7 +1196,9 @@ def trends(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 90)
-    selection = _preferred_nutrition_provider(db, user.id)
+    selection = _preferred_nutrition_provider(
+        db, user.id, include_analysis_demo=True,
+    )
     if selection is None:
         _unlock_big_picture_if_requested(db, user, period)
         points = _legacy_daily_points(db, user, start, end)
@@ -1022,6 +1266,11 @@ def trends(
         "points": output,
         "incomplete_included": include_incomplete,
         "budget_balance": historical_budget_balance,
+        # No complete reader start boundary; Legacy period=all acceptance is separate.
+        "period_capabilities": {
+            "supports_all_data": False,
+            "all_data_start_date": None,
+        },
     }
 
 

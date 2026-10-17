@@ -41,6 +41,17 @@ async function mountApp(path = '/tage', isAdmin = false) {
       { path: '/mikronaehrstoffe', name: 'micronutrients', component: { template: '<h1>Mikronährstoffe</h1>' } },
       { path: '/erfolge', name: 'achievements', component: { template: '<h1>Erfolge</h1>' } },
       {
+        path: '/analyse',
+        component: { template: '<RouterView />' },
+        children: [
+          { path: '', name: 'analysis-overview', component: { template: '<h1>Analyse</h1>' } },
+          { path: 'katalog', name: 'analysis-catalog', component: { template: '<h1>Katalog</h1>' } },
+          { path: 'koerper/gewicht', name: 'analysis-weight-detail', component: { template: '<h1>Gewicht</h1>' } },
+          { path: 'aktivitaet/aktive-energie', name: 'analysis-active-energy', component: { template: '<h1>Aktive Energie</h1>' } },
+          { path: 'mikronaehrstoffe/:metric', name: 'analysis-micronutrient-detail', component: { template: '<h1>Details</h1>' } },
+        ],
+      },
+      {
         path: '/konto',
         name: 'account',
         component: { template: '<h1>Konto</h1><RouterView />' },
@@ -85,21 +96,17 @@ describe('App-Sidebar-Navigation', () => {
     }))).toEqual([
       { href: '/', label: 'Übersicht' },
       { href: '/tage', label: 'Tagesverlauf' },
-      { href: '/ernaehrung', label: 'Ernährung' },
-      { href: '/aktivitaet', label: 'Aktivität' },
-      { href: '/gewicht', label: 'Gewicht' },
+      { href: '/analyse', label: 'Analyse' },
       { href: '/wochen', label: 'Wochenbudget' },
       { href: '/wochentage', label: 'Wochentage' },
       { href: '/kalender', label: 'Kalender' },
-      { href: '/trends', label: 'Trends' },
-      { href: '/mikronaehrstoffe', label: 'Mikronährstoffe' },
       { href: '/erfolge', label: 'Erfolge' },
     ])
     expect(navigationGroups[1].findAll('a').map((link) => link.attributes('href'))).toEqual([
       '/konto/persoenliche-daten',
     ])
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
-    expect(wrapper.findAll('aside nav a')).toHaveLength(12)
+    expect(wrapper.findAll('aside nav a')).toHaveLength(8)
     wrapper.unmount()
   })
 
@@ -145,6 +152,34 @@ describe('App-Sidebar-Navigation', () => {
     wrapper.unmount()
   })
 
+  it('keeps one analysis navigation item active across the hub and existing analysis pages', async () => {
+    for (const path of [
+      '/analyse',
+      '/analyse/katalog',
+      '/analyse/koerper/gewicht',
+      '/analyse/mikronaehrstoffe/vitamin_a_ug',
+      '/analyse/aktivitaet/aktive-energie',
+      '/ernaehrung',
+      '/aktivitaet',
+      '/gewicht',
+      '/trends',
+      '/mikronaehrstoffe',
+    ]) {
+      const { wrapper } = await mountApp(path)
+      const primaryLinks = wrapper.findAll('.sidebar-primary-navigation a')
+      expect(primaryLinks.filter((link) => link.classes('active'))).toHaveLength(1)
+      expect(wrapper.find('.sidebar-primary-navigation a[href=\"/analyse\"]').classes()).toContain('active')
+      wrapper.unmount()
+    }
+
+    const { router, wrapper } = await mountApp('/tage')
+    await wrapper.get('.menu-button').trigger('click')
+    await wrapper.get('.sidebar-primary-navigation a[href=\"/analyse\"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('analysis-overview')
+    expect(wrapper.get('aside').classes()).not.toContain('open')
+    wrapper.unmount()
+  })
   it('keeps the account family active for nested pages without changing admin placement', async () => {
     const { wrapper } = await mountApp('/konto/sicherheit', true)
 

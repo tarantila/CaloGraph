@@ -24,6 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.activity import ACTIVITY_MODES, ACTIVITY_SOURCE_TYPES
+from app.analysis_registry import DEFAULT_SUMMARY_ORDER
 from app.database import Base
 
 
@@ -55,6 +56,18 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     highlight_over_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    active_card_ids: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        default=lambda: ["weight", "nutrition", "micronutrients", "activity"],
+        server_default=text("'[\"weight\", \"nutrition\", \"micronutrients\", \"activity\"]'"),
+    )
+    summary_order: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=lambda: list(DEFAULT_SUMMARY_ORDER),
+        server_default=text("'[\"weight\", \"nutrition\", \"micronutrients\", \"activity\"]'"),
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -133,6 +146,35 @@ class UserProviderPriority(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+class UserAnalysisPreference(Base):
+    __tablename__ = "user_analysis_preferences"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "position",
+            name="uq_user_analysis_preferences_position",
+        ),
+        CheckConstraint(
+            "length(analysis_key) > 0",
+            name="ck_user_analysis_preferences_key",
+        ),
+        CheckConstraint(
+            "position >= 0",
+            name="ck_user_analysis_preferences_position",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    analysis_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
 
 class InstanceBootstrap(Base):
     __tablename__ = "instance_bootstrap"

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import YazioConnection
 from app.nutrition.enums import (
@@ -756,3 +757,90 @@ def test_yazio_daily_reader_accepts_n1_micronutrient(db, user):
 
     assert candidate.value == Decimal("4")
     assert candidate.unit == "mg"
+
+def test_product_profile_micronutrient_resolves_idempotently_with_revisions_and_isolation(
+    db, user
+):
+    connection = _connection(db, user)
+    other_user = type(user)(username="other-yazio-user", password_hash="hash")
+    db.add(other_user)
+    db.flush()
+    other_user_source = _connection(db, other_user, source_identifier="other-user-yazio")
+
+    def diary(iron_value: Decimal, updated_at: datetime) -> YazioFoodDiary:
+        profile = replace(
+            _profile("iron-product", None),
+            updated_at=updated_at,
+            nutrients=YazioNutrientValues(additional={"mineral.iron": iron_value}),
+        )
+        return _diary(
+            products=(_product("iron-event", "iron-product"),),
+            profiles=(profile,),
+        )
+
+    first_diary = diary(Decimal("0.004"), datetime(2026, 8, 31, 10, 0))
+    _ingest(db, user, connection, first_diary)
+
+    def resolved(*, target_user, source) -> object:
+        return resolve_yazio_metric(
+            db,
+            user_id=target_user.id,
+            source_instance_id=source.id,
+            local_date=DAY,
+            metric_key="iron_mg",
+        )
+
+    first = resolved(target_user=user, source=connection)
+    assert first.value == Decimal("4")
+    assert first.unit == "mg"
+
+    first_counts = (
+        db.scalar(
+            select(func.count()).select_from(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.user_id == user.id
+            )
+        ),
+        db.scalar(
+            select(func.count()).select_from(NutritionFieldObservation).where(
+                NutritionFieldObservation.user_id == user.id,
+                NutritionFieldObservation.metric_key == "iron_mg",
+                NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value,
+            )
+        ),
+    )
+    _ingest(db, user, connection, first_diary)
+    assert first_counts == (
+        db.scalar(
+            select(func.count()).select_from(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.user_id == user.id
+            )
+        ),
+        db.scalar(
+            select(func.count()).select_from(NutritionFieldObservation).where(
+                NutritionFieldObservation.user_id == user.id,
+                NutritionFieldObservation.metric_key == "iron_mg",
+                NutritionFieldObservation.observation_role == ObservationRole.DERIVED.value,
+            )
+        ),
+    )
+
+    _ingest(
+        db,
+        user,
+        connection,
+        diary(Decimal("0.005"), datetime(2026, 9, 1, 10, 0)),
+    )
+    corrected = resolved(target_user=user, source=connection)
+    assert corrected.value == Decimal("5")
+    assert (
+        db.scalar(
+            select(func.count()).select_from(NutritionConsumptionEvent).where(
+                NutritionConsumptionEvent.user_id == user.id,
+                NutritionConsumptionEvent.logical_event_key == "iron-event",
+            )
+        )
+        == 2
+    )
+    with pytest.raises(ValueError, match="source_instance_id"):
+        resolved(target_user=user, source=other_user_source)
+    assert resolved(target_user=other_user, source=other_user_source).value is None

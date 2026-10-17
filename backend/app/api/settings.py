@@ -4,7 +4,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
@@ -17,6 +17,7 @@ from app.activity import (
     ACTIVITY_SOURCE_TYPES,
     GOOGLE_HEALTH_ACTIVITY_SOURCE_TYPE,
 )
+from app.analysis_registry import ANALYSIS_REGISTRY, DEFAULT_SUMMARY_ORDER
 from app.auth.dependencies import current_user, require_csrf
 from app.auth.security import (
     create_api_token,
@@ -38,6 +39,7 @@ from app.models import (
     TrackingOverride,
     TrackingQualitySettings,
     User,
+    UserAnalysisPreference,
     UserOnboarding,
     UserProfile,
     UserSession,
@@ -62,6 +64,8 @@ from app.provider_preferences import (
 )
 from app.schemas import (
     ActivitySourceResponse,
+    AnalysisPreferencesResponse,
+    AnalysisPreferencesUpdate,
     MfaCodeRequest,
     MfaManagementRequest,
     MfaStatusResponse,
@@ -95,6 +99,7 @@ from app.schemas import (
 )
 from app.security_events import log_security_event, security_context_references, security_reference
 from app.services.achievements import unlock_achievement_keys
+from app.services.analysis_demo import is_owned_analysis_demo_account
 from app.services.data_export import (
     ExportBusy,
     ExportStream,
@@ -141,6 +146,153 @@ from app.source_priority.compatibility import (
 
 router = APIRouter(prefix="/settings", tags=["Einstellungen"])
 
+@router.get(
+    "/analysis-preferences",
+    response_model=AnalysisPreferencesResponse,
+)
+def get_analysis_preferences(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisPreferencesResponse:
+    active_ids = user.active_card_ids if user.active_card_ids is not None else _legacy_active_card_ids(db, user)
+    _validate_stored_active_cards(active_ids, user.id)
+    return _analysis_preferences_response(active_ids)
+
+
+_BUILTIN_CARD_IDS = {"weight", "nutrition", "micronutrients", "activity", "meals_today"}
+_LEGACY_CARD_ALIASES = {"weight_kg": "weight", "active_energy_kcal": "activity"}
+
+
+def _legacy_active_card_ids(db: Session, user: User) -> list[str]:
+    if (
+        not isinstance(user.summary_order, list)
+        or len(user.summary_order) != 4
+        or not all(isinstance(key, str) for key in user.summary_order)
+        or len(set(user.summary_order)) != 4
+        or set(user.summary_order) != set(DEFAULT_SUMMARY_ORDER)
+    ):
+        raise RuntimeError(f"Invalid stored summary_order for user {user.id}")
+    result = list(user.summary_order)
+    rows = db.scalars(
+        select(UserAnalysisPreference)
+        .where(UserAnalysisPreference.user_id == user.id)
+        .order_by(UserAnalysisPreference.position, UserAnalysisPreference.analysis_key)
+    ).all()
+    for row in rows:
+        key = row.analysis_key
+        if key not in _LEGACY_CARD_ALIASES:
+            definition = ANALYSIS_REGISTRY.get(key)
+            if definition is None or definition["status"] != "available" or not definition["card_capable"]:
+                raise RuntimeError(f"Invalid stored analysis preference {key!r} for user {user.id}")
+        card_id = _LEGACY_CARD_ALIASES.get(key, key)
+        if card_id not in result:
+            result.append(card_id)
+    return result
+
+
+def _validate_stored_active_cards(active_ids: object, user_id: UUID) -> None:
+    if not isinstance(active_ids, list) or not all(isinstance(key, str) for key in active_ids):
+        raise RuntimeError(f"Invalid stored active_card_ids for user {user_id}")
+    if len(active_ids) != len(set(active_ids)):
+        raise RuntimeError(f"Duplicate stored active_card_ids for user {user_id}")
+    for key in active_ids:
+        if key in _LEGACY_CARD_ALIASES:
+            raise RuntimeError(f"Noncanonical stored active_card_id {key!r} for user {user_id}")
+        if key in _BUILTIN_CARD_IDS:
+            continue
+        definition = ANALYSIS_REGISTRY.get(key)
+        if definition is None or definition["status"] != "available" or not definition["card_capable"]:
+            raise RuntimeError(f"Invalid stored active_card_id {key!r} for user {user_id}")
+
+
+def _analysis_preferences_response(active_ids: list[str]) -> AnalysisPreferencesResponse:
+    analysis_keys = [
+        key for key in active_ids
+        if key not in _BUILTIN_CARD_IDS and key not in _LEGACY_CARD_ALIASES
+    ]
+    builtin_order = [key for key in active_ids if key in {"weight", "nutrition", "micronutrients", "activity"}]
+    summary_order = builtin_order + [key for key in DEFAULT_SUMMARY_ORDER if key not in builtin_order]
+    return AnalysisPreferencesResponse(
+        active_card_ids=active_ids,
+        analysis_keys=analysis_keys,
+        summary_order=summary_order,
+    )
+
+
+@router.put(
+    "/analysis-preferences",
+    response_model=AnalysisPreferencesResponse,
+)
+def put_analysis_preferences(
+    payload: AnalysisPreferencesUpdate,
+    user: User = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> AnalysisPreferencesResponse:
+    canonical = "active_card_ids" in payload.model_fields_set
+    if canonical:
+        active_ids = payload.active_card_ids
+        assert active_ids is not None
+        if len(active_ids) != len(set(active_ids)):
+            raise HTTPException(status_code=422, detail="Karten-IDs dürfen nicht doppelt sein")
+        if sum(key in ANALYSIS_REGISTRY and key not in _LEGACY_CARD_ALIASES for key in active_ids) > 64:
+            raise HTTPException(status_code=422, detail="Zu viele Analyse-Schlüssel")
+        for key in active_ids:
+            if key in _LEGACY_CARD_ALIASES:
+                raise HTTPException(status_code=422, detail="Legacy-Analyse-Schlüssel sind nicht kanonisch")
+            if key in _BUILTIN_CARD_IDS:
+                continue
+            definition = ANALYSIS_REGISTRY.get(key)
+            if definition is None or definition["status"] != "available" or not definition["card_capable"]:
+                raise HTTPException(status_code=422, detail="Analyse ist nicht verfügbar")
+    else:
+        requested = payload.analysis_keys or []
+        if len(requested) != len(set(requested)):
+            raise HTTPException(status_code=422, detail="Analyse-Schlüssel dürfen nicht doppelt sein")
+        for key in requested:
+            definition = ANALYSIS_REGISTRY.get(key)
+            if definition is None or definition["status"] != "available" or not definition["card_capable"]:
+                raise HTTPException(status_code=422, detail="Analyse ist nicht verfügbar")
+
+    if canonical:
+        assert active_ids is not None
+        response_projection = _analysis_preferences_response(active_ids)
+        if "analysis_keys" in payload.model_fields_set and payload.analysis_keys != response_projection.analysis_keys:
+            raise HTTPException(status_code=422, detail="Analyse-Schlüssel stimmen nicht mit active_card_ids überein")
+        if "summary_order" in payload.model_fields_set and payload.summary_order != response_projection.summary_order:
+            raise HTTPException(status_code=422, detail="Summary-Reihenfolge stimmt nicht mit active_card_ids überein")
+
+    locked_user = db.scalar(
+        select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+    )
+    assert locked_user is not None
+    if not canonical:
+        active_ids = list(locked_user.active_card_ids) if locked_user.active_card_ids is not None else _legacy_active_card_ids(db, locked_user)
+        _validate_stored_active_cards(active_ids, locked_user.id)
+        if "analysis_keys" in payload.model_fields_set:
+            incoming_metrics = [key for key in (payload.analysis_keys or []) if key not in _LEGACY_CARD_ALIASES]
+            metric_slots = [index for index, key in enumerate(active_ids) if key not in _BUILTIN_CARD_IDS]
+            rewritten = list(active_ids)
+            for index, key in zip(metric_slots, incoming_metrics, strict=False):
+                rewritten[index] = key
+            rewritten = [key for index, key in enumerate(rewritten) if index not in metric_slots[len(incoming_metrics):]]
+            rewritten.extend(incoming_metrics[len(metric_slots):])
+            active_ids = rewritten
+        if "summary_order" in payload.model_fields_set and payload.summary_order is not None:
+            active_slots = [index for index, key in enumerate(active_ids) if key in {"weight", "nutrition", "micronutrients", "activity"}]
+            selected = [key for key in payload.summary_order if key in active_ids]
+            for index, key in zip(active_slots, selected, strict=False):
+                active_ids[index] = key
+    assert active_ids is not None
+    projection = _analysis_preferences_response(active_ids)
+    locked_user.active_card_ids = list(active_ids)
+    locked_user.summary_order = list(projection.summary_order)
+    db.execute(delete(UserAnalysisPreference).where(UserAnalysisPreference.user_id == user.id))
+    db.add_all(
+        UserAnalysisPreference(user_id=user.id, analysis_key=key, position=position)
+        for position, key in enumerate(projection.analysis_keys)
+    )
+    db.commit()
+    return projection
 
 class ExportStreamingResponse(StreamingResponse):
     def __init__(self, export: ExportStream, **kwargs: Any) -> None:
@@ -982,6 +1134,10 @@ def _activity_priority_chain(
             provider_key
             for provider_key in effective_provider_order(ACTIVITY_ENERGY_DATA_AREA, ())
             if provider_key != projection_provider
+            and (
+                provider_key != "analysis_demo"
+                or is_owned_analysis_demo_account(db, user_id)
+            )
         )
         if projection_provider is not None:
             _activity_provider_source_type(

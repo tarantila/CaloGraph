@@ -5,54 +5,55 @@ import {
   PhFire,
   PhWarningCircle,
 } from '@phosphor-icons/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
 import {
-  analyticsPresetMatchesRange,
-  inferDesktopPreset,
-  parseAnalyticsCompactPreset,
-  resolveAnalyticsRange,
-  type AnalyticsCompactPreset,
+  periodFromQuery,
+  type AppliedPeriod,
+  type PeriodLimits,
+  type PeriodRange,
 } from '../analytics-period'
-import AnalyticsPeriodFilter from '../components/AnalyticsPeriodFilter.vue'
+import PeriodPicker from '../components/PeriodPicker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { formatGermanDate, isoDateInTimeZone, shiftIsoDate } from '../date-format'
+import { formatGermanDate, isoDateInTimeZone } from '../date-format'
 import { createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
-import type { DailyPoint } from '../types'
+import type { DailyPoint, ReaderPeriodCapabilities } from '../types'
 
 const t = i18n.global.t.bind(i18n.global)
 
 const route = useRoute()
 const router = useRouter()
 const today = isoDateInTimeZone(useAuthStore().user?.timezone ?? 'UTC')
-const before = shiftIsoDate(today, -29)
-const defaultRange = { start: before, end: today }
-const initialRange = resolveAnalyticsRange(route.query.start, route.query.end, defaultRange)
-const start = ref(initialRange.start)
-const end = ref(initialRange.end)
+const limits: PeriodLimits = { minDays: 1, maxDays: 3661, customRange: true }
+const readerCapability: ReaderPeriodCapabilities = {
+  supports_all_data: false, all_data_start_date: null,
+}
+const allRange: PeriodRange | null = null
+const initial = periodFromQuery(route.query, limits, today, allRange)
+const start = ref(initial.start)
+const end = ref(initial.end)
+const period = ref(initial.period)
 const source = ref(String(route.query.source ?? ''))
 const tracking = ref(String(route.query.tracking ?? ''))
 const weekday = ref(String(route.query.weekday ?? ''))
-const compactPresets: AnalyticsCompactPreset[] = ['7', '30', '60', 'all']
-const periodCandidate = parseAnalyticsCompactPreset(route.query.period, compactPresets)
-const period = ref<AnalyticsCompactPreset | undefined>(
-  analyticsPresetMatchesRange(periodCandidate, route.query.start, route.query.end)
-    ? periodCandidate
-    : undefined,
-)
-const desktopPreset = computed(() => inferDesktopPreset(start.value, end.value))
+let latestLoadId = 0
+let disposed = false
 const points = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
 const number = createNumberFormatter({ maximumFractionDigits: 1 })
 const kcal = createKcalFormatter()
 
-function selectPeriod(value: AnalyticsCompactPreset) {
-  period.value = value
+function applyPeriod(value: AppliedPeriod): void {
+  const selected = periodFromQuery(value, limits, today, allRange)
+  start.value = selected.start
+  end.value = selected.end
+  period.value = selected.period
+  void load()
 }
 
 function numericValue(value: number | null | undefined) {
@@ -160,33 +161,71 @@ function ariaSort(column: SortColumn) {
 }
 
 
+watch(
+  () => [
+    route.query.start, route.query.end, route.query.period,
+    route.query.source, route.query.tracking, route.query.weekday,
+  ] as const,
+  ([nextStart, nextEnd, nextPeriod, nextSource, nextTracking, nextWeekday]) => {
+    if (
+      nextStart === start.value && nextEnd === end.value && nextPeriod === period.value
+      && String(nextSource ?? '') === source.value
+      && String(nextTracking ?? '') === tracking.value
+      && String(nextWeekday ?? '') === weekday.value
+    ) return
+    const selected = periodFromQuery(route.query, limits, today, allRange)
+    start.value = selected.start
+    end.value = selected.end
+    period.value = selected.period
+    source.value = String(nextSource ?? '')
+    tracking.value = String(nextTracking ?? '')
+    weekday.value = String(nextWeekday ?? '')
+    void load()
+  },
+)
+
 async function load() {
+  if (disposed) return
+  const requestId = ++latestLoadId
+  const request = {
+    start: start.value, end: end.value, period: period.value,
+    source: source.value, tracking: tracking.value, weekday: weekday.value,
+  }
   error.value = ''
   loading.value = true
-  await router.replace({
-    query: {
-      start: start.value,
-      end: end.value,
-      period: period.value || undefined,
-      source: source.value || undefined,
-      tracking: tracking.value || undefined,
-      weekday: weekday.value || undefined,
-    },
-  })
   try {
-    const params = new URLSearchParams({ start: start.value, end: end.value })
-    if (period.value === 'all') params.set('period', 'all')
-    if (source.value) params.set('source', source.value)
-    if (tracking.value) params.set('tracking', tracking.value)
-    if (weekday.value) params.set('weekday', weekday.value)
-    points.value = await api<DailyPoint[]>(`/analytics/daily?${params}`)
+    await router.replace({
+      query: {
+        ...route.query,
+        start: request.start,
+        end: request.end,
+        period: request.period,
+        source: request.source || undefined,
+        tracking: request.tracking || undefined,
+        weekday: request.weekday || undefined,
+      },
+      hash: route.hash,
+    })
+    if (requestId !== latestLoadId) return
+    const params = new URLSearchParams({ start: request.start, end: request.end })
+    if (request.source) params.set('source', request.source)
+    if (request.tracking) params.set('tracking', request.tracking)
+    if (request.weekday) params.set('weekday', request.weekday)
+    const response = await api<DailyPoint[]>(`/analytics/daily?${params}`)
+    if (requestId !== latestLoadId) return
+    points.value = response
   } catch (cause) {
+    if (requestId !== latestLoadId) return
     error.value = localizeApiError(cause, 'errors.requestFailed')
   } finally {
-    loading.value = false
+    if (requestId === latestLoadId) loading.value = false
   }
 }
 onMounted(load)
+onBeforeUnmount(() => {
+  disposed = true
+  latestLoadId += 1
+})
 const display = (
   value: number | null,
   unit = '',
@@ -226,14 +265,17 @@ const weekdays = computed(() =>
   <div class="page-heading analytics-page-heading">
     <div class="analytics-page-heading-content">
       <div><h1>{{ t('daily.title') }}</h1><p>{{ t('daily.description') }}</p></div>
-      <AnalyticsPeriodFilter
-        v-model:start="start"
-        v-model:end="end"
-        :initial-preset="desktopPreset"
-        :compact-presets="compactPresets"
-        :compact-preset="period"
-        @preset="selectPeriod"
-        @apply="load"
+      <PeriodPicker
+        :start="start"
+        :end="end"
+        :period="period"
+        :today="today"
+        :min-days="limits.minDays"
+        :max-days="limits.maxDays"
+        :custom-range="limits.customRange"
+        :period-capabilities="readerCapability"
+        :all-range="allRange"
+        @apply="applyPeriod"
       />
     </div>
   </div>

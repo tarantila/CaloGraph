@@ -11,8 +11,14 @@ The stable direct-sync provider is `sdk-v22`, backed by the pinned
 `yazio-sdk==0.4.0` and the YAZIO API v22. It maps the v22 aggregate endpoint
 to energy, carbohydrates, protein, and fat and reads optional activity energy
 from the daily-summary widget. It does not provide a safe daily micronutrient
-or fiber aggregate, so SDK results remain explicitly incomplete and never
-advance `last_micronutrient_sync_at`.
+or fiber aggregate, so
+this compatibility payload remains explicitly incomplete and does not advance
+`last_micronutrient_sync_at`.
+
+The normal SDK manual and scheduled sync use the separate `fetch_food_diary`
+path. It reads consumed items, simple products, product profiles, and daily
+summaries; known additional nutrient IDs are preserved and mapped through the
+canonical nutrient catalog.
 
 `legacy-v15`, backed by `yazio-exporter==0.2.0`, remains available as a
 deprecated compatibility provider while its micronutrient and fiber coverage
@@ -289,25 +295,27 @@ CaloGraph account through `user_id`.
 | `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
 | `mineral.calcium` through `mineral.choline` | 13 canonical mineral metrics | mg or µg |
 
-In SDK mode, `energy`, `protein`, `carb`, and `fat` are mapped directly from
-the v22 `nutrients-daily` response. `activity_energy` is read only from the
-daily-summary widget; meals and product/recipe maps are intentionally ignored
-because they cannot safely reconstruct daily micronutrients. Every requested
-date is emitted, including dates missing from the provider response, and
-provider values must be finite, non-negative numbers within the requested
-range.
+The aggregate `nutrients-daily` adapter maps `energy`, `protein`, `carb`, and
+`fat`; it is not the normal canonical Nutrition Domain sync path. That path
+preserves numeric additional nutrient fields whose YAZIO IDs exist in the
+canonical catalog. Product-profile micronutrients become event evidence only
+when linked to a real consumed product, scaled by its provider-supplied amount.
+Simple-product and daily-summary nutrient fields remain direct provider
+observations. Missing values remain missing, and a product profile without a
+matching consumed event does not contribute daily intake. Micronutrients are
+not added to `DAILY_PROJECTION_METRICS`.
 
 YAZIO's specific-nutrient endpoint returns these vitamin and mineral values in
 grams. The adapter preserves that source unit and converts each value to the
 canonical mg or µg unit before storing and analyzing it.
 
-The YAZIO adapter imports daily `activity_energy` as `active_energy_kcal` when
-the exporter supplies it. It is credited only after the user selects YAZIO for
-the applicable target version. Steps and water are not imported. Meals,
-products, recipes, profile fields, and YAZIO targets are not currently
-persisted. Even when general raw-payload retention is enabled, the YAZIO adapter
-does not store the complete export file. Re-fetching the same day updates stable
-daily values idempotently.
+In the legacy-v15 HealthSample compatibility path, the adapter imports daily
+`activity_energy` as `active_energy_kcal` when the exporter supplies it. It is
+credited only after the user selects YAZIO for the applicable target version.
+Steps and water are not imported. Meals, products, recipes, profile fields, and
+YAZIO targets are not persisted in that legacy path. Even when general
+raw-payload retention is enabled, the adapter does not store the complete
+export file. Re-fetching the same day updates stable daily values idempotently.
 
 The direct SDK Weight transport uses
 `https://yzapi.yazio.com/v22/user/bodyvalues/weight/last` through CaloGraph's

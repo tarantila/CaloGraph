@@ -505,7 +505,10 @@ def test_micronutrient_endpoint_keeps_legacy_response_when_shadow_disabled(
         source="test",
     ).to_public(start=date(2024, 1, 1), end=date(2024, 1, 1), source="test")
 
-    assert result == expected
+    assert result == {
+        **expected,
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
     assert calls[0]["enabled"] is False
 
 
@@ -548,7 +551,10 @@ def test_micronutrient_endpoint_keeps_legacy_response_when_enabled_shadow_fails(
         db=db,
     )
 
-    assert result == expected
+    assert result == {
+        **expected,
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
 
 
 
@@ -825,7 +831,10 @@ def test_canonical_mismatch_keeps_complete_legacy_value_scope(
         start=start, end=end, source="test", period=None, user=user, db=db
     )
 
-    assert result == legacy.to_public(start=start, end=end, source="test")
+    assert result == {
+        **legacy.to_public(start=start, end=end, source="test"),
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
 
 
 def test_canonical_error_keeps_complete_legacy_response(
@@ -849,7 +858,10 @@ def test_canonical_error_keeps_complete_legacy_response(
         start=start, end=end, source="test", period=None, user=user, db=db
     )
 
-    assert result == legacy.to_public(start=start, end=end, source="test")
+    assert result == {
+        **legacy.to_public(start=start, end=end, source="test"),
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
 
 
 def test_canonical_serialization_failure_keeps_complete_legacy_response(
@@ -879,7 +891,10 @@ def test_canonical_serialization_failure_keeps_complete_legacy_response(
         start=start, end=end, source="test", period=None, user=user, db=db
     )
 
-    assert result == legacy.to_public(start=start, end=end, source="test")
+    assert result == {
+        **legacy.to_public(start=start, end=end, source="test"),
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
 
 
 def test_canonical_value_scope_serializes_all_catalog_items() -> None:
@@ -1178,7 +1193,10 @@ def test_metadata_shadow_route_preserves_legacy_response(
         end=end,
         source="test",
     ).to_public(start=start, end=end, source="test")
-    assert result == expected
+    assert result == {
+        **expected,
+        "period_capabilities": {"supports_all_data": False, "all_data_start_date": None},
+    }
     assert calls == [
         {
             "enabled": True,

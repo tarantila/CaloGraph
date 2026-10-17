@@ -163,7 +163,7 @@ test('dashboard periods, calorie budget, weekly icons and macro tooltip order', 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Ernährungsüberblick' })).toBeVisible()
   await expect(page.getByText('Ernährungs-Analytics')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Alle' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Individuell' })).toBeVisible()
   await expect(page.getByText('Selbst gehostet')).toHaveCount(0)
   await expect(page.getByText('Verbleibend nach Aktivität').first()).toBeVisible()
   await expect(page.getByText('inkl. +520 kcal durch Aktivitäten')).toBeVisible()

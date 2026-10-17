@@ -10,6 +10,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
+
 from .contracts import ProviderCandidate
 from .metrics import CANONICAL_NUTRITION_METRICS
 from .providers import ProviderNotAvailableError
@@ -100,21 +102,23 @@ def _normalize_provider_key(provider_key: str) -> str:
 
 
 def _default_registry() -> Mapping[str, NutritionPeriodResolver]:
+    from app.services.analysis_demo_nutrition_resolution import resolve_analysis_demo_period
     from app.services.apple_health_nutrition_resolution import resolve_apple_health_period
     from app.services.google_health_nutrition_resolution import resolve_google_health_period
     from app.services.yazio_nutrition_resolution import resolve_yazio_period
 
-    return MappingProxyType(
-        {
-            "apple_health": _FunctionPeriodResolver(
-                "apple_health", resolve_apple_health_period, supports_read_context=True
-            ),
-            "google_health": _FunctionPeriodResolver(
-                "google_health", resolve_google_health_period, supports_read_context=True
-            ),
-            "yazio": _FunctionPeriodResolver("yazio", resolve_yazio_period),
-        }
-    )
+    registry = {
+        "apple_health": _FunctionPeriodResolver(
+            "apple_health", resolve_apple_health_period, supports_read_context=True
+        ),
+        "google_health": _FunctionPeriodResolver(
+            "google_health", resolve_google_health_period, supports_read_context=True
+        ),
+        "yazio": _FunctionPeriodResolver("yazio", resolve_yazio_period),
+    }
+    if settings.environment in {"development", "test"}:
+        registry["analysis_demo"] = _FunctionPeriodResolver("analysis_demo", resolve_analysis_demo_period)
+    return MappingProxyType(registry)
 
 
 def _validate_candidate(

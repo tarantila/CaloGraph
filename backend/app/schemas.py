@@ -3,7 +3,17 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from app.analysis_registry import DEFAULT_SUMMARY_ORDER
 
 
 class ProblemDetail(BaseModel):
@@ -622,11 +632,29 @@ class WeightSelectedProviderResponse(BaseModel):
     provider_key: str
 
 
+class WeightSummaryResponse(BaseModel):
+    measurement_count: int
+    latest: WeightPoint | None
+    change_kg: float | None
+    average_kg: float | None
+    minimum_kg: float | None
+    maximum_kg: float | None
+
+
+class ReaderPeriodCapabilities(BaseModel):
+    supports_all_data: bool
+    all_data_start_date: date | None = None
+
+
 class WeightResponse(BaseModel):
     start_date: date
     end_date: date
     selected_provider: WeightSelectedProviderResponse | None
     points: list[WeightPoint]
+    summary: WeightSummaryResponse
+    period_capabilities: ReaderPeriodCapabilities = Field(
+        default_factory=lambda: ReaderPeriodCapabilities(supports_all_data=False),
+    )
 
 
 class MicronutrientSelectedProviderResponse(BaseModel):
@@ -677,6 +705,167 @@ class MicronutrientResponse(BaseModel):
     definition: MicronutrientDefinitionResponse
     selected_provider: MicronutrientSelectedProviderResponse | None = None
     providers: list[MicronutrientProviderMetadataResponse] | None = None
+    period_capabilities: ReaderPeriodCapabilities = Field(
+        default_factory=lambda: ReaderPeriodCapabilities(supports_all_data=False),
+    )
+
+
+class AnalysisSelectedProviderResponse(BaseModel):
+    provider_key: str
+
+
+class AnalysisMicronutrientContributorResponse(BaseModel):
+    provider_key: str
+    days_with_data: int
+
+
+class AnalysisMicronutrientMetricResponse(BaseModel):
+    metric_key: str
+    label: str
+    category: Literal["vitamin", "mineral"]
+    unit: Literal["mg", "ug"]
+    eu_nrv: Decimal | None
+    total: Decimal | None
+    days_with_data: int
+    contributors: list[AnalysisMicronutrientContributorResponse]
+
+    @field_serializer("eu_nrv", "total", when_used="json")
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisMicronutrientDayResponse(BaseModel):
+    date: date
+    provider_key: str
+    value: Decimal | None
+
+    @field_serializer("value", when_used="json")
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisMicronutrientResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: AnalysisSelectedProviderResponse
+    period_days: int
+    metrics: list[AnalysisMicronutrientMetricResponse]
+    series: list[AnalysisMicronutrientDayResponse]
+    period_capabilities: ReaderPeriodCapabilities = Field(
+        default_factory=lambda: ReaderPeriodCapabilities(supports_all_data=False),
+    )
+
+
+class AnalysisNutritionMealResponse(BaseModel):
+    event_id: uuid.UUID
+    local_date: date
+    serving_amount: Decimal | None
+    serving_unit: str | None
+    provider_key: str
+    local_time: str | None
+    meal_type: str | None
+    display_name: str
+    dietary_energy_kcal: Decimal | None
+    protein_g: Decimal | None
+    carbohydrates_g: Decimal | None
+    fat_g: Decimal | None
+    fiber_g: Decimal | None
+    sugar_g: Decimal | None
+    saturated_fat_g: Decimal | None
+
+    @field_serializer(
+        "serving_amount", "dietary_energy_kcal", "protein_g", "carbohydrates_g", "fat_g",
+        "fiber_g", "sugar_g", "saturated_fat_g", when_used="json"
+    )
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisNutritionDayResponse(BaseModel):
+    date: date
+    provider_key: str | None
+    dietary_energy_kcal: Decimal | None
+    protein_g: Decimal | None
+    carbohydrates_g: Decimal | None
+    fat_g: Decimal | None
+    fiber_g: Decimal | None
+    sugar_g: Decimal | None
+    saturated_fat_g: Decimal | None
+    meals: list[AnalysisNutritionMealResponse]
+
+    @field_serializer(
+        "dietary_energy_kcal", "protein_g", "carbohydrates_g", "fat_g",
+        "fiber_g", "sugar_g", "saturated_fat_g", when_used="json"
+    )
+    def serialize_measurement(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+
+class AnalysisNutritionResponse(BaseModel):
+    start_date: date
+    end_date: date
+    selected_provider: AnalysisSelectedProviderResponse
+    period_days: int
+    days: list[AnalysisNutritionDayResponse]
+    period_capabilities: ReaderPeriodCapabilities = Field(
+        default_factory=lambda: ReaderPeriodCapabilities(supports_all_data=False),
+    )
+
+
+class AnalysisPeriodCapability(BaseModel):
+    min_days: int
+    max_days: int
+    custom_range: bool
+
+
+class AnalysisRegistryEntryResponse(BaseModel):
+    analysis_key: str
+    category_key: str
+    domain_key: str
+    status: Literal["available", "coming_soon"]
+    card_capable: bool
+    detail_capable: bool
+    reader_key: str | None
+    period_capability: AnalysisPeriodCapability | None
+
+
+class AnalysisRegistryResponse(BaseModel):
+    analyses: list[AnalysisRegistryEntryResponse]
+
+
+class AnalysisPreferencesUpdate(BaseModel):
+    active_card_ids: list[str] | None = Field(default=None, max_length=69)
+    analysis_keys: list[str] | None = Field(default=None, max_length=64)
+    summary_order: list[str] | None = Field(default=None, min_length=4, max_length=4)
+
+    @field_validator("analysis_keys", "summary_order", mode="before")
+    @classmethod
+    def reject_null_legacy_fields(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("Präferenzfeld darf nicht null sein")
+        return value
+
+    @field_validator("summary_order")
+    @classmethod
+    def validate_summary_order(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and set(value) != set(DEFAULT_SUMMARY_ORDER):
+            raise ValueError("Summary-Reihenfolge muss alle vier Zusammenfassungen enthalten")
+        return value
+
+    @model_validator(mode="after")
+    def validate_preference_fields(self) -> AnalysisPreferencesUpdate:
+        if "active_card_ids" in self.model_fields_set:
+            if self.active_card_ids is None:
+                raise ValueError("active_card_ids darf nicht null sein")
+        elif not ({"analysis_keys", "summary_order"} & self.model_fields_set):
+            raise ValueError("Mindestens ein Präferenzfeld muss angegeben werden")
+        return self
+
+
+class AnalysisPreferencesResponse(BaseModel):
+    active_card_ids: list[str]
+    analysis_keys: list[str]
+    summary_order: list[str]
 
 
 class TargetSettingsResponse(BaseModel):
@@ -686,8 +875,8 @@ class TargetSettingsResponse(BaseModel):
 
 
 VerificationView = Literal["canonical", "all"]
-VerificationProviderKey = Literal["google_health", "yazio", "apple_health"]
-VerificationActivityProviderKey = Literal["google_health", "yazio", "apple_health", "withings"]
+VerificationProviderKey = Literal["google_health", "yazio", "apple_health", "analysis_demo"]
+VerificationActivityProviderKey = Literal["google_health", "yazio", "apple_health", "withings", "analysis_demo"]
 VerificationRecordStatus = Literal["available", "no_data", "unavailable"]
 VerificationActivitySourceType = Literal[
     "google_health_activity_v4",
@@ -695,6 +884,7 @@ VerificationActivitySourceType = Literal[
     "apple_health_xml",
     "health_auto_export_v2",
     "withings_activity_v2",
+    "analysis_demo_offline",
 ]
 
 
@@ -723,6 +913,9 @@ class VerificationActivityResponse(BaseModel):
     end_date: date
     view: VerificationView
     days: list[VerificationActivityDayResponse]
+    period_capabilities: ReaderPeriodCapabilities = Field(
+        default_factory=lambda: ReaderPeriodCapabilities(supports_all_data=False),
+    )
 
 
 class VerificationNutritionSummary(BaseModel):
@@ -736,6 +929,9 @@ class VerificationNutritionSummary(BaseModel):
 
 class VerificationNutritionEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    event_id: uuid.UUID
+    detail_available: bool
 
     provider_key: VerificationProviderKey
     local_time: str | None

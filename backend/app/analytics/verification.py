@@ -12,7 +12,11 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
-from app.analytics.provider_selection import NutritionProviderSelection, resolve_nutrition_provider
+from app.analytics.provider_selection import (
+    NutritionProviderSelection,
+    NutritionProviderSelectionError,
+    resolve_nutrition_provider,
+)
 from app.analytics.scalar_selection import (
     ScalarProviderNotReady,
     ScalarProviderSelection,
@@ -37,6 +41,7 @@ from app.nutrition.resolution.metrics import canonical_unit
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA
 from app.schemas import (
+    ReaderPeriodCapabilities,
     VerificationActivityDayResponse,
     VerificationActivityProviderRecord,
     VerificationActivityResponse,
@@ -49,7 +54,11 @@ from app.schemas import (
 from app.services.apple_health_nutrition_ingestion import apple_health_source_instance_id
 from app.services.provider_preferences import resolve_provider_source_type
 
-_PROVIDER_KEYS = tuple(ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS)
+_PROVIDER_KEYS = tuple(
+    provider_key
+    for provider_key in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
+    if provider_key != "analysis_demo"
+)
 _KNOWN_SOURCE_TYPES = tuple(
     source_type
     for source_types in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS.values()
@@ -178,10 +187,35 @@ def read_activity_verification(
     """Read user-scoped activity evidence without blending provider totals."""
     selection: ScalarProviderSelection | None = None
     apple_source_type: str | None = None
+    provider_keys = _PROVIDER_KEYS
+    demo_source_identifier: str | None = None
+    if "analysis_demo" in ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS:
+        from app.services.analysis_demo import (
+            ANALYSIS_DEMO_SOURCE_TYPE,
+            demo_source_instance_id,
+            is_owned_analysis_demo_account,
+        )
+
+        if is_owned_analysis_demo_account(db, user_id):
+            demo_source_identifier = str(demo_source_instance_id(user_id))
     if view == "canonical":
         selection, apple_source_type = _canonical_selection(db, user_id)
     else:
         apple_source_type = _resolve_apple_transport(db, user_id)
+        if demo_source_identifier is not None:
+            demo_evidence = db.scalar(
+                select(HealthSample.id)
+                .where(
+                    HealthSample.user_id == user_id,
+                    HealthSample.source_type == ANALYSIS_DEMO_SOURCE_TYPE,
+                    HealthSample.source_identifier == demo_source_identifier,
+                    HealthSample.metric_type == ACTIVE_ENERGY_METRIC,
+                    HealthSample.value >= 0,
+                )
+                .limit(1)
+            )
+            if demo_evidence is not None:
+                provider_keys = (*_PROVIDER_KEYS, "analysis_demo")
     withings_connection = db.scalar(
         select(WithingsConnection).where(
             WithingsConnection.user_id == user_id,
@@ -207,12 +241,17 @@ def read_activity_verification(
         for source_type in source_types
     }
     for sample in samples:
+        provider_key = source_to_provider[sample.source_type]
+        if provider_key == "analysis_demo" and (
+            sample.source_identifier != demo_source_identifier
+        ):
+            continue
         if sample.source_type in _WITHINGS_SOURCE_TYPES and (
             withings_connection is None
             or sample.source_identifier != str(withings_connection.id)
         ):
             continue
-        samples_by_provider_day[(source_to_provider[sample.source_type], sample.local_date)].append(sample)
+        samples_by_provider_day[(provider_key, sample.local_date)].append(sample)
 
     days: list[VerificationActivityDayResponse] = []
     for offset in range((end - start).days + 1):
@@ -245,7 +284,7 @@ def read_activity_verification(
                         samples=samples_by_provider_day[(provider_key, local_date)],
                         apple_source_type=apple_source_type,
                     )
-                    for provider_key in _PROVIDER_KEYS
+                    for provider_key in provider_keys
                 ],
             )
         )
@@ -255,6 +294,10 @@ def read_activity_verification(
         end_date=end,
         view=view,
         days=days,
+        # Window evidence does not establish a complete reader start boundary.
+        period_capabilities=ReaderPeriodCapabilities(
+            supports_all_data=False, all_data_start_date=None,
+        ),
     )
 
 
@@ -326,6 +369,22 @@ def _all_nutrition_sources(db: Session, user_id: UUID) -> dict[str, UUID | None]
         ),
         "apple_health": apple_health_source_instance_id(user_id),
     }
+
+
+def nutrition_meal_detail_sources(db: Session, user_id: UUID) -> tuple[tuple[str, UUID], ...]:
+    """Union only current Analysis and daily source bindings for this user."""
+    pairs = {
+        (provider_key, source_id)
+        for provider_key, source_id in _all_nutrition_sources(db, user_id).items()
+        if source_id is not None
+    }
+    try:
+        selection = resolve_nutrition_provider(db, user_id=user_id, include_analysis_demo=True)
+    except NutritionProviderSelectionError:
+        selection = None
+    if selection is not None:
+        pairs.update(selection.provider_sources)
+    return tuple(sorted(pairs))
 
 
 def _source_pair_predicates(
@@ -697,6 +756,7 @@ def _nutrition_event_response(
     metrics: dict[str, Decimal],
     food_names: dict[UUID, str | None],
     provider_metadata: Mapping[UUID, Mapping[str, object]],
+    detail_available: bool,
 ) -> VerificationNutritionEvent:
     serving_is_safe = (
         event.amount is not None
@@ -722,6 +782,8 @@ def _nutrition_event_response(
             _metadata_text(metadata, "meal_type"),
         )
     return VerificationNutritionEvent(
+        event_id=event.id,
+        detail_available=detail_available,
         provider_key=event.provider_key,
         local_time=_nutrition_local_time(event),
         meal_type=meal_type,
@@ -746,6 +808,7 @@ def _nutrition_provider_group(
     metrics_by_source: dict[UUID, dict[str, Decimal]],
     food_names: dict[UUID, str | None],
     provider_metadata: Mapping[UUID, Mapping[str, object]],
+    detail_available_ids: set[UUID],
 ) -> VerificationNutritionProviderGroup:
     summary = (
         _empty_nutrition_summary()
@@ -764,6 +827,7 @@ def _nutrition_provider_group(
             metrics=metrics_by_source.get(event.source_observation_id, {}),
             food_names=food_names,
             provider_metadata=provider_metadata,
+            detail_available=event.id in detail_available_ids,
         )
         for event in events
     ]
@@ -793,9 +857,12 @@ def read_nutrition_verification(
     view: VerificationView,
 ) -> VerificationNutritionResponse:
     """Read user-scoped nutrition evidence without blending provider totals."""
+    # Local import keeps the existing shared normalization helpers cycle-free.
+    from app.analytics.nutrition_analysis import nutrition_detail_available_ids
+
     if view == "canonical":
         selection: NutritionProviderSelection | None = resolve_nutrition_provider(
-            db, user_id=user_id
+            db, user_id=user_id, include_analysis_demo=True
         )
         if selection is None:
             return VerificationNutritionResponse(
@@ -813,6 +880,7 @@ def read_nutrition_verification(
             local_date=local_date,
             source_instances=source_instances,
         )
+        detail_available_ids = nutrition_detail_available_ids(db, user_id=user_id, events=events)
         metrics_by_source = _read_nutrition_event_metrics(
             db,
             user_id=user_id,
@@ -847,6 +915,7 @@ def read_nutrition_verification(
                 metrics_by_source=metrics_by_source,
                 food_names=food_names,
                 provider_metadata=provider_metadata,
+                detail_available_ids=detail_available_ids,
             ),
             providers=[],
         )
@@ -858,6 +927,7 @@ def read_nutrition_verification(
         local_date=local_date,
         source_instances=source_instances,
     )
+    detail_available_ids = nutrition_detail_available_ids(db, user_id=user_id, events=events)
     metrics_by_source = _read_nutrition_event_metrics(
         db,
         user_id=user_id,
@@ -891,6 +961,7 @@ def read_nutrition_verification(
                 metrics_by_source=metrics_by_source,
                 food_names=food_names,
                 provider_metadata=provider_metadata,
+                detail_available_ids=detail_available_ids,
             )
             for provider_key in _NUTRITION_PROVIDER_KEYS
         ],
