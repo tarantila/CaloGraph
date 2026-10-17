@@ -331,7 +331,8 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   expect(longTitleLayout.height).toBeGreaterThan(longTitleLayout.lineHeight * 1.5)
 
   await page.goto('/analyse/koerper/gewicht')
-  await expectUsefulInsets('.weight-summary-primary')
+  await expectUsefulInsets('.weight-summary-current')
+  await expectUsefulInsets('.weight-summary-meta')
   await expectUsefulInsets('.weight-reading-list')
 
   await page.goto('/analyse/aktivitaet/aktive-energie')
