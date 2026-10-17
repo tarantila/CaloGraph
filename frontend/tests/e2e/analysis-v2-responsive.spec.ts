@@ -247,6 +247,7 @@ test('Analysis cards stay readable across viewports and detail cards have useful
   await expect(nutrientSummary.locator('.analysis-nutrient-trends > li')).toHaveCount(0)
   await expect(nutrientSummary.locator('.analysis-drag-handle')).toHaveCount(1)
   await expect(nutrientSummary.locator('.analysis-overflow-trigger')).toHaveCount(1)
+  const nutrition = cards.locator('[data-card-key="nutrition"]')
   const macroKpis = nutrition.locator('.analysis-nutrition-kpi')
   await expect(macroKpis).toHaveCount(3)
   await expect(macroKpis.locator('.analysis-nutrition-kpi-label'))
