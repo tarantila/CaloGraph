@@ -59,6 +59,34 @@ def _point(local_date: date, calories: str | None = "1900") -> DailyPoint:
     )
 
 
+def test_calendar_reader_opts_into_guarded_analysis_demo_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection = object()
+    include_demo: list[bool] = []
+    calendar_date = date(2026, 9, 10)
+
+    def preferred_provider(db, user_id, *, include_analysis_demo=False):
+        include_demo.append(include_analysis_demo)
+        return selection
+
+    monkeypatch.setattr(analytics_api, "_preferred_nutrition_provider", preferred_provider)
+    monkeypatch.setattr(
+        analytics_api,
+        "_read_preferred_daily_points",
+        lambda db, **kwargs: [_point(calendar_date)],
+    )
+
+    result = analytics_api.calendar(
+        start=calendar_date,
+        end=calendar_date,
+        user=USER,
+        db=object(),
+    )
+
+    assert include_demo == [True]
+    assert result["days"][0]["classification"] == "under_budget"
+
 def test_calendar_canonical_read_flag_defaults_off() -> None:
     settings = Settings(environment="test")
 

@@ -1282,7 +1282,7 @@ def calendar(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     start, end = _range(start, end, user.timezone, 31)
-    selection = _preferred_nutrition_provider(db, user.id)
+    selection = _preferred_nutrition_provider(db, user.id, include_analysis_demo=True)
     if selection is None:
         points = _legacy_daily_points(db, user, start, end)
         if settings.analytics_calendar_canonical_read_enabled:
