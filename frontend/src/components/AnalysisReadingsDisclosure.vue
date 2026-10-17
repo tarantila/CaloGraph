@@ -24,7 +24,7 @@ const panelId = computed(() => `${props.headingId}-panel`)
         <span class="analysis-readings-chevron" :class="{ 'is-expanded': expanded }" aria-hidden="true"></span>
       </button>
     </h2>
-    <div :id="panelId" v-show="expanded">
+    <div v-show="expanded" :id="panelId">
       <slot />
     </div>
   </section>
