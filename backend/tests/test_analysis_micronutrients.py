@@ -496,9 +496,10 @@ def test_analysis_api_reads_canonical_yazio_micronutrients_for_saved_priority(
 ) -> None:
     from dataclasses import replace
 
+    from test_yazio_nutrition_ingestion import _connection, _diary, _ingest
+
     from app.provider_preferences import NUTRITION_DATA_AREA
     from app.source_priority.compatibility import replace_provider_preferences
-    from test_yazio_nutrition_ingestion import _connection, _diary, _ingest
 
     local_day = date(2026, 9, 1)
     connection = _connection(db, user)
