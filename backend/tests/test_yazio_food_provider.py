@@ -142,6 +142,7 @@ def test_sdk_maps_typed_product_simple_product_profiles_and_daily_summary(
     assert result.consumed_products[0].provider_civil_datetime == datetime(2026, 8, 1, 12, 34, 56)
     assert result.consumed_products[0].provider_timezone == "UTC+02:00"
     assert result.consumed_products[0].local_date == date(2026, 8, 1)
+    assert result.consumed_products[0].daytime == "lunch"
     assert result.consumed_simple_products[0].name == "Tea"
     assert result.consumed_simple_products[0].nutrients.energy == Decimal("0")
     assert result.consumed_simple_products[0].nutrients.additional["mystery_nutrient"] == Decimal("4")

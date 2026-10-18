@@ -771,6 +771,7 @@ def _product_event(
         provider_civil_datetime=_civil(item.provider_civil_datetime),
         provider_timezone=item.provider_timezone,
         local_date=item.local_date,
+        daytime=item.daytime,
         amount=safe_amount,
         amount_unit=snapshot.base_unit if snapshot else None,
         presence_state=_presence(safe_amount),

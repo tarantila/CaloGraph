@@ -193,7 +193,88 @@ def test_product_event_uses_profile_base_unit_without_scaling(db, user):
     assert by_metric["protein_g"].canonical_value == Decimal("0.0")
     assert by_metric["protein_g"].presence_state == PresenceState.EXPLICIT_ZERO.value
 
+@pytest.mark.parametrize("daytime", ("breakfast", "lunch", "dinner", "snack"))
+def test_product_event_persists_daytime(db, user, daytime):
+    diary = _diary(simple=False, summary=False)
+    product = replace(diary.consumed_products[0], daytime=daytime)
+    _ingest(
+        db,
+        user,
+        replace(diary, consumed_products=(product,)),
+        simple=False,
+        summary=False,
+    )
 
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.event_kind == ConsumptionEventKind.PRODUCT.value
+        )
+    )
+
+    assert event is not None
+    assert event.daytime == daytime
+
+
+def test_product_event_replay_from_missing_daytime_creates_classified_revision(db, user):
+    connection = _connection(db, user)
+    diary = _diary(simple=False, summary=False)
+    unclassified = replace(diary.consumed_products[0], daytime=None)
+    _ingest(
+        db,
+        user,
+        replace(diary, consumed_products=(unclassified,)),
+        connection=connection,
+        simple=False,
+        summary=False,
+    )
+    first_event = db.scalar(select(NutritionConsumptionEvent))
+    assert first_event is not None
+    assert first_event.daytime is None
+
+    classified = replace(unclassified, daytime="lunch")
+    _ingest(
+        db,
+        user,
+        replace(diary, consumed_products=(classified,)),
+        connection=connection,
+        simple=False,
+        summary=False,
+    )
+
+    events = db.scalars(
+        select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision)
+    ).all()
+    assert len(events) == 2
+    previous, current = events
+    assert previous.daytime is None
+    assert current.daytime == "lunch"
+    assert current.revision == previous.revision + 1
+    assert current.supersedes_event_id == previous.id
+
+
+def test_product_event_replay_repairs_legacy_null_daytime_without_source_change(db, user):
+    connection = _connection(db, user)
+    diary = _diary(simple=False, summary=False)
+    _ingest(db, user, diary, connection=connection, simple=False, summary=False)
+    legacy_event = db.scalar(select(NutritionConsumptionEvent))
+    assert legacy_event is not None
+    assert legacy_event.daytime == "lunch"
+
+    # Existing rows have the same provider fingerprint but missed the daytime column.
+    legacy_event.daytime = None
+    db.flush()
+
+    _ingest(db, user, diary, connection=connection, simple=False, summary=False)
+
+    events = db.scalars(
+        select(NutritionConsumptionEvent).order_by(NutritionConsumptionEvent.revision)
+    ).all()
+    assert len(events) == 2
+    previous, current = events
+    assert previous.daytime is None
+    assert current.daytime == "lunch"
+    assert current.revision == previous.revision + 1
+    assert current.supersedes_event_id == previous.id
 
 
 def test_product_event_without_base_unit_is_unresolved_and_not_derived(db, user):
@@ -219,6 +300,7 @@ def test_simple_product_preserves_direct_values_name_ai_zero_missing_unknown(db,
     _ingest(db, user, _diary(simple=True, summary=False), **{})
     event = db.scalar(select(NutritionConsumptionEvent).where(NutritionConsumptionEvent.event_kind == "simple_product"))
     assert event is not None
+    assert event.daytime == "breakfast"
     assert event.provider_metadata["name"] == "Tea"
     assert event.provider_metadata["is_ai_generated"] is True
     assert "token" not in event.provider_metadata
