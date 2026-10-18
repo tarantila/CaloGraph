@@ -489,6 +489,69 @@ def test_reader_excludes_canonical_evidence_from_other_users_and_source_instance
     assert result.metrics[0].total is None
     assert result.metrics[0].days_with_data == 0
 
+def test_analysis_api_reads_canonical_yazio_micronutrients_for_saved_priority(
+    client: TestClient,
+    db: Session,
+    user: User,
+) -> None:
+    from dataclasses import replace
+
+    from test_yazio_nutrition_ingestion import _connection, _diary, _ingest
+
+    from app.provider_preferences import NUTRITION_DATA_AREA
+    from app.source_priority.compatibility import replace_provider_preferences
+
+    local_day = date(2026, 9, 1)
+    connection = _connection(db, user)
+    diary = _diary(simple=False, summary=False)
+    profile = replace(
+        diary.product_profiles[0],
+        nutrients=replace(
+            diary.product_profiles[0].nutrients,
+            additional={"vitamin.a": Decimal("0.000001")},
+        ),
+    )
+    _ingest(
+        db,
+        user,
+        replace(diary, product_profiles=(profile,)),
+        connection=connection,
+        simple=False,
+        summary=False,
+    )
+    replace_provider_preferences(
+        db,
+        user_id=user.id,
+        data_area=NUTRITION_DATA_AREA,
+        provider_keys=("yazio",),
+    )
+    db.flush()
+    _login(client)
+
+    persisted = client.get("/api/v1/settings/provider-preferences")
+    assert persisted.status_code == 200
+    assert persisted.json()["preferences"] == [
+        {"data_area": NUTRITION_DATA_AREA, "provider_key": "yazio"}
+    ]
+
+    response = client.get(
+        "/api/v1/analytics/nutrition/micronutrients",
+        params={"start": local_day.isoformat(), "end": local_day.isoformat(), "metric_key": "vitamin_a_ug"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_provider"] == {"provider_key": "yazio"}
+    assert payload["period_days"] == 1
+    assert payload["metrics"][0]["days_with_data"] == 1
+    assert payload["metrics"][0]["contributors"] == [
+        {"provider_key": "yazio", "days_with_data": 1}
+    ]
+    assert payload["series"][0]["provider_key"] == "yazio"
+    assert payload["series"][0]["value"] == 2.5
+
+
+
 
 def _login(client: TestClient) -> None:
     response = client.post(

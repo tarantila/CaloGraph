@@ -11,6 +11,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { hasActivityCredit } from '../activity'
 import { api, localizeApiError } from '../api'
+import { calendarClassificationClass, calendarClassificationLabel } from '../calendar-status'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatGermanDate, formatGermanDayMonth, formatGermanWeekday } from '../date-format'
 import { createDateFormatter, createKcalFormatter, createNumberFormatter, i18n } from '../i18n'
@@ -24,17 +25,6 @@ const selectedMonth = ref(new Date(currentMonth))
 const days = ref<DailyPoint[]>([])
 const error = ref('')
 const loading = ref(true)
-const classificationKeys: Record<string, string> = {
-  under_budget: 'calendar.withinBudget',
-  over_budget: 'calendar.overBudget',
-  above_maintenance: 'calendar.overMaintenance',
-  probably_incomplete: 'daily.withoutCalories',
-  no_target: 'calendar.noTarget',
-  no_data: 'calendar.noData',
-}
-function classificationLabel(value: string | undefined) {
-  return t(classificationKeys[value ?? 'no_data'] ?? 'calendar.noData')
-}
 
 function dayUnit(count: number) {
   return count === 1 ? t('common.day') : t('common.days')
@@ -204,15 +194,15 @@ const averageCalories = computed(() => {
         <article
           v-for="day in days"
           :key="day.date"
-          :class="['calendar-day', day.classification]"
-          :aria-label="`${formatGermanDate(day.date)}: ${classificationLabel(day.classification)}`"
+          :class="['calendar-day', day.classification, calendarClassificationClass(day.classification)]"
+          :aria-label="`${formatGermanDate(day.date)}: ${calendarClassificationLabel(day.classification)}`"
         >
           <div class="calendar-day-heading">
             <strong>{{ formatGermanWeekday(day.date) }}</strong>
             <time :datetime="day.date">{{ formatGermanDayMonth(day.date) }}</time>
           </div>
           <b>{{ calorieValue(day) == null ? '–' : kcal.format(calorieValue(day)!) }}<small v-if="calorieValue(day) != null"> kcal</small></b>
-          <span>{{ classificationLabel(day.classification) }}</span>
+          <span>{{ calendarClassificationLabel(day.classification) }}</span>
           <small v-if="day.target_kcal != null" class="calendar-day-reference">
             {{ hasActivityCredit(day) ? t('activity.baseBudget') : t('charts.dailyBudget') }} {{ kcal.format(Number(day.target_kcal)) }}
             <template v-if="hasActivityCredit(day)">
