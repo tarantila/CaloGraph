@@ -23,6 +23,7 @@ import {
   localizedAnalysisPresentation,
   nutritionAnalysisKeys,
 } from '../analysis-v2'
+import { groupNutritionMealOccasions } from '../analysis-nutrition-overview'
 import { analysisRangeWithinDays, commonAllDataRange, periodFromQuery, validPeriodRange, type AppliedPeriod, type PeriodLimits, type PeriodRange, type PeriodSelection } from '../analytics-period'
 import { useAnalysisPreferences } from '../composables/useAnalysisPreferences'
 import { useAuthStore } from '../stores/auth'
@@ -43,6 +44,13 @@ type ReaderState = 'idle' | 'loading' | 'ready' | 'error'
 type PreviewReader = 'weight' | 'activity' | 'nutrition' | 'micronutrients'
 type BuiltInCardId = 'weight' | 'nutrition' | 'micronutrients' | 'activity'
 type ManagerEntry = { id: string; label: string; icon: string; status: 'available' | 'coming_soon' }
+type HubMealType = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'uncategorized'
+const hubMealTypeOrder: readonly HubMealType[] = [
+  'breakfast', 'lunch', 'dinner', 'snack', 'uncategorized',
+]
+const recognizedHubMealTypes = new Set<HubMealType>([
+  'breakfast', 'lunch', 'dinner', 'snack',
+])
 type ManagerGroup = { key: AnalysisCategoryKey; labelKey: string; entries: ManagerEntry[] }
 type ManagerScrollSnapshot = {
   scrollX: number
@@ -127,35 +135,52 @@ let managerBackdropPointerId: number | null = null
 let managerBackdropPointerStartedOutside = false
 let managerBackdropClickReady = false
 const mealsTodayDay = computed(() => mealsTodayResponse.value?.days.find((day) => day.date === today.value) ?? null)
-const mealsTodayExpanded = ref(false)
-const namedTodayMeals = computed(() => {
-  const meals = (mealsTodayDay.value?.meals ?? [])
-    .filter((meal) => typeof meal.display_name === 'string' && meal.display_name.trim().length > 0)
-  return meals.sort((left, right) => {
-    const leftTime = left.local_time?.trim() || null
-    const rightTime = right.local_time?.trim() || null
-    if (leftTime === null) return rightTime === null ? 0 : 1
-    if (rightTime === null) return -1
-    return leftTime.localeCompare(rightTime)
-  })
+function normalizeHubMealType(value: string | null): HubMealType {
+  const normalized = value?.trim().toLowerCase()
+  return normalized && recognizedHubMealTypes.has(normalized as HubMealType)
+    ? normalized as HubMealType : 'uncategorized'
+}
+function formatHubMealType(type: HubMealType): string {
+  return type === 'uncategorized'
+    ? t('analysisV2.mealsUncategorized')
+    : t(`nutritionVerification.mealTypes.${type}`)
+}
+const todayMealGroups = computed(() => {
+  const entries = (mealsTodayDay.value?.meals ?? []).map((meal) => ({
+    id: meal.event_id,
+    time: meal.local_time,
+    type: normalizeHubMealType(meal.meal_type),
+    name: meal.display_name,
+    energy: meal.dietary_energy_kcal,
+  }))
+  return groupNutritionMealOccasions(entries).map((group) => {
+    const energies = group.entries.map((entry) => entry.energy)
+    const totalEnergy = energies.every((energy): energy is number =>
+      typeof energy === 'number' && Number.isFinite(energy))
+      ? energies.reduce((total, energy) => total + energy, 0)
+      : null
+    return {
+      ...group,
+      type: group.type as HubMealType,
+      totalEnergy: totalEnergy !== null && Number.isFinite(totalEnergy) ? totalEnergy : null,
+    }
+  }).sort((left, right) =>
+    hubMealTypeOrder.indexOf(left.type) - hubMealTypeOrder.indexOf(right.type))
 })
-const visibleTodayMeals = computed(() => mealsTodayExpanded.value
-  ? namedTodayMeals.value
-  : namedTodayMeals.value.slice(0, 3))
-const remainingTodayMeals = computed(() => Math.max(0, namedTodayMeals.value.length - 3))
-function mealCountLabel(count: number): string {
-  return t(count === 1 ? 'analysisV2.mealCountSingular' : 'analysisV2.mealCountPlural', {
+const todayMealEntryCount = computed(() =>
+  todayMealGroups.value.reduce((total, group) => total + group.entryCount, 0))
+function mealOccasionCountLabel(count: number): string {
+  return t(count === 1 ? 'analysisV2.mealOccasionSingular' : 'analysisV2.mealOccasionPlural', {
     count: number.format(count),
   })
 }
-function mealOverflowLabel(count: number): string {
-  return t(count === 1 ? 'analysisV2.mealsExpandOne' : 'analysisV2.mealsExpandMany', {
+function mealEntryCountLabel(count: number): string {
+  return t(count === 1 ? 'analysisV2.mealEntrySingular' : 'analysisV2.mealEntryPlural', {
     count: number.format(count),
   })
 }
-function formatMealTime(value: string | null): string {
-  const localTime = value?.trim()
-  return localTime ? localTime.slice(0, 5) : '–'
+function mealSummaryLabel(occasionCount: number, entryCount: number): string {
+  return `${mealOccasionCountLabel(occasionCount)} · ${mealEntryCountLabel(entryCount)}`
 }
 const hubMetricIcons: Record<string, string> = {
   dietary_energy_kcal: 'energy',
@@ -725,7 +750,6 @@ async function loadPreviews(): Promise<void> {
   nutritionResponse.value = null
   micronutrientSummary.value = null
   mealsTodayResponse.value = null
-  mealsTodayExpanded.value = false
   mealsTodayError.value = ''
   mealsTodayState.value = activeCardIds.value.includes('meals_today') ? 'loading' : 'idle'
   for (const reader of ['weight', 'activity', 'nutrition', 'micronutrients'] as const) {
@@ -1793,7 +1817,6 @@ onBeforeUnmount(() => {
           :removable="workspaceReady && !workspaceLoading"
           :dragging="pointerDrag === cardId"
           :style="dragStyle(cardId)"
-          :class="{ 'analysis-card--expanded': cardId === 'meals_today' && mealsTodayExpanded }"
           @drag-start="pointerDown(cardId, $event)"
           @toggle-menu="toggleOverflow(cardId)"
           @move="moveKey(cardId, $event)"
@@ -1892,37 +1915,22 @@ onBeforeUnmount(() => {
                 <strong v-if="mealsTodayDay && typeof mealsTodayDay.dietary_energy_kcal === 'number' && Number.isFinite(mealsTodayDay.dietary_energy_kcal)" class="analysis-metric-value">
                   {{ kcal.format(mealsTodayDay.dietary_energy_kcal) }} kcal
                 </strong>
-                <span v-if="namedTodayMeals.length" class="analysis-meal-count">
-                  {{ mealCountLabel(namedTodayMeals.length) }}
+                <span v-if="todayMealGroups.length" class="analysis-meal-count">
+                  {{ mealSummaryLabel(todayMealGroups.length, todayMealEntryCount) }}
                 </span>
               </div>
-              <p v-if="!namedTodayMeals.length" class="analysis-meal-empty">
-                {{ t('analysisV2.mealsNoNamedRows') }}
+              <p v-if="!todayMealGroups.length" class="analysis-meal-empty">
+                {{ t('analysisV2.mealsNoEntries') }}
               </p>
-              <template v-else>
-                <ul id="meals-today-list" class="analysis-meal-list" :aria-label="t('analysisV2.mealsToday')">
-                  <li v-for="(meal, index) in visibleTodayMeals" :key="`${meal.local_time}-${meal.display_name}-${index}`">
-                    <time
-                      class="analysis-meal-time"
-                      :datetime="meal.local_time ? `${today}T${meal.local_time}` : undefined"
-                    >{{ formatMealTime(meal.local_time) }}</time>
-                    <span class="analysis-meal-name" :title="meal.display_name ?? undefined">{{ meal.display_name ?? '' }}</span>
-                    <span v-if="typeof meal.dietary_energy_kcal === 'number' && Number.isFinite(meal.dietary_energy_kcal)" class="analysis-meal-kcal">
-                      {{ kcal.format(meal.dietary_energy_kcal) }} kcal
-                    </span>
-                  </li>
-                </ul>
-                <button
-                  v-if="namedTodayMeals.length > 3"
-                  class="analysis-meal-expand"
-                  type="button"
-                  :aria-expanded="mealsTodayExpanded"
-                  aria-controls="meals-today-list"
-                  @click.stop="mealsTodayExpanded = !mealsTodayExpanded"
-                >
-                  {{ mealsTodayExpanded ? t('analysisV2.mealsCollapse') : mealOverflowLabel(remainingTodayMeals) }}
-                </button>
-              </template>
+              <ul v-else class="analysis-meal-list" :aria-label="t('analysisV2.mealsToday')">
+                <li v-for="group in todayMealGroups" :key="group.key">
+                  <span class="analysis-meal-group-label">{{ formatHubMealType(group.type) }}</span>
+                  <span class="analysis-meal-entry-count">{{ mealEntryCountLabel(group.entryCount) }}</span>
+                  <span v-if="group.totalEnergy !== null" class="analysis-meal-group-kcal">
+                    {{ kcal.format(group.totalEnergy) }} kcal
+                  </span>
+                </li>
+              </ul>
             </template>
             <template v-else>
               <strong class="analysis-metric-value">{{ cardValue(cardId) ?? '–' }}</strong>
@@ -2132,17 +2140,14 @@ onBeforeUnmount(() => {
 .analysis-workspace-error p { margin: 0; }
 .analysis-list-heading { display: flex; align-items: center; justify-content: flex-start; gap: .75rem; }
 .analysis-list-heading h2 { margin: 0; font-size: .92rem; line-height: 1.5; font-weight: 400; }
- .analysis-meal-summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .1rem .5rem; min-width: 0; }
- .analysis-meal-count { color: var(--muted); font-size: .75rem; line-height: 1.4; font-weight: 400; }
- .analysis-meal-empty { margin: 0; color: var(--muted); }
- .analysis-meal-list { position: relative; z-index: 2; display: grid; gap: .2rem; min-width: 0; margin: 0; padding: 0; list-style: none; }
- .analysis-meal-list li { display: grid; grid-template-columns: 3.25rem minmax(0, 1fr) auto; align-items: center; gap: .35rem; min-width: 0; padding: .1rem 0; border-bottom: 1px solid var(--border); }
- .analysis-meal-time { color: var(--muted); font-size: .75rem; white-space: nowrap; }
- .analysis-meal-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
- .analysis-meal-kcal { justify-self: end; white-space: nowrap; }
- .analysis-meal-expand { position: relative; z-index: 2; justify-self: start; min-height: 2rem; padding: .2rem 0; border: 0; border-radius: .25rem; background: transparent; color: var(--muted); font: inherit; font-size: .75rem; text-align: left; cursor: pointer; }
- .analysis-meal-expand:hover { color: var(--accent-hover); text-decoration: underline; }
- .analysis-meal-expand:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.analysis-meal-summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .1rem .5rem; min-width: 0; }
+.analysis-meal-count { color: var(--muted); font-size: .75rem; line-height: 1.4; font-weight: 400; }
+.analysis-meal-empty { margin: 0; color: var(--muted); }
+.analysis-meal-list { position: relative; z-index: 2; display: grid; gap: .2rem; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.analysis-meal-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .35rem; min-width: 0; padding: .05rem 0; border-bottom: 1px solid var(--border); }
+.analysis-meal-group-label { min-width: 0; font-size: .82rem; line-height: 1.2; overflow-wrap: anywhere; }
+.analysis-meal-entry-count { color: var(--muted); font-size: .72rem; line-height: 1.2; white-space: nowrap; }
+.analysis-meal-group-kcal { justify-self: end; font-size: .9rem; line-height: 1.2; white-space: nowrap; }
 .analysis-manager-dialog {
   position: fixed; inset: 0; margin: auto; width: min(680px, calc(100vw - 32px));
   max-height: min(80dvh, 720px); box-sizing: border-box; padding: 0; border: 1px solid var(--border);
@@ -2208,10 +2213,6 @@ onBeforeUnmount(() => {
   }
   :deep(.analysis-card[data-card-key="meals_today"] .analysis-card-content) {
     grid-template-rows: none;
-  }
-  :deep(.analysis-card[data-card-key="meals_today"].analysis-card--expanded) {
-    height: auto;
-    min-height: 18rem;
   }
   :deep(.analysis-card[data-card-key="nutrition"] .analysis-nutrition-summary-note) {
     grid-row: 1 / -1; align-self: center;

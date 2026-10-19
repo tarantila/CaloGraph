@@ -2,7 +2,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 const DEFAULT_CARDS = ['weight', 'nutrition', 'micronutrients', 'activity']
 const initialCards = [...DEFAULT_CARDS, 'protein_g', 'vitamin_a_ug']
-const longMealName = 'Eine besonders lange Mahlzeit ohne hinterlegten Kalorienwert, die innerhalb der Karte gekürzt werden muss'
 const periodCapabilities = { supports_all_data: false, all_data_start_date: null }
 const todayInBerlin = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -29,30 +28,43 @@ const registry = [
   period_capability: card_capable ? { min_days: 1, max_days, custom_range: true } : null,
 }))
 
-function day(date: string, meals = false) {
+function mealEvents(date: string, groupCount: number) {
+  if (groupCount === 2) {
+    return [
+      { event_id: 'breakfast-coffee', local_date: date, provider_key: 'yazio', local_time: '08:20:00', meal_type: 'breakfast', display_name: 'Schwarzer Kaffee', dietary_energy_kcal: 30 },
+      { event_id: 'lunch-oatly', local_date: date, provider_key: 'yazio', local_time: '12:20:00', meal_type: 'lunch', display_name: 'Oatly Barista Edition Lighter', dietary_energy_kcal: 86 },
+      { event_id: 'breakfast-corny', local_date: date, provider_key: 'yazio', local_time: '08:10:00', meal_type: 'breakfast', display_name: 'Corny Protein Erdnuss', dietary_energy_kcal: 20 },
+      { event_id: 'breakfast-sweetener', local_date: date, provider_key: 'yazio', local_time: '08:15:00', meal_type: 'breakfast', display_name: 'süssstoff', dietary_energy_kcal: 15 },
+    ]
+  }
+  const types = ['breakfast', 'lunch', 'dinner', 'snack', 'unknown']
+  return types.slice(0, groupCount).flatMap((type, groupIndex) =>
+    Array.from({ length: groupCount > 1 && groupIndex === 0 ? 2 : 1 }, (_, entryIndex) => ({
+      event_id: `${type}-${entryIndex}`,
+      local_date: date,
+      provider_key: 'yazio',
+      local_time: `${String(8 + groupIndex).padStart(2, '0')}:${String(entryIndex * 15).padStart(2, '0')}:00`,
+      meal_type: type,
+      display_name: `Synthetic ${type} ${entryIndex}`,
+      dietary_energy_kcal: 20 + groupIndex * 10 + entryIndex,
+    })))
+}
+
+function day(date: string, meals = false, groupCount = 2) {
   return {
     date, provider_key: 'yazio', dietary_energy_kcal: 1200,
     protein_g: 60, carbohydrates_g: 140, fat_g: 40, fiber_g: 20, sugar_g: 25, saturated_fat_g: 8,
-    meals: meals ? [
-      { local_time: '12:20:00', meal_type: 'lunch', display_name: 'Linsensalat', dietary_energy_kcal: 420, protein_g: 24, carbohydrates_g: 52, fat_g: 12 },
-      { local_time: '18:00:00', meal_type: 'dinner', display_name: 'Gemüsepfanne', dietary_energy_kcal: 380, protein_g: 18, carbohydrates_g: 46, fat_g: 14 },
-      { local_time: '20:30:00', meal_type: 'snack', display_name: 'Vanillepudding', dietary_energy_kcal: 400, protein_g: 10, carbohydrates_g: 55, fat_g: 14 },
-      {
-        provider_key: 'yazio', local_time: '21:00:00', meal_type: 'dinner',
-        display_name: longMealName, dietary_energy_kcal: null,
-        protein_g: null, carbohydrates_g: null, fat_g: null,
-        fiber_g: null, sugar_g: null, saturated_fat_g: null,
-      },
-    ] : [],
+    meals: meals ? mealEvents(date, groupCount) : [],
   }
 }
 
 async function installSyntheticAnalysisApi(
   page: Page,
-  options: { language?: 'de' | 'en'; activeCards?: string[] } = {},
+  options: { language?: 'de' | 'en'; activeCards?: string[]; mealGroupCount?: number } = {},
 ) {
   const state = {
     activeCards: [...(options.activeCards ?? initialCards)],
+    mealGroupCount: options.mealGroupCount ?? 2,
     persistedWrites: [] as string[][],
     mealReads: [] as Array<{ start: string | null; end: string | null }>,
     dailyMealReads: [] as Array<{ date: string | null; view: string | null }>,
@@ -81,7 +93,7 @@ async function installSyntheticAnalysisApi(
         body: JSON.stringify({
           start_date: start, end_date: end, selected_provider: { provider_key: 'yazio' },
           period_days: (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000 + 1,
-          days: [day(end ?? todayInBerlin, end === todayInBerlin)],
+          days: [day(end ?? todayInBerlin, end === todayInBerlin, state.mealGroupCount)],
         }),
       })
       return
@@ -387,14 +399,17 @@ test('centres the manager and routes Meals Today to its date-specific view', asy
   await expect(mealsRow.getByRole('button', { name: 'Entfernen', exact: true })).toBeFocused()
   const mealsCard = page.locator('.analysis-card-list [data-card-key="meals_today"]')
   await expect(mealsCard).toContainText('Mahlzeiten heute')
-  await expect(mealsCard).toContainText('Linsensalat')
   await expect(mealsCard).toContainText('1.200 kcal')
-  await expect(mealsCard.locator('.analysis-meal-count')).toHaveText('4 Mahlzeiten')
-  await expect(mealsCard.locator('.analysis-meal-list li')).toHaveCount(3)
-  await expect(mealsCard.locator('.analysis-meal-expand')).toHaveText('+ 1 weitere Mahlzeit')
-  await expect(mealsCard.locator('.analysis-meal-list'))
-    .not.toHaveAttribute('tabindex', '0')
-  await expect(mealsCard.locator('.analysis-meal-list')).not.toContainText(longMealName)
+  await expect(mealsCard.locator('.analysis-meal-count')).toHaveText('2 Mahlzeiten · 4 Einträge')
+  const mealGroups = mealsCard.locator('.analysis-meal-list > li')
+  await expect(mealGroups).toHaveCount(2)
+  await expect(mealGroups.locator('.analysis-meal-group-label')).toHaveText(['Frühstück', 'Mittagessen'])
+  await expect(mealGroups.locator('.analysis-meal-entry-count')).toHaveText(['3 Einträge', '1 Eintrag'])
+  await expect(mealGroups.locator('.analysis-meal-group-kcal')).toHaveText(['65 kcal', '86 kcal'])
+  await expect(mealsCard).not.toContainText('Corny Protein Erdnuss')
+  await expect(mealsCard).not.toContainText('süssstoff')
+  await expect(mealsCard).not.toContainText('Schwarzer Kaffee')
+  await expect(mealsCard).not.toContainText('Oatly Barista Edition Lighter')
   expect(state.mealReads).toContainEqual({ start: todayInBerlin, end: todayInBerlin })
   const expectedMealDate = new Intl.DateTimeFormat('de-DE', {
     day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC',
@@ -409,34 +424,6 @@ test('centres the manager and routes Meals Today to its date-specific view', asy
   await expect(dialog).toBeHidden()
   const scrollYAfterMealsManagerClose = await page.evaluate(() => window.scrollY)
   expect(scrollYAfterMealsManagerClose).toBe(scrollYAtMealsManagerOpen)
-  const collapsedHeight = await mealsCard.evaluate((card) => card.getBoundingClientRect().height)
-  const expandMeals = mealsCard.locator('.analysis-meal-expand')
-  await expandMeals.click()
-  await expect(expandMeals).toHaveText('Weniger anzeigen')
-  await expect(expandMeals).toHaveAttribute('aria-expanded', 'true')
-  await expect(mealsCard).toContainText(longMealName)
-  const expandedHeight = await mealsCard.evaluate((card) => card.getBoundingClientRect().height)
-  expect(expandedHeight).toBeGreaterThan(collapsedHeight)
-  const longMeal = mealsCard.locator('.analysis-meal-list li')
-    .filter({ hasText: longMealName }).locator('.analysis-meal-name')
-  await expect(longMeal).toHaveText(longMealName)
-  const mealLayout = await longMeal.evaluate((name) => {
-    const style = window.getComputedStyle(name)
-    return {
-      overflow: style.overflow,
-      textOverflow: style.textOverflow,
-      whiteSpace: style.whiteSpace,
-      scrollWidth: name.scrollWidth,
-      clientWidth: name.clientWidth,
-    }
-  })
-  expect(mealLayout.overflow).toBe('hidden')
-  expect(mealLayout.textOverflow).toBe('ellipsis')
-  expect(mealLayout.whiteSpace).toBe('nowrap')
-  expect(mealLayout.scrollWidth).toBeGreaterThan(mealLayout.clientWidth)
-  await expandMeals.click()
-  await expect(expandMeals).toHaveText('+ 1 weitere Mahlzeit')
-  await expect(mealsCard).not.toContainText(longMealName)
   expect(new URL(page.url()).pathname).toBe('/analyse')
   await expect.poll(() => page.evaluate(() => ({
     x: window.scrollX,
@@ -476,6 +463,37 @@ test('centres the manager and routes Meals Today to its date-specific view', asy
   await page.reload()
   await expect.poll(() => readCardOrder(page)).toEqual(initialCards)
 })
+
+test('keeps meal occasion groups within the card footer for every supported count', async ({ page }) => {
+  const cards = [...initialCards, 'meals_today']
+  const state = await installSyntheticAnalysisApi(page, { activeCards: cards })
+  for (const groupCount of [1, 2, 4, 5, 0]) {
+    state.mealGroupCount = groupCount
+    await openHub(page, '30', cards)
+    const card = page.locator('.analysis-card-list > li[data-card-key="meals_today"]')
+    await expect(card.locator('.analysis-metric-value')).toHaveText('1.200 kcal')
+    if (groupCount === 0) {
+      await expect(card.locator('.analysis-meal-empty')).toHaveText('Keine Ernährungseinträge für heute.')
+      await expect(card.locator('.analysis-meal-list')).toHaveCount(0)
+      continue
+    }
+
+    const groups = card.locator('.analysis-meal-list > li')
+    await expect(groups).toHaveCount(groupCount)
+    const bounds = await card.evaluate((element) => {
+      const list = element.querySelector('.analysis-meal-list')!
+      const footer = element.querySelector('.analysis-card-footer')!
+      return {
+        listBottom: list.getBoundingClientRect().bottom,
+        footerTop: footer.getBoundingClientRect().top,
+        hasHorizontalOverflow: element.scrollWidth > element.clientWidth,
+      }
+    })
+    expect(bounds.listBottom).toBeLessThanOrEqual(bounds.footerTop)
+    expect(bounds.hasHorizontalOverflow).toBe(false)
+  }
+})
+
 
 test('formats the Meals Today card date for English users', async ({ page }) => {
   const cards = [...initialCards, 'meals_today']
