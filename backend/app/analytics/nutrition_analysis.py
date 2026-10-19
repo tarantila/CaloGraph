@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.analytics.provider_selection import NutritionProviderSelection
+from app.analytics.service import PRIMARY_NUTRITION_METRICS
 from app.analytics.verification import _metadata_text, _normalized_meal_type, _nutrition_local_time
 from app.nutrition.enums import (
     CoverageState,
@@ -66,13 +67,14 @@ def _value(candidate: ProviderCandidate) -> Decimal | None:
     return None
 
 
-def _whole_day_evidence(candidates: Mapping[str, ProviderCandidate]) -> bool:
-    values = tuple(_value(candidates[key]) for key in DAILY_PROJECTION_METRICS)
+def _has_eligible_primary_evidence(candidates: Mapping[str, ProviderCandidate]) -> bool:
+    # Evaluate every metric first so secondary conflicts and duplicate candidates still fail closed.
+    values = {key: _value(candidates[key]) for key in DAILY_PROJECTION_METRICS}
     return all(
         candidates[key].coverage_state is CoverageState.COMPLETE
         and candidates[key].resolution_state is ResolutionState.RESOLVED
-        for key in DAILY_PROJECTION_METRICS
-    ) and any(value is not None for value in values)
+        for key in PRIMARY_NUTRITION_METRICS
+    ) and any(values[key] is not None for key in PRIMARY_NUTRITION_METRICS)
 
 
 def _current_event_condition(event: type[NutritionConsumptionEvent]) -> ColumnElement[bool]:
@@ -480,7 +482,7 @@ def read_analysis_nutrition(
                 metric_keys=DAILY_PROJECTION_METRICS,
             ):
                 for day, candidates in matrix.items():
-                    if day not in winners and _whole_day_evidence(candidates):
+                    if day not in winners and _has_eligible_primary_evidence(candidates):
                         winners[day] = (provider_key, source_id, candidates)
     except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisNutritionReadError("canonical nutrition provider period is unreadable") from exc

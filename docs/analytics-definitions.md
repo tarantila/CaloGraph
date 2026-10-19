@@ -157,15 +157,18 @@ or unreadable configured sources return a provider problem (HTTP 503), not
 empty evidence.
 
 The configured `selected_provider` describes the head of the ordered source
-chain. For each date independently, the first source with all seven primary
-daily nutrition metrics complete and resolved, and at least one supplied value
-(including explicit zero), wins the **whole day**. Daily totals and named meals
-come only from that winning provider/source instance; no individual metric
-or meal is filled from another provider. A date without such a winner returns
-HTTP 200 with `provider_key: null`, seven null metrics and `meals: []`.
+chain. For each date independently, the first source whose four core daily
+nutrition metrics—energy, protein, carbohydrates and fat—are complete and
+resolved, and which has at least one supplied core value (including explicit
+zero), wins the **whole day**. Each metric is exposed only when its own
+candidate is complete and resolved and has a supplied value or explicit zero;
+unavailable or unresolved secondary metrics remain `null`. Daily totals and
+named meals come only from that winning provider/source instance; no individual
+metric or meal is filled from another provider. A date without such a winner
+returns HTTP 200 with `provider_key: null`, seven null metrics and `meals: []`.
 `null` means absent or unusable evidence; numeric zero is a present value,
-never a missing-day substitute. Unsafe conflicts or duplicate candidates
-fail closed.
+never a missing-day substitute. Unsafe conflicts or duplicate candidates fail
+closed.
 
 Meals are current, non-tombstoned consumption events from the winning
 account/provider/source only, with real persisted food-snapshot names or

@@ -3,12 +3,14 @@
 import hashlib
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analytics.nutrition_analysis import read_analysis_nutrition
+import app.analytics.nutrition_analysis as nutrition_analysis
+from app.analytics.nutrition_analysis import AnalysisNutritionReadError, read_analysis_nutrition
 from app.analytics.provider_selection import NutritionProviderSelection
 from app.google_health.client import (
     NutritionLog,
@@ -79,7 +81,8 @@ def _demo(db: Session) -> tuple[User, NutritionProviderSelection]:
 
 def _apple_meal(
     db: Session, owner: User, *, day: date, name: str | None,
-    omit: str | None = None, zero: str | None = None, record_id: str | None = None,
+    omit: str | None = None, omit_metrics: tuple[str, ...] = (),
+    zero: str | None = None, record_id: str | None = None,
     run: NutritionIngestionRun | None = None,
 ) -> None:
     instant = datetime(day.year, day.month, day.day, 12, tzinfo=UTC)
@@ -94,7 +97,8 @@ def _apple_meal(
             source_name="Apple",
             source_version="1",
         )
-        for raw_type, key, unit, value in APPLE_FIELDS if key != omit
+        for raw_type, key, unit, value in APPLE_FIELDS
+        if key != omit and key not in omit_metrics
     )
     if run is None:
         run = create_apple_health_nutrition_run(db, user_id=owner.id)
@@ -129,13 +133,16 @@ def _read(db: Session, owner: User, selection: NutritionProviderSelection, first
     )
 
 
-def test_incomplete_primary_falls_back_with_exact_winning_meals_and_next_day_prefers_first(
-    db: Session, user: User,
+def test_partial_secondary_keeps_primary_day_and_winning_meals_without_blending(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     demo, demo_selection = _demo(db)
     first = START + timedelta(days=10)
     second = first + timedelta(days=1)
-    _apple_meal(db, demo, day=first, name="Incomplete Apple bowl", omit="fiber_g")
+    _apple_meal(
+        db, demo, day=first, name="Apple bowl with unresolved secondary metrics",
+        omit_metrics=("fiber_g", "sugar_g", "saturated_fat_g"),
+    )
     _apple_meal(db, demo, day=second, name="Complete Apple bowl")
     apple_source = apple_health_source_instance_id(demo.id)
     selection = NutritionProviderSelection(
@@ -143,28 +150,43 @@ def test_incomplete_primary_falls_back_with_exact_winning_meals_and_next_day_pre
         (("apple_health", apple_source), ("analysis_demo", demo_selection.source_instance_id)),
     )
 
+    original_period_chunks = nutrition_analysis.iter_provider_period_chunks
+
+    def with_partial_secondary(*args, **kwargs):
+        for chunk_start, chunk_end, matrix in original_period_chunks(*args, **kwargs):
+            modified = {
+                candidate_day: dict(values) for candidate_day, values in matrix.items()
+            }
+            if kwargs["provider_key"] == "apple_health" and first in modified:
+                for metric in ("fiber_g", "sugar_g", "saturated_fat_g"):
+                    modified[first][metric] = SimpleNamespace(
+                        value=Decimal("999"),
+                        coverage_state=CoverageState.PARTIAL,
+                        resolution_state=ResolutionState.UNRESOLVED,
+                        presence_state=PresenceState.SUPPLIED,
+                    )
+            yield chunk_start, chunk_end, modified
+
+    monkeypatch.setattr(
+        nutrition_analysis, "iter_provider_period_chunks", with_partial_secondary,
+    )
     response = _read(db, demo, selection, first, second)
 
     assert response.start_date == first
     assert response.end_date == second
     assert response.period_days == 2
     assert response.selected_provider.provider_key == "apple_health"
-    fallback, preferred = response.days
-    assert fallback.provider_key == "analysis_demo"
-    assert tuple(getattr(fallback, field) for field in FIELDS) == (
-        Decimal("1760"), Decimal("69"), Decimal("223"), Decimal("61"),
-        Decimal("38"), Decimal("50"), Decimal("10"),
+    partial_secondary, preferred = response.days
+    assert partial_secondary.provider_key == "apple_health"
+    assert tuple(getattr(partial_secondary, field) for field in FIELDS) == (
+        Decimal("600"), Decimal("30"), Decimal("80"), Decimal("20"), None, None, None,
     )
-    assert [meal.display_name for meal in fallback.meals] == [
-        "Haferflocken mit Beeren", "Linsensalat", "Gemüsepfanne mit Reis", "Apfel und Mandeln",
+    assert [(meal.provider_key, meal.display_name) for meal in partial_secondary.meals] == [
+        ("apple_health", "Apple bowl with unresolved secondary metrics"),
     ]
-    assert [meal.meal_type for meal in fallback.meals] == ["breakfast", "lunch", "dinner", "snack"]
-    assert {meal.provider_key for meal in fallback.meals} == {"analysis_demo"}
-    assert tuple(getattr(fallback.meals[0], field) for field in FIELDS) == (
-        Decimal("420"), Decimal("18"), Decimal("62"), Decimal("12"),
-        Decimal("9"), Decimal("14"), Decimal("2"),
+    assert tuple(getattr(partial_secondary.meals[0], field) for field in FIELDS) == (
+        Decimal("600"), Decimal("30"), Decimal("80"), Decimal("20"), None, None, None,
     )
-    assert fallback.meals[0].local_time is not None
     assert preferred.provider_key == "apple_health"
     assert tuple(getattr(preferred, field) for field in FIELDS) == (
         Decimal("600"), Decimal("30"), Decimal("80"), Decimal("20"),
@@ -173,7 +195,73 @@ def test_incomplete_primary_falls_back_with_exact_winning_meals_and_next_day_pre
     assert [(meal.provider_key, meal.display_name) for meal in preferred.meals] == [
         ("apple_health", "Complete Apple bowl"),
     ]
-    assert "Incomplete Apple bowl" not in [meal.display_name for day in response.days for meal in day.meals]
+
+
+def test_explicit_zero_is_present_but_missing_or_secondary_only_days_have_no_winner(
+    db: Session, user: User,
+) -> None:
+    demo, _ = _demo(db)
+    missing = START + timedelta(days=4)  # The offline seed deliberately has no events here.
+    secondary_only = missing + timedelta(days=1)
+    zero_day = missing + timedelta(days=2)
+    _apple_meal(
+        db, demo, day=secondary_only, name="Secondary-only food",
+        omit_metrics=("dietary_energy_kcal", "protein_g", "carbohydrates_g", "fat_g"),
+    )
+    _apple_meal(db, demo, day=zero_day, name="Zero energy food", zero="dietary_energy_kcal")
+    source = apple_health_source_instance_id(demo.id)
+    selection = NutritionProviderSelection("apple_health", source, (("apple_health", source),))
+
+    empty, secondary, present = _read(db, demo, selection, missing, zero_day).days
+
+    assert empty.date == missing
+    assert empty.provider_key is None
+    assert all(getattr(empty, field) is None for field in FIELDS)
+    assert empty.meals == []
+    assert secondary.date == secondary_only
+    assert secondary.provider_key is None
+    assert all(getattr(secondary, field) is None for field in FIELDS)
+    assert secondary.meals == []
+    assert present.provider_key == "apple_health"
+    assert present.dietary_energy_kcal == Decimal("0")
+    assert present.meals[0].dietary_energy_kcal == Decimal("0")
+    assert present.protein_g == Decimal("30")
+
+
+@pytest.mark.parametrize(
+    "resolution_state",
+    (ResolutionState.CONFLICT, ResolutionState.DUPLICATE_CANDIDATE),
+)
+def test_unsafe_secondary_candidate_still_fails_closed_with_complete_primary(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+    resolution_state: ResolutionState,
+) -> None:
+    day = START + timedelta(days=10)
+    candidates = {
+        key: SimpleNamespace(
+            value=Decimal("1"),
+            coverage_state=CoverageState.COMPLETE,
+            resolution_state=ResolutionState.RESOLVED,
+            presence_state=PresenceState.SUPPLIED,
+        )
+        for key in FIELDS
+    }
+    candidates["fiber_g"] = SimpleNamespace(
+        value=None,
+        coverage_state=CoverageState.PARTIAL,
+        resolution_state=resolution_state,
+        presence_state=PresenceState.MISSING,
+    )
+    source = apple_health_source_instance_id(user.id)
+    selection = NutritionProviderSelection("apple_health", source, (("apple_health", source),))
+
+    def unsafe_secondary(*_args, **_kwargs):
+        yield day, day, {day: candidates}
+
+    monkeypatch.setattr(nutrition_analysis, "iter_provider_period_chunks", unsafe_secondary)
+
+    with pytest.raises(AnalysisNutritionReadError):
+        _read(db, user, selection, day, day)
 
 
 def test_current_day_seed_supplement_is_visible_to_analysis_meals(
@@ -881,9 +969,9 @@ def test_provider_winner_changes_on_both_sides_of_two_chunk_boundaries(
 ) -> None:
     demo, demo_selection = _demo(db)
     for offset, name, omitted in (
-        (30, "Apple incomplete 31", "fiber_g"),
+        (30, "Apple missing core 31", "protein_g"),
         (31, "Apple complete 32", None),
-        (61, "Apple incomplete 62", "fiber_g"),
+        (61, "Apple missing core 62", "protein_g"),
         (62, "Apple complete 63", None),
     ):
         _apple_meal(db, demo, day=START + timedelta(days=offset), name=name, omit=omitted)
@@ -896,9 +984,9 @@ def test_provider_winner_changes_on_both_sides_of_two_chunk_boundaries(
     rows = _read(db, demo, selection, START, START + timedelta(days=62)).days
 
     for offset, winner, meal_name in (
-        (30, "analysis_demo", "Apple incomplete 31"),
+        (30, "analysis_demo", "Apple missing core 31"),
         (31, "apple_health", "Apple complete 32"),
-        (61, "analysis_demo", "Apple incomplete 62"),
+        (61, "analysis_demo", "Apple missing core 62"),
         (62, "apple_health", "Apple complete 63"),
     ):
         row = rows[offset]
