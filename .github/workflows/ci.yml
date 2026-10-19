@@ -319,6 +319,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --yes age
       - run: cp .env.example .env
       - run: ./scripts/init-secrets.sh
+      - name: Verify container update recipient resolution
+        run: ./scripts/test-update-containers.sh
       - name: Verify single backup-agent base and secrets override
         run: ./scripts/test-backup-agent.sh
       - name: Test the prebuilt runtime images

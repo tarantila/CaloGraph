@@ -1,4 +1,4 @@
-.PHONY: dev up down logs migrate analysis-review-up analysis-review-down test lint typecheck frontend-test e2e build backup backup-secrets backup-test update
+.PHONY: dev up down logs migrate analysis-review-up analysis-review-down test lint typecheck frontend-test e2e build backup backup-secrets backup-test update update-test
 TEST_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.test.yml
 
 dev:
@@ -54,3 +54,5 @@ backup-test:
 
 update:
 	./scripts/update-containers.sh
+update-test:
+	./scripts/test-update-containers.sh
