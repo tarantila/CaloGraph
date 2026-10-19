@@ -2626,13 +2626,20 @@ describe('Analysis V1 hub summaries', () => {
     }
   }
 
-  function mealEntry(name: string, localTime: string | null, kcal: number | null) {
+  function mealEntry(
+    name: string | null,
+    localTime: string | null,
+    kcal: number | null,
+    mealType: string | null = 'snack',
+  ) {
     return {
-      event_id: `synthetic-${name}`, local_date: isoDateInTimeZone('Europe/Berlin'),
-      serving_amount: null, serving_unit: null,
+      event_id: `synthetic-${localTime ?? 'untimed'}-${name ?? 'unnamed'}`,
+      local_date: isoDateInTimeZone('Europe/Berlin'),
+      serving_amount: null,
+      serving_unit: null,
       provider_key: 'yazio',
       local_time: localTime,
-      meal_type: 'snack',
+      meal_type: mealType,
       display_name: name,
       dietary_energy_kcal: kcal,
       protein_g: null,
@@ -2663,73 +2670,122 @@ describe('Analysis V1 hub summaries', () => {
     return today
   }
 
-  it('shows three chronologically sorted meals, expands inline, and collapses without navigating', async () => {
-    const today = serveMealsToday([
-      mealEntry('Lachs mit Kartoffeln', '15:30:00', 645),
-      mealEntry('Vanillepudding', '20:00:00', 220),
-      mealEntry('Haferflocken mit Beeren', '07:30:00', 420),
-      mealEntry('Linsensalat', '11:30:00', 510),
-    ], 1795)
-    const { router, wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
-    const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
-    const rows = () => card.findAll('.analysis-meal-list > li')
-
-    expect(card.get('.analysis-metric-value').text()).toBe('1.795 kcal')
-    expect(card.get('.analysis-card-footer-copy').text()).toMatch(/^Heute · \d{2}\.\d{2}\.\d{4}$/)
-    expect(rows()).toHaveLength(3)
-    expect(rows().map((row) => row.text())).toEqual([
-      '07:30Haferflocken mit Beeren420 kcal',
-      '11:30Linsensalat510 kcal',
-      '15:30Lachs mit Kartoffeln645 kcal',
-    ])
-    expect(card.get('.analysis-meal-expand').text()).toBe('+ 1 weitere Mahlzeit')
-    expect(card.get('.analysis-meal-list').attributes('tabindex')).toBeUndefined()
-
-    await card.get('.analysis-meal-expand').trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/analyse')
-    expect(card.classes()).toContain('analysis-card--expanded')
-    expect(rows()).toHaveLength(4)
-    expect(rows()[3]!.text()).toContain('20:00Vanillepudding220 kcal')
-    expect(card.get('.analysis-meal-expand').text()).toBe('Weniger anzeigen')
-
-    await card.get('.analysis-meal-expand').trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/analyse')
-    expect(card.classes()).not.toContain('analysis-card--expanded')
-    expect(rows()).toHaveLength(3)
-
-    await card.get('.analysis-card-heading a').trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/ernaehrung')
-    expect(router.currentRoute.value.query.date).toBe(today)
-    wrapper.unmount()
-  })
-
-  it('shows up to three meals without an expansion control', async () => {
+  it('groups today food entries into ordered meal occasions and keeps the daily total', async () => {
     serveMealsToday([
-      mealEntry('Frühstück', '08:00:00', 300),
-      mealEntry('Mittagessen', '12:00:00', 500),
-      mealEntry('Abendessen', '18:00:00', 700),
-    ], 1500)
+      mealEntry('Oatly Barista Edition Lighter', '12:00:00', 86, 'lunch'),
+      mealEntry('Corny Protein Erdnuss', '08:15:00', 20, 'breakfast'),
+      mealEntry(null, '08:30:00', 30, 'breakfast'),
+      mealEntry('süssstoff', '08:00:00', 15, 'breakfast'),
+    ], 250)
     const { wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
     const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
+    const groups = card.findAll('.analysis-meal-list > li')
 
-    expect(card.get('.analysis-meal-count').text()).toBe('3 Mahlzeiten')
-    expect(card.findAll('.analysis-meal-list > li')).toHaveLength(3)
-    expect(card.find('.analysis-meal-expand').exists()).toBe(false)
+    expect(card.get('.analysis-metric-value').text()).toBe('250 kcal')
+    expect(card.get('.analysis-meal-count').text()).toBe('2 Mahlzeiten · 4 Einträge')
+    expect(groups.map((group) => group.get('.analysis-meal-group-label').text()))
+      .toEqual(['Frühstück', 'Mittagessen'])
+    expect(groups.map((group) => group.get('.analysis-meal-entry-count').text()))
+      .toEqual(['3 Einträge', '1 Eintrag'])
+    expect(groups.map((group) => group.get('.analysis-meal-group-kcal').text()))
+      .toEqual(['65 kcal', '86 kcal'])
+    expect(card.text()).not.toContain('Oatly Barista Edition Lighter')
+    expect(card.text()).not.toContain('Corny Protein Erdnuss')
+    expect(card.text()).not.toContain('süssstoff')
     wrapper.unmount()
   })
 
-  it('keeps the empty state concise and omits meal count and list controls', async () => {
-    serveMealsToday([], null)
+  it('orders all normalized types and safely groups unknown types when calories are missing', async () => {
+    serveMealsToday([
+      mealEntry('Unknown meal', '21:00:00', 9, 'brunch'),
+      mealEntry('Snack', '16:00:00', 10, 'snack'),
+      mealEntry('Dinner', '19:00:00', 0, 'dinner'),
+      mealEntry('Lunch', '12:00:00', null, 'lunch'),
+      mealEntry('Breakfast B', '08:30:00', null, 'breakfast'),
+      mealEntry(null, null, 3, null),
+      mealEntry('Breakfast A', '08:00:00', 4, ' Breakfast '),
+    ], 36)
+    const { wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
+    const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
+    const groups = card.findAll('.analysis-meal-list > li')
+
+    expect(card.get('.analysis-meal-count').text()).toBe('5 Mahlzeiten · 7 Einträge')
+    expect(groups.map((group) => group.get('.analysis-meal-group-label').text()))
+      .toEqual(['Frühstück', 'Mittagessen', 'Abendessen', 'Snack', 'Ohne Kategorie'])
+    expect(groups.map((group) => group.get('.analysis-meal-entry-count').text()))
+      .toEqual(['2 Einträge', '1 Eintrag', '1 Eintrag', '1 Eintrag', '2 Einträge'])
+    expect(groups[0]!.find('.analysis-meal-group-kcal').exists()).toBe(false)
+    expect(groups[1]!.find('.analysis-meal-group-kcal').exists()).toBe(false)
+    expect(groups[2]!.get('.analysis-meal-group-kcal').text()).toBe('0 kcal')
+    expect(groups[3]!.get('.analysis-meal-group-kcal').text()).toBe('10 kcal')
+    expect(groups[4]!.get('.analysis-meal-group-kcal').text()).toBe('12 kcal')
+    expect(card.text()).not.toContain('brunch')
+    wrapper.unmount()
+  })
+
+  it('localizes meal types and the uncategorized fallback in English', async () => {
+    setLocale('en')
+    serveMealsToday([
+      mealEntry('Coffee', '08:00:00', 25, 'breakfast'),
+      mealEntry(null, '12:00:00', 5, 'provider-special-type'),
+    ], 30)
+    const { wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
+    const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
+    const groups = card.findAll('.analysis-meal-list > li')
+
+    expect(groups.map((group) => group.get('.analysis-meal-group-label').text()))
+      .toEqual(['Breakfast', 'Uncategorized'])
+    expect(card.text()).not.toContain('provider-special-type')
+    wrapper.unmount()
+  })
+
+
+  it.each([
+    {
+      locale: 'de' as const,
+      meals: [mealEntry('Breakfast', '08:00:00', 10, 'breakfast')],
+      expected: '1 Mahlzeit · 1 Eintrag',
+    },
+    {
+      locale: 'de' as const,
+      meals: [
+        mealEntry('Breakfast', '08:00:00', 10, 'breakfast'),
+        mealEntry('Lunch', '12:00:00', 20, 'lunch'),
+      ],
+      expected: '2 Mahlzeiten · 2 Einträge',
+    },
+    {
+      locale: 'en' as const,
+      meals: [mealEntry('Breakfast', '08:00:00', 10, 'breakfast')],
+      expected: '1 meal · 1 entry',
+    },
+    {
+      locale: 'en' as const,
+      meals: [
+        mealEntry('Breakfast', '08:00:00', 10, 'breakfast'),
+        mealEntry('Lunch', '12:00:00', 20, 'lunch'),
+      ],
+      expected: '2 meals · 2 entries',
+    },
+  ])('localizes meal occasion and entry counts in $locale', async ({ locale, meals, expected }) => {
+    setLocale(locale)
+    serveMealsToday(meals, 30)
     const { wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
     const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
 
-    expect(card.text()).toContain('Keine benannten Mahlzeiten für heute verfügbar.')
+    expect(card.get('.analysis-meal-count').text()).toBe(expected)
+    wrapper.unmount()
+  })
+
+  it('shows a localized no-entry state while retaining the independent daily total', async () => {
+    serveMealsToday([], 142)
+    const { wrapper } = await mountAnalysis('/analyse', [...DEFAULT_ACTIVE_CARD_IDS, 'meals_today'])
+    const card = wrapper.get('.analysis-card-list > li[data-card-key="meals_today"]')
+
+    expect(card.get('.analysis-metric-value').text()).toBe('142 kcal')
+    expect(card.get('.analysis-meal-empty').text()).toBe('Keine Ernährungseinträge für heute.')
     expect(card.find('.analysis-meal-count').exists()).toBe(false)
     expect(card.find('.analysis-meal-list').exists()).toBe(false)
-    expect(card.find('.analysis-meal-expand').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -2998,7 +3054,13 @@ describe('Analysis V1 hub summaries', () => {
       ...todayMeal,
       days: todayMeal.days.map((day) => ({
         ...day,
-        meals: day.meals.map((meal) => ({ ...meal, display_name: 'B-Konto Mahlzeit' })),
+        dietary_energy_kcal: 510,
+        meals: day.meals.map((meal) => ({
+          ...meal,
+          meal_type: 'dinner',
+          display_name: 'B-Konto Mahlzeit',
+          dietary_energy_kcal: 510,
+        })),
       })),
     }
     apiMock.mockImplementation((path: string, options?: RequestInit) => {
@@ -3027,7 +3089,7 @@ describe('Analysis V1 hub summaries', () => {
     })
     const { router, wrapper } = await mountAnalysis('/analyse', initialCards, 'analysis-user-a')
     const cardSelector = '.analysis-card-list > li[data-card-key="meals_today"]'
-    expect(wrapper.get(cardSelector).text()).toContain('A-Konto Mahlzeit')
+    expect(wrapper.get(cardSelector).text()).toContain('425 kcal')
     await router.push('/analyse?period=90')
     await flushPromises()
     expect(weightRequests).toBe(2)
@@ -3047,7 +3109,6 @@ describe('Analysis V1 hub summaries', () => {
 
     expect(auth.user).toBeNull()
     expect(cardOrder(wrapper)).not.toContain('meals_today')
-    expect(wrapper.text()).not.toContain('A-Konto Mahlzeit')
     expect(wrapper.get('.analysis-card-list > li[data-card-key="weight"]').text()).not.toContain('71,4 kg')
 
     restoredUser.resolve({
@@ -3062,8 +3123,10 @@ describe('Analysis V1 hub summaries', () => {
     await flushPromises()
 
     expect(auth.user?.id).toBe('analysis-user-b')
-    expect(wrapper.get(cardSelector).text()).toContain('B-Konto Mahlzeit')
-    expect(wrapper.get(cardSelector).text()).not.toContain('A-Konto Mahlzeit')
+    const mealsCardB = wrapper.get(cardSelector)
+    expect(mealsCardB.text()).toContain('510 kcal')
+    expect(mealsCardB.text()).toContain('Abendessen')
+    expect(mealsCardB.text()).not.toContain('425 kcal')
     lateWeight.resolve({
       ...structuredClone(weight),
       points: [{ date: start, weight_kg: 10 }, { date: end, weight_kg: 10 }],
