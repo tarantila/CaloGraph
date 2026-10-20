@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { PhBowlFood, PhCarrot, PhCoffee, PhForkKnife } from '@phosphor-icons/vue'
+import type { Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api, localizeApiError } from '../api'
@@ -64,7 +66,6 @@ function formatGrams(value: number | null): string {
 }
 
 function formatMealType(value: string | null | undefined): string {
-  if (!value) return '—'
   switch (value) {
     case 'breakfast':
       return t('nutritionVerification.mealTypes.breakfast')
@@ -75,7 +76,22 @@ function formatMealType(value: string | null | undefined): string {
     case 'snack':
       return t('nutritionVerification.mealTypes.snack')
     default:
-      return value
+      return t('analysisV2.mealsUncategorized')
+  }
+}
+
+function mealTypeIcon(value: string | null | undefined): Component {
+  switch (value) {
+    case 'breakfast':
+      return PhCoffee
+    case 'lunch':
+      return PhBowlFood
+    case 'dinner':
+      return PhForkKnife
+    case 'snack':
+      return PhCarrot
+    default:
+      return PhForkKnife
   }
 }
 
@@ -88,6 +104,17 @@ function groupMealEvents(events: readonly VerificationNutritionEvent[]) {
     name: event.display_name,
     energy: event.calories_kcal,
   })))
+}
+
+function formatMealEntryCount(count: number): string {
+  const key = count === 1 ? 'analysisV2.mealEntrySingular' : 'analysisV2.mealEntryPlural'
+  return t(key, { count: number.format(count) })
+}
+
+function occasionCalories(occasion: ReturnType<typeof groupMealEvents>[number]): number | null {
+  if (occasion.entries.length !== 1) return occasion.totalEnergy
+  const value = occasion.entries[0]?.energy
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function formatServing(event: VerificationNutritionEvent): string {
@@ -330,7 +357,23 @@ onMounted(() => {
           >
             <tr class="verification-meal-occasion-heading">
               <th colspan="6" scope="rowgroup" class="verification-meal-occasion-title">
-                {{ formatMealType(occasion.type) }}
+                <div class="verification-meal-occasion-header">
+                  <div class="verification-meal-occasion-identity">
+                    <span class="verification-meal-occasion-icon" aria-hidden="true">
+                      <component :is="mealTypeIcon(occasion.type)" weight="regular" />
+                    </span>
+                    <span class="verification-meal-occasion-copy">
+                      <span class="verification-meal-occasion-label">{{ formatMealType(occasion.type) }}</span>
+                      <span class="verification-meal-occasion-entry-count">{{ formatMealEntryCount(occasion.entryCount) }}</span>
+                    </span>
+                  </div>
+                  <span
+                    v-if="occasionCalories(occasion) !== null"
+                    class="verification-meal-occasion-total"
+                  >
+                    {{ formatCalories(occasionCalories(occasion)) }}
+                  </span>
+                </div>
               </th>
             </tr>
             <tr
@@ -349,11 +392,6 @@ onMounted(() => {
               <td class="number" :data-label="t('nutritionVerification.protein')">{{ formatGrams(event.protein_g) }}</td>
               <td class="number" :data-label="t('nutritionVerification.carbohydrates')">{{ formatGrams(event.carbohydrates_g) }}</td>
               <td class="number" :data-label="t('nutritionVerification.fat')">{{ formatGrams(event.fat_g) }}</td>
-            </tr>
-            <tr v-if="occasion.entries.length > 1 && occasion.totalEnergy !== null" class="verification-meal-subtotal">
-              <th colspan="2" scope="row">{{ t('analysisV2.nutritionOccasionTotal', { type: formatMealType(occasion.type) }) }}</th>
-              <td class="number">{{ formatCalories(occasion.totalEnergy) }}</td>
-              <td colspan="3"></td>
             </tr>
           </tbody>
           <tbody v-if="!group.events.length">
@@ -414,6 +452,7 @@ onMounted(() => {
     white-space: nowrap;
     border: 0;
   }
+  .nutrition-food-table .verification-meal-occasion-heading th { padding-inline: .75rem; }
   .nutrition-food-table .verification-meal-occasion-heading th { display: block; width: 100%; white-space: normal; }
   .nutrition-food-table .verification-event-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
   .nutrition-food-table .verification-event-row > td { display: block; min-width: 0; padding: .5rem .75rem; border-bottom: 0; white-space: normal; overflow-wrap: anywhere; }
@@ -422,10 +461,6 @@ onMounted(() => {
   .nutrition-food-table .verification-event-row > td:nth-child(2) { white-space: nowrap; }
   .nutrition-food-table .verification-event-row > td[data-label] { display: flex; justify-content: space-between; align-items: baseline; gap: .4rem; }
   .nutrition-food-table .verification-event-row > td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: .66rem; font-weight: 400; text-align: left; }
-  .nutrition-food-table .verification-meal-subtotal { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-  .nutrition-food-table .verification-meal-subtotal th { text-align: left; }
-  .nutrition-food-table .verification-meal-subtotal td { text-align: right; }
-  .nutrition-food-table .verification-meal-subtotal td:empty { display: none; }
 }
 @media (max-width: 480px) {
   .nutrition-day-summary { margin: .75rem; }
@@ -439,7 +474,53 @@ onMounted(() => {
   background-color: color-mix(in srgb, var(--accent) 30%, var(--surface) 70%);
 }
 .verification-event-row--navigable:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -2px; }
-.verification-meal-occasion-heading th { text-align: left; color: var(--muted-strong); font-weight: 600; background: var(--surface-soft); }
-.verification-meal-subtotal { border-top: 1px solid var(--border); }
-.verification-meal-subtotal th { color: var(--muted-strong); text-align: right; }
+tbody.verification-meal-occasion { --meal-accent: var(--muted); }
+tbody.verification-meal-occasion[data-meal-type='breakfast'] { --meal-accent: var(--chart-series-violet); }
+tbody.verification-meal-occasion[data-meal-type='lunch'] { --meal-accent: var(--chart-series-teal); }
+tbody.verification-meal-occasion[data-meal-type='dinner'] { --meal-accent: var(--chart-series-blue); }
+tbody.verification-meal-occasion[data-meal-type='snack'] { --meal-accent: var(--chart-series-amber); }
+.verification-meal-occasion-heading th {
+  padding: .75rem 1rem;
+  color: var(--ink);
+  font-size: .95rem;
+  font-weight: 650;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  background: color-mix(in srgb, var(--meal-accent) 10%, var(--surface));
+}
+.verification-meal-occasion-header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; min-width: 0; }
+.verification-meal-occasion-identity { display: flex; align-items: center; flex: 1 1 10rem; gap: .65rem; min-width: 0; }
+.verification-meal-occasion-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 2.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--meal-accent) 24%, var(--surface));
+}
+.verification-meal-occasion-icon :deep(svg) { width: 1.2rem; height: 1.2rem; }
+.verification-meal-occasion-copy { display: grid; gap: .08rem; min-width: 0; }
+.verification-meal-occasion-label { color: var(--ink); font-size: .95rem; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.verification-meal-occasion-entry-count { color: var(--muted-strong); font-size: .72rem; font-weight: 400; line-height: 1.4; }
+.verification-meal-occasion-total {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  margin-inline-start: auto;
+  padding: .4rem .75rem;
+  border: 1px solid color-mix(in srgb, var(--meal-accent) 24%, var(--border));
+  border-radius: .45rem;
+  color: var(--ink);
+  font-size: .9rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--meal-accent) 18%, var(--surface));
+}
 </style>

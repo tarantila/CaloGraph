@@ -424,7 +424,7 @@ describe('NutritionView', () => {
     const rows = wrapper.findAll('.verification-event-row')
     const cells = rows.map((row) => row.findAll('td').map((cell) => cell.text()))
 
-    expect(wrapper.findAll('.verification-meal-occasion-title').map((title) => title.text())).toEqual([
+    expect(wrapper.findAll('.verification-meal-occasion-label').map((title) => title.text())).toEqual([
       'Frühstück',
       'Mittagessen',
       'Abendessen',
@@ -442,27 +442,93 @@ describe('NutritionView', () => {
     ])
     wrapper.unmount()
   })
-  it('groups daily entries by meal type and shows a subtotal only for multi-entry occasions', async () => {
+  it('renders occasion title, entry count, and safe kcal in the rowgroup header', async () => {
     apiMock.mockResolvedValue(response({
       canonical: {
         ...canonicalGroup,
         record_count: 3,
         events: [
           { ...canonicalGroup.events[0], event_id: 'salad', meal_type: 'lunch', local_time: '11:30', display_name: 'Linsensalat', calories_kcal: 510 },
-          { ...canonicalGroup.events[0], event_id: 'schnitzel', meal_type: 'lunch', local_time: '11:30', display_name: 'Schnitzel', calories_kcal: 650 },
+          { ...canonicalGroup.events[0], event_id: 'schnitzel', meal_type: 'lunch', local_time: '11:40', display_name: 'Schnitzel', calories_kcal: 650 },
           { ...canonicalGroup.events[0], event_id: 'pudding', meal_type: 'snack', local_time: '19:30', display_name: 'Vanillepudding', calories_kcal: 220 },
         ],
       },
     }))
     const wrapper = await mountView()
+    const lunch = wrapper.get('tbody.verification-meal-occasion[data-meal-type="lunch"]')
+    const snack = wrapper.get('tbody.verification-meal-occasion[data-meal-type="snack"]')
 
-    const lunch = wrapper.get('.verification-meal-occasion[data-meal-type="lunch"]')
-    expect(lunch.get('.verification-meal-occasion-title').text()).toBe('Mittagessen')
-    expect(lunch.findAll('.verification-event-food').map((entry) => entry.text())).toEqual(['Linsensalat', 'Schnitzel'])
-    expect(lunch.get('.verification-meal-subtotal th').text()).toBe('Mittagessen gesamt')
-    expect(lunch.get('.verification-meal-subtotal td').text()).toBe('1.160 kcal')
-    const snack = wrapper.get('.verification-meal-occasion[data-meal-type="snack"]')
+    expect(lunch.get('.verification-meal-occasion-title').attributes('scope')).toBe('rowgroup')
+    expect(lunch.get('.verification-meal-occasion-label').text()).toBe('Mittagessen')
+    expect(lunch.get('.verification-meal-occasion-entry-count').text()).toBe('2 Einträge')
+    expect(lunch.get('.verification-meal-occasion-total').text()).toBe('1.160 kcal')
+    expect(lunch.findAll('.verification-event-food').map((entry) => entry.text()))
+      .toEqual(['Linsensalat', 'Schnitzel'])
+    expect(lunch.find('.verification-meal-subtotal').exists()).toBe(false)
+
+    expect(snack.get('.verification-meal-occasion-label').text()).toBe('Snack')
+    expect(snack.get('.verification-meal-occasion-entry-count').text()).toBe('1 Eintrag')
+    expect(snack.get('.verification-meal-occasion-total').text()).toBe('220 kcal')
+    expect(snack.findAll('.verification-event-row')).toHaveLength(1)
     expect(snack.find('.verification-meal-subtotal').exists()).toBe(false)
+
+    expect(wrapper.get('.verification-provider-group-header h2').text()).toBe('Google Health')
+    expect(wrapper.get('.nutrition-day-summary-item--energy .nutrition-day-summary-value').text())
+      .toBe('640 kcal')
+    wrapper.unmount()
+  })
+
+  it('localizes unknown and missing meal types without dropping food rows', async () => {
+    apiMock.mockResolvedValue(response({
+      canonical: {
+        ...canonicalGroup,
+        record_count: 2,
+        events: [
+          { ...canonicalGroup.events[0], event_id: 'unknown-type', meal_type: 'provider-dessert', display_name: 'Unbekanntes Essen', calories_kcal: 42 },
+          { ...canonicalGroup.events[0], event_id: 'missing-type', meal_type: null, display_name: 'Eintrag ohne Typ', calories_kcal: 0 },
+        ],
+      },
+    }))
+    const wrapper = await mountView()
+    const groups = wrapper.findAll('tbody.verification-meal-occasion')
+
+    expect(groups).toHaveLength(2)
+    expect(groups.map((group) => group.get('.verification-meal-occasion-label').text()))
+      .toEqual(['Ohne Kategorie', 'Ohne Kategorie'])
+    expect(groups.map((group) => group.get('.verification-meal-occasion-entry-count').text()))
+      .toEqual(['1 Eintrag', '1 Eintrag'])
+    const totalsByFood = Object.fromEntries(groups.map((group) => [
+      group.get('.verification-event-food').text(),
+      group.get('.verification-meal-occasion-total').text(),
+    ]))
+    expect(totalsByFood).toEqual({
+      'Unbekanntes Essen': '42 kcal',
+      'Eintrag ohne Typ': '0 kcal',
+    })
+    expect(wrapper.findAll('.verification-event-food').map((entry) => entry.text()).sort())
+      .toEqual(['Eintrag ohne Typ', 'Unbekanntes Essen'])
+    expect(wrapper.text()).not.toContain('provider-dessert')
+    wrapper.unmount()
+  })
+
+  it('omits the occasion kcal badge when a multi-entry total is incomplete', async () => {
+    apiMock.mockResolvedValue(response({
+      canonical: {
+        ...canonicalGroup,
+        record_count: 2,
+        events: [
+          { ...canonicalGroup.events[0], event_id: 'meal-with-kcal', meal_type: 'lunch', display_name: 'Eintrag mit Kalorien', calories_kcal: 510 },
+          { ...canonicalGroup.events[0], event_id: 'meal-without-kcal', meal_type: 'lunch', display_name: 'Eintrag ohne Kalorien', calories_kcal: null },
+        ],
+      },
+    }))
+    const wrapper = await mountView()
+    const lunch = wrapper.get('tbody.verification-meal-occasion[data-meal-type="lunch"]')
+
+    expect(lunch.get('.verification-meal-occasion-entry-count').text()).toBe('2 Einträge')
+    expect(lunch.find('.verification-meal-occasion-total').exists()).toBe(false)
+    expect(lunch.findAll('.verification-event-row')).toHaveLength(2)
+    expect(lunch.find('.verification-meal-subtotal').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -550,10 +616,11 @@ describe('NutritionView', () => {
     }))
 
     const wrapper = await mountView()
-
-    const occasionTitle = wrapper.get('.verification-meal-occasion-title')
     const row = wrapper.get('.verification-event-row')
-    expect(occasionTitle.text()).toBe('—')
+
+    expect(wrapper.get('.verification-meal-occasion-label').text()).toBe('Ohne Kategorie')
+    expect(wrapper.get('.verification-meal-occasion-entry-count').text()).toBe('1 Eintrag')
+    expect(wrapper.get('.verification-meal-occasion-total').text()).toBe('640 kcal')
     expect(row.findAll('td').at(0)?.text()).toBe('Unbenannter Eintrag')
     expect(row.findAll('td').at(1)?.text()).toBe('–')
     expect(wrapper.get('.verification-event-row').find('.verification-event-food').text()).toBe('Unbenannter Eintrag')
