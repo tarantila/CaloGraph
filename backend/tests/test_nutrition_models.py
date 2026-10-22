@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.models import (
@@ -71,6 +71,47 @@ def test_phase_a1_enum_values_are_stable() -> None:
     assert ResolutionState.CONFLICT.value == "conflict"
     assert LineageState.CONFIRMED.value == "confirmed"
     assert ObservationRole.DERIVED.value == "derived"
+
+
+def test_projection_pending_defaults_false_and_rejects_null(db, user) -> None:
+    run = NutritionIngestionRun(
+        user_id=user.id,
+        provider_key="yazio",
+        source_instance_id=uuid4(),
+    )
+    db.add(run)
+    db.flush()
+    assert run.projection_pending is False
+    db.commit()
+
+    # Raw SQL deliberately bypasses SQLAlchemy's Python-side insert default.
+    values = {
+        "id": uuid4().hex,
+        "user_id": user.id.hex,
+        "source_instance_id": uuid4().hex,
+    }
+    insert_sql = (
+        "INSERT INTO nutrition_ingestion_runs "
+        "(id, user_id, provider_key, source_instance_id, status, coverage_state, "
+        "metadata, started_at, created_at{column}) VALUES "
+        "(:id, :user_id, 'yazio', :source_instance_id, 'pending', 'unknown', "
+        "'{{}}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP{value})"
+    )
+    db.execute(text(insert_sql.format(column="", value="")), values)
+    raw_default = db.scalar(
+        text("SELECT projection_pending FROM nutrition_ingestion_runs WHERE id = :id"),
+        {"id": values["id"]},
+    )
+    assert raw_default == False  # noqa: E712 - SQLite raw SQL returns 0.
+    db.commit()
+
+    with pytest.raises(IntegrityError):
+        db.execute(
+            text(insert_sql.format(column=", projection_pending", value=", NULL")),
+            {**values, "id": uuid4().hex},
+        )
+        db.commit()
+    db.rollback()
 
 
 def test_source_observation_requires_source_instance_and_fingerprint(db, user) -> None:

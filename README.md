@@ -64,9 +64,6 @@ CaloGraph is actively evolving. Planned areas of development include:
   micronutrient views around richer long-term analysis, period-over-period
   comparisons, data coverage and clearer macro- and micronutrient insights,
   with optional reference-value context where appropriate.
-- **Modernized YAZIO integration:** migrate the experimental direct YAZIO sync
-  from the legacy exporter path to a CaloGraph-owned integration based on the
-  newer community API and SDK.
 - **Richer Apple Health ingestion:** explore additional nutrition and meal-level
   data where the available Apple Health export paths provide reliable metadata.
 
@@ -101,12 +98,14 @@ rather than inventing meal detail.
 
 ### Experimental YAZIO integration
 
-File import and direct/scheduled sync use an undocumented provider interface and
-may stop after provider changes; Health Auto Export remains the recommended
-default. Scheduled credentials are encrypted and user-scoped. Enabling direct
-YAZIO sync deliberately communicates with YAZIO. CaloGraph is independent of
-and not endorsed by YAZIO; `yazio-exporter` is a separately maintained
-MIT-licensed dependency. See [YAZIO sync](docs/yazio-sync.md) and
+Direct/scheduled sync uses only the pinned `yazio-sdk==0.4.0` integration with
+an undocumented provider interface and may stop after provider changes; Health
+Auto Export remains the recommended default. Scheduled credentials are encrypted
+and user-scoped. Enabling direct YAZIO sync deliberately communicates with YAZIO.
+Compatible historical `days.json` and `nutrients.json` files can be imported
+independently of direct sync; `yazio-exporter` is only an optional external
+producer of those files, not a runtime dependency. CaloGraph is independent of
+and not endorsed by YAZIO. See [YAZIO sync](docs/yazio-sync.md) and
 [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Quick start (local/private)

@@ -63,10 +63,12 @@ backups, and the availability of the private application.
   than an email-derived digest. Credentials reach the isolated transport
   process through standard input rather than process arguments or environment
   variables.
-- **Unofficial third-party interface:** isolated adapter, pinned exporter
-  version, fixed provider endpoint, explicit network timeouts, rejected
-  redirects, no authentication retries, parent-enforced operation deadlines,
-  bounded retrieval periods, and Apple Health as an independent fallback path.
+- **Unofficial third-party interface:** SDK-only direct sync uses the pinned
+  `yazio-sdk==0.4.0` through an isolated transport process, a fixed provider
+  endpoint, explicit network timeouts, rejected redirects, no automatic
+  authentication retries, parent-enforced operation deadlines, bounded
+  retrieval periods and response sizes, and Apple Health as an independent
+  fallback path.
 - **YAZIO resource exhaustion and credential stuffing:** independent
   PostgreSQL-backed limits for the authenticated user and normalized client IP
   protect credential setup and manual synchronization. Deployment-wide

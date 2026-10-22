@@ -12,9 +12,14 @@ follows [Semantic Versioning](https://semver.org/).
 ### YAZIO synchronization
 
 - Restored the versioned YAZIO SDK mobile-client credential defaults. Normal
-  SDK operation requires only `YAZIO_ENABLED=true` and
-  `YAZIO_PROVIDER=sdk`; `YAZIO_SDK_CLIENT_ID` and
-  `YAZIO_SDK_CLIENT_SECRET` remain optional maintainer/emergency overrides.
+  SDK operation requires only `YAZIO_ENABLED=true`;
+  `YAZIO_SDK_CLIENT_ID` and `YAZIO_SDK_CLIENT_SECRET` remain optional
+  maintainer/emergency overrides.
+- Completed the SDK-only direct-sync cutover, retaining `yazio-sdk==0.4.0`
+  and removing the exporter runtime, provider selector, and nutrition-domain
+  rollout switch. Compatible historical `days.json` and `nutrients.json`
+  imports remain available without an SDK connection or exporter installation;
+  existing imported data and historical connector provenance are preserved.
 
 ### Data source priorities
 

@@ -1,5 +1,8 @@
 # ruff: noqa: E402
 
+import builtins
+import importlib
+import json
 import os
 from collections.abc import Mapping
 
@@ -69,7 +72,6 @@ from app.models import NutritionTarget, TrackingQualitySettings, User
 settings.credential_encryption_key = Fernet.generate_key().decode()
 settings.mfa_encryption_key = Fernet.generate_key().decode()
 settings.yazio_enabled = True
-settings.yazio_provider = "legacy"
 
 
 def assert_safe_test_database() -> None:
@@ -135,3 +137,112 @@ def user(db: Session) -> User:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(params=["days.json", "nutrients.json"])
+def compatible_yazio_file(request: pytest.FixtureRequest) -> dict[str, object]:
+    from decimal import Decimal
+
+    if request.param == "days.json":
+        payload = {
+            "weight": {"2026-07-20": {"value": 72.5, "unit": "kg"}},
+            "2026-07-20": {
+                "daily_summary": {
+                    "activity_energy": 300,
+                    "steps": 8000,
+                    "water_intake": 2000,
+                    "units": {"unit_energy": "kcal"},
+                    "meals": {
+                        "breakfast": {
+                            "nutrients": {
+                                "energy.energy": 450,
+                                "nutrient.protein": 25,
+                                "nutrient.carb": 60,
+                                "nutrient.fat": 15,
+                            }
+                        }
+                    },
+                }
+            },
+        }
+        values = {
+            "dietary_energy_kcal": Decimal("450"),
+            "protein_g": Decimal("25"),
+            "carbohydrates_g": Decimal("60"),
+            "fat_g": Decimal("15"),
+            "active_energy_kcal": Decimal("300"),
+            "weight_kg": Decimal("72.5"),
+        }
+        units = {
+            "dietary_energy_kcal": "kcal",
+            "protein_g": "g",
+            "carbohydrates_g": "g",
+            "fat_g": "g",
+            "active_energy_kcal": "kcal",
+            "weight_kg": "kg",
+        }
+    else:
+        payload = {
+            "vitamin.d": {"2026-07-20": 0.0000125},
+            "mineral.iron": {"2026-07-20": 0.0084},
+        }
+        values = {"vitamin_d_ug": Decimal("12.5"), "iron_mg": Decimal("8.4")}
+        units = {"vitamin_d_ug": "ug", "iron_mg": "mg"}
+    return {
+        "filename": request.param,
+        "payload": payload,
+        "raw": json.dumps(payload).encode(),
+        "values": values,
+        "units": units,
+    }
+
+
+@pytest.fixture
+def block_yazio_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import yazio_transport
+
+    original_import = builtins.__import__
+    original_import_module = importlib.import_module
+
+    def deny_exporter(name: str) -> None:
+        if name == "yazio_exporter" or name.startswith("yazio_exporter."):
+            pytest.fail("Compatible file imports must not import yazio_exporter")
+
+    def guarded_import(name, *args, **kwargs):
+        deny_exporter(name)
+        return original_import(name, *args, **kwargs)
+
+    def guarded_import_module(name, *args, **kwargs):
+        deny_exporter(name)
+        return original_import_module(name, *args, **kwargs)
+
+    def forbidden_runtime(*args, **kwargs):
+        pytest.fail("Compatible file imports must not decrypt credentials or invoke SDK transport")
+
+    # Guard import statements and dynamic imports, even for an installed/cached package.
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    monkeypatch.setattr(importlib, "import_module", guarded_import_module)
+    # Both SDK credential validation and domain fetching cross this worker boundary.
+    monkeypatch.setattr(yazio_transport, "_run_worker", forbidden_runtime)
+    monkeypatch.setattr(Fernet, "decrypt", forbidden_runtime)
+
+
+@pytest.fixture(params=["unconfigured", "configured"])
+def yazio_file_source_identifier(
+    request: pytest.FixtureRequest, db: Session, user: User
+) -> str:
+    from app.models import YazioConnection
+
+    if request.param == "unconfigured":
+        return "yazio-account"
+    identifier = "yazio:synthetic-compatible-file-account"
+    db.add(
+        YazioConnection(
+            user_id=user.id,
+            encrypted_email=b"synthetic-opaque-email-not-a-fernet-token",
+            encrypted_password=b"synthetic-opaque-password-not-a-fernet-token",
+            source_identifier=identifier,
+        )
+    )
+    db.commit()
+    return identifier

@@ -83,7 +83,6 @@ COPY --from=backend-base --chown=calograph:calograph /app /app
 COPY --chmod=444 LICENSE /licenses/CaloGraph-LICENSE.md
 COPY --chmod=444 THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
 COPY --from=backend-base /third-party-licenses/backend /licenses/backend
-COPY --chmod=444 THIRD_PARTY_LICENSES/yazio-exporter-MIT.txt /licenses/yazio-exporter-MIT.txt
 COPY --chmod=444 THIRD_PARTY_LICENSES/yazio-sdk-MIT.txt /licenses/yazio-sdk-MIT.txt
 COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
 RUN test -d /usr/local/lib/python3.14/site-packages/pip \
@@ -107,7 +106,6 @@ RUN chmod 0555 /licenses
 
 RUN test -r /licenses/CaloGraph-LICENSE.md \
     && test -r /licenses/THIRD_PARTY_NOTICES.md \
-    && test -r /licenses/yazio-exporter-MIT.txt \
     && test -r /licenses/yazio-sdk-MIT.txt \
     && test -n "$(find /licenses/backend -type f -print -quit)"
 USER calograph

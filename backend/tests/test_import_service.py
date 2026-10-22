@@ -1,4 +1,5 @@
 import io
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -11,7 +12,8 @@ from app.config import settings
 from app.database import engine
 from app.importers.common import CanonicalSample
 from app.importers.json_adapter import AdapterResult
-from app.models import HealthSample, ImportBatch, User
+from app.importers.yazio import parse_yazio_export
+from app.models import HealthSample, ImportBatch, ImportError, RawImportPayload, User
 from app.services import import_service
 from app.services.import_service import persist_apple_health_stream, persist_import
 
@@ -56,24 +58,99 @@ def test_repeated_import_is_idempotent(db: Session, user: User) -> None:
     assert count == 1
 
 
-def test_yazio_upload_without_connector_variant_keeps_provenance_unknown(
-    db: Session, user: User
+@pytest.mark.usefixtures("block_yazio_runtime")
+def test_yazio_upload_preserves_legacy_batches_and_unknown_file_provenance(
+    db: Session, user: User, compatible_yazio_file
 ) -> None:
-    imported_sample = sample()
-    imported_sample.source_type = "yazio_export_v1"
-
-    result = persist_import(
+    historical_sample = sample()
+    historical_sample.source_type = "yazio_export_v1"
+    historical_sample.source_identifier = "yazio:synthetic-legacy-account"
+    historical = persist_import(
         db,
         user,
-        AdapterResult("yazio_export_v1", [imported_sample], received=1),
+        AdapterResult("yazio_export_v1", [historical_sample], received=1),
+        b'{"synthetic":"historical-file"}',
+        "application/json",
+        "synthetic-legacy-sync",
+        connector_variant="legacy-v15",
+    )
+    legacy_batch_id = historical.batch_id
+
+    def legacy_snapshot() -> dict[str, list[dict[str, object]]]:
+        snapshot = {}
+        for model in (ImportBatch, HealthSample, ImportError, RawImportPayload):
+            batch_column = (
+                model.__table__.c.id
+                if model is ImportBatch
+                else model.__table__.c.import_batch_id
+                if model is HealthSample
+                else model.__table__.c.batch_id
+            )
+            snapshot[model.__tablename__] = [
+                deepcopy(dict(row))
+                for row in db.execute(
+                    select(model.__table__)
+                    .where(batch_column == legacy_batch_id)
+                    .order_by(model.__table__.c.id)
+                ).mappings()
+            ]
+        return snapshot
+
+    legacy_before = legacy_snapshot()
+    assert legacy_before["import_batches"][0]["connector_variant"] == "legacy-v15"
+    assert len(legacy_before["health_samples"]) == 1
+    expected_values = compatible_yazio_file["values"]
+
+    first = persist_import(
+        db,
+        user,
+        parse_yazio_export(compatible_yazio_file["payload"], user.timezone),
         None,
         "application/json",
-        "uploaded-yazio.json",
+        compatible_yazio_file["filename"],
     )
+    assert first.inserted == len(expected_values)
+    assert first.updated == first.failed == 0
+    file_batch = db.get(ImportBatch, first.batch_id)
+    assert file_batch is not None
+    assert file_batch.source_type == "yazio_export_v1"
+    assert file_batch.connector_variant is None
+    samples = list(
+        db.scalars(select(HealthSample).where(HealthSample.import_batch_id == first.batch_id))
+    )
+    assert {item.metric_type: item.value for item in samples} == expected_values
+    assert {item.source_identifier for item in samples} == {"yazio-account"}
+    samples_before = [
+        deepcopy(dict(row))
+        for row in db.execute(
+            select(HealthSample.__table__)
+            .where(HealthSample.import_batch_id == first.batch_id)
+            .order_by(HealthSample.id)
+        ).mappings()
+    ]
 
-    batch = db.get(ImportBatch, result.batch_id)
-    assert batch is not None
-    assert batch.connector_variant is None
+    repeated = persist_import(
+        db,
+        user,
+        parse_yazio_export(compatible_yazio_file["payload"], user.timezone),
+        None,
+        "application/json",
+        compatible_yazio_file["filename"],
+    )
+    assert repeated.inserted == repeated.updated == repeated.failed == 0
+    assert repeated.skipped == len(expected_values)
+    db.expire_all()
+    assert db.get(ImportBatch, repeated.batch_id).connector_variant is None
+    assert [
+        dict(row)
+        for row in db.execute(
+            select(HealthSample.__table__)
+            .where(HealthSample.import_batch_id == first.batch_id)
+            .order_by(HealthSample.id)
+        ).mappings()
+    ] == samples_before
+    assert db.scalar(select(func.count()).select_from(HealthSample)) == len(expected_values) + 1
+    assert legacy_snapshot() == legacy_before
 
 def test_duplicate_samples_in_same_import_are_skipped(db: Session, user: User) -> None:
     first = sample()

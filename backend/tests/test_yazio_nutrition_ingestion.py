@@ -409,6 +409,33 @@ def test_exact_requested_date_boundaries_are_persisted(db, user):
     assert summary_dates == {next_day}
 
 
+@pytest.mark.parametrize("bound", ("start", "end"))
+def test_diary_bounds_must_match_requested_bounds_before_any_domain_writes(db, user, bound):
+    connection = _connection(db, user)
+    diary = replace(
+        _diary(),
+        **{
+            f"requested_{bound}_day": DAY + (
+                timedelta(days=-1) if bound == "start" else timedelta(days=1)
+            ),
+        },
+    )
+    with pytest.raises(ValueError, match="diary range must match requested range"):
+        ingest_yazio_food_diary(
+            db,
+            user_id=user.id,
+            source_instance_id=connection.id,
+            requested_start=DAY,
+            requested_end=DAY,
+            diary=diary,
+        )
+    for model in (
+        NutritionIngestionRun, NutritionSourceObservation, NutritionConsumptionEvent,
+        NutritionFoodProfile, NutritionFoodSnapshot,
+    ):
+        assert db.scalar(select(func.count()).select_from(model)) == 0
+
+
 @pytest.mark.parametrize("invalid_kind", ("consumption_event", "daily_summary"))
 def test_out_of_range_dates_are_rejected_before_persistence(db, user, invalid_kind):
     connection = _connection(db, user)

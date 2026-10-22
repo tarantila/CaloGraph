@@ -153,11 +153,11 @@ bounding repeated full-history calculations. A `429` response does not
 invalidate the authenticated session; the frontend retries reconciliation on
 the next authenticated bootstrap or explicit import.
 
-Direct YAZIO access is enabled by `YAZIO_ENABLED=true`. Set
-`YAZIO_PROVIDER=sdk` explicitly for enabled installations. The legacy provider
-remains only as a deprecated compatibility rollback and will be removed no
-later than CaloGraph 1.0. SDK mode uses CaloGraph's versioned defaults for the
-shared mobile client credentials. `YAZIO_SDK_CLIENT_ID` and
+Direct YAZIO access is enabled by `YAZIO_ENABLED=true` and uses only the pinned
+`yazio-sdk==0.4.0` integration. Manual and scheduled sync require a personal
+configured connection; no provider selection or Nutrition Domain rollout
+setting is required. CaloGraph supplies versioned defaults for the shared
+mobile client credentials. `YAZIO_SDK_CLIENT_ID` and
 `YAZIO_SDK_CLIENT_SECRET` are optional maintainer/emergency overrides, not
 normal operator configuration. The API URL, User-Agent, and
 provider timeout/concurrency settings retain their versioned defaults.
@@ -256,6 +256,14 @@ The recommended process is documented in
 [backup-restore.md](backup-restore.md) and reproduced by
 `scripts/update-containers.sh`. Every update begins with a validated database
 dump. Source updates and container updates remain separate, auditable steps.
+The YAZIO SDK-only cutover uses an update quiescence step: after pulling
+images, `scripts/update-containers.sh` stops the old `backend` and
+`yazio-scheduler` before starting the new backend and applying migrations.
+Do not run an external one-off YAZIO sync concurrently; old writers must not
+create completed Nutrition runs without the durable projection-retry marker.
+If migration or startup fails after that stop, leave the writer services
+stopped until the new version is repaired; do not restart an old writer image
+against the migrated schema.
 
 Release images are available from GHCR after the complete CI, exact-image
 browser/production-smoke tests, and high/critical vulnerability gate succeed.

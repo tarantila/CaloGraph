@@ -60,6 +60,16 @@ class NutritionIngestionRun(Base):
         _in_check("coverage_state", COVERAGE_VALUES, "ck_nutrition_runs_coverage"),
         Index("ix_nutrition_ingestion_runs_user_provider", "user_id", "provider_key"),
         Index("ix_nutrition_ingestion_runs_user_dates", "user_id", "requested_start_date", "requested_end_date"),
+        Index(
+            "ix_nutrition_ingestion_runs_projection_pending",
+            "user_id",
+            "provider_key",
+            "source_instance_id",
+            "created_at",
+            "id",
+            postgresql_where=text("projection_pending = true"),
+            sqlite_where=text("projection_pending = true"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -72,6 +82,9 @@ class NutritionIngestionRun(Base):
     covered_start_date: Mapped[date | None] = mapped_column(Date)
     covered_end_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="pending")
+    projection_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     coverage_state: Mapped[str] = mapped_column(String(16), default="unknown")
     provider_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

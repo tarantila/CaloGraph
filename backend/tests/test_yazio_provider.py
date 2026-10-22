@@ -131,7 +131,7 @@ def test_sdk_maps_aggregate_and_activity_with_requested_dates(monkeypatch: pytes
     monkeypatch.setattr(yazio_sdk_provider.get_daily_summary_widget, "sync_detailed", widget)
 
     result = yazio_sdk_provider.YazioSdkProvider().fetch(
-        "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 3), True
+        "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 3)
     )
 
     assert result.payload == {
@@ -187,7 +187,7 @@ def test_sdk_omits_missing_and_null_values_and_supports_empty_range(
     )
 
     result = yazio_sdk_provider.YazioSdkProvider().fetch(
-        "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2), False
+        "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2)
     )
 
     assert result.payload == {
@@ -211,7 +211,7 @@ def test_sdk_rejects_out_of_range_dates_and_invalid_numbers(monkeypatch: pytest.
 
     with pytest.raises(YazioProviderInvalidResponseError):
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 2)
         )
 
     monkeypatch.setattr(
@@ -221,7 +221,7 @@ def test_sdk_rejects_out_of_range_dates_and_invalid_numbers(monkeypatch: pytest.
     )
     with pytest.raises(YazioProviderInvalidResponseError):
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1)
         )
 
 
@@ -253,7 +253,7 @@ def test_sdk_classifies_statuses_and_bounds_retry_after(monkeypatch: pytest.Monk
     )
     with pytest.raises(YazioProviderVersionBlockedError):
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1)
         )
 
     monkeypatch.setattr(
@@ -263,7 +263,7 @@ def test_sdk_classifies_statuses_and_bounds_retry_after(monkeypatch: pytest.Monk
     )
     with pytest.raises(YazioProviderAuthenticationError):
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1)
         )
 
 
@@ -274,7 +274,7 @@ def test_sdk_classifies_statuses_and_bounds_retry_after(monkeypatch: pytest.Monk
     )
     with pytest.raises(YazioProviderRateLimitedError) as error:
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1)
         )
     assert error.value.retry_after == 3600
 
@@ -286,7 +286,7 @@ def test_sdk_classifies_statuses_and_bounds_retry_after(monkeypatch: pytest.Monk
     )
     with pytest.raises(YazioProviderUnavailableError):
         yazio_sdk_provider.YazioSdkProvider().fetch(
-            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1), False
+            "owner@example.com", "private-password", date(2026, 8, 1), date(2026, 8, 1)
         )
 
 def test_sdk_bounds_streamed_response_before_json_parse(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -386,7 +386,6 @@ def test_sdk_weight_discards_latest_weight_payload_outside_requested_range(
         "private-password",
         date(2026, 8, 1),
         date(2026, 8, 2),
-        False,
     )
 
     assert result.payload["weight"] == {}
@@ -425,7 +424,6 @@ def test_sdk_weight_skips_typed_record_without_stable_identity(
         "private-password",
         date(2026, 8, 1),
         date(2026, 8, 1),
-        False,
     )
 
     assert result.payload["weight"] == {}
@@ -470,7 +468,6 @@ def test_sdk_weight_deduplicates_by_provider_id_and_preserves_provider_date(
         "private-password",
         date(2026, 8, 1),
         date(2026, 8, 2),
-        False,
     )
 
     assert calls == ["2026-08-01", "2026-08-02"]

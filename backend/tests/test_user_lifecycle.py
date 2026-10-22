@@ -67,7 +67,11 @@ from app.services.user_operation_lock import (
     exclusive_user_lifecycle_operation,
     shared_user_operation,
 )
-from app.services.yazio_sync import YazioSyncError, configure_yazio_connection, sync_yazio_user
+from app.services.yazio_sync import (
+    YazioSyncError,
+    configure_yazio_connection,
+    run_manual_yazio_sync,
+)
 from app.source_priority.application import create_policy_with_rules
 from app.source_priority.contracts import PriorityRuleSpec
 from app.source_priority.models import SourcePriorityPolicy, SourcePriorityRule
@@ -667,16 +671,6 @@ def test_inactive_user_is_rejected_by_all_operator_mutation_paths(
         fetch_called = True
         return {}
 
-    with pytest.raises(YazioSyncError, match="nicht aktiv"):
-        sync_yazio_user(
-            target,
-            "owner@example.com",
-            "secret",
-            date(2026, 8, 1),
-            date(2026, 8, 1),
-            fetcher=fetcher,
-        )
-    assert fetch_called is False
     connection = YazioConnection(
         user_id=target.id,
         encrypted_email=b"encrypted-email",
@@ -688,6 +682,12 @@ def test_inactive_user_is_rejected_by_all_operator_mutation_paths(
     )
     db.add(connection)
     db.commit()
+    monkeypatch.setattr("app.services.yazio_sync.fetch_yazio_domain_transport", fetcher)
+    with pytest.raises(YazioSyncError, match="nicht aktiv"):
+        run_manual_yazio_sync(
+            target.id, start_day=date(2026, 8, 1), end_day=date(2026, 8, 1),
+        )
+    assert fetch_called is False
 
     monkeypatch.setattr("app.cli.SessionLocal", SessionLocal)
     with pytest.raises(SystemExit, match="inaktiven Benutzer"):

@@ -31,6 +31,21 @@ setup_case() {
 #!/bin/sh
 set -eu
 printf 'docker:%s\n' "$*" >>"$TRACE_FILE"
+case "${FAKE_STOP_RESULT:-success}" in
+  complete)
+    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+      printf 'stop-result:none-stopped\n' >>"$TRACE_FILE"
+      exit 1
+    fi
+    ;;
+  partial)
+    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+      printf 'stop-result:backend-stopped\n' >>"$TRACE_FILE"
+      printf 'stop-result:yazio-scheduler-failed\n' >>"$TRACE_FILE"
+      exit 1
+    fi
+    ;;
+esac
 EOF
   cat >"$CASE_PROJECT/scripts/backup-postgres.sh" <<'EOF'
 #!/bin/sh
@@ -58,7 +73,7 @@ EOF
 run_update() {
   (
     cd "$CASE_PROJECT"
-    unset BACKUP_AGE_RECIPIENTS_FILE BACKUP_SECRETS BACKUP_DIR FAKE_BACKUP_FAIL
+    unset BACKUP_AGE_RECIPIENTS_FILE BACKUP_SECRETS BACKUP_DIR FAKE_BACKUP_FAIL FAKE_STOP_RESULT
     export PATH="$CASE_BIN:$PATH"
     export TRACE_FILE="$CASE_TRACE"
     export EXPECTED_RECIPIENTS="$CASE_EXPECTED"
@@ -71,6 +86,41 @@ assert_trace() {
   printf '%s\n' "$@" >"$expected_file"
   diff -u "$expected_file" "$CASE_TRACE" || fail 'operation order or recipient path was incorrect.'
 }
+expect_writer_stop_failure() {
+  local stop_result=$1
+  setup_case "writer_stop_${stop_result}_failure"
+  local recipients="$CASE_ROOT/recipients.txt"
+  printf '%s\n' 'synthetic public recipient' >"$recipients"
+  CASE_EXPECTED=$recipients
+  if run_update "BACKUP_AGE_RECIPIENTS_FILE=$recipients" "FAKE_STOP_RESULT=$stop_result" \
+    >"$CASE_ROOT/stdout" 2>"$CASE_ROOT/stderr"; then
+    fail "container update succeeded after a $stop_result writer-stop failure."
+  fi
+  if grep -Fq 'Container-Update abgeschlossen.' "$CASE_ROOT/stdout" "$CASE_ROOT/stderr"; then
+    fail "container update reported success after a $stop_result writer-stop failure."
+  fi
+  case "$stop_result" in
+    complete)
+      assert_trace \
+        'docker:compose config --quiet' \
+        "backup-postgres:$recipients" \
+        'docker:compose pull postgres backend frontend yazio-scheduler' \
+        'docker:compose stop backend yazio-scheduler' \
+        'stop-result:none-stopped'
+      ;;
+    partial)
+      assert_trace \
+        'docker:compose config --quiet' \
+        "backup-postgres:$recipients" \
+        'docker:compose pull postgres backend frontend yazio-scheduler' \
+        'docker:compose stop backend yazio-scheduler' \
+        'stop-result:backend-stopped' \
+        'stop-result:yazio-scheduler-failed'
+      ;;
+    *) fail "unknown mocked writer-stop result: $stop_result." ;;
+  esac
+}
+
 
 expect_failure_before_backup() {
   if run_update "$@" >"$CASE_ROOT/stdout" 2>"$CASE_ROOT/stderr"; then
@@ -92,8 +142,11 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$environment_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
+expect_writer_stop_failure complete
+expect_writer_stop_failure partial
 
 # The parser accepts whitespace and matching quotes, and never executes other dotenv fields.
 setup_case dotenv_fallback
@@ -110,6 +163,7 @@ assert_trace \
   "backup-postgres:$fallback_recipients" \
   "backup-secrets:$fallback_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -125,6 +179,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$single_quoted_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -146,6 +201,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -170,6 +226,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -185,6 +242,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$escaped_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -206,6 +264,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -224,6 +283,7 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
   'docker:compose pull postgres backend frontend yazio-scheduler' \
+  'docker:compose stop backend yazio-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 

@@ -211,7 +211,6 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webauthn" },
-    { name = "yazio-exporter" },
     { name = "yazio-sdk" },
     { name = "zstandard" },
 ]
@@ -252,7 +251,6 @@ requires-dist = [
     { name = "sqlalchemy", specifier = "==2.1.5" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.54.0" },
     { name = "webauthn", specifier = "==3.0.1" },
-    { name = "yazio-exporter", specifier = "==0.2.0" },
     { name = "yazio-sdk", specifier = "==0.4.0" },
     { name = "zstandard", specifier = "==0.25.0" },
 ]
@@ -1633,18 +1631,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/49/b2/b6987faf330f5af5c787a2610124c2e8403d51724f9001ec4fff6311fe7a/websockets-16.1.1-cp314-cp314t-win32.whl", hash = "sha256:8483c2096363120eea8b07c06ae7304d520f686665fffd4811fad423930a65d7", size = 179729, upload-time = "2026-07-17T22:50:53.269Z" },
     { url = "https://files.pythonhosted.org/packages/a2/6e/fbac6ed878dd362fbad7d415fa4f84d38e3e33fed8cde45c64e783acf826/websockets-16.1.1-cp314-cp314t-win_amd64.whl", hash = "sha256:bcce07e23e5769375158f5efdcdafa8d5cd014b93c6683865b840ed65b96f231", size = 180072, upload-time = "2026-07-17T22:50:54.969Z" },
     { url = "https://files.pythonhosted.org/packages/be/4d/2d0d67834092e354d2b0498f014a41249a89556bc406cf86f3e1557bb463/websockets-16.1.1-py3-none-any.whl", hash = "sha256:6abbd3e82c731c8e531714466acd5d87b5e88ac3243465337ba71d68e23ae7e3", size = 173814, upload-time = "2026-07-17T22:51:04.184Z" },
-]
-
-[[package]]
-name = "yazio-exporter"
-version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/21/9e/a00490639a14544827cd7c3deebb16ba15a0a28299373cf9b217259d21de/yazio_exporter-0.2.0.tar.gz", hash = "sha256:01a02bd49f39b87e0a05b568bbdc7176d2a59a8918cfb71426fa46f31b54ff40", size = 81263, upload-time = "2026-02-14T00:03:40.858Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/5d/2a3d44d7c6c9068664a829617e1c5557797f4245e8b3335552b8eda59cc4/yazio_exporter-0.2.0-py3-none-any.whl", hash = "sha256:fbadd34bda064cbb22cae0a8f7fe12c171d97a4ea35b9a87a0907e765ee5d4cf", size = 38821, upload-time = "2026-02-14T00:03:39.352Z" },
 ]
 
 [[package]]
