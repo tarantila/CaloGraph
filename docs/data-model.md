@@ -54,6 +54,19 @@
   without a schema migration.
 - `import_batches`, `import_errors`, `raw_import_payloads`: import reporting,
   safe error context, and optional compressed raw data.
+- `nutrition_ingestion_runs.projection_pending`: durable, non-null lifecycle
+  acknowledgement for canonical SDK YAZIO projection work; Python and database
+  defaults are `false`. It is independent of ingestion `status`, `finished_at`,
+  and provider metadata. Canonical YAZIO sync marks completed evidence as pending
+  until downstream projection work is acknowledged. The partial index
+  `ix_nutrition_ingestion_runs_projection_pending` covers
+  `(user_id, provider_key, source_instance_id, created_at, id)` for pending rows.
+  Revision `20261021_0040` conservatively enrolls every completed `yazio` /
+  `sdk-v22` run with a source instance and non-null, ordered requested date
+  bounds for one-time replay, including previously successful projections.
+  Legacy, file-import, unknown-connector and other-provider runs are not
+  enrolled. Existing provenance, ingestion status/timestamps/metadata,
+  `health_samples`, and `import_batches` remain unchanged.
 - `tracking_overrides`: optional manual data-status override per local day.
 - `yazio_connections`: one encrypted, user-scoped YAZIO connection with
   scheduling, last-run status, and an opaque source identifier derived only

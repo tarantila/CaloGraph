@@ -17,7 +17,6 @@ services:
     environment:
       YAZIO_ENABLED: "true"
       YAZIO_SCHEDULER_ENABLED: "true"
-      YAZIO_PROVIDER: "sdk"
     volumes:
       - ./backend:/app
     read_only: false
@@ -27,7 +26,6 @@ services:
     environment:
       YAZIO_ENABLED: "true"
       YAZIO_SCHEDULER_ENABLED: "true"
-      YAZIO_PROVIDER: "sdk"
   frontend:
     image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.5}
     build:

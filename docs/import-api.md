@@ -98,10 +98,12 @@ budget by itself.
 
 ## YAZIO exporter JSON
 
-`POST /api/v1/import/yazio` accepts `days.json` and `nutrients.json` produced by
-`yazio-exporter`. Use `POST /api/v1/import/yazio/validate` to validate without
-storing data. Both endpoints use an import token like the Apple Health JSON
-endpoint.
+`POST /api/v1/import/yazio` accepts compatible historical `days.json` and
+`nutrients.json` files. `yazio-exporter` is an optional external producer of
+these files, not a CaloGraph runtime dependency. File imports require neither
+an SDK connection nor direct-sync credentials and make no YAZIO network requests.
+Use `POST /api/v1/import/yazio/validate` to validate without storing data.
+Both endpoints use an import token like the Apple Health JSON endpoint.
 
 The same files can be uploaded under **Importe** in the browser. CaloGraph
 aggregates the four macronutrient fields across all meals, imports supported

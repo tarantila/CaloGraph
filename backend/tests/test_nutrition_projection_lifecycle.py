@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -19,7 +19,9 @@ from app.nutrition.enums import (
 )
 from app.nutrition.models import (
     NutritionConsumptionEvent,
+    NutritionDailyProjection,
     NutritionIngestionRun,
+    NutritionProjectionHead,
     NutritionSourceObservation,
 )
 from app.nutrition.projection import ProjectionPersistenceStatus, lifecycle
@@ -27,7 +29,9 @@ from app.nutrition.projection.lifecycle import (
     NutritionProjectionLifecycleError,
     NutritionProjectionLifecycleResult,
     rebuild_affected_nutrition_days,
+    rebuild_replay_nutrition_days,
     resolve_affected_nutrition_dates,
+    resolve_replay_nutrition_dates,
 )
 
 PROVIDER = "contract-provider"
@@ -855,3 +859,285 @@ def test_lifecycle_retry_after_partial_failure_keeps_prior_date_unchanged(
     assert len({id(call[0]) for call in b6_calls}) == 5
     assert len(sessions) == 7
     assert all(session.closed for session in sessions)
+
+
+def _replay_run(db: Session, user_id: UUID, **kwargs) -> NutritionIngestionRun:
+    return _run(
+        db, user_id, requested_start_date=DAY_TWO, requested_end_date=DAY_THREE, **kwargs
+    )
+
+
+def test_replay_unions_persisted_range_evidence_and_affected_ancestry(db, user) -> None:
+    historical = _run(db, user.id)
+    ancestor_source = _source(db, user.id, historical, key="replay-old", local_date=DAY_ONE)
+    ancestor = _event(
+        db, user.id, ancestor_source, logical_event_key="replay-meal", local_date=DAY_ONE
+    )
+    _source(db, user.id, historical, key="replay-in-range", local_date=DAY_THREE)
+    _source(
+        db, user.id, historical, key="replay-outside", local_date=DAY_THREE + timedelta(days=1)
+    )
+    run = _replay_run(db, user.id)
+    source = _source(db, user.id, run, key="replay-new", local_date=None)
+    _event(
+        db, user.id, source, logical_event_key="replay-meal", local_date=DAY_TWO,
+        revision=2, supersedes=ancestor,
+    )
+
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_ONE, DAY_TWO, DAY_THREE,
+    )
+
+
+def test_replay_includes_head_only_and_ready_stale_dates(db, user) -> None:
+    from app.source_priority.application import create_policy_with_rules
+    from app.source_priority.contracts import PriorityRuleSpec
+
+    policy = create_policy_with_rules(
+        db, user.id, 1, POLICY_AT, (PriorityRuleSpec("nutrition", None, PROVIDER, 1),)
+    )
+    run = _replay_run(db, user.id)
+    historical = _run(db, user.id)
+    for day in (DAY_ONE, DAY_TWO, DAY_THREE):
+        projection = NutritionDailyProjection(
+            user_id=user.id, local_date=day, projection_version=1,
+            projection_algorithm_version="old", priority_policy_id=policy.policy_id,
+            input_watermark="stale", projection_status="ready",
+        )
+        db.add(projection)
+        db.flush()
+        db.add(NutritionProjectionHead(
+            user_id=user.id, local_date=day, current_projection_id=projection.id,
+        ))
+    _source(db, user.id, historical, key="new-evidence", local_date=DAY_TWO)
+    db.flush()
+
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_TWO, DAY_THREE,
+    )
+
+
+def test_replay_does_not_synthesize_empty_requested_range(db, user) -> None:
+    run = _replay_run(db, user.id)
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == ()
+
+
+def test_replay_excludes_other_users_evidence(db, user) -> None:
+    run = _replay_run(db, user.id)
+    other = _other_user(db)
+    foreign = _run(db, other.id)
+    source = _source(db, other.id, foreign, key="foreign-source", local_date=DAY_TWO)
+    _event(db, other.id, source, logical_event_key="foreign-event", local_date=DAY_THREE)
+
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == ()
+
+
+@pytest.mark.parametrize(
+    ("provider", "source_id"),
+    [(OTHER_PROVIDER, SOURCE_INSTANCE_ID), (PROVIDER, OTHER_SOURCE_INSTANCE_ID)],
+)
+def test_replay_includes_same_user_other_provider_and_source_dates_without_heads(
+    db, user, provider, source_id
+) -> None:
+    run = _replay_run(db, user.id)
+    historical = _run(db, user.id, provider_key=provider, source_instance_id=source_id)
+    source = _source(db, user.id, historical, key="alternate-source", local_date=DAY_TWO)
+    _event(db, user.id, source, logical_event_key="alternate-event", local_date=DAY_THREE)
+
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_TWO, DAY_THREE,
+    )
+
+
+@pytest.mark.parametrize("bounds", [(None, None), (DAY_ONE, None), (None, DAY_ONE), (DAY_TWO, DAY_ONE)])
+def test_replay_rejects_missing_or_reversed_requested_bounds(db, user, bounds) -> None:
+    run = _run(db, user.id, requested_start_date=bounds[0], requested_end_date=bounds[1])
+    with pytest.raises(NutritionProjectionLifecycleError):
+        resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id)
+
+
+def test_replay_rejects_missing_and_foreign_runs(db, user) -> None:
+    foreign = _replay_run(db, _other_user(db).id)
+    for run_id in (uuid4(), foreign.id):
+        with pytest.raises(NutritionProjectionLifecycleError):
+            resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run_id)
+
+
+@pytest.mark.parametrize("scope", ["user", "provider", "source"])
+def test_replay_rejects_malformed_ancestry_in_historical_range(db, user, scope) -> None:
+    kwargs = {
+        "user": {"ancestor_user": _other_user(db)},
+        "provider": {"ancestor_provider": OTHER_PROVIDER},
+        "source": {"ancestor_source_instance_id": OTHER_SOURCE_INSTANCE_ID},
+    }[scope]
+    _event_with_malformed_ancestor(db, user, **kwargs)
+    run = _replay_run(db, user.id)
+    with pytest.raises(NutritionProjectionLifecycleError):
+        resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id)
+
+
+@pytest.mark.parametrize("provider", [PROVIDER, OTHER_PROVIDER])
+@pytest.mark.parametrize("corruption", ["observation_provider", "event_source", "ancestor_run"])
+def test_replay_rejects_evidence_with_inconsistent_run_lineage(db, user, corruption, provider) -> None:
+    historical = _run(db, user.id, provider_key=provider)
+    source = _source(db, user.id, historical, key="lineage-source", local_date=DAY_TWO)
+    event = _event(
+        db, user.id, source, logical_event_key="lineage-event", local_date=DAY_TWO
+    )
+    run = _replay_run(db, user.id)
+    if corruption == "observation_provider":
+        _source(db, user.id, historical, key="mismatched-provider", local_date=DAY_TWO,
+                provider_key=OTHER_PROVIDER if provider == PROVIDER else PROVIDER)
+    elif corruption == "event_source":
+        event.source_instance_id = OTHER_SOURCE_INSTANCE_ID
+    else:
+        historical.provider_key = OTHER_PROVIDER if provider == PROVIDER else PROVIDER
+        current = _run(db, user.id, provider_key=provider)
+        current_source = _source(db, user.id, current, key="new-lineage", local_date=DAY_THREE)
+        _event(
+            db, user.id, current_source, logical_event_key="lineage-event",
+            local_date=DAY_THREE, revision=2, supersedes=event,
+        )
+    db.flush()
+    with pytest.raises(NutritionProjectionLifecycleError):
+        resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id)
+
+
+def test_replay_resolves_and_rebuilds_more_than_fifty_persisted_dates(db, user, monkeypatch) -> None:
+    from app.database import SessionLocal
+
+    last = DAY_ONE + timedelta(days=74)
+    historical = _run(db, user.id)
+    dates = tuple(DAY_ONE + timedelta(days=offset) for offset in range(75))
+    for offset, day in enumerate(dates):
+        _source(db, user.id, historical, key=f"long-replay-{offset}", local_date=day)
+    run = _run(db, user.id, requested_start_date=DAY_ONE, requested_end_date=last)
+    db.commit()
+    seen = []
+    sessions = []
+
+    def rebuild(session, *, user_id, local_date, policy_at):
+        assert not session.in_transaction()
+        sessions.append(session)
+        seen.append(local_date)
+        return SimpleNamespace(status=ProjectionPersistenceStatus.UNCHANGED)
+
+    monkeypatch.setattr(lifecycle, "rebuild_nutrition_day", rebuild)
+    result = rebuild_replay_nutrition_days(
+        session_factory=SessionLocal, user_id=user.id, ingestion_run_id=run.id,
+        policy_at=POLICY_AT,
+    )
+    assert result.affected_dates == dates
+    assert result.unchanged_dates == dates
+    assert seen == list(dates)
+    assert len({id(session) for session in sessions}) == 75
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("day failed"), None])
+def test_replay_preserves_lifecycle_statuses_and_fail_fast_close(monkeypatch, failure) -> None:
+    sessions = []
+    events = []
+    monkeypatch.setattr(
+        lifecycle, "resolve_replay_nutrition_dates",
+        lambda db, **kwargs: (DAY_THREE, DAY_ONE, DAY_TWO),
+    )
+    seen = []
+
+    def rebuild(db, *, local_date, **kwargs):
+        seen.append(local_date)
+        if local_date == DAY_TWO and failure is not None:
+            raise failure
+        return SimpleNamespace(status={
+            DAY_ONE: ProjectionPersistenceStatus.CREATED,
+            DAY_TWO: ProjectionPersistenceStatus.UNCHANGED,
+            DAY_THREE: ProjectionPersistenceStatus.POLICY_MISSING,
+        }[local_date])
+
+    monkeypatch.setattr(lifecycle, "rebuild_nutrition_day", rebuild)
+    kwargs = dict(
+        session_factory=_session_factory(sessions, events), user_id=uuid4(),
+        ingestion_run_id=uuid4(), policy_at=POLICY_AT,
+    )
+    if failure is not None:
+        with pytest.raises(NutritionProjectionLifecycleError):
+            rebuild_replay_nutrition_days(**kwargs)
+        assert seen == [DAY_ONE, DAY_TWO]
+    else:
+        result = rebuild_replay_nutrition_days(**kwargs)
+        assert result.created_dates == (DAY_ONE,)
+        assert result.unchanged_dates == (DAY_TWO,)
+        assert result.policy_missing_dates == (DAY_THREE,)
+    assert all(session.closed for session in sessions)
+
+
+@pytest.mark.parametrize(
+    ("provider", "source_id"),
+    [
+        (PROVIDER, SOURCE_INSTANCE_ID),
+        (OTHER_PROVIDER, SOURCE_INSTANCE_ID),
+        (PROVIDER, OTHER_SOURCE_INSTANCE_ID),
+    ],
+)
+def test_replay_includes_historical_event_with_undated_observation(
+    db, user, provider, source_id
+) -> None:
+    historical = _run(db, user.id, provider_key=provider, source_instance_id=source_id)
+    source = _source(db, user.id, historical, key="replay-undated-source", local_date=None)
+    _event(
+        db, user.id, source, logical_event_key="replay-dated-event", local_date=DAY_TWO
+    )
+    run = _replay_run(db, user.id)
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_TWO,
+    )
+
+
+def test_replay_excludes_another_users_projection_head(db, user) -> None:
+    from app.source_priority.application import create_policy_with_rules
+    from app.source_priority.contracts import PriorityRuleSpec
+
+    other = _other_user(db)
+    policy = create_policy_with_rules(
+        db, other.id, 1, POLICY_AT, (PriorityRuleSpec("nutrition", None, PROVIDER, 1),)
+    )
+    projection = NutritionDailyProjection(
+        user_id=other.id, local_date=DAY_TWO, projection_version=1,
+        projection_algorithm_version="foreign", priority_policy_id=policy.policy_id,
+        input_watermark="foreign", projection_status="ready",
+    )
+    db.add(projection)
+    db.flush()
+    db.add(NutritionProjectionHead(
+        user_id=other.id, local_date=DAY_TWO, current_projection_id=projection.id,
+    ))
+    run = _replay_run(db, user.id)
+    db.flush()
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == ()
+
+
+@pytest.mark.parametrize(
+    ("provider", "source_id"),
+    [
+        (PROVIDER, SOURCE_INSTANCE_ID),
+        (OTHER_PROVIDER, SOURCE_INSTANCE_ID),
+        (PROVIDER, OTHER_SOURCE_INSTANCE_ID),
+    ],
+)
+def test_replay_historical_ancestry_is_validated_without_expanding_requested_range(
+    db, user, provider, source_id
+) -> None:
+    first = _run(db, user.id, provider_key=provider, source_instance_id=source_id)
+    first_source = _source(db, user.id, first, key="historical-first", local_date=DAY_ONE)
+    ancestor = _event(
+        db, user.id, first_source, logical_event_key="historical-moved", local_date=DAY_ONE
+    )
+    moved = _run(db, user.id, provider_key=provider, source_instance_id=source_id)
+    moved_source = _source(db, user.id, moved, key="historical-moved", local_date=DAY_TWO)
+    _event(
+        db, user.id, moved_source, logical_event_key="historical-moved", local_date=DAY_TWO,
+        revision=2, supersedes=ancestor,
+    )
+    run = _replay_run(db, user.id)
+    assert resolve_replay_nutrition_dates(db, user_id=user.id, ingestion_run_id=run.id) == (
+        DAY_TWO,
+    )

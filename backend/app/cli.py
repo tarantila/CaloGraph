@@ -19,7 +19,6 @@ from app.auth.security import create_api_token, hash_password, purge_expired_ses
 from app.config import (
     ProductionConfigurationError,
     settings,
-    warn_legacy_yazio_provider,
 )
 from app.database import SessionLocal
 from app.models import (
@@ -70,7 +69,7 @@ from app.services.yazio_sync import (
     effective_sync_interval_minutes,
     enqueue_historical_yazio_sync,
     run_due_yazio_syncs,
-    sync_yazio_user,
+    run_manual_yazio_sync,
     validate_yazio_credentials,
 )
 
@@ -273,7 +272,7 @@ def purge_raw(_: argparse.Namespace) -> None:
 
 
 def sync_yazio(args: argparse.Namespace) -> None:
-    username = args.username or input("CaloGraph-Benutzername: ").strip()
+    username = args.username
     try:
         end_day = date.fromisoformat(args.end_date) if args.end_date else date.today()
         if args.from_date:
@@ -294,34 +293,19 @@ def sync_yazio(args: argparse.Namespace) -> None:
         if not user:
             raise SystemExit("CaloGraph-Benutzer nicht gefunden.")
 
-    email = args.email or input("YAZIO-E-Mail-Adresse: ").strip()
-    password = getpass.getpass("YAZIO-Passwort (wird nicht gespeichert): ")
-    if not email or not password:
-        raise SystemExit("YAZIO-E-Mail-Adresse und Passwort sind erforderlich.")
     try:
-        summary = sync_yazio_user(
-            user,
-            email,
-            password,
-            start_day,
-            end_day,
-            args.source_identifier,
+        summary = run_manual_yazio_sync(
+            user.id,
+            start_day=start_day,
+            end_day=end_day,
         )
+    except YazioConnectionNotConfigured as exc:
+        raise SystemExit(
+            "Für dieses Konto ist keine YAZIO-Verbindung eingerichtet. "
+            "Bitte zuerst configure-yazio ausführen."
+        ) from exc
     except YazioSyncError as exc:
         raise SystemExit(str(exc)) from exc
-
-    log_security_event(
-        "integration.yazio.sync_completed",
-        actor_ref=security_reference("user", user.id),
-        details={
-            "mode": "manual",
-            "received": summary.received,
-            "inserted": summary.inserted,
-            "updated": summary.updated,
-            "skipped": summary.skipped,
-            "failed": summary.failed,
-        },
-    )
 
     print(
         f"YAZIO-Sync {start_day.isoformat()} bis {end_day.isoformat()}: "
@@ -483,7 +467,6 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    warn_legacy_yazio_provider(logger)
     logger.info(
         "yazio_scheduler_started poll_seconds=%s jitter_minutes=%s",
         settings.yazio_scheduler_poll_seconds,
@@ -600,10 +583,9 @@ def parser() -> argparse.ArgumentParser:
     purge.set_defaults(handler=purge_raw)
     yazio = commands.add_parser(
         "sync-yazio",
-        help="Direktabruf über die inoffizielle YAZIO-Schnittstelle",
+        help="Konfigurierte YAZIO-Verbindung für den gewählten Zeitraum synchronisieren",
     )
     yazio.add_argument("--username", default="admin")
-    yazio.add_argument("--email")
     yazio.add_argument("--from-date", help="Startdatum im Format YYYY-MM-DD")
     yazio.add_argument("--end-date", help="Enddatum im Format YYYY-MM-DD")
     yazio.add_argument(
@@ -611,10 +593,6 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=60,
         help="Ohne --from-date werden die letzten N Tage abgerufen (Standard: 60)",
-    )
-    yazio.add_argument(
-        "--source-identifier",
-        help="Stabile, nicht sensible Kennung bei mehreren YAZIO-Konten",
     )
     yazio.set_defaults(handler=sync_yazio)
     credential_key = commands.add_parser(

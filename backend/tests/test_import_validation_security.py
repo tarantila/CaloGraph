@@ -7,7 +7,24 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.security import create_api_token
-from app.models import ApiToken, HealthSample, ImportBatch, ImportError, User
+from app.models import ApiToken, HealthSample, ImportBatch, ImportError, RawImportPayload, User
+from app.nutrition.models import (
+    NutritionConsumptionEvent,
+    NutritionDailyProjection,
+    NutritionDailyProjectionFact,
+    NutritionDailyProjectionLineage,
+    NutritionExternalIdentity,
+    NutritionExternalIdentityLink,
+    NutritionFieldObservation,
+    NutritionFoodProfile,
+    NutritionFoodSnapshot,
+    NutritionIngestionRun,
+    NutritionProjectionHead,
+    NutritionProvenance,
+    NutritionServingObservation,
+    NutritionSourceObservation,
+    NutritionSourceTombstone,
+)
 
 
 def _import_headers(db: Session, user: User) -> dict[str, str]:
@@ -16,6 +33,107 @@ def _import_headers(db: Session, user: User) -> dict[str, str]:
         "Authorization": f"Bearer {raw}",
         "Content-Type": "application/json",
     }
+
+
+@pytest.mark.usefixtures("block_yazio_runtime")
+@pytest.mark.parametrize("explicit_client_identifier", [None, "synthetic-file-client"])
+def test_compatible_yazio_token_import_is_offline_and_idempotent(
+    client: TestClient,
+    user: User,
+    db: Session,
+    compatible_yazio_file,
+    yazio_file_source_identifier: str,
+    explicit_client_identifier: str | None,
+) -> None:
+    headers = _import_headers(db, user)
+    if explicit_client_identifier is not None:
+        headers["X-Client-Identifier"] = explicit_client_identifier
+    expected_identifier = explicit_client_identifier or yazio_file_source_identifier
+    expected_values = compatible_yazio_file["values"]
+
+    first = client.post(
+        "/api/v1/import/yazio", headers=headers, content=compatible_yazio_file["raw"]
+    )
+    assert first.status_code == 200
+    assert first.json()["inserted"] == len(expected_values)
+    assert first.json()["updated"] == first.json()["failed"] == 0
+    samples = list(db.scalars(select(HealthSample).where(HealthSample.user_id == user.id)))
+    assert {sample.metric_type: sample.value for sample in samples} == expected_values
+    assert {sample.metric_type: sample.unit for sample in samples} == compatible_yazio_file["units"]
+    assert {sample.source_identifier for sample in samples} == {expected_identifier}
+    sample_ids = {sample.id for sample in samples}
+    batches = list(db.scalars(select(ImportBatch).where(ImportBatch.user_id == user.id)))
+    assert len(batches) == 1
+    assert batches[0].source_type == "yazio_export_v1"
+    assert batches[0].connector_variant is None
+    assert batches[0].client_identifier == (explicit_client_identifier or "security-test")
+
+    repeated = client.post(
+        "/api/v1/import/yazio", headers=headers, content=compatible_yazio_file["raw"]
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["inserted"] == repeated.json()["updated"] == 0
+    assert repeated.json()["skipped"] == len(expected_values)
+    db.expire_all()
+    samples = list(db.scalars(select(HealthSample).where(HealthSample.user_id == user.id)))
+    assert {sample.id for sample in samples} == sample_ids
+    assert {sample.metric_type: sample.value for sample in samples} == expected_values
+    assert {sample.source_identifier for sample in samples} == {expected_identifier}
+    assert all(batch.connector_variant is None for batch in db.scalars(select(ImportBatch)))
+
+
+@pytest.mark.usefixtures("block_yazio_runtime")
+def test_compatible_yazio_validation_is_offline_and_creates_no_data(
+    client: TestClient,
+    user: User,
+    db: Session,
+    compatible_yazio_file,
+    yazio_file_source_identifier: str,
+) -> None:
+    models = (
+        HealthSample,
+        ImportBatch,
+        ImportError,
+        RawImportPayload,
+        NutritionIngestionRun,
+        NutritionSourceObservation,
+        NutritionExternalIdentity,
+        NutritionConsumptionEvent,
+        NutritionFoodProfile,
+        NutritionFoodSnapshot,
+        NutritionExternalIdentityLink,
+        NutritionServingObservation,
+        NutritionFieldObservation,
+        NutritionSourceTombstone,
+        NutritionProvenance,
+        NutritionDailyProjection,
+        NutritionDailyProjectionFact,
+        NutritionDailyProjectionLineage,
+        NutritionProjectionHead,
+    )
+    headers = _import_headers(db, user)
+    before = {
+        model.__tablename__: db.scalar(select(func.count()).select_from(model))
+        for model in models
+    }
+    assert set(before.values()) == {0}
+
+    for _ in range(2):
+        response = client.post(
+            "/api/v1/import/yazio/validate",
+            headers=headers,
+            content=compatible_yazio_file["raw"],
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "valid"
+        assert response.json()["received"] == len(compatible_yazio_file["values"])
+        assert response.json()["inserted"] == response.json()["updated"] == 0
+        assert response.json()["failed"] == response.json()["skipped"] == 0
+        db.expire_all()
+        assert {
+            model.__tablename__: db.scalar(select(func.count()).select_from(model))
+            for model in models
+        } == before
 
 
 def test_import_token_activity_timestamp_is_throttled(

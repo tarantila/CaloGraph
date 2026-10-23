@@ -2,7 +2,7 @@ import ast
 import io
 import json
 import subprocess
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -10,11 +10,13 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.schemas import ImportSummary
+from app.models import YazioConnection
 from app.security_events import log_security_event
 from app.services import yazio_sdk_provider, yazio_sync, yazio_transport
+from app.services.credential_crypto import encrypt_credential
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_provider import (
+    YazioFoodDiary,
     YazioProviderErrorContext,
     YazioProviderInvalidResponseError,
     YazioProviderMetadata,
@@ -34,11 +36,8 @@ from app.services.yazio_transport import (
     YazioTransportError,
     YazioTransportInvalidResponseError,
     YazioTransportUnavailableError,
-    _BoundedYazioClient,
     _execute_worker,
-    _login,
     _run_worker,
-    _TransportOptions,
     validate_yazio_credentials_transport,
 )
 
@@ -93,40 +92,73 @@ def _patch_sdk_clients(monkeypatch: pytest.MonkeyPatch) -> None:
         "sync_detailed",
         lambda **_: type("Response", (), {"status_code": 200, "parsed": {"access_token": "token"}})(),
     )
-def test_login_uses_explicit_timeout_without_redirects_or_retries(monkeypatch) -> None:
-    client = _BoundedYazioClient(
-        _TransportOptions(
-            connect_timeout=3.05,
-            read_timeout=15,
-            request_workers=3,
+@pytest.mark.parametrize(
+    ("outcome", "error_type"),
+    [
+        (401, yazio_sdk_provider.YazioProviderAuthenticationError),
+        (302, YazioProviderUnavailableError),
+        ("timeout", YazioProviderNetworkTimeoutError),
+    ],
+)
+def test_sdk_login_uses_explicit_timeout_without_redirects_or_auth_retries(
+    monkeypatch: pytest.MonkeyPatch, outcome: int | str, error_type: type[Exception],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if outcome == "timeout":
+            raise httpx.ReadTimeout("private-password", request=request)
+        assert isinstance(outcome, int)
+        return httpx.Response(
+            outcome,
+            json={"error": "invalid_grant", "error_description": "synthetic"},
+            headers={"Location": "https://redirect.invalid/oauth/token"},
         )
+
+    monkeypatch.setattr(settings, "yazio_connect_timeout_seconds", 3.05)
+    monkeypatch.setattr(settings, "yazio_read_timeout_seconds", 15)
+    monkeypatch.setattr(
+        yazio_sdk_provider, "_httpx_args",
+        lambda: {"transport": httpx.MockTransport(handle)},
     )
-    calls: list[dict[str, object]] = []
 
-    class Response:
-        status_code = 200
+    with pytest.raises(error_type) as caught:
+        yazio_sdk_provider.YazioSdkProvider().validate_credentials(
+            "owner@example.com", "private-password",
+        )
 
-        @staticmethod
-        def raise_for_status() -> None:
-            return None
+    assert len(requests) == 1
+    assert requests[0].extensions["timeout"] == {
+        "connect": 3.05, "read": 15, "write": 15, "pool": 3.05,
+    }
+    assert requests[0].url.host != "redirect.invalid"
+    assert "private-password" not in str(caught.value)
 
-        @staticmethod
-        def json() -> dict[str, str]:
-            return {"access_token": "token"}
 
-    def fake_post(_url, **kwargs):
-        calls.append(kwargs)
-        return Response()
+def test_authenticated_sdk_client_does_not_follow_redirects(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
 
-    monkeypatch.setattr(client.session, "post", fake_post)
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            302, headers={"Location": "https://redirect.invalid/private"},
+        )
+
+    monkeypatch.setattr(
+        yazio_sdk_provider, "_httpx_args",
+        lambda: {"transport": httpx.MockTransport(handle)},
+    )
+    client = yazio_sdk_provider._new_authenticated_client("synthetic-token")
     try:
-        assert _login(client, "owner@example.com", "password") == "token"
+        response = client.get_httpx_client().get("/v22/user/daily-nutrients")
     finally:
-        client.session.close()
+        yazio_sdk_provider._close_client(client)
 
-    assert len(calls) == 1
-    assert calls[0]["timeout"] == (3.05, 15)
-    assert calls[0]["allow_redirects"] is False
+    assert response.status_code == 302
+    assert len(requests) == 1
+    assert requests[0].url.host != "redirect.invalid"
+    assert requests[0].headers["Authorization"] == "Bearer synthetic-token"
 
 
 def test_transport_deadline_kills_the_isolated_worker(monkeypatch) -> None:
@@ -159,6 +191,8 @@ def test_transport_keeps_credentials_out_of_process_arguments(monkeypatch) -> No
     assert "very-secret" not in " ".join(captured["command"])
     worker_input = json.loads(process.stdin.value)
     assert worker_input["password"] == "very-secret"
+    assert "provider_mode" not in worker_input
+    assert worker_input["operation"] == "validate"
     assert process.wait_timeouts == [settings.yazio_login_deadline_seconds]
 
 
@@ -180,49 +214,88 @@ def test_isolated_transport_worker_can_be_started() -> None:
         _run_worker({"operation": "invalid"}, deadline_seconds=5)
 
 
+def test_transport_bounds_input_before_starting_worker(monkeypatch) -> None:
+    monkeypatch.setattr(yazio_transport, "MAX_WORKER_INPUT_BYTES", 32)
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Oversized input must not spawn a worker"),
+    )
+    with pytest.raises(YazioTransportError, match="input is too large"):
+        _run_worker({"operation": "validate", "password": "x" * 64}, deadline_seconds=5)
 
-def test_sdk_worker_dispatches_provider_payload_without_legacy_client(monkeypatch) -> None:
-    calls: list[tuple[str, object]] = []
+
+def test_worker_bounds_stdin_before_dispatch(monkeypatch) -> None:
+    monkeypatch.setattr(yazio_transport, "MAX_WORKER_INPUT_BYTES", 32)
+    monkeypatch.setattr(
+        yazio_transport.sys, "stdin",
+        type("Input", (), {"buffer": io.BytesIO(b"x" * 33)})(),
+    )
+    stdout = io.StringIO()
+    monkeypatch.setattr(yazio_transport.sys, "stdout", stdout)
+    monkeypatch.setattr(
+        yazio_transport, "_execute_worker",
+        lambda *_args: pytest.fail("Oversized input must not reach the SDK"),
+    )
+
+    assert yazio_transport._worker_main() == 0
+    assert json.loads(stdout.getvalue()) == {"ok": False, "kind": "unavailable"}
+
+
+
+def test_sdk_worker_has_no_provider_selector_or_aggregate_only_operation(monkeypatch) -> None:
+    sdk_calls: list[str] = []
+    instances: list[object] = []
 
     class _Provider:
-        def fetch(self, email, password, start_day, end_day, include_micronutrients):
-            calls.append((email, include_micronutrients))
+        def __init__(self):
+            instances.append(self)
+            self.aggregate_read = False
+
+        def validate_credentials(self, email, password):
+            assert (email, password) == ("owner@example.com", "private-password")
+            sdk_calls.append("validate")
+
+        def fetch(self, email, password, start_day, end_day):
+            assert (email, password) == ("owner@example.com", "private-password")
+            assert (start_day, end_day) == (date(2026, 8, 1), date(2026, 8, 1))
+            self.aggregate_read = True
+            sdk_calls.append("aggregate")
             return YazioProviderResult(
-                payload={
-                    "days": [{"local_date": start_day.isoformat()}],
-                    "weight": {"2026-08-01": 72.5},
-                },
-                metadata=YazioProviderMetadata(
-                    micronutrient_complete=False,
-                    provider_mode="sdk",
-                ),
+                payload={"days": {"2026-08-01": {"energy": 1900.0}}, "weight": {}},
+                metadata=YazioProviderMetadata(micronutrient_complete=False),
             )
 
-    monkeypatch.setattr(yazio_transport, "get_yazio_provider", lambda mode: _Provider())
-    monkeypatch.setattr(
-        yazio_transport,
-        "_login",
-        lambda *_args: pytest.fail("SDK worker must use the SDK provider authentication"),
-    )
-    result = _execute_worker(
-        {
-            "operation": "fetch",
-            "provider_mode": "sdk",
-            "email": "owner@example.com",
-            "password": "private-password",
-            "start_day": "2026-08-01",
-            "end_day": "2026-08-01",
-            "include_micronutrients": True,
-            "connect_timeout": 3.05,
-            "read_timeout": 15,
-            "request_workers": 3,
-        }
-    )
-    assert result == {
-        "days": [{"local_date": "2026-08-01"}],
-        "weight": {"2026-08-01": 72.5},
+        def fetch_food_diary(self, email, password, start_day, end_day):
+            assert self.aggregate_read, "Aggregate and diary must share the SDK provider instance"
+            assert (email, password) == ("owner@example.com", "private-password")
+            assert (start_day, end_day) == (date(2026, 8, 1), date(2026, 8, 1))
+            sdk_calls.append("diary")
+            return YazioFoodDiary(start_day, end_day, (), (), (), ())
+
+    monkeypatch.setattr(yazio_sdk_provider, "YazioSdkProvider", _Provider)
+    request = {
+        "email": "owner@example.com",
+        "password": "private-password",
+        "connect_timeout": 3.05,
+        "read_timeout": 15,
+        "request_workers": 3,
     }
-    assert calls == [("owner@example.com", True)]
+    assert _execute_worker({"operation": "validate", **request}) is None
+    assert sdk_calls == ["validate"]
+    sdk_calls.clear()
+    domain_result = _execute_worker({
+        "operation": "fetch_domain", **request,
+        "start_day": "2026-08-01", "end_day": "2026-08-01",
+    })
+    assert sdk_calls == ["aggregate", "diary"]
+    assert len(instances) == 2
+    assert set(domain_result) == {"aggregate", "diary"}
+    assert domain_result["aggregate"] == {
+        "days": {"2026-08-01": {"energy": 1900.0}}, "weight": {},
+    }
+    assert yazio_transport._decode_food_diary(domain_result["diary"]) == YazioFoodDiary(
+        date(2026, 8, 1), date(2026, 8, 1), (), (), (), (),
+    )
 
 
 def test_sdk_weight_range_uses_generated_v22_operation_and_identity(
@@ -341,21 +414,84 @@ def test_sdk_weight_classifies_status_transport_and_numeric_failures() -> None:
 
 
 
-def test_worker_rejects_missing_provider_mode() -> None:
+@pytest.mark.parametrize(
+    "obsolete",
+    [
+        {"operation": "fetch"},
+        {"operation": "invalid"},
+        {"provider_mode": "sdk"},
+        {"provider_mode": "legacy"},
+        {"provider_mode": None},
+        {"mode": "sdk"},
+        {"yazio_provider": "sdk"},
+        {"include_micronutrients": True},
+    ],
+)
+def test_worker_rejects_old_operations_and_selector_fields(obsolete) -> None:
     with pytest.raises(ValueError, match="Invalid worker input"):
-        _execute_worker(
-            {
-                "operation": "fetch",
-                "email": "owner@example.com",
-                "password": "private-password",
-                "start_day": "2026-08-01",
-                "end_day": "2026-08-01",
-                "include_micronutrients": False,
-                "connect_timeout": 3.05,
-                "read_timeout": 15,
-                "request_workers": 3,
-            }
-        )
+        _execute_worker({
+            "operation": "fetch_domain",
+            "email": "owner@example.com",
+            "password": "private-password",
+            "start_day": "2026-08-01",
+            "end_day": "2026-08-01",
+            "connect_timeout": 3.05,
+            "read_timeout": 15,
+            "request_workers": 3,
+            **obsolete,
+        })
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"connect_timeout": 0.09},
+        {"connect_timeout": float("nan")},
+        {"read_timeout": 121},
+        {"read_timeout": True},
+        {"request_workers": 0},
+        {"request_workers": 11},
+        {"request_workers": True},
+    ],
+)
+def test_worker_retains_bounded_sdk_options(invalid) -> None:
+    with pytest.raises(ValueError, match="Invalid worker options"):
+        _execute_worker({
+            "operation": "validate",
+            "email": "owner@example.com",
+            "password": "private-password",
+            "connect_timeout": 3.05,
+            "read_timeout": 15,
+            "request_workers": 3,
+            **invalid,
+        })
+
+
+@pytest.mark.parametrize(
+    ("start_day", "end_day"),
+    [
+        ("not-a-date", "2026-08-01"),
+        ("2026-08-02", "2026-08-01"),
+        ("2026-01-01", "2027-01-02"),
+    ],
+)
+def test_worker_rejects_invalid_sdk_ranges_without_fetching(monkeypatch, start_day, end_day) -> None:
+    class _Provider:
+        def fetch(self, *_args):
+            pytest.fail("Invalid ranges must never reach SDK fetch")
+
+    monkeypatch.setattr(yazio_sdk_provider, "YazioSdkProvider", _Provider)
+    with pytest.raises(ValueError, match="Invalid YAZIO date range"):
+        _execute_worker({
+            "operation": "fetch_domain",
+            "email": "owner@example.com",
+            "password": "private-password",
+            "start_day": start_day,
+            "end_day": end_day,
+            "connect_timeout": 3.05,
+            "read_timeout": 15,
+            "request_workers": 3,
+        })
 
 
 def test_local_yazio_slots_are_per_user_and_globally_bounded(monkeypatch) -> None:
@@ -375,42 +511,52 @@ def test_local_yazio_slots_are_per_user_and_globally_bounded(monkeypatch) -> Non
         pass
 
 
-def test_user_slot_remains_held_while_yazio_payload_is_persisted(
-    user,
-    monkeypatch,
-) -> None:
-    persisted = False
+def _configured_connection(db, user, monkeypatch):
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-sdk-secret")
+    connection = YazioConnection(
+        user_id=user.id, source_identifier=f"yazio:{user.id}",
+        encrypted_email=encrypt_credential("owner@example.com"),
+        encrypted_password=encrypt_credential("password"),
+        sync_enabled=True, sync_days=1,
+    )
+    db.add(connection)
+    db.commit()
+    return connection
 
-    def persist_while_locked(*_args, **_kwargs):
+
+def test_user_slot_remains_held_while_yazio_evidence_is_persisted(
+    db, user, monkeypatch,
+) -> None:
+    _configured_connection(db, user, monkeypatch)
+    persisted = False
+    original = yazio_sync._persist_import_locked
+
+    def persist_while_locked(*args, **kwargs):
         nonlocal persisted
         with pytest.raises(YazioOperationBusy), yazio_operation_slot(user.id):
             pass
         persisted = True
-        return ImportSummary(
-            status="completed",
-            received=0,
-            inserted=0,
-            updated=0,
-            skipped=0,
+        return original(*args, **kwargs)
+
+    def fetch(_email, _password, start_day, end_day):
+        return {"days": {end_day.isoformat(): {"energy": 1800}}}, YazioFoodDiary(
+            requested_start_day=start_day, requested_end_day=end_day,
+            consumed_products=(), consumed_simple_products=(), product_profiles=(),
+            daily_summaries=(),
         )
 
-    monkeypatch.setattr(yazio_sync, "import_yazio_payload", persist_while_locked)
-
-    summary = yazio_sync.sync_yazio_user(
-        user,
-        "owner@example.com",
-        "password",
-        date(2026, 7, 28),
-        date(2026, 7, 28),
-        fetcher=lambda *_args: {},
+    monkeypatch.setattr(yazio_sync, "_persist_import_locked", persist_while_locked)
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fetch)
+    summary = yazio_sync.run_manual_yazio_sync(
+        user.id, now=datetime(2026, 7, 28, tzinfo=UTC),
     )
-
     assert persisted is True
     assert summary.status == "completed"
+    assert summary.inserted == 1
 
 
-def test_provider_failures_open_the_shared_circuit(db, monkeypatch) -> None:
-    del db
+def test_provider_failures_open_the_shared_circuit(db, user, monkeypatch) -> None:
+    _configured_connection(db, user, monkeypatch)
     monkeypatch.setattr(settings, "yazio_circuit_failure_limit", 2)
     monkeypatch.setattr(settings, "yazio_circuit_window_seconds", 600)
     calls = 0
@@ -418,30 +564,14 @@ def test_provider_failures_open_the_shared_circuit(db, monkeypatch) -> None:
     def provider_failure(*_args, **_kwargs):
         nonlocal calls
         calls += 1
-        raise yazio_sync.YazioTransportError("provider unavailable")
+        raise YazioProviderUnavailableError()
 
-    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", provider_failure)
-
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", provider_failure)
     for _ in range(2):
         with pytest.raises(YazioSyncError):
-            yazio_sync.fetch_yazio_payload(
-                "owner@example.com",
-                "password",
-                date(2026, 7, 28),
-                date(2026, 7, 28),
-                False,
-                operation_key="user-id",
-            )
-
+            yazio_sync.run_manual_yazio_sync(user.id)
     with pytest.raises(YazioCircuitOpen):
-        yazio_sync.fetch_yazio_payload(
-            "owner@example.com",
-            "password",
-            date(2026, 7, 28),
-            date(2026, 7, 28),
-            False,
-            operation_key="user-id",
-        )
+        yazio_sync.run_manual_yazio_sync(user.id)
     assert calls == 2
 
 
@@ -551,7 +681,6 @@ def test_http_error_context_contains_status_without_response_body(
             "private-password",
             date(2026, 8, 1),
             date(2026, 8, 1),
-            False,
         )
 
     context = caught.value.context
@@ -748,7 +877,7 @@ def test_worker_parent_preserves_http_status_without_response_body(monkeypatch) 
     assert "test-weight-value-marker" not in repr(caught.value)
 
 
-def test_payload_transport_rewrapping_preserves_provider_context(monkeypatch) -> None:
+def test_domain_transport_rewrapping_preserves_provider_context(db, user, monkeypatch) -> None:
     context = YazioProviderErrorContext(
         operation="daily_summary",
         endpoint_key="daily_summary",
@@ -758,24 +887,23 @@ def test_payload_transport_rewrapping_preserves_provider_context(monkeypatch) ->
         validation_location=None,
         retryable=True,
     )
+    connection = _configured_connection(db, user, monkeypatch)
     monkeypatch.setattr(
-        yazio_sync,
-        "fetch_yazio_payload_transport",
+        yazio_transport,
+        "_run_worker",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             YazioTransportUnavailableError(context=context.to_dict())
         ),
     )
 
     with pytest.raises(YazioSyncError) as caught:
-        yazio_sync._fetch_yazio_payload_unlocked(
-            "owner@example.com",
-            "private-password",
-            date(2026, 8, 1),
-            date(2026, 8, 1),
-            False,
-            provider_mode="sdk",
+        yazio_sync.run_manual_yazio_sync(
+            user.id, start_day=date(2026, 8, 1), end_day=date(2026, 8, 1),
         )
     assert caught.value.provider_context == context.to_dict()
+    db.refresh(connection)
+    assert connection.last_success_at is None
+    assert connection.last_error == "YAZIO ist vorübergehend nicht erreichbar."
 
 
 def test_provider_context_details_match_security_event_contract() -> None:

@@ -11,6 +11,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, func, select, text
 
 from alembic import command
+from app.config import settings
 from app.database import SessionLocal
 from app.database import engine as application_engine
 from app.importers.json_adapter import AdapterResult
@@ -34,7 +35,8 @@ from app.models import (
     WebAuthnUserHandle,
     YazioConnection,
 )
-from app.services import import_service
+from app.services import import_service, yazio_sync
+from app.services.credential_crypto import encrypt_credential
 from app.services.import_service import persist_import
 from app.services.rate_limit import hash_rate_limit_key, normalize_account_identifier
 from app.services.user_lifecycle import (
@@ -43,7 +45,8 @@ from app.services.user_lifecycle import (
     delete_user,
 )
 from app.services.user_operation_lock import InactiveUserOperation
-from app.services.yazio_sync import YazioSyncError, sync_yazio_user
+from app.services.yazio_provider import YazioFoodDiary
+from app.services.yazio_sync import YazioSyncError, run_manual_yazio_sync
 
 POSTGRES_TESTS_ENABLED = (
     os.environ.get("CALOGRAPH_ALLOW_DESTRUCTIVE_POSTGRES_TESTS") == "1"
@@ -482,8 +485,9 @@ def test_import_and_deactivation_are_serialized(
     not POSTGRES_TESTS_ENABLED,
     reason="isolated PostgreSQL integration tests are not explicitly enabled",
 )
-def test_yazio_sync_and_deactivation_are_serialized() -> None:
+def test_yazio_sync_and_deactivation_are_serialized(monkeypatch) -> None:
     assert application_engine.dialect.name == "postgresql"
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-sdk-secret")
     with SessionLocal() as db:
         actor = User(
             username="postgres-yazio-race-admin",
@@ -498,39 +502,35 @@ def test_yazio_sync_and_deactivation_are_serialized() -> None:
         db.commit()
         actor_id = actor.id
         target_id = target.id
-        db.expunge(target)
+        db.add(YazioConnection(
+            user_id=target_id, source_identifier=f"yazio:{target_id}",
+            encrypted_email=encrypt_credential("owner@example.com"),
+            encrypted_password=encrypt_credential("secret"),
+            sync_enabled=True, sync_days=1,
+        ))
+        db.commit()
 
     entered = Event()
     release = Event()
 
-    def blocked_fetch(*_args):
+    def blocked_fetch(_email, _password, start_day, end_day):
         entered.set()
         assert release.wait(timeout=10)
-        return {
-            "2026-08-01": {
-                "daily_summary": {
-                    "meals": {
-                        "dinner": {
-                            "nutrients": {
-                                "energy.energy": 1800,
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        return {"days": {end_day.isoformat(): {"energy": 1800}}}, YazioFoodDiary(
+            requested_start_day=start_day, requested_end_day=end_day,
+            consumed_products=(), consumed_simple_products=(), product_profiles=(),
+            daily_summaries=(),
+        )
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", blocked_fetch)
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
-                sync_yazio_user,
-                target,
-                "owner@example.com",
-                "secret",
-                date(2026, 8, 1),
-                date(2026, 8, 1),
-                None,
-                blocked_fetch,
+                run_manual_yazio_sync,
+                target_id,
+                start_day=date(2026, 8, 1),
+                end_day=date(2026, 8, 1),
             )
             assert entered.wait(timeout=10)
             with SessionLocal() as db:
@@ -549,16 +549,13 @@ def test_yazio_sync_and_deactivation_are_serialized() -> None:
         fetch_called = True
         return {}
 
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fetch_after_deactivation)
+
     with SessionLocal() as db:
         deactivate_user(db, actor_id, target_id)
     with pytest.raises(YazioSyncError, match="nicht aktiv"):
-        sync_yazio_user(
-            target,
-            "owner@example.com",
-            "secret",
-            date(2026, 8, 1),
-            date(2026, 8, 1),
-            fetcher=fetch_after_deactivation,
+        run_manual_yazio_sync(
+            target_id, start_day=date(2026, 8, 1), end_day=date(2026, 8, 1),
         )
     assert fetch_called is False
 

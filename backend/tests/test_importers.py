@@ -877,6 +877,38 @@ def test_yazio_micronutrients_are_imported_with_canonical_units() -> None:
     assert "unknown.nutrient" not in by_metric
 
 
+@pytest.mark.usefixtures("block_yazio_runtime")
+def test_compatible_yazio_files_work_without_exporter(compatible_yazio_file) -> None:
+    for identifier in ("yazio-account", "synthetic-explicit-file-source"):
+        if identifier == "yazio-account":
+            result = parse_yazio_export(compatible_yazio_file["payload"], "Europe/Berlin")
+        else:
+            result = parse_yazio_export(
+                compatible_yazio_file["payload"], "Europe/Berlin", identifier
+            )
+
+        by_metric = {sample.metric_type: sample for sample in result.samples}
+        assert result.source_type == "yazio_export_v1"
+        assert result.received == len(compatible_yazio_file["values"])
+        assert result.errors == []
+        assert result.unknown_count == 0
+        assert len(result.samples) == len(by_metric)
+        assert {metric: sample.value for metric, sample in by_metric.items()} == (
+            compatible_yazio_file["values"]
+        )
+        assert {metric: sample.unit for metric, sample in by_metric.items()} == (
+            compatible_yazio_file["units"]
+        )
+        assert {sample.source_identifier for sample in result.samples} == {identifier}
+        assert {sample.external_sample_id for sample in result.samples} == {
+            f"2026-07-20:{metric}" for metric in compatible_yazio_file["values"]
+        }
+        if compatible_yazio_file["filename"] == "nutrients.json":
+            assert by_metric["vitamin_d_ug"].original_value == Decimal("0.0000125")
+            assert by_metric["iron_mg"].original_value == Decimal("0.0084")
+            assert {sample.original_unit for sample in result.samples} == {"g"}
+
+
 def test_yazio_export_rejects_payload_without_dated_entries() -> None:
     with pytest.raises(ValueError, match="keine Tagesdaten"):
         parse_yazio_export({"profile": {"name": "not imported"}}, "Europe/Berlin")

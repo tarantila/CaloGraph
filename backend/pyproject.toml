@@ -25,7 +25,6 @@ dependencies = [
   "sqlalchemy==2.1.5",
   "uvicorn[standard]==0.54.0",
   "webauthn==3.0.1",
-  "yazio-exporter==0.2.0",
   "yazio-sdk==0.4.0",
   "zstandard==0.25.0",
   "google-auth>=2.62.0",

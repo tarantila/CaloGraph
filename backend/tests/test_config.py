@@ -8,14 +8,11 @@ from sqlalchemy.engine import make_url
 
 from app.config import (
     YAZIO_API_BASE_URL_DEFAULT,
-    YAZIO_LEGACY_DEPRECATION_MESSAGE,
     YAZIO_SDK_CLIENT_ID_DEFAULT,
     YAZIO_SDK_CLIENT_SECRET_DEFAULT,
     YAZIO_SDK_USER_AGENT_DEFAULT,
     ProductionConfigurationError,
     Settings,
-    settings,
-    warn_legacy_yazio_provider,
 )
 
 
@@ -37,7 +34,6 @@ def valid_production_settings(**overrides) -> Settings:
         "credential_encryption_key": Fernet.generate_key().decode(),
         "mfa_encryption_key": Fernet.generate_key().decode(),
         "yazio_enabled": True,
-        "yazio_provider": "sdk",
         "yazio_sdk_client_secret": "test-only-yazio-sdk-secret",
     }
     values.update(overrides)
@@ -111,42 +107,61 @@ def test_environment_is_required(monkeypatch) -> None:
         Settings(_env_file=None)
 
 
-@pytest.mark.parametrize("provider", [None, ""])
-def test_disabled_yazio_allows_missing_or_empty_provider(provider: str | None) -> None:
+def test_enabled_yazio_starts_without_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "YAZIO_PROVIDER",
+        "YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED",
+        "YAZIO_SDK_CLIENT_ID",
+        "YAZIO_SDK_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     configured = Settings(
         _env_file=None,
         environment="development",
-        yazio_enabled=False,
-        yazio_provider=provider,
+        yazio_enabled=True,
     )
 
-    assert configured.yazio_provider is None
+    assert configured.yazio_enabled is True
+    assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
+    assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
+    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
+    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
-@pytest.mark.parametrize("provider", [None, ""])
-def test_enabled_yazio_rejects_missing_or_empty_provider(provider: str | None) -> None:
-    with pytest.raises(ValidationError, match="YAZIO_PROVIDER is required"):
-        Settings(
-            _env_file=None,
-            environment="development",
-            yazio_enabled=True,
-            yazio_provider=provider,
-        )
+@pytest.mark.parametrize("enabled", [False, True])
+def test_yazio_selector_and_rollout_fields_are_absent(enabled: bool) -> None:
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=enabled,
+    )
+
+    assert "yazio_provider" not in Settings.model_fields
+    assert "yazio_nutrition_domain_write_enabled" not in Settings.model_fields
+    assert "yazio_provider" not in configured.model_dump()
+    assert "yazio_nutrition_domain_write_enabled" not in configured.model_dump()
 
 
-@pytest.mark.parametrize("provider", ["sdk", "legacy"])
-def test_enabled_yazio_accepts_supported_provider(provider: str) -> None:
-    values = {
-        "environment": "development",
-        "yazio_enabled": True,
-        "yazio_provider": provider,
-    }
-    if provider == "sdk":
-        values["yazio_sdk_client_secret"] = "test-only-yazio-sdk-secret"
+@pytest.mark.parametrize("provider", ["legacy", "sdk", "garbage", ""])
+@pytest.mark.parametrize("rollout", ["true", "false", "garbage"])
+def test_stale_selector_and_rollout_environment_are_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    rollout: str,
+) -> None:
+    monkeypatch.setenv("YAZIO_PROVIDER", provider)
+    monkeypatch.setenv("YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED", rollout)
 
-    configured = Settings(_env_file=None, **values)
+    configured = Settings(
+        _env_file=None,
+        environment="development",
+        yazio_enabled=True,
+    )
 
-    assert configured.yazio_provider == provider
+    assert configured.yazio_enabled is True
+    assert "yazio_provider" not in configured.model_dump()
+    assert "yazio_nutrition_domain_write_enabled" not in configured.model_dump()
 
 
 def test_yazio_disabled_allows_default_sdk_client_secret() -> None:
@@ -159,31 +174,6 @@ def test_yazio_disabled_allows_default_sdk_client_secret() -> None:
     assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
 
 
-def test_yazio_legacy_allows_default_sdk_client_secret() -> None:
-    configured = Settings(
-        _env_file=None,
-        environment="development",
-        yazio_enabled=True,
-        yazio_provider="legacy",
-    )
-
-    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
-
-
-
-
-def test_enabled_yazio_sdk_uses_versioned_credential_defaults() -> None:
-    configured = Settings(
-        _env_file=None,
-        environment="development",
-        yazio_enabled=True,
-        yazio_provider="sdk",
-    )
-
-    assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
-    assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
-    assert configured.yazio_sdk_client_secret.strip()
-
 def test_yazio_sdk_environment_overrides_win(monkeypatch: pytest.MonkeyPatch) -> None:
     client_id_override = "synthetic-yazio-client-id-override"
     client_secret_override = "synthetic-yazio-client-secret-override"
@@ -194,7 +184,6 @@ def test_yazio_sdk_environment_overrides_win(monkeypatch: pytest.MonkeyPatch) ->
         _env_file=None,
         environment="development",
         yazio_enabled=True,
-        yazio_provider="sdk",
     )
 
     assert configured.yazio_sdk_client_id == client_id_override
@@ -213,7 +202,6 @@ def test_blank_sdk_environment_overrides_use_versioned_defaults(
         _env_file=None,
         environment="development",
         yazio_enabled=True,
-        yazio_provider="sdk",
     )
 
     assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
@@ -228,7 +216,6 @@ def test_yazio_sdk_accepts_explicit_client_secret_without_exposing_it() -> None:
         _env_file=None,
         environment="development",
         yazio_enabled=True,
-        yazio_provider="sdk",
         yazio_sdk_client_secret=secret,
     )
 
@@ -241,35 +228,10 @@ def test_yazio_sdk_non_secret_defaults_are_internal_and_stable() -> None:
     configured = Settings(_env_file=None, environment="development")
 
     assert configured.yazio_enabled is False
-    assert configured.yazio_provider is None
     assert configured.yazio_api_base_url == YAZIO_API_BASE_URL_DEFAULT
     assert configured.yazio_sdk_user_agent == YAZIO_SDK_USER_AGENT_DEFAULT
     assert configured.yazio_sdk_client_id == YAZIO_SDK_CLIENT_ID_DEFAULT
     assert configured.yazio_sdk_client_secret == YAZIO_SDK_CLIENT_SECRET_DEFAULT
-
-
-def test_yazio_provider_rejects_unknown_value() -> None:
-    with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            environment="development",
-            yazio_provider="invalid",
-        )
-
-
-
-
-def test_legacy_yazio_provider_warning_is_operator_facing(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setattr(settings, "yazio_provider", "legacy")
-    logger = logging.getLogger("test.yazio.provider")
-    caplog.set_level(logging.WARNING, logger=logger.name)
-
-    warn_legacy_yazio_provider(logger)
-
-    assert caplog.messages == [YAZIO_LEGACY_DEPRECATION_MESSAGE]
 
 
 def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
@@ -284,11 +246,20 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
     production = (repository_root / ".env.production.example").read_text()
     compose = (repository_root / "docker-compose.yml").read_text()
     development_compose = (repository_root / "docker-compose.dev.yml").read_text()
+    verification_compose = (repository_root / "docker-compose.verification.yml").read_text()
+
+    for content in (
+        development,
+        production,
+        compose,
+        development_compose,
+        verification_compose,
+    ):
+        assert "YAZIO_PROVIDER" not in content
+        assert "YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED" not in content
 
     assert "YAZIO_ENABLED=true" in development
-    assert "YAZIO_PROVIDER=sdk" in development
     assert "YAZIO_ENABLED=false" in production
-    assert "YAZIO_PROVIDER=sdk" in production
     for content in (development, production):
         assert "YAZIO_SDK_CLIENT_SECRET=" not in content
         assert "YAZIO_SDK_CLIENT_ID=" not in content
@@ -298,13 +269,34 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
         assert "YAZIO_SDK_CLIENT_ID" not in content
     assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
     assert compose.count("YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}") == 2
-    assert compose.count("YAZIO_PROVIDER: ${YAZIO_PROVIDER-}") == 2
     assert compose.count("YAZIO_SDK_CLIENT_ID: ${YAZIO_SDK_CLIENT_ID-}") == 2
     assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
-    assert "${YAZIO_PROVIDER:-legacy}" not in compose
-    assert "YAZIO_PROVIDER: \"sdk\"" in development_compose
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in compose
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in development_compose
+    assert development_compose.count('YAZIO_ENABLED: "true"') == 2
+    assert development_compose.count('YAZIO_SCHEDULER_ENABLED: "true"') == 2
+    assert 'YAZIO_ENABLED: "true"' in verification_compose
+    assert 'YAZIO_SCHEDULER_ENABLED: "false"' in verification_compose
+    operational_defaults = {
+        "YAZIO_SYNC_INTERVAL_HOURS": "6",
+        "YAZIO_SYNC_DAYS": "7",
+        "YAZIO_CONNECT_TIMEOUT_SECONDS": "3.05",
+        "YAZIO_READ_TIMEOUT_SECONDS": "15",
+        "YAZIO_LOGIN_DEADLINE_SECONDS": "25",
+        "YAZIO_OPERATION_DEADLINE_SECONDS": "300",
+        "YAZIO_REQUEST_WORKERS": "3",
+        "YAZIO_RATE_LIMIT": "2",
+        "YAZIO_RATE_LIMIT_WINDOW_SECONDS": "600",
+        "YAZIO_MAX_PARALLEL_OPERATIONS": "2",
+        "YAZIO_CIRCUIT_FAILURE_LIMIT": "5",
+        "YAZIO_CIRCUIT_WINDOW_SECONDS": "600",
+        "YAZIO_SCHEDULER_POLL_SECONDS": "60",
+        "YAZIO_SCHEDULER_JITTER_MINUTES": "30",
+    }
+    for name, default in operational_defaults.items():
+        assert f"{name}={default}" in development
+        assert f"{name}={default}" in production
+        assert f"{name}: ${{{name}:-{default}}}" in compose
 
 
 def test_validation_errors_do_not_echo_sensitive_inputs() -> None:
@@ -548,7 +540,6 @@ def test_scheduler_production_validation_only_requires_its_own_secrets(
         rate_limit_secret_file=str(rate_limit_secret),
         yazio_enabled=True,
         yazio_sdk_client_secret="test-only-yazio-sdk-secret",
-        yazio_provider="sdk",
     )
 
     configured.validate_runtime_security("scheduler")
@@ -575,7 +566,6 @@ def test_scheduler_rejects_default_rate_limit_secret(
         ),
         yazio_enabled=True,
         yazio_sdk_client_secret="test-only-yazio-sdk-secret",
-        yazio_provider="sdk",
     )
 
     with pytest.raises(ProductionConfigurationError, match="RATE_LIMIT_SECRET"):

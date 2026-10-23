@@ -184,7 +184,7 @@ def test_auth_entry_points_queue_without_provider_access(
         network_calls.append("provider")
         raise AssertionError("YAZIO provider access is not allowed in auth requests")
 
-    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", fail_if_called)
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", fail_if_called)
     monkeypatch.setattr(yazio_sync, "validate_yazio_credentials_transport", fail_if_called)
 
     login = client.post(

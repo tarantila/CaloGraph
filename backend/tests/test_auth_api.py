@@ -21,7 +21,6 @@ from app.models import (
     User,
     UserOnboarding,
     UserSession,
-    YazioConnection,
 )
 from app.nutrition.models import (
     NutritionDailyProjection,
@@ -919,64 +918,63 @@ def test_browser_file_import_has_size_and_rate_limits(
     assert limited.status_code == 429
 
 
-def test_authenticated_yazio_json_upload(client: TestClient, user: User, db) -> None:
-    db.add(
-        YazioConnection(
-            user_id=user.id,
-            encrypted_email=b"encrypted-email",
-            encrypted_password=b"encrypted-password",
-            source_identifier=f"yazio:{user.id}",
-        )
-    )
-    db.commit()
+@pytest.mark.usefixtures("block_yazio_runtime")
+def test_authenticated_yazio_json_upload(
+    client: TestClient,
+    user: User,
+    db,
+    compatible_yazio_file,
+    yazio_file_source_identifier: str,
+) -> None:
     login = client.post(
         "/api/v1/auth/login",
         json={"username": "admin", "password": "correct-horse-battery-staple"},
     )
     csrf = login.json()["csrf_token"]
-    payload = b"""{
-      "weight": {
-        "2026-07-20": {"value": 72.5, "unit": "kg"}
-      },
-      "2026-07-20": {
-        "daily_summary": {
-          "activity_energy": 300,
-          "steps": 8000,
-          "water_intake": 2000,
-          "units": {"unit_energy": "kcal"},
-          "meals": {
-            "breakfast": {
-              "nutrients": {
-                "energy.energy": 450,
-                "nutrient.protein": 25,
-                "nutrient.carb": 60,
-                "nutrient.fat": 15
-              }
-            }
-          }
-        }
-      }
-    }"""
+    filename = compatible_yazio_file["filename"]
+    payload = compatible_yazio_file["raw"]
     response = client.post(
         "/api/v1/import/yazio/file",
         headers={"X-CSRF-Token": csrf},
-        files={"file": ("days.json", payload, "application/json")},
+        files={"file": (filename, payload, "application/json")},
     )
     assert response.status_code == 200
-    assert response.json()["inserted"] == 6
-    sample = db.scalar(
-        select(HealthSample).where(
-            HealthSample.user_id == user.id,
-            HealthSample.metric_type == "weight_kg",
-        )
+    expected_values = compatible_yazio_file["values"]
+    assert response.json()["inserted"] == len(expected_values)
+    assert response.json()["updated"] == response.json()["failed"] == 0
+    samples = list(db.scalars(select(HealthSample).where(HealthSample.user_id == user.id)))
+    assert {sample.metric_type: sample.value for sample in samples} == expected_values
+    assert {sample.source_identifier for sample in samples} == {yazio_file_source_identifier}
+    batches = list(db.scalars(select(ImportBatch).where(ImportBatch.user_id == user.id)))
+    assert len(batches) == 1
+    assert batches[0].source_type == "yazio_export_v1"
+    assert batches[0].connector_variant is None
+    assert batches[0].client_identifier == filename
+
+    repeated = client.post(
+        "/api/v1/import/yazio/file",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": (filename, payload, "application/json")},
     )
-    assert sample is not None
-    assert sample.source_identifier == f"yazio:{user.id}"
+    assert repeated.status_code == 200
+    assert repeated.json()["inserted"] == repeated.json()["updated"] == 0
+    assert repeated.json()["skipped"] == len(expected_values)
+    db.expire_all()
+    after = list(db.scalars(select(HealthSample).where(HealthSample.user_id == user.id)))
+    assert {sample.id for sample in after} == {sample.id for sample in samples}
+    assert {sample.metric_type: sample.value for sample in after} == expected_values
+    assert all(batch.connector_variant is None for batch in db.scalars(select(ImportBatch)))
     summary = client.get("/api/v1/dashboard/summary")
     assert summary.status_code == 200
-    assert summary.json()["data_start_date"] == "2026-07-20"
-    assert summary.json()["data_end_date"] == "2026-07-20"
-    assert summary.json()["data_day_count"] == 1
+    if filename == "days.json":
+        assert summary.json()["data_start_date"] == "2026-07-20"
+        assert summary.json()["data_end_date"] == "2026-07-20"
+        assert summary.json()["data_day_count"] == 1
+    else:
+        # Dashboard coverage tracks primary nutrition, not micronutrient-only history.
+        assert summary.json()["data_start_date"] is None
+        assert summary.json()["data_end_date"] is None
+        assert summary.json()["data_day_count"] == 0
 
 
 def test_import_detail_exposes_only_safe_record_errors(

@@ -25,7 +25,6 @@ from app.services.credential_crypto import (
 from app.services.yazio_guard import YazioOperationBusy, yazio_operation_slot
 from app.services.yazio_provider import YazioFoodDiary
 from app.services.yazio_sync import (
-    YazioAuthenticationError,
     YazioConnectionDisabled,
     YazioInvalidResponseError,
     YazioSdkNotConfigured,
@@ -45,6 +44,7 @@ from app.services.yazio_sync import (
 def _configure_key(monkeypatch) -> str:
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(settings, "credential_encryption_key", key)
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-sdk-secret")
     return key
 
 
@@ -62,6 +62,17 @@ def configure_yazio_connection(
         password,
         **kwargs,
     )
+
+
+def _mock_domain_transport(monkeypatch, fetch):
+    def transport(email, password, start_day, end_day):
+        return fetch(email, password, start_day, end_day), YazioFoodDiary(
+            requested_start_day=start_day, requested_end_day=end_day,
+            consumed_products=(), consumed_simple_products=(), product_profiles=(),
+            daily_summaries=(),
+        )
+
+    monkeypatch.setattr(yazio_sync, "fetch_yazio_domain_transport", transport)
 
 
 def test_credentials_are_authenticated_and_encrypted(monkeypatch) -> None:
@@ -159,10 +170,11 @@ def test_empty_historical_range_completes_without_a_processing_failure(
     _configure_key(monkeypatch)
     connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
 
-    def empty_fetch(_email, _password, _start_day, end_day, _include_micronutrients):
+    def empty_fetch(_email, _password, _start_day, end_day):
         return {end_day.isoformat(): {"daily_summary": {"meals": {}}}}
 
-    summary = run_scheduled_yazio_sync(connection.id, fetcher=empty_fetch)
+    _mock_domain_transport(monkeypatch, empty_fetch)
+    summary = run_scheduled_yazio_sync(connection.id)
 
     assert summary is not None
     assert summary.status == "completed"
@@ -261,106 +273,45 @@ def test_manual_sync_imports_only_for_connection_user(
 ) -> None:
     _configure_key(monkeypatch)
     connection = configure_yazio_connection(
-        user,
-        "owner@example.com",
-        "yazio-password",
-        sync_interval_minutes=360,
-        sync_days=7,
+        user, "owner@example.com", "yazio-password",
+        sync_interval_minutes=360, sync_days=7,
     )
-    attempted_at = datetime(2026, 7, 23, 8, tzinfo=UTC)
-
-    def fake_fetch(email, password, start_day, end_day, include_micronutrients):
-        assert email == "owner@example.com"
-        assert password == "yazio-password"
-        assert start_day.isoformat() == "2026-05-25"
-        assert end_day.isoformat() == "2026-07-23"
-        assert include_micronutrients is True
-        return {
-            "2026-07-23": {
-                "daily_summary": {
-                    "meals": {
-                        "dinner": {
-                            "nutrients": {
-                                "energy.energy": 1800,
-                                "nutrient.protein": 120,
-                                "nutrient.carb": 190,
-                                "nutrient.fat": 60,
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-    summary = run_manual_yazio_sync(
-        user.id,
-        sync_days=60,
-        fetcher=fake_fetch,
-        now=attempted_at,
-    )
-
-    assert summary is not None
-    assert summary.inserted == 4
-    samples = list(
-        db.scalars(select(HealthSample).where(HealthSample.user_id == user.id))
-    )
-    assert len(samples) == 4
-    batches = list(
-        db.scalars(select(ImportBatch).where(ImportBatch.user_id == user.id))
-    )
-    assert len(batches) == 1
-    assert batches[0].connector_variant == "legacy-v15"
-    db.expire_all()
     stored = db.get(YazioConnection, connection.id)
-    assert stored is not None
-    assert stored.last_success_at is not None
-    assert stored.last_micronutrient_sync_at is not None
-    assert stored.last_error is None
-    assert stored.next_sync_at is not None
-    delay = stored.next_sync_at - stored.last_success_at
-    assert timedelta(hours=6, minutes=1) <= delay <= timedelta(hours=6, minutes=30)
+    stored.last_micronutrient_sync_at = datetime(2025, 1, 1, tzinfo=UTC)
     stored.historical_sync_state = "completed"
     db.commit()
+    attempted_at = datetime(2026, 7, 23, 8, tzinfo=UTC)
+    ranges = []
 
+    def fake_fetch(email, password, start_day, end_day):
+        assert (email, password) == ("owner@example.com", "yazio-password")
+        ranges.append((start_day, end_day))
+        return {"days": {"2026-07-23": {
+            "energy": 1800, "protein": 120, "carb": 190, "fat": 60,
+        }}}
 
-    first_micronutrient_sync = stored.last_micronutrient_sync_at
-
-    def fake_scheduled_fetch(
-        email, password, start_day, end_day, include_micronutrients
-    ):
-        del email, password
-        assert start_day.isoformat() == "2026-07-17"
-        assert end_day.isoformat() == "2026-07-23"
-        assert include_micronutrients is False
-        return {
-            "2026-07-23": {
-                "daily_summary": {
-                    "meals": {
-                        "dinner": {
-                            "nutrients": {
-                                "energy.energy": 1800,
-                                "nutrient.protein": 120,
-                                "nutrient.carb": 190,
-                                "nutrient.fat": 60,
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-    assert (
-        run_scheduled_yazio_sync(
-            connection.id,
-            fetcher=fake_scheduled_fetch,
-            now=attempted_at + timedelta(hours=6),
-        )
-        is not None
-    )
+    _mock_domain_transport(monkeypatch, fake_fetch)
+    summary = run_manual_yazio_sync(user.id, sync_days=60, now=attempted_at)
+    assert summary.inserted == 4
+    samples = list(db.scalars(select(HealthSample)))
+    assert len(samples) == 4
+    assert {sample.user_id for sample in samples} == {user.id}
+    batch = db.scalar(select(ImportBatch))
+    assert batch.connector_variant == "sdk-v22"
     db.expire_all()
-    stored = db.get(YazioConnection, connection.id)
-    assert stored is not None
-    assert stored.last_micronutrient_sync_at == first_micronutrient_sync
+    assert stored.last_success_at is not None and stored.last_error is None
+    assert stored.last_micronutrient_sync_at.replace(tzinfo=UTC) == datetime(2025, 1, 1, tzinfo=UTC)
+    delay = stored.next_sync_at - stored.last_success_at
+    assert timedelta(hours=6, minutes=1) <= delay <= timedelta(hours=6, minutes=30)
+    assert run_scheduled_yazio_sync(
+        connection.id, now=attempted_at + timedelta(hours=6),
+    ) is not None
+    assert ranges == [
+        (date(2026, 5, 25), date(2026, 7, 23)),
+        (date(2026, 7, 17), date(2026, 7, 23)),
+    ]
+    db.expire_all()
+    assert stored.last_micronutrient_sync_at.replace(tzinfo=UTC) == datetime(2025, 1, 1, tzinfo=UTC)
 
 
 def test_scheduled_sync_records_safe_failure(
@@ -373,11 +324,11 @@ def test_scheduled_sync_records_safe_failure(
         "yazio-password",
     )
 
-    def failing_fetch(email, password, start_day, end_day, include_micronutrients):
-        del email, password, start_day, end_day, include_micronutrients
-        raise YazioSyncError("YAZIO ist vorübergehend nicht erreichbar.")
+    def failing_fetch(email, password, start_day, end_day):
+        raise yazio_sync.YazioProviderUnavailableError()
 
-    summary = run_scheduled_yazio_sync(connection.id, fetcher=failing_fetch)
+    _mock_domain_transport(monkeypatch, failing_fetch)
+    summary = run_scheduled_yazio_sync(connection.id)
 
     assert summary is None
     db.expire_all()
@@ -392,27 +343,30 @@ def test_scheduled_sync_records_safe_failure(
 
 
 def test_version_blocked_fetch_reports_operator_upgrade_message(
-    monkeypatch: pytest.MonkeyPatch,
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "yazio_enabled", True)
-    monkeypatch.setattr(yazio_sync, "_ensure_yazio_circuit_closed", lambda: None)
-    monkeypatch.setattr(yazio_sync, "_record_yazio_provider_failure", lambda: None)
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(
+        user, "owner@example.com", "private-password",
+    )
 
-    def blocked_fetch(*_args, **_kwargs):
+    def blocked_worker(payload, deadline_seconds):
         from app.services.yazio_transport import YazioTransportVersionBlockedError
 
+        assert payload["operation"] == "fetch_domain"
+        assert "provider_mode" not in payload
         raise YazioTransportVersionBlockedError("version blocked")
 
-    monkeypatch.setattr(yazio_sync, "fetch_yazio_payload_transport", blocked_fetch)
+    monkeypatch.setattr(yazio_transport, "_run_worker", blocked_worker)
 
     with pytest.raises(YazioVersionBlockedError, match="neuere CaloGraph-Version"):
-        yazio_sync.fetch_yazio_payload(
-            "owner@example.com",
-            "private-password",
-            date(2026, 8, 1),
-            date(2026, 8, 1),
-            operation_key="test-version-blocked",
+        run_manual_yazio_sync(
+            user.id, start_day=date(2026, 8, 1), end_day=date(2026, 8, 1),
         )
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    assert stored.last_success_at is None
+    assert "neuere CaloGraph-Version" in stored.last_error
 
 
 
@@ -502,10 +456,8 @@ def test_fully_rejected_payload_is_not_recorded_as_success(
         "yazio-password",
     )
 
-    def overprecise_fetch(
-        email, password, start_day, end_day, include_micronutrients
-    ):
-        del email, password, start_day, end_day, include_micronutrients
+    def overprecise_fetch(email, password, start_day, end_day):
+        del email, password, start_day, end_day
         return {
             "2026-07-23": {
                 "daily_summary": {
@@ -520,9 +472,9 @@ def test_fully_rejected_payload_is_not_recorded_as_success(
             }
         }
 
-    assert (
-        run_scheduled_yazio_sync(connection.id, fetcher=overprecise_fetch) is None
-    )
+    _mock_domain_transport(monkeypatch, overprecise_fetch)
+    with pytest.raises(YazioSyncError, match="konnten nicht verarbeitet"):
+        run_scheduled_yazio_sync(connection.id)
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
@@ -534,13 +486,11 @@ def test_fully_rejected_payload_is_not_recorded_as_success(
         YazioSyncError,
         match="YAZIO-Daten konnten nicht verarbeitet werden",
     ):
-        run_manual_yazio_sync(user.id, fetcher=overprecise_fetch)
+        run_manual_yazio_sync(user.id)
 def test_manual_sync_worker_context_reaches_security_event(
     db: Session, user: User, monkeypatch
 ) -> None:
     _configure_key(monkeypatch)
-    monkeypatch.setattr(settings, "yazio_provider", "sdk")
-    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
     connection = configure_yazio_connection(
         user,
         "owner@example.com",
@@ -621,8 +571,6 @@ def test_historical_sync_worker_context_reaches_security_event(
     db: Session, user: User, monkeypatch
 ) -> None:
     _configure_key(monkeypatch)
-    monkeypatch.setattr(settings, "yazio_provider", "sdk")
-    monkeypatch.setattr(settings, "yazio_nutrition_domain_write_enabled", True)
     connection = configure_yazio_connection(
         user,
         "owner@example.com",
@@ -686,24 +634,18 @@ def test_authentication_failure_disables_automatic_retries(
         "yazio-password",
     )
 
-    def invalid_credentials(
-        email, password, start_day, end_day, include_micronutrients
-    ):
-        del email, password, start_day, end_day, include_micronutrients
-        raise YazioAuthenticationError(
-            "YAZIO-Anmeldung fehlgeschlagen. Zugangsdaten aktualisieren."
-        )
+    def invalid_credentials(email, password, start_day, end_day):
+        raise yazio_sync.YazioProviderAuthenticationError()
 
-    assert (
-        run_scheduled_yazio_sync(connection.id, fetcher=invalid_credentials) is None
-    )
+    _mock_domain_transport(monkeypatch, invalid_credentials)
+    assert run_scheduled_yazio_sync(connection.id) is None
 
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
     assert stored is not None
     assert stored.sync_enabled is False
     assert stored.next_sync_at is None
-    assert "Zugangsdaten aktualisieren" in (stored.last_error or "")
+    assert "Zugangsdaten prüfen" in (stored.last_error or "")
     assert connection.id not in due_yazio_connection_ids()
 
 
@@ -896,10 +838,10 @@ def test_initial_range_runs_in_bounded_chunks_before_regular_sync(
         start_day=date(2026, 7, 20),
         end_day=date(2026, 7, 23),
     )
-    calls: list[tuple[date, date, bool]] = []
+    calls: list[tuple[date, date]] = []
 
-    def fake_fetch(_email, _password, start_day, end_day, include_micronutrients):
-        calls.append((start_day, end_day, include_micronutrients))
+    def fake_fetch(_email, _password, start_day, end_day):
+        calls.append((start_day, end_day))
         return {
             end_day.isoformat(): {
                 "daily_summary": {
@@ -908,20 +850,19 @@ def test_initial_range_runs_in_bounded_chunks_before_regular_sync(
             }
         }
 
+    _mock_domain_transport(monkeypatch, fake_fetch)
     assert run_scheduled_yazio_sync(
         connection.id,
-        fetcher=fake_fetch,
         now=datetime(2026, 7, 23, 10, tzinfo=UTC),
     ) is not None
     assert run_scheduled_yazio_sync(
         connection.id,
-        fetcher=fake_fetch,
         now=datetime(2026, 7, 23, 11, tzinfo=UTC),
     ) is not None
 
     assert calls == [
-        (date(2026, 7, 22), date(2026, 7, 23), True),
-        (date(2026, 7, 20), date(2026, 7, 21), True),
+        (date(2026, 7, 22), date(2026, 7, 23)),
+        (date(2026, 7, 20), date(2026, 7, 21)),
     ]
     db.expire_all()
     stored = db.get(YazioConnection, connection.id)
@@ -948,7 +889,7 @@ def test_explicit_range_history_is_chunked_and_replaces_prior_values(
     assert queued.id == connection.id
     calls: list[tuple[date, date]] = []
 
-    def fake_fetch(_email, _password, start_day, end_day, _include_micronutrients):
+    def fake_fetch(_email, _password, start_day, end_day):
         calls.append((start_day, end_day))
         return {
             end_day.isoformat(): {
@@ -958,8 +899,9 @@ def test_explicit_range_history_is_chunked_and_replaces_prior_values(
             }
         }
 
-    assert run_scheduled_yazio_sync(connection.id, fetcher=fake_fetch) is not None
-    assert run_scheduled_yazio_sync(connection.id, fetcher=fake_fetch) is not None
+    _mock_domain_transport(monkeypatch, fake_fetch)
+    assert run_scheduled_yazio_sync(connection.id) is not None
+    assert run_scheduled_yazio_sync(connection.id) is not None
     assert calls == [
         (date(2026, 7, 22), date(2026, 7, 23)),
         (date(2026, 7, 20), date(2026, 7, 21)),
@@ -1154,11 +1096,11 @@ def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
     _configure_key(monkeypatch)
     configure_yazio_connection(user, "owner@example.com", "yazio-password")
     monkeypatch.setattr(settings, "yazio_enabled", True)
-    monkeypatch.setattr(settings, "yazio_provider", "sdk")
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
 
-    def sdk_fetch(*_args, provider_mode: str | None = None, **_kwargs):
-        assert provider_mode == "sdk"
+    def sdk_fetch(email, password, start_day, end_day):
+        assert (email, password) == ("owner@example.com", "yazio-password")
+        assert (start_day, end_day) == (date(2026, 7, 23), date(2026, 7, 23))
         return {
             "days": {
                 "2026-07-23": {
@@ -1179,19 +1121,11 @@ def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
             },
         }
 
-    def forbidden_legacy_transport(*_args, **_kwargs):
-        raise AssertionError("SDK manual sync invoked legacy/exporter transport")
-
-    monkeypatch.setattr(
-        yazio_transport,
-        "fetch_yazio_payload_transport",
-        forbidden_legacy_transport,
-    )
     monkeypatch.setattr(
         yazio_sync,
         "fetch_yazio_domain_transport",
-        lambda *_args, **_kwargs: (
-            sdk_fetch(provider_mode="sdk"),
+        lambda email, password, start_day, end_day: (
+            sdk_fetch(email, password, start_day, end_day),
             YazioFoodDiary(
                 requested_start_day=date(2026, 7, 23),
                 requested_end_day=date(2026, 7, 23),
@@ -1234,53 +1168,40 @@ def test_sdk_sync_records_explicit_provenance_and_imports_aggregate_payload(
     assert batch.client_identifier == "yazio-sdk"
 
 
-def test_legacy_credential_validation_uses_configured_provider_without_sdk_secret(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("secret", ("", "   "))
+def test_credential_validation_requires_effective_sdk_configuration(
+    monkeypatch: pytest.MonkeyPatch, secret: str,
 ) -> None:
     monkeypatch.setattr(settings, "yazio_enabled", True)
-    monkeypatch.setattr(settings, "yazio_provider", "legacy")
-    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "")
-    captured: dict[str, str] = {}
-
-    def fake_validate(_email: str, _password: str, *, provider_mode: str) -> None:
-        captured["provider_mode"] = provider_mode
-
-    monkeypatch.setattr(yazio_sync, "validate_yazio_credentials_transport", fake_validate)
-
-    yazio_sync.validate_yazio_credentials("owner@example.com", "yazio-password")
-
-    assert captured["provider_mode"] == "legacy"
-
-def test_manual_sync_forces_sdk_v22_provider_mode(
-    db: Session,
-    user: User,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _configure_key(monkeypatch)
-    configure_yazio_connection(user, "owner@example.com", "yazio-password")
-    monkeypatch.setattr(settings, "yazio_provider", "legacy")
-    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "sdk-secret")
-    captured: dict[str, object] = {}
-
-    def fake_sync(*_args, **kwargs):
-        captured.update(kwargs)
-        return ImportSummary(
-            status="completed",
-            received=0,
-            inserted=0,
-            updated=0,
-            skipped=0,
-        )
-
-    monkeypatch.setattr(yazio_sync, "_sync_yazio_user_unlocked", fake_sync)
-    summary = run_manual_yazio_sync(
-        user.id,
-        sync_days=1,
-        now=datetime(2026, 7, 23, 8, tzinfo=UTC),
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", secret)
+    monkeypatch.setattr(
+        yazio_sync,
+        "validate_yazio_credentials_transport",
+        lambda *_args, **_kwargs: pytest.fail("validation reached SDK without config"),
     )
 
-    assert summary.status == "completed"
-    assert captured["provider_mode"] == "sdk"
+    with pytest.raises(YazioSdkNotConfigured, match="SDK"):
+        yazio_sync.validate_yazio_credentials("owner@example.com", "yazio-password")
+
+
+@pytest.mark.parametrize("operation_key", (None, "synthetic-validation-operation"))
+def test_credential_validation_uses_mode_free_sdk_transport(
+    monkeypatch: pytest.MonkeyPatch, operation_key: object | None,
+) -> None:
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", YAZIO_SDK_CLIENT_SECRET_DEFAULT)
+    credentials = []
+
+    def validate(email: str, password: str) -> None:
+        credentials.append((email, password))
+
+    monkeypatch.setattr(yazio_sync, "validate_yazio_credentials_transport", validate)
+
+    yazio_sync.validate_yazio_credentials(
+        "owner@example.com", "yazio-password", operation_key=operation_key,
+    )
+
+    assert credentials == [("owner@example.com", "yazio-password")]
 
 
 def test_manual_sync_uses_versioned_sdk_default_without_env_override(
@@ -1291,19 +1212,14 @@ def test_manual_sync_uses_versioned_sdk_default_without_env_override(
     _configure_key(monkeypatch)
     configure_yazio_connection(user, "owner@example.com", "yazio-password")
     monkeypatch.setattr(settings, "yazio_enabled", True)
-    monkeypatch.setattr(settings, "yazio_provider", "sdk")
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", YAZIO_SDK_CLIENT_SECRET_DEFAULT)
 
-    def fake_sync(*_args, **_kwargs):
-        return ImportSummary(
-            status="completed",
-            received=0,
-            inserted=0,
-            updated=0,
-            skipped=0,
-        )
-
-    monkeypatch.setattr(yazio_sync, "_sync_yazio_user_unlocked", fake_sync)
+    _mock_domain_transport(
+        monkeypatch,
+        lambda _email, _password, _start_day, end_day: {
+            end_day.isoformat(): {"daily_summary": {"meals": {}}},
+        },
+    )
 
     summary = run_manual_yazio_sync(
         user.id,
@@ -1324,7 +1240,7 @@ def test_manual_sync_rejects_missing_effective_sdk_configuration(
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "")
     monkeypatch.setattr(
         yazio_sync,
-        "_sync_yazio_user_unlocked",
+        "fetch_yazio_domain_transport",
         lambda *_args, **_kwargs: pytest.fail("manual sync reached provider without SDK config"),
     )
 
@@ -1349,16 +1265,11 @@ def test_scheduler_gate_is_separate_from_manual_sync(
     db.commit()
     monkeypatch.setattr(settings, "yazio_scheduler_enabled", False)
     monkeypatch.setattr(settings, "yazio_sdk_client_secret", "sdk-secret")
-    monkeypatch.setattr(
-        yazio_sync,
-        "_sync_yazio_user_unlocked",
-        lambda *_args, **_kwargs: ImportSummary(
-            status="completed",
-            received=0,
-            inserted=0,
-            updated=0,
-            skipped=0,
-        ),
+    _mock_domain_transport(
+        monkeypatch,
+        lambda _email, _password, _start_day, end_day: {
+            end_day.isoformat(): {"daily_summary": {"meals": {}}},
+        },
     )
 
     assert run_due_yazio_syncs(now=datetime(2026, 7, 23, 8, tzinfo=UTC)) == (0, 0)

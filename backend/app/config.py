@@ -26,12 +26,6 @@ YAZIO_SDK_USER_AGENT_DEFAULT = (
 )
 YAZIO_SDK_CLIENT_ID_DEFAULT = "3_5rbw4kehpugw8ogsc8ck8oo4ogswgckcskc04gcg8kk8k48ssw"
 YAZIO_SDK_CLIENT_SECRET_DEFAULT = '25gdtt1hvdi8gwowoww4oo88sgsw0oo04o0og0kkgwwks8k0k'
-YAZIO_LEGACY_DEPRECATION_MESSAGE = (
-    "The legacy YAZIO provider is deprecated. "
-    "Migrate to YAZIO_PROVIDER=sdk. "
-    "It will be removed no later than CaloGraph 1.0."
-)
-
 KNOWN_INSECURE_SECRETS = frozenset(
     {
         "development-session-secret-change-me-32",
@@ -238,8 +232,6 @@ class Settings(BaseSettings):
     )
     yazio_enabled: bool = False
     yazio_scheduler_enabled: bool = True
-    yazio_nutrition_domain_write_enabled: bool = False
-    yazio_provider: Literal["legacy", "sdk"] | None = None
     yazio_api_base_url: str = Field(
         default=YAZIO_API_BASE_URL_DEFAULT,
         min_length=1,
@@ -375,14 +367,6 @@ class Settings(BaseSettings):
         ).render_as_string(hide_password=False)
         return self
 
-    @field_validator("yazio_provider", mode="before")
-    @classmethod
-    def normalize_yazio_provider(cls, value: object) -> object:
-        if isinstance(value, str):
-            normalized = value.strip()
-            return normalized or None
-        return value
-
     @field_validator("withings_redirect_uri", mode="before")
     @classmethod
     def normalize_withings_redirect_uri(cls, value: object) -> object:
@@ -406,19 +390,6 @@ class Settings(BaseSettings):
         if value is None or (isinstance(value, str) and not value.strip()):
             return YAZIO_SDK_CLIENT_SECRET_DEFAULT
         return value
-
-    @model_validator(mode="after")
-    def require_yazio_provider_when_enabled(self) -> Settings:
-        if self.yazio_enabled and self.yazio_provider is None:
-            raise ValueError(
-                "YAZIO_PROVIDER is required when YAZIO_ENABLED is true.\n"
-                "This setting was introduced with CaloGraph v0.6.4.\n"
-                "Set YAZIO_PROVIDER=sdk (recommended) or "
-                "YAZIO_PROVIDER=legacy (deprecated compatibility provider). "
-                "The legacy provider will be removed no later than CaloGraph 1.0."
-            )
-        return self
-
 
     @field_validator("raw_payload_retention_days")
     @classmethod
@@ -681,11 +652,6 @@ class Settings(BaseSettings):
         if self.calograph_public_url not in origins:
             origins.append(self.calograph_public_url)
         return origins
-
-
-def warn_legacy_yazio_provider(logger: logging.Logger) -> None:
-    if settings.yazio_provider == "legacy":
-        logger.warning(YAZIO_LEGACY_DEPRECATION_MESSAGE)
 
 
 @lru_cache

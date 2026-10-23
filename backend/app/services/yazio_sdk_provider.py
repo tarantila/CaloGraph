@@ -17,7 +17,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import partial
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import httpx
 from yazio_sdk import AuthenticatedClient, Client  # type: ignore[import-untyped]
@@ -938,8 +938,6 @@ def _fetch_weight_range(
 class YazioSdkProvider:
     """Map safe v22 SDK responses into the legacy parser envelope."""
 
-    mode: Literal["sdk"] = "sdk"
-
     def validate_credentials(self, email: str, password: str) -> None:
         client = _new_client()
         try:
@@ -1110,9 +1108,7 @@ class YazioSdkProvider:
         password: str,
         start_day: date,
         end_day: date,
-        include_micronutrients: bool,
     ) -> YazioProviderResult:
-        del include_micronutrients
         nutrient_context = _context(
             "daily_nutrients", "daily_nutrients", "Response[DailyNutrients]"
         )
@@ -1195,7 +1191,6 @@ class YazioSdkProvider:
                 payload={"days": days, "weight": weight},
                 metadata=YazioProviderMetadata(
                     micronutrient_complete=False,
-                    provider_mode="sdk",
                 ),
             )
         finally:

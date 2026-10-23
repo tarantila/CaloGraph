@@ -4,7 +4,6 @@ services:
       E2E_VERIFICATION_DATE: ${E2E_VERIFICATION_DATE}
       GOOGLE_HEALTH_ENABLED: "true"
       YAZIO_ENABLED: "true"
-      YAZIO_PROVIDER: "sdk"
       YAZIO_SCHEDULER_ENABLED: "false"
       INITIAL_ADMIN_SETUP_ENABLED: "false"
   yazio-scheduler:

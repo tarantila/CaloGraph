@@ -3,46 +3,36 @@
 ## Context
 
 YAZIO currently provides no documented public export API for this use case.
-CaloGraph therefore isolates the integration in its own adapter. Analytics and
-the database do not depend on the concrete exporter; if its format or interface
-changes, only the adapter should need adjustment.
+CaloGraph isolates direct access behind its own adapter and uses only the
+pinned community `yazio-sdk==0.4.0` integration with YAZIO API v22. Enable it
+with `YAZIO_ENABLED=true`; there is no provider selector or Nutrition Domain
+write rollout switch.
 
-The stable direct-sync provider is `sdk-v22`, backed by the pinned
-`yazio-sdk==0.4.0` and the YAZIO API v22. It maps the v22 aggregate endpoint
-to energy, carbohydrates, protein, and fat and reads optional activity energy
-from the daily-summary widget. It does not provide a safe daily micronutrient
-or fiber aggregate, so
-this compatibility payload remains explicitly incomplete and does not advance
-`last_micronutrient_sync_at`.
+Every direct manual or scheduled sync uses the user's configured, encrypted
+YAZIO connection. It retrieves both:
 
-The normal SDK manual and scheduled sync use the separate `fetch_food_diary`
-path. It reads consumed items, simple products, product profiles, and daily
-summaries; known additional nutrient IDs are preserved and mapped through the
-canonical nutrient catalog.
+- A compatibility payload with aggregate energy, carbohydrates, protein, fat,
+  optional activity energy, and optional body weight for existing HealthSample
+  consumers.
+- A food diary with consumed items, simple products, product profiles, and
+  daily summaries for canonical Nutrition Domain evidence and projections.
 
-`legacy-v15`, backed by `yazio-exporter==0.2.0`, remains available as a
-deprecated compatibility provider while its micronutrient and fiber coverage
-is still needed. It will be removed no later than CaloGraph 1.0.
+The aggregate endpoint does not provide a safe daily micronutrient or fiber
+aggregate. Diary evidence can preserve supported nutrients actually supplied
+by YAZIO, but does not establish complete daily micronutrient coverage.
+`last_micronutrient_sync_at` remains unchanged, including after a successful
+SDK sync. Missing provider values are not synthesized.
 
-When direct YAZIO synchronization is enabled, `YAZIO_PROVIDER` must be set
-explicitly:
-
-```dotenv
-YAZIO_ENABLED=true
-YAZIO_PROVIDER=sdk
-```
-
-Use `YAZIO_PROVIDER=legacy` only as a temporary compatibility rollback. The
-application rejects an enabled installation with a missing or empty provider,
-and rejects every value other than `sdk` or `legacy`. Disabled installations
-may omit the provider.
+Compatible `days.json` and `nutrients.json` uploads remain independent of direct
+access: neither a configured connection nor an installed SDK/exporter runtime
+is required to parse or import those files.
 
 ### Operator configuration
 
 Normal operator configuration consists of:
 
 - `YAZIO_ENABLED`
-- `YAZIO_PROVIDER`
+- a personal connection configured through CaloGraph
 - optional rolling-sync defaults `YAZIO_SYNC_INTERVAL_HOURS` and
   `YAZIO_SYNC_DAYS`
 
@@ -77,24 +67,29 @@ If YAZIO responds with `403 {"error":"version_blocked"}`, CaloGraph reports:
 akzeptiert. Prüfe, ob eine neuere CaloGraph-Version verfügbar ist.” Users
 should update CaloGraph rather than editing User-Agent values.
 
-For internal provenance, each newly created direct-sync `ImportBatch` records
-`connector_variant` as `sdk-v22` or `legacy-v15`. The fachliche
-`source_type=yazio_export_v1`, `source_name=YAZIO`, stable
-`source_identifier`, `external_sample_id`, and `client_identifier=yazio-exporter`
-remain unchanged. Existing batches keep their nullable legacy-compatible value.
-The connector variant is operational metadata and is intentionally not added to
-the normal imports UI or the portable export schema.
+Each new direct-sync `ImportBatch` records `connector_variant=sdk-v22` and
+`client_identifier=yazio-sdk`. The compatibility samples retain
+`source_type=yazio_export_v1`, `source_name=YAZIO`, the connection's stable
+`source_identifier`, and stable daily `external_sample_id` values.
+Canonical evidence is scoped to the CaloGraph user and YAZIO connection
+(`source_instance_id`).
 
-Before enabling SDK mode in a deployment, perform the controlled staging
-sequence below without putting credentials in logs. This document does not
-execute or authorize live YAZIO requests.
+Historical batches and HealthSamples are not rewritten by the cutover:
+existing `legacy-v15`, nullable connector variants, and
+`client_identifier=yazio-exporter` remain accurate provenance. File imports
+do not claim an SDK connector variant. Connector variants are operational
+metadata, not a new normal-imports UI field or portable export field.
+
+The staging procedure below is optional and requires separate, explicit
+authorization for the staging target and test account. This document neither
+executes nor authorizes live YAZIO requests.
 
 ### Controlled live verification sequence (later, staging only)
 
-This sequence is intentionally not run as part of development or CI. Use only
-with a disposable YAZIO test account and a staging CaloGraph instance. Record
-status codes and bounded response shapes, never credentials, access tokens, or
-raw health payloads:
+Do not run this sequence during development or CI. Run it only after explicit
+authorization, with a disposable YAZIO test account and an isolated staging
+CaloGraph instance. Record status codes and bounded response shapes, never
+credentials, access tokens, or raw health payloads:
 
 1. **TCP preflight:** verify only DNS resolution and a TCP connection to
    `yzapi.yazio.com:443`; do not send an HTTP request yet.
@@ -106,34 +101,18 @@ raw health payloads:
 4. **Response validation:** confirm the expected status, bounded body size,
    ISO dates, optional fields, finite non-negative numeric values, and the
    `403 {"error":"version_blocked"}` distinction. Do not persist the response.
-5. **One-day read:** repeat the provider through the staging CaloGraph worker
-   for exactly one harmless day and compare only normalized metrics.
-6. **Small historical period:** request a bounded multi-day range, compare it to
-   an exporter fixture, and watch rate-limit, timeout, circuit, and import
-   behavior.
-7. **Historical sync last:** only after the preceding checks pass, run the
-   initial historical synchronization for one test account. Keep
-   `YAZIO_PROVIDER=legacy` as the immediate rollback.
-
-## Upgrade to CaloGraph v0.6.4
-
-Existing installations with enabled direct YAZIO synchronization must add an
-explicit provider selection before upgrading:
-
-```dotenv
-YAZIO_PROVIDER=sdk
-```
-
-For a temporary rollback or compatibility window, use:
-
-```dotenv
-YAZIO_PROVIDER=legacy
-```
-
-Normal operators do not need to configure API URLs, User-Agent strings, SDK
-client credentials, or timeout, worker, and circuit-breaker settings. SDK mode
-uses CaloGraph's versioned provider defaults unless a maintainer supplies an
-optional environment override.
+5. **One-day application sync:** use a configured staging connection for
+   exactly one harmless day. Confirm compatibility import, canonical evidence,
+   projection replay, and completion status in that order, comparing only
+   normalized metrics.
+6. **Small historical period:** request a bounded multi-day range and compare
+   it to synthetic compatible-file expectations. Observe pending replay,
+   cursor progress, rate limits, timeout, circuit, and import behavior.
+7. **Historical sync last:** only after the preceding checks pass and within
+   the authorized scope, run the initial historical synchronization for the
+   test account. Use `YAZIO_ENABLED=false` as the operational kill switch if
+   necessary; it preserves stored data and credentials. There is no retired
+   direct-provider rollback path.
 
 ## Automatic synchronization
 
@@ -163,9 +142,9 @@ or environment configuration is required.
 
 ### Upload `days.json` or `nutrients.json`
 
-1. Use
-   [`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter) to
-   create `days.json` and, optionally, `nutrients.json`.
+1. Obtain a compatible `days.json` or `nutrients.json` file. The external
+   [`yazio-exporter`](https://github.com/aleksandr-bogdanov/yazio-exporter)
+   is one optional file producer, not a CaloGraph runtime requirement.
 2. Open **Importe** in CaloGraph.
 3. Select and import the files one after another.
 
@@ -178,34 +157,34 @@ The adapter supports the exporter's original date object, a wrapper shaped as
 `{ "days": { ... } }`, and the original `nutrients.json`. It also accepts
 simple daily objects containing `energy`, `protein`, `carb`, and `fat`.
 
-### Retrieve data directly from the backend
+### Synchronize a configured connection from the CLI
+
+First configure the personal connection as described below. `sync-yazio`
+requires that enabled connection and uses its encrypted credentials, stable
+source identifier, user locks, and the same canonical sync flow as the UI and
+scheduler. It does not accept ad-hoc email/password or source-identifier
+overrides and does not prompt for credentials.
 
 ```bash
-docker compose exec backend python -m app.cli sync-yazio \
-  --username admin \
-  --email name@example.com
+docker compose exec backend python -m app.cli sync-yazio --username admin
 ```
 
-Without dates, the command retrieves the previous 60 days including today. Use
-an explicit range when required:
+Without date options, the CLI retrieves the previous 60 days including today.
+Use `--days` for a different trailing window (1–366 days), or an explicit
+inclusive range of at most 366 days:
 
 ```bash
 docker compose exec backend python -m app.cli sync-yazio \
+  --username admin --days 7
+docker compose exec backend python -m app.cli sync-yazio \
   --username admin \
-  --email name@example.com \
   --from-date 2026-01-01 \
   --end-date 2026-03-31
 ```
 
-The YAZIO password is requested interactively without echo. CaloGraph stores
-neither the password nor the access token for this manual operation. Unless
-`--source-identifier` is supplied, manual retrieval uses
-`yazio:<CaloGraph user UUID>`, the same stable source identifier as scheduled
-synchronization. It is based only on CaloGraph's random internal user UUID;
-neither the YAZIO email address nor an unkeyed digest of it is stored in health
-samples. An explicit `--source-identifier` can separate the provenance of
-multiple YAZIO accounts under one CaloGraph user; because it is persisted with
-the samples, it must be stable and non-sensitive.
+For longer ranges, queue `sync-yazio-history` instead. The stable default
+source identifier is `yazio:<CaloGraph user UUID>`; neither the YAZIO email
+address nor an unkeyed digest of it is stored in health samples.
 
 ### Configure scheduled synchronization
 
@@ -283,64 +262,121 @@ Each user has at most one personal YAZIO connection. Imported samples, import
 batches, and synchronization status remain strictly associated with that
 CaloGraph account through `user_id`.
 
-## Mapping
+## Persistence, replay, and source priority
 
-| YAZIO field | CaloGraph metric | Unit |
+Direct UI, CLI, and scheduled synchronization all use this ordering:
+
+1. Under the existing per-user operation locks, replay pending canonical runs
+   for that user and connection, oldest first, before fetching new data.
+2. Retrieve the SDK compatibility payload and food diary in the bounded worker.
+   A fetch failure does not persist a new compatibility import or diary run.
+3. Parse and persist compatibility HealthSamples and the import batch, then
+   ingest canonical diary evidence in the **same database transaction**.
+   Persist the ingestion run with `projection_pending=true` and commit.
+   A failure before this commit rolls back both paths.
+4. Bootstrap source priority without replacing existing policies, then rebuild
+   replay dates from committed evidence, requested-range observations, and
+   affected event revisions. Each day uses an independent clean session.
+5. Only after replay returns successfully, atomically clear the run's pending
+   marker and update connection success/scheduling state and, for historical
+   work, advance the cursor or mark the job completed.
+
+Projection or finalization failure does not erase already committed evidence
+or compatibility samples. Earlier successfully rebuilt days can remain visible
+when a later day fails. The run remains pending until acknowledged; the next
+attempt replays durable evidence idempotently before fetching another payload.
+A failed pending replay stops that drain so newer runs cannot overtake it.
+Recovering an older run alone does not mark a current sync successful or
+advance a historical cursor: the requested range must still complete and
+finalize. Historical chunks run from the newest end backwards, at most 366
+days per chunk; a failed chunk keeps its cursor for retry.
+
+For non-authentication sync failures, the next attempt is scheduled after the
+smaller of the connection interval and 60 minutes, plus configured jitter.
+Authentication failures disable the connection's schedule until credentials
+are verified and saved again. Individual SDK requests are not automatically
+retried. Local ingestion, projection, or acknowledgement errors are not
+classified as provider failures and do not open the shared provider circuit.
+
+Source priority is a **downstream projection decision**, not a switch deciding
+whether SDK evidence is written. With no policy and just one available source,
+bootstrap can establish that source; with several sources, explicit selection
+is required. Existing user policies are preserved. Replay selects the policy
+effective at an explicit, timezone-aware replay timestamp (`policy_at`), not at
+the diary date or the original fetch time. Pending drains share one current
+timestamp; a later retry can therefore use a newly effective policy. A
+future-only policy is not applied early.
+
+A missing effective policy yields `policy_missing` for affected days rather
+than inventing a source selection. This is not a replay exception and can
+still allow sync finalization; successful fetching does not imply that every
+day has a selected daily projection. Canonical evidence stays available for
+later policy-aware rebuilds.
+
+Existing historical HealthSamples are not converted to canonical diary
+evidence automatically. To populate canonical data for an older period, queue
+an explicit historical SDK sync; its cursor and pending-replay rules are the
+same as for new data.
+
+## Mapping and coverage
+
+### Compatibility HealthSamples and compatible files
+
+| Input | CaloGraph metric | Unit |
 |---|---|---|
-| Sum of `energy.energy` across all meals | `dietary_energy_kcal` | kcal |
+| SDK daily aggregate `energy` or compatible meal `energy.energy` totals | `dietary_energy_kcal` | kcal |
+| SDK/compatible daily `protein`, `carb`, `fat` | `protein_g`, `carbohydrates_g`, `fat_g` | g |
 | Daily `activity_energy`, when supplied | `active_energy_kcal` | kcal |
-| Daily body weight from SDK `/v22/user/bodyvalues/weight/last` (direct mode) or exporter `/v15/user/bodyvalues/weight/last` (legacy compatibility) | `weight_kg` | kg |
-| Sum of `nutrient.protein` | `protein_g` | g |
-| Sum of `nutrient.fat` | `fat_g` | g |
-| `vitamin.a` through `vitamin.k` | 13 canonical vitamin metrics | mg or µg |
-| `mineral.calcium` through `mineral.choline` | 13 canonical mineral metrics | mg or µg |
+| SDK `/v22/user/bodyvalues/weight/last` or compatible weight entries | `weight_kg` | kg |
+| Compatible `nutrients.json` vitamin and mineral entries | 26 canonical vitamin/mineral metrics | mg or µg |
 
-The aggregate `nutrients-daily` adapter maps `energy`, `protein`, `carb`, and
-`fat`; it is not the normal canonical Nutrition Domain sync path. That path
-preserves numeric additional nutrient fields whose YAZIO IDs exist in the
-canonical catalog. Product-profile micronutrients become event evidence only
-when linked to a real consumed product, scaled by its provider-supplied amount.
-Simple-product and daily-summary nutrient fields remain direct provider
-observations. Missing values remain missing, and a product profile without a
-matching consumed event does not contribute daily intake. Micronutrients are
-not added to `DAILY_PROJECTION_METRICS`.
+The direct aggregate payload is only the macro/optional activity/weight
+compatibility path; it is not the diary Nutrition Domain. Steps and water are
+not imported through this path. Activity energy is credited only after the
+user selects YAZIO for the applicable target version. Re-fetching stable
+daily IDs updates values idempotently; a day omitted by YAZIO is not a
+deletion. SDK weight is normalized to kg with
+`<local-date>:weight_kg` as its external ID and uses CaloGraph's bounded
+authenticated HTTP transport.
 
-YAZIO's specific-nutrient endpoint returns these vitamin and mineral values in
-grams. The adapter preserves that source unit and converts each value to the
-canonical mg or µg unit before storing and analyzing it.
+Compatible `nutrients.json` retains the historical specific-nutrient format:
+vitamin/mineral values supplied in grams are converted to the canonical mg or
+µg unit. This file-format support is not a direct-runtime call to the retired
+exporter's separate nutrient endpoints. Files create compatibility
+HealthSamples, not consumed-event/product diary evidence. The compatibility
+adapter does not persist meals, products, recipes, profile fields, YAZIO
+targets, or the complete raw file even when general raw-payload retention is
+enabled. Historical HealthSamples retain these semantics.
 
-In the legacy-v15 HealthSample compatibility path, the adapter imports daily
-`activity_energy` as `active_energy_kcal` when the exporter supplies it. It is
-credited only after the user selects YAZIO for the applicable target version.
-Steps and water are not imported. Meals, products, recipes, profile fields, and
-YAZIO targets are not persisted in that legacy path. Even when general
-raw-payload retention is enabled, the adapter does not store the complete
-export file. Re-fetching the same day updates stable daily values idempotently.
+### Canonical diary evidence
 
-The direct SDK Weight transport uses
-`https://yzapi.yazio.com/v22/user/bodyvalues/weight/last` through CaloGraph's
-bounded authenticated SDK HTTP client and parses the response in CaloGraph.
-It is independent of `yazio-exporter`; values are normalized to kg and use
-`<local-date>:weight_kg` as their stable external ID, so a corrected value
-updates that sample. A day omitted by YAZIO is not treated as a deletion.
-Only explicit `YAZIO_PROVIDER=legacy` uses the pinned exporter/v15-compatible
-transport for legacy Weight and micronutrient compatibility. The exporter is
-not used by SDK Weight synchronization.
-Micronutrients come from the 26 separate daily endpoints provided by
-`yazio-exporter==0.2.0`. Missing product details can therefore look like low
-intake. The analysis reports data coverage separately and treats values as a
-reliable orientation only at 70 percent coverage or above. EU NRVs from Annex
-XIII of Regulation (EU) No 1169/2011 are a neutral adult reference, not a
-medical diagnosis.
+The SDK diary path preserves consumed products, simple products, linked
+product profiles, and daily summaries as bounded canonical observations and
+consumption evidence. Numeric additional nutrient fields whose YAZIO IDs are
+known to the canonical catalog are preserved and mapped. Product-profile
+nutrients contribute to event evidence only when linked to a real consumed
+product and scaled by its provider-supplied amount. Unlinked profiles do not
+contribute daily intake. Simple-product and daily-summary fields remain
+direct provider observations; missing values remain missing.
+
+Daily Nutrition Domain projections currently cover energy, protein,
+carbohydrates, fat, fiber, sugar, and saturated fat.
+Micronutrients are not added to `DAILY_PROJECTION_METRICS`; supported diary
+micronutrient evidence is not a promise of complete daily micronutrient
+coverage and does not advance `last_micronutrient_sync_at`.
+
+Missing product details can look like low intake. Analysis reports coverage
+separately and treats values as a reliable orientation only at 70 percent
+coverage or above. EU NRVs from Annex XIII of Regulation (EU) No 1169/2011 are
+a neutral adult reference, not a medical diagnosis.
 
 ## Security and operational limits
 
-- Direct retrieval uses the explicitly selected provider. Legacy uses the
-  pinned `yazio-exporter==0.2.0` dependency; SDK uses the pinned community
-  `yazio-sdk==0.4.0` provider.
-- CaloGraph owns the network transport around both providers. Every request
-  uses explicit connect/read timeouts, redirects are rejected, and
-  authentication is never retried automatically.
+- Direct retrieval uses only the pinned community `yazio-sdk==0.4.0`
+  integration. External compatible-file producers are not runtime providers.
+- CaloGraph owns the bounded network transport. Every request uses explicit
+  connect/read timeouts, redirects are rejected, and authentication is never
+  retried automatically.
 - The SDK provider uses `httpx.Timeout`, rejects redirects, and uses a bounded
   request worker pool without unbounded parallelism. It calls generated
   `sync_detailed` operations so status and `Retry-After` can be classified
@@ -369,10 +405,10 @@ medical diagnosis.
 - Set `YAZIO_ENABLED=false` to disable credential setup, manual retrieval, and
   scheduled synchronization immediately. Existing encrypted credentials
   remain stored so the feature can be re-enabled later.
-- Manual retrieval sends credentials only to the YAZIO endpoint and does not
-  persist them. Scheduled sync stores them using authenticated Fernet
-  encryption, with the key kept in a separate host file and delivered through
-  a service-scoped secret mount.
+- Direct UI, CLI, and scheduler retrieval all use the configured connection's
+  credentials, stored with authenticated Fernet encryption. The key is kept in
+  a separate host file and delivered through a service-scoped secret mount.
+  Access tokens are not persisted.
 - Stored source identifiers use only CaloGraph's random internal user UUID.
   Neither the YAZIO email address nor an unkeyed digest of it is stored or
   written to logs.

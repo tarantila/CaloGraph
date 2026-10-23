@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.nutrition.models import (
     NutritionConsumptionEvent,
     NutritionIngestionRun,
+    NutritionProjectionHead,
     NutritionSourceObservation,
 )
 from app.nutrition.projection.contracts import ProjectionPersistenceStatus
@@ -39,11 +40,83 @@ _RESOLUTION_ERROR = "nutrition projection lifecycle resolution failed for ingest
 _REBUILD_ERROR = "nutrition projection lifecycle rebuild failed for ingestion run"
 
 
+def _load_run(
+    db: Session, *, user_id: UUID, ingestion_run_id: UUID
+) -> NutritionIngestionRun:
+    run = db.scalar(
+        select(NutritionIngestionRun).where(
+            NutritionIngestionRun.id == ingestion_run_id,
+            NutritionIngestionRun.user_id == user_id,
+        )
+    )
+    if run is None or not run.provider_key or run.source_instance_id is None:
+        raise NutritionProjectionLifecycleError(_MISSING_RUN_ERROR)
+    return run
+
+
+def _validate_observation(
+    db: Session,
+    observation: NutritionSourceObservation,
+    *,
+    run: NutritionIngestionRun,
+) -> None:
+    lineage_run = _load_run(
+        db, user_id=run.user_id, ingestion_run_id=observation.ingestion_run_id
+    )
+    if (
+        observation.user_id != run.user_id
+        or observation.provider_key != run.provider_key
+        or observation.source_instance_id != run.source_instance_id
+        or lineage_run.provider_key != run.provider_key
+        or lineage_run.source_instance_id != run.source_instance_id
+    ):
+        raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+
+
+def _validate_event(
+    db: Session, event: NutritionConsumptionEvent, *, run: NutritionIngestionRun
+) -> None:
+    observation = db.scalar(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.id == event.source_observation_id,
+            NutritionSourceObservation.user_id == run.user_id,
+        )
+    )
+    if (
+        observation is None
+        or event.user_id != run.user_id
+        or event.provider_key != run.provider_key
+        or event.source_instance_id != run.source_instance_id
+    ):
+        raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+    _validate_observation(db, observation, run=run)
+
+
+def _add_event_dates(
+    db: Session,
+    event: NutritionConsumptionEvent,
+    *,
+    run: NutritionIngestionRun,
+    dates: set[date],
+) -> None:
+    _validate_event(db, event, run=run)
+    if event.local_date is not None:
+        dates.add(event.local_date)
+    if not isinstance(event.revision, int) or event.revision < 1:
+        raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+    if event.supersedes_event_id is None:
+        if event.supersedes_revision is not None or event.revision != 1:
+            raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+    else:
+        _load_ancestor(db, event, user_id=run.user_id, run=run, dates=dates)
+
+
 def _load_ancestor(
     db: Session,
     event: NutritionConsumptionEvent,
     *,
     user_id: UUID,
+    run: NutritionIngestionRun,
     dates: set[date],
 ) -> None:
     """Add every superseded event date, rejecting unsafe ancestry."""
@@ -82,6 +155,7 @@ def _load_ancestor(
             raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
         if ancestor.id in visited:
             raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+        _validate_event(db, ancestor, run=run)
         if ancestor.local_date is not None:
             dates.add(ancestor.local_date)
         cursor = ancestor
@@ -102,25 +176,18 @@ def resolve_affected_nutrition_dates(
     also include every valid superseded ancestor date so a moved event rebuilds
     both its old and current day.
     """
-    run = db.scalar(
-        select(NutritionIngestionRun).where(
-            NutritionIngestionRun.id == ingestion_run_id,
-            NutritionIngestionRun.user_id == user_id,
+    run = _load_run(db, user_id=user_id, ingestion_run_id=ingestion_run_id)
+    dates: set[date] = set()
+    observations = db.scalars(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.ingestion_run_id == ingestion_run_id,
+            NutritionSourceObservation.user_id == user_id,
         )
     )
-    if run is None:
-        raise NutritionProjectionLifecycleError(_MISSING_RUN_ERROR)
-
-    dates: set[date] = {
-        observation.local_date
-        for observation in db.scalars(
-            select(NutritionSourceObservation).where(
-                NutritionSourceObservation.ingestion_run_id == ingestion_run_id,
-                NutritionSourceObservation.user_id == user_id,
-            )
-        )
-        if observation.local_date is not None
-    }
+    for observation in observations:
+        _validate_observation(db, observation, run=run)
+        if observation.local_date is not None:
+            dates.add(observation.local_date)
 
     events = db.scalars(
         select(NutritionConsumptionEvent)
@@ -136,16 +203,77 @@ def resolve_affected_nutrition_dates(
         )
     ).all()
     for event in events:
-        if event.local_date is not None:
-            dates.add(event.local_date)
-        if not isinstance(event.revision, int) or event.revision < 1:
-            raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
-        if event.supersedes_event_id is None:
-            if event.supersedes_revision is not None or event.revision != 1:
-                raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
-        else:
-            _load_ancestor(db, event, user_id=user_id, dates=dates)
+        _add_event_dates(db, event, run=run, dates=dates)
 
+    return tuple(sorted(dates))
+
+
+def resolve_replay_nutrition_dates(
+    db: Session,
+    *,
+    user_id: UUID,
+    ingestion_run_id: UUID,
+) -> tuple[date, ...]:
+    """Replay persisted range evidence and heads, plus the run's affected dates.
+
+    Heads are user/date scoped and deliberately include READY projections:
+    their evidence can have changed since the last successful projection.
+    In-range evidence spans all providers/sources for this user, with each
+    observation and event validated against its own ingestion-run lineage.
+    """
+    run = _load_run(db, user_id=user_id, ingestion_run_id=ingestion_run_id)
+    start, end = run.requested_start_date, run.requested_end_date
+    if start is None or end is None or start > end:
+        raise NutritionProjectionLifecycleError("nutrition ingestion run requested range is invalid")
+    dates = set(resolve_affected_nutrition_dates(
+        db, user_id=user_id, ingestion_run_id=ingestion_run_id
+    ))
+    observations = db.scalars(
+        select(NutritionSourceObservation).where(
+            NutritionSourceObservation.user_id == user_id,
+            NutritionSourceObservation.local_date.between(start, end),
+        )
+    )
+    for observation in observations:
+        if observation.local_date is None:
+            continue
+        observation_run = _load_run(
+            db, user_id=user_id, ingestion_run_id=observation.ingestion_run_id
+        )
+        _validate_observation(db, observation, run=observation_run)
+        dates.add(observation.local_date)
+
+    events = db.scalars(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.user_id == user_id,
+            NutritionConsumptionEvent.local_date.between(start, end),
+        )
+    )
+    for event in events:
+        if event.local_date is None:
+            continue
+        event_observation = db.scalar(
+            select(NutritionSourceObservation).where(
+                NutritionSourceObservation.id == event.source_observation_id,
+                NutritionSourceObservation.user_id == user_id,
+            )
+        )
+        if event_observation is None:
+            raise NutritionProjectionLifecycleError(_MALFORMED_ANCESTRY_ERROR)
+        event_run = _load_run(
+            db, user_id=user_id, ingestion_run_id=event_observation.ingestion_run_id
+        )
+        # Historical evidence contributes only its in-range date. Validate its
+        # ancestry without extending the range; only this run's affected-date
+        # resolver contributes superseded dates outside the requested bounds.
+        _add_event_dates(db, event, run=event_run, dates=set())
+        dates.add(event.local_date)
+    dates.update(db.scalars(
+        select(NutritionProjectionHead.local_date).where(
+            NutritionProjectionHead.user_id == user_id,
+            NutritionProjectionHead.local_date.between(start, end),
+        )
+    ))
     return tuple(sorted(dates))
 
 
@@ -157,13 +285,41 @@ def rebuild_affected_nutrition_days(
     policy_at: datetime,
 ) -> NutritionProjectionLifecycleResult:
     """Resolve and rebuild every affected nutrition date independently."""
+    return _rebuild_nutrition_days(
+        session_factory=session_factory, user_id=user_id, ingestion_run_id=ingestion_run_id,
+        policy_at=policy_at, resolver=resolve_affected_nutrition_dates,
+    )
+
+
+def rebuild_replay_nutrition_days(
+    *,
+    session_factory: Callable[[], Session],
+    user_id: UUID,
+    ingestion_run_id: UUID,
+    policy_at: datetime,
+) -> NutritionProjectionLifecycleResult:
+    """Rebuild every persisted replay date in independent clean sessions."""
+    return _rebuild_nutrition_days(
+        session_factory=session_factory, user_id=user_id, ingestion_run_id=ingestion_run_id,
+        policy_at=policy_at, resolver=resolve_replay_nutrition_dates,
+    )
+
+
+def _rebuild_nutrition_days(
+    *,
+    session_factory: Callable[[], Session],
+    user_id: UUID,
+    ingestion_run_id: UUID,
+    policy_at: datetime,
+    resolver: Callable[..., tuple[date, ...]],
+) -> NutritionProjectionLifecycleResult:
     if policy_at.tzinfo is None or policy_at.utcoffset() is None:
         raise ValueError("policy_at must be timezone-aware")
 
     resolver_session = session_factory()
     try:
         try:
-            affected_dates = resolve_affected_nutrition_dates(
+            affected_dates = resolver(
                 resolver_session,
                 user_id=user_id,
                 ingestion_run_id=ingestion_run_id,
@@ -177,7 +333,7 @@ def rebuild_affected_nutrition_days(
     finally:
         resolver_session.close()
 
-    sorted_dates = tuple(sorted(affected_dates))
+    sorted_dates = tuple(sorted(set(affected_dates)))
     created_dates: list[date] = []
     unchanged_dates: list[date] = []
     policy_missing_dates: list[date] = []

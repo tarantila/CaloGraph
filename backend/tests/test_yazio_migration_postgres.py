@@ -13,7 +13,13 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from app.config import settings
 from app.database import engine as application_engine
+from app.services import yazio_sync
 from app.services.credential_crypto import encrypt_credential
+from app.services.yazio_provider import (
+    YazioDailyNutrientSummary,
+    YazioFoodDiary,
+    YazioNutrientValues,
+)
 from app.services.yazio_sync import run_scheduled_yazio_sync
 
 POSTGRES_TESTS_ENABLED = (
@@ -466,13 +472,15 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
         }
 
 
+        monkeypatch.setattr(settings, "yazio_enabled", True)
+        monkeypatch.setattr(settings, "yazio_sdk_client_secret", "test-sdk-secret")
+
         def fetch_existing_sample(
             email: str,
             password: str,
-            _start_day,
-            _end_day,
-            _include_micronutrients: bool,
-        ) -> dict[str, object]:
+            start_day: date,
+            end_day: date,
+        ) -> tuple[dict[str, object], YazioFoodDiary]:
             assert email == "legacy-owner@example.com"
             assert password == "legacy-yazio-password"
             return {
@@ -485,11 +493,26 @@ def test_legacy_yazio_identifiers_are_migrated_without_duplicates(monkeypatch) -
                         }
                     }
                 }
-            }
+            }, YazioFoodDiary(
+                requested_start_day=start_day,
+                requested_end_day=end_day,
+                consumed_products=(),
+                consumed_simple_products=(),
+                product_profiles=(),
+                daily_summaries=(
+                    YazioDailyNutrientSummary(
+                        local_date=date(2026, 7, 23),
+                        nutrients=YazioNutrientValues(energy=Decimal("1850")),
+                        energy_goal=None,
+                    ),
+                ),
+            )
 
+        monkeypatch.setattr(
+            yazio_sync, "fetch_yazio_domain_transport", fetch_existing_sample,
+        )
         summary = run_scheduled_yazio_sync(
             connection_id,
-            fetcher=fetch_existing_sample,
             now=datetime(2026, 7, 23, 12, tzinfo=UTC),
         )
         assert summary is not None

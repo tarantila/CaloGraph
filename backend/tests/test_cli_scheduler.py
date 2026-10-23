@@ -137,7 +137,6 @@ def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypat
     db.commit()
     expired_id = expired.id
     monkeypatch.setattr(type(cli.settings), "validate_runtime_security", lambda _self, _purpose: None)
-    monkeypatch.setattr(cli, "warn_legacy_yazio_provider", lambda _logger: None)
     monkeypatch.setattr(cli, "_touch_yazio_scheduler_heartbeat", lambda: None)
     monkeypatch.setattr(cli, "run_due_yazio_syncs", lambda **_kwargs: (0, 0))
     monkeypatch.setattr(cli.time, "monotonic", lambda: 3601.0)

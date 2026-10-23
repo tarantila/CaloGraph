@@ -7,27 +7,14 @@ machine-readable inventory for each release image.
 
 Runtime images also include the license, copyright, and NOTICE files shipped
 by their installed production dependencies below `/licenses/backend` or
-`/licenses/frontend`. The explicit YAZIO dependency license texts are stored
-at `/licenses/yazio-exporter-MIT.txt` and `/licenses/yazio-sdk-MIT.txt` in the
-backend image.
-
-## yazio-exporter
-
-CaloGraph installs `yazio-exporter` as an external Python dependency and uses
-its public API for the legacy provider. CaloGraph does not own or maintain that
-project and does not vendor its source code.
-
-- Project: <https://github.com/aleksandr-bogdanov/yazio-exporter>
-- Package: <https://pypi.org/project/yazio-exporter/>
-- Copyright: Alexander Bogdanov and contributors
-- License: MIT
-- License text: [THIRD_PARTY_LICENSES/yazio-exporter-MIT.txt](THIRD_PARTY_LICENSES/yazio-exporter-MIT.txt)
+`/licenses/frontend`. The explicit YAZIO SDK license text is stored
+at `/licenses/yazio-sdk-MIT.txt` in the backend image.
 
 ## yazio-sdk
 
-CaloGraph pins `yazio-sdk==0.4.0` for its opt-in v22 provider. The generated
-client is used only behind the CaloGraph provider boundary and is not exposed
-as an application API.
+CaloGraph pins `yazio-sdk==0.4.0` for its sole direct YAZIO integration.
+The generated client is used only behind the CaloGraph provider boundary
+and is not exposed as an application API.
 
 - Project: <https://github.com/yazio-community/yazio-sdk-python>
 - Package: <https://pypi.org/project/yazio-sdk/>
