@@ -737,12 +737,12 @@ def _is_google_date_only(event: NutritionConsumptionEvent) -> bool:
 
 
 def _nutrition_local_time(event: NutritionConsumptionEvent) -> str | None:
-    if event.canonical_start_at is None:
-        return None
     if _is_google_date_only(event):
         return None
     if event.provider_civil_datetime is not None:
         return event.provider_civil_datetime.strftime("%H:%M")
+    if event.canonical_start_at is None:
+        return None
     canonical = event.canonical_start_at
     offset = _provider_offset(event)
     if canonical.tzinfo is not None and offset is not None:
@@ -770,11 +770,15 @@ def _nutrition_event_response(
         if event.food_snapshot_id is not None
         else None
     )
-    display_name = snapshot_name or (
-        _metadata_text(metadata, "food_display_name")
-        if event.provider_key == "google_health"
-        else None
-    )
+    display_name = snapshot_name
+    if not display_name:
+        if event.provider_key == "google_health":
+            display_name = _metadata_text(metadata, "food_display_name")
+        elif (
+            event.provider_key == "yazio"
+            and event.event_kind == ConsumptionEventKind.SIMPLE_PRODUCT.value
+        ):
+            display_name = _metadata_text(event.provider_metadata, "name")
     meal_type = _normalized_meal_type(event.provider_key, event.daytime)
     if meal_type is None and event.daytime is None:
         meal_type = _normalized_meal_type(

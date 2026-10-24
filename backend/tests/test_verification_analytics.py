@@ -692,6 +692,7 @@ def _nutrition_event(
     provider_civil_datetime: datetime | None = None,
     provider_timezone: str | None = None,
     provider_metadata: dict[str, object] | None = None,
+    event_metadata: dict[str, object] | None = None,
     amount: Decimal | None = Decimal("1.5"),
     amount_unit: str | None = "portion",
     event_kind: str = ConsumptionEventKind.SIMPLE_PRODUCT.value,
@@ -783,7 +784,7 @@ def _nutrition_event(
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
-        provider_metadata=provider_metadata or {},
+        provider_metadata=event_metadata if event_metadata is not None else {},
     )
     db.add(event)
     db.flush()
@@ -1045,6 +1046,197 @@ def test_nutrition_uses_snapshot_metadata_and_safe_food_fallback(
         "12:00",
     ]
     assert metadata_event.food_snapshot_id is None
+
+def test_yazio_simple_product_uses_event_name_without_overriding_snapshot_or_source_metadata(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "yazio")
+    events = {
+        "named": _nutrition_event(
+            db,
+            user,
+            provider_key="yazio",
+            source_instance_id=source_instance_id,
+            local_date=day,
+            logical_event_key="named-simple-product",
+            source_namespace="yazio.simple_product",
+            event_metadata={"name": " Chicken ", "is_ai_generated": False},
+            provider_metadata={"is_ai_generated": False},
+            metrics={},
+        ),
+        "source-only": _nutrition_event(
+            db,
+            user,
+            provider_key="yazio",
+            source_instance_id=source_instance_id,
+            local_date=day,
+            logical_event_key="source-only-name",
+            source_namespace="yazio.simple_product",
+            event_metadata={"is_ai_generated": False},
+            provider_metadata={"name": "Source metadata must not be used"},
+            metrics={},
+        ),
+        "empty": _nutrition_event(
+            db,
+            user,
+            provider_key="yazio",
+            source_instance_id=source_instance_id,
+            local_date=day,
+            logical_event_key="empty-name",
+            source_namespace="yazio.simple_product",
+            event_metadata={"name": "   "},
+            metrics={},
+        ),
+        "unsafe": _nutrition_event(
+            db,
+            user,
+            provider_key="yazio",
+            source_instance_id=source_instance_id,
+            local_date=day,
+            logical_event_key="unsafe-name",
+            source_namespace="yazio.simple_product",
+            event_metadata={"name": {"raw": "upstream payload"}, "raw_payload": "Do not expose"},
+            metrics={},
+        ),
+        "product": _nutrition_event(
+            db,
+            user,
+            provider_key="yazio",
+            source_instance_id=source_instance_id,
+            local_date=day,
+            logical_event_key="snapshot-product",
+            source_namespace="yazio.consumed_item",
+            event_kind=ConsumptionEventKind.PRODUCT.value,
+            food_name="Snapshot product",
+            event_metadata={"name": "Metadata must not override the snapshot"},
+            metrics={},
+        ),
+    }
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    names = {event.event_id: event.display_name for event in response.canonical.events}
+    assert names == {
+        events["named"].id: "Chicken",
+        events["source-only"].id: "Unbenannter Eintrag",
+        events["empty"].id: "Unbenannter Eintrag",
+        events["unsafe"].id: "Unbenannter Eintrag",
+        events["product"].id: "Snapshot product",
+    }
+
+
+def test_yazio_provider_civil_time_is_kept_without_canonical_time_and_precedes_it(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "yazio")
+    civil_only = _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="civil-only",
+        metrics={},
+        provider_civil_datetime=datetime(2026, 9, 14, 11, 35, 27),
+    )
+    civil_only.canonical_start_at = None
+    civil_and_canonical = _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="civil-authoritative",
+        metrics={},
+        provider_civil_datetime=datetime(2026, 9, 14, 15, 36, 44),
+        provider_timezone="3600s",
+        occurred_at=datetime(2026, 9, 14, 18, 20, tzinfo=UTC),
+    )
+    canonical_only = _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="canonical-fallback",
+        metrics={},
+        provider_timezone="3600s",
+        occurred_at=datetime(2026, 9, 14, 18, 20, tzinfo=UTC),
+    )
+    no_time = _nutrition_event(
+        db,
+        user,
+        provider_key="yazio",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="no-time",
+        metrics={},
+    )
+    no_time.canonical_start_at = None
+    db.flush()
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    times = {event.event_id: event.local_time for event in response.canonical.events}
+    assert times == {
+        civil_only.id: "11:35",
+        civil_and_canonical.id: "15:36",
+        canonical_only.id: "19:20",
+        no_time.id: None,
+    }
+
+
+def test_google_date_only_civil_midnight_without_canonical_time_remains_untimed(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    day = date(2026, 9, 14)
+    source_instance_id = _nutrition_provider_source(db, user, "google_health")
+    event = _nutrition_event(
+        db,
+        user,
+        provider_key="google_health",
+        source_instance_id=source_instance_id,
+        local_date=day,
+        logical_event_key="google-date-only",
+        metrics={},
+        daytime=None,
+        provider_civil_datetime=datetime(2026, 9, 14),
+    )
+    event.canonical_start_at = None
+    db.flush()
+    monkeypatch.setattr(
+        verification,
+        "resolve_nutrition_provider",
+        lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
+    )
+    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+
+    response = verification.read_nutrition_verification(
+        db, user_id=user.id, local_date=day, view="canonical"
+    )
+
+    assert response.canonical is not None
+    assert response.canonical.events[0].local_time is None
 
 def test_nutrition_amount_without_unit_is_not_displayable(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
