@@ -53,6 +53,29 @@ function compareMealTime(a: string | null, b: string | null): number {
   return a.localeCompare(b)
 }
 
+const KNOWN_MEAL_TYPE_ORDER = new Map<string, number>([
+  ['breakfast', 0],
+  ['lunch', 1],
+  ['dinner', 2],
+  ['snack', 3],
+])
+
+function mealTypeRank(type: string | null): number {
+  if (type === null) return 4
+  return KNOWN_MEAL_TYPE_ORDER.get(type.toLowerCase()) ?? 5
+}
+
+function compareStableText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function compareMealOccasions(
+  a: { key: string; type: string | null },
+  b: { key: string; type: string | null },
+): number {
+  return mealTypeRank(a.type) - mealTypeRank(b.type) || compareStableText(a.key, b.key)
+}
+
 export function groupNutritionMealOccasions<T extends NutritionMealOccurrenceEntry>(
   entries: readonly T[],
 ): NutritionMealOccasion<T>[] {
@@ -69,14 +92,16 @@ export function groupNutritionMealOccasions<T extends NutritionMealOccurrenceEnt
   }
 
   return [...groups.values()].map(({ key, type, entries: occasionEntries }) => {
-    const sortedEntries = [...occasionEntries].sort((a, b) => compareMealTime(a.time, b.time))
+    const sortedEntries = [...occasionEntries].sort((a, b) =>
+      compareMealTime(a.time, b.time) || compareStableText(a.id, b.id),
+    )
     const time = sortedEntries.find((entry) => entry.time !== null)?.time ?? null
     const totalEnergy = sortedEntries.length > 1
       && sortedEntries.every((entry) => entry.energy !== null && Number.isFinite(entry.energy))
       ? sortedEntries.reduce((total, entry) => total + entry.energy!, 0)
       : null
     return { key, type, time, entries: sortedEntries, entryCount: sortedEntries.length, totalEnergy }
-  }).sort((a, b) => compareMealTime(a.time, b.time) || a.key.localeCompare(b.key))
+  }).sort(compareMealOccasions)
 }
 
 interface NamedMealInput {
@@ -125,7 +150,7 @@ export function projectNutritionMeals(
     || a.key.localeCompare(b.key),
   ).slice(0, 6)
   const visibleKeys = new Set(latestOccasions.map((occasion) => `${occasion.date}\u0000${occasion.key}`))
-  candidates.sort((a, b) => b.date.localeCompare(a.date) || compareMealTime(a.time, b.time) || a.key.localeCompare(b.key))
+  candidates.sort((a, b) => b.date.localeCompare(a.date) || compareMealOccasions(a, b))
   const all: NutritionMealDateGroup[] = []
   const preview: NutritionMealDateGroup[] = []
   for (const occasion of candidates) {

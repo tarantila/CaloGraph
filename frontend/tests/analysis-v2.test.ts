@@ -5913,7 +5913,7 @@ describe('Analysis V2 nutrition detail', () => {
     wrapper.unmount()
   })
 
-  it('sorts newest meal occasions chronologically with stable time ties and missing times last', async () => {
+  it('keeps semantic meal order, stable ties, and missing-time entries last', async () => {
     serveNutrition({
       ...nutritionResponse,
       days: [
@@ -5942,7 +5942,7 @@ describe('Analysis V2 nutrition detail', () => {
     expect(links).toHaveLength(7)
     for (const [index, name] of [
       'Midday soup', 'First tied dinner', 'Second tied dinner',
-      'Latest snack', 'Untimed apple', 'Previous lunch', 'Previous dinner',
+      'Latest snack', 'Untimed apple', 'Previous dinner', 'Previous lunch',
     ].entries()) {
       expect(links[index]!.text()).toContain(name)
     }
@@ -5952,8 +5952,8 @@ describe('Analysis V2 nutrition detail', () => {
       '/ernaehrung/eintrag/second-dinner?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
       '/ernaehrung/eintrag/latest-snack?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
       '/ernaehrung/eintrag/untimed-apple?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
-      '/ernaehrung/eintrag/previous-lunch?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
       '/ernaehrung/eintrag/previous-dinner?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
+      '/ernaehrung/eintrag/previous-lunch?period=custom&start=2020-03-01&end=2020-03-03&from=analysis',
     ])
     expect(wrapper.findAll('.nutrition-meal-date').map((heading) => heading.text()))
       .toEqual(['03.03.2020', '02.03.2020'])
@@ -5964,7 +5964,7 @@ describe('Analysis V2 nutrition detail', () => {
     expect(links[2]!.text()).toContain('420 kcal')
     expect(links[3]!.text()).toContain('0 kcal')
     expect(links[3]!.text()).not.toContain('21:00')
-    expect(links[6]!.text()).toContain('510 kcal')
+    expect(links[5]!.text()).toContain('510 kcal')
     expect(wrapper.text()).not.toMatch(/Older porridge|Previous breakfast|yazio|provider/i)
     expect(apiMock.mock.calls.map(([path]) => path)).toEqual([
       '/analytics/nutrition/analysis?start=2020-03-01&end=2020-03-03',
@@ -5975,22 +5975,22 @@ describe('Analysis V2 nutrition detail', () => {
   it.each([
     { locale: 'de' as const, labels: ['Frühstück', 'Mittagessen', 'Abendessen', 'Snack'] },
     { locale: 'en' as const, labels: ['Breakfast', 'Lunch', 'Dinner', 'Snack'] },
-  ])('localizes actual meal types in $locale without exposing provider IDs', async ({ locale, labels }) => {
+  ])('localizes semantic meal order in $locale despite conflicting event times', async ({ locale, labels }) => {
     setLocale(locale)
     serveNutrition({
       ...nutritionResponse,
       days: [{ ...nutritionResponse.days[0]!, meals: [
-        { ...mealFixture, event_id: 'oats', display_name: 'Oats', meal_type: 'breakfast', local_time: '08:00:00', dietary_energy_kcal: 100 },
-        { ...mealFixture, event_id: 'soup', display_name: 'Soup', meal_type: 'lunch', local_time: '12:00:00', dietary_energy_kcal: 200 },
-        { ...mealFixture, event_id: 'rice', display_name: 'Rice', meal_type: 'dinner', local_time: '19:00:00', dietary_energy_kcal: 300 },
-        { ...mealFixture, event_id: 'apple', display_name: 'Apple', meal_type: 'snack', local_time: '21:00:00', dietary_energy_kcal: 50 },
+        { ...mealFixture, event_id: 'apple', display_name: 'Apple', meal_type: 'snack', local_time: '06:00:00', dietary_energy_kcal: 50 },
+        { ...mealFixture, event_id: 'rice', display_name: 'Rice', meal_type: 'dinner', local_time: '08:00:00', dietary_energy_kcal: 300 },
+        { ...mealFixture, event_id: 'oats', display_name: 'Oats', meal_type: 'breakfast', local_time: '23:00:00', dietary_energy_kcal: 100 },
+        { ...mealFixture, event_id: 'soup', display_name: 'Soup', meal_type: 'lunch', local_time: '22:00:00', dietary_energy_kcal: 200 },
       ] }],
     })
     const { wrapper } = await mountAnalysis(`/analyse/ernaehrung${rangeQuery}`)
     const links = dailyMealLinks(wrapper)
     expect(links).toHaveLength(4)
     expect(wrapper.findAll('.nutrition-meal-occasion-title').map((header) => header.text()))
-      .toEqual(labels.map((label, index) => `${label} · ${['08:00', '12:00', '19:00', '21:00'][index]}`))
+      .toEqual(labels.map((label, index) => `${label} · ${['23:00', '22:00', '08:00', '06:00'][index]}`))
     expect(wrapper.findAll('.nutrition-meal-name').map((name) => name.text()))
       .toEqual(['Oats', 'Soup', 'Rice', 'Apple'])
     expect(wrapper.text()).not.toMatch(/yazio|provider/i)

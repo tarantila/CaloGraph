@@ -19,6 +19,7 @@ import AnalysisNutritionOverviewView from '../src/views/AnalysisNutritionOvervie
 import type { AnalysisNutritionResponse } from '../src/types'
 import {
   DEFAULT_NUTRITION_SECTION_ORDER,
+  groupNutritionMealOccasions,
   projectNutritionMeals,
   moveNutritionSection,
   normalizeNutritionSectionOrder,
@@ -99,6 +100,64 @@ describe('Nutrition overview helpers', () => {
     ])
   })
 
+
+  it('orders known meal types semantically and keeps unknown groups deterministic', () => {
+    const entries = [
+      { id: 'dinner-no-time', type: 'dinner', time: null, name: 'Dinner untimed', energy: null },
+      { id: 'unknown-z', type: 'provider-z', time: '00:00', name: 'Unknown Z', energy: null },
+      { id: 'snack-early', type: 'snack', time: '06:00', name: 'Snack', energy: null },
+      { id: 'dinner-tie-z', type: 'dinner', time: '19:00', name: 'Dinner Z', energy: null },
+      { id: 'lunch-no-time', type: 'lunch', time: null, name: 'Lunch untimed', energy: null },
+      { id: 'breakfast-no-time', type: 'breakfast', time: null, name: 'Breakfast untimed', energy: null },
+      { id: 'null-b', type: null, time: null, name: 'Null B', energy: null },
+      { id: 'dinner-tie-a', type: 'dinner', time: '19:00', name: 'Dinner A', energy: null },
+      { id: 'unknown-a', type: 'provider-a', time: '00:30', name: 'Unknown A', energy: null },
+      { id: 'unknown-constructor', type: 'constructor', time: '00:15', name: 'Constructor', energy: null },
+      { id: 'unknown-prototype', type: '__proto__', time: '00:10', name: 'Prototype', energy: null },
+      { id: 'dinner-early', type: 'dinner', time: '06:00', name: 'Dinner early', energy: null },
+      { id: 'null-a', type: null, time: null, name: 'Null A', energy: null },
+    ] as const
+    const groups = groupNutritionMealOccasions(entries)
+    const groupOrder = groups.map(({ key, type }) => [key, type])
+
+    expect(groupOrder).toEqual([
+      ['type:breakfast', 'breakfast'],
+      ['type:lunch', 'lunch'],
+      ['type:dinner', 'dinner'],
+      ['type:snack', 'snack'],
+      ['entry:null-a', null],
+      ['entry:null-b', null],
+      ['type:__proto__', '__proto__'],
+      ['type:constructor', 'constructor'],
+      ['type:provider-a', 'provider-a'],
+      ['type:provider-z', 'provider-z'],
+    ])
+    expect(groups.find((group) => group.type === 'dinner')?.entries.map((entry) => entry.id))
+      .toEqual(['dinner-early', 'dinner-tie-a', 'dinner-tie-z', 'dinner-no-time'])
+    expect(groupNutritionMealOccasions([...entries].reverse()).map(({ key }) => key))
+      .toEqual(groups.map(({ key }) => key))
+  })
+
+  it('keeps semantic meal order in recent and full projections despite conflicting local times', () => {
+    const result = projectNutritionMeals([{
+      date: '2026-10-13',
+      meals: [
+        { ...meal('dinner', '06:00', 'Dinner'), meal_type: 'dinner' },
+        { ...meal('snack', '05:00', 'Snack'), meal_type: 'snack' },
+        { ...meal('lunch', '23:00', 'Lunch'), meal_type: 'lunch' },
+        { ...meal('breakfast', '22:00', 'Breakfast'), meal_type: 'breakfast' },
+        { ...meal('unsupported', '00:30', 'Unsupported'), meal_type: 'provider-dessert' },
+        { ...meal('missing', null, 'Missing type'), meal_type: null },
+      ],
+    }])
+
+    expect(result.preview[0]?.occasions.map((occasion) => occasion.type)).toEqual([
+      'breakfast', 'lunch', 'dinner', 'snack', null, 'provider-dessert',
+    ])
+    expect(result.all[0]?.occasions.map((occasion) => occasion.type)).toEqual([
+      'breakfast', 'lunch', 'dinner', 'snack', null, 'provider-dessert',
+    ])
+  })
 
   it('groups recent named meal occasions by date and orders days newest first with chronological meals', () => {
     const days = [
