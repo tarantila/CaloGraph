@@ -39,13 +39,13 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.71.2",
     "vite": "8.3.4",
-    "vitest": "4.1.11",
+    "vitest": "4.1.12",
     "vue-tsc": "3.3.13"
   },
   "overrides": {
     "brace-expansion": "5.0.12",
     "postcss-selector-parser": "7.1.6",
     "source-map-js": "1.2.2",
-    "undici": "8.10.2"
+    "undici": "8.12.2"
   }
 }
