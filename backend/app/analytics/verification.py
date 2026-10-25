@@ -688,6 +688,30 @@ def _metadata_text(metadata: Mapping[str, object], key: str) -> str | None:
     return value or None
 
 
+def _safe_nutrition_display_name(
+    event: NutritionConsumptionEvent,
+    *,
+    snapshot_name: str | None,
+    source_metadata: Mapping[str, object],
+    source_metadata_key: str | None,
+) -> str | None:
+    """Resolve a display name only from persisted safe snapshot/metadata fields."""
+    if isinstance(snapshot_name, str):
+        normalized_snapshot_name = snapshot_name.strip()
+        if normalized_snapshot_name:
+            return normalized_snapshot_name
+    if source_metadata_key is not None:
+        metadata_name = _metadata_text(source_metadata, source_metadata_key)
+        if metadata_name is not None:
+            return metadata_name
+    if (
+        event.provider_key == "yazio"
+        and event.event_kind == ConsumptionEventKind.SIMPLE_PRODUCT.value
+    ):
+        return _metadata_text(event.provider_metadata or {}, "name")
+    return None
+
+
 _GOOGLE_MEAL_TYPES = {
     "BREAKFAST": "breakfast",
     "LUNCH": "lunch",
@@ -770,15 +794,12 @@ def _nutrition_event_response(
         if event.food_snapshot_id is not None
         else None
     )
-    display_name = snapshot_name
-    if not display_name:
-        if event.provider_key == "google_health":
-            display_name = _metadata_text(metadata, "food_display_name")
-        elif (
-            event.provider_key == "yazio"
-            and event.event_kind == ConsumptionEventKind.SIMPLE_PRODUCT.value
-        ):
-            display_name = _metadata_text(event.provider_metadata, "name")
+    display_name = _safe_nutrition_display_name(
+        event,
+        snapshot_name=snapshot_name,
+        source_metadata=metadata,
+        source_metadata_key="food_display_name" if event.provider_key == "google_health" else None,
+    )
     meal_type = _normalized_meal_type(event.provider_key, event.daytime)
     if meal_type is None and event.daytime is None:
         meal_type = _normalized_meal_type(

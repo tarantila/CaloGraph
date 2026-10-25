@@ -625,7 +625,7 @@ describe('NutritionView', () => {
     expect(wrapper.findAll('.verification-provider-group')).toHaveLength(3)
   })
 
-  it('shows the backend food fallback and a dash for missing meal details', async () => {
+  it('shows the backend food fallback and an explicit label for missing serving data', async () => {
     apiMock.mockResolvedValue(response({
       canonical: {
         ...canonicalGroup,
@@ -647,8 +647,27 @@ describe('NutritionView', () => {
     expect(wrapper.get('.verification-meal-occasion-entry-count').text()).toBe('1 Eintrag')
     expect(wrapper.get('.verification-meal-occasion-total').text()).toBe('640 kcal')
     expect(row.findAll('td').at(0)?.text()).toBe('Unbenannter Eintrag')
-    expect(row.findAll('td').at(1)?.text()).toBe('–')
+    expect(row.findAll('td').at(1)?.text()).toBe('Nicht angegeben')
     expect(wrapper.get('.verification-event-row').find('.verification-event-food').text()).toBe('Unbenannter Eintrag')
+  })
+
+  it('localizes missing serving data in English', async () => {
+    setLocale('en')
+    apiMock.mockResolvedValue(response({
+      canonical: {
+        ...canonicalGroup,
+        events: [{
+          ...canonicalGroup.events[0],
+          serving_amount: null,
+          serving_unit: null,
+        }],
+      },
+    }))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.get('.verification-event-row').findAll('td').at(1)?.text()).toBe('Not specified')
+    wrapper.unmount()
   })
 
   it('moves by one local day and keeps the URL date synchronized', async () => {

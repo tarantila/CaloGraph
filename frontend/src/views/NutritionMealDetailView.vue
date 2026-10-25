@@ -39,7 +39,7 @@ const mealType = computed(() => {
 const serving = computed(() => {
   const amount = meal.value?.serving_amount
   const unit = meal.value?.serving_unit
-  if (amount == null || !Number.isFinite(amount) || !unit) return '–'
+  if (amount == null || !Number.isFinite(amount) || !unit) return t('nutritionVerification.servingNotSpecified')
   return `${number.format(amount)} ${unit.toLowerCase() === 'portion' ? t('nutritionVerification.portionUnit', amount) : unit}`
 })
 const primaryNutrients = [
