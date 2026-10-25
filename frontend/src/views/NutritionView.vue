@@ -118,7 +118,7 @@ function occasionCalories(occasion: ReturnType<typeof groupMealEvents>[number]):
 }
 
 function formatServing(event: VerificationNutritionEvent): string {
-  if (event.serving_amount == null || !event.serving_unit) return '–'
+  if (event.serving_amount == null || !event.serving_unit) return t('nutritionVerification.servingNotSpecified')
   const unit = event.serving_unit.toLowerCase() === 'portion'
     ? t('nutritionVerification.portionUnit', event.serving_amount)
     : event.serving_unit

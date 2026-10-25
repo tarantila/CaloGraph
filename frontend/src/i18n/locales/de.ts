@@ -83,6 +83,7 @@ const de = {
     foodName: 'Lebensmittel',
     serving: 'Portion',
     portionUnit: 'Portion | Portionen',
+    servingNotSpecified: 'Nicht angegeben',
     calories: 'Kalorien',
     energy: 'Energie',
     protein: 'Protein',

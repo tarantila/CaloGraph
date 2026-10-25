@@ -14,7 +14,12 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.analytics.provider_selection import NutritionProviderSelection
 from app.analytics.service import PRIMARY_NUTRITION_METRICS
-from app.analytics.verification import _metadata_text, _normalized_meal_type, _nutrition_local_time
+from app.analytics.verification import (
+    _metadata_text,
+    _normalized_meal_type,
+    _nutrition_local_time,
+    _safe_nutrition_display_name,
+)
 from app.nutrition.enums import (
     CoverageState,
     LineageState,
@@ -323,21 +328,24 @@ def _read_safe_meals(
     meals: list[AnalysisNutritionMealResponse] = []
     for item, observation, snapshot, snapshot_observation in event_rows:
         # A foreign-source or deleted snapshot cannot supply a meal name.
-        name = (
-            snapshot.name.strip()
+        snapshot_name = (
+            snapshot.name
             if snapshot is not None and snapshot_observation is not None
-            and snapshot.name and snapshot.name.strip()
+            and isinstance(snapshot.name, str) and snapshot.name.strip()
             and snapshot.is_deleted is not True
             else None
         )
-        if name is None:
-            metadata_key = (
-                "food_display_name" if item.provider_key == "google_health"
-                else "food_name" if item.provider_key == "apple_health"
-                else None
-            )
-            if metadata_key is not None:
-                name = _metadata_text(observation.provider_metadata or {}, metadata_key)
+        metadata_key = (
+            "food_display_name" if item.provider_key == "google_health"
+            else "food_name" if item.provider_key == "apple_health"
+            else None
+        )
+        name = _safe_nutrition_display_name(
+            item,
+            snapshot_name=snapshot_name,
+            source_metadata=observation.provider_metadata or {},
+            source_metadata_key=metadata_key,
+        )
         if name is None:
             continue
         values: dict[str, Decimal] = {}

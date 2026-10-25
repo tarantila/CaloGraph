@@ -85,6 +85,27 @@ describe('persisted Nutrition meal detail', () => {
     expect(sugarRow?.get('dd').text()).toBe('–')
     wrapper.unmount()
   })
+  it('localizes a missing serving without changing missing nutrient presentation', async () => {
+    apiMock.mockResolvedValue({
+      ...persistedMeal,
+      serving_amount: null,
+      serving_unit: null,
+      sugar_g: null,
+    })
+    const { wrapper } = await mountDetail()
+    expect(wrapper.text()).toContain('Nicht angegeben')
+    const sugarRow = wrapper.findAll('.nutrition-meal-secondary-value').find((row) => row.text().includes('Zucker'))
+    expect(sugarRow?.get('dd').text()).toBe('–')
+    wrapper.unmount()
+
+    setLocale('en')
+    const { wrapper: englishWrapper } = await mountDetail()
+    expect(englishWrapper.text()).toContain('Not specified')
+    const englishSugarRow = englishWrapper.findAll('.nutrition-meal-secondary-value').find((row) => row.text().includes('Sugar'))
+    expect(englishSugarRow?.get('dd').text()).toBe('–')
+    englishWrapper.unmount()
+  })
+
 
 
   it('preserves daily navigation context and handles an unavailable event without fabricated meal content', async () => {

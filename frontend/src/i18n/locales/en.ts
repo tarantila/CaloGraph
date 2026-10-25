@@ -81,6 +81,7 @@ const en = {
     foodName: 'Food',
     serving: 'Serving',
     portionUnit: 'Portion | Portions',
+    servingNotSpecified: 'Not specified',
     calories: 'Calories',
     energy: 'Energy',
     protein: 'Protein',
