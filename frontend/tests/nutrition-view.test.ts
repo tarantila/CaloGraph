@@ -478,6 +478,31 @@ describe('NutritionView', () => {
     wrapper.unmount()
   })
 
+  it('orders daily meal groups semantically when provider times are missing', async () => {
+    apiMock.mockResolvedValue(response({
+      canonical: {
+        ...canonicalGroup,
+        record_count: 4,
+        events: [
+          { ...canonicalGroup.events[0], event_id: 'dinner', meal_type: 'dinner', local_time: null },
+          { ...canonicalGroup.events[0], event_id: 'snack', meal_type: 'snack', local_time: null },
+          { ...canonicalGroup.events[0], event_id: 'breakfast', meal_type: 'breakfast', local_time: null },
+          { ...canonicalGroup.events[0], event_id: 'lunch', meal_type: 'lunch', local_time: null },
+        ],
+      },
+    }))
+
+    const wrapper = await mountView()
+    const groups = wrapper.findAll('tbody.verification-meal-occasion')
+
+    expect(groups.map((group) => group.attributes('data-meal-type')))
+      .toEqual(['breakfast', 'lunch', 'dinner', 'snack'])
+    expect(groups.map((group) => group.get('.verification-meal-occasion-label').text()))
+      .toEqual(['Frühstück', 'Mittagessen', 'Abendessen', 'Snack'])
+    expect(wrapper.findAll('.verification-event-row')).toHaveLength(4)
+    wrapper.unmount()
+  })
+
   it('localizes unknown and missing meal types without dropping food rows', async () => {
     apiMock.mockResolvedValue(response({
       canonical: {
