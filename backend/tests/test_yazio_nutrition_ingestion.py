@@ -313,6 +313,176 @@ def test_simple_product_preserves_direct_values_name_ai_zero_missing_unknown(db,
     assert by_path["nutrients.unknown"].provider_raw_value_decimal == Decimal("7")
     assert by_path["nutrients.unknown"].metric_key is None
 
+
+def test_simple_product_without_amount_is_present_and_detail_readable(db, user):
+    from app.analytics.nutrition_analysis import (
+        nutrition_detail_available_ids,
+        read_nutrition_meal_detail,
+    )
+
+    connection = _connection(db, user)
+    item = YazioConsumedSimpleProduct(
+        consumed_item_id="simple-without-amount",
+        amount=None,
+        provider_civil_datetime=datetime(2026, 9, 1, 21, 15),
+        local_date=DAY,
+        daytime="dinner",
+        nutrients=YazioNutrientValues(
+            energy=Decimal("518"),
+            protein=Decimal("10"),
+            carb=Decimal("30"),
+            fat=Decimal("13"),
+            fiber=Decimal("0"),
+            sugar=None,
+        ),
+        serving=None,
+        serving_quantity=None,
+        name="Chicken",
+        metadata={"is_ai_generated": False},
+    )
+    _ingest(
+        db,
+        user,
+        YazioFoodDiary(
+            requested_start_day=DAY,
+            requested_end_day=DAY,
+            consumed_products=(),
+            consumed_simple_products=(item,),
+            product_profiles=(),
+            daily_summaries=(),
+        ),
+        connection=connection,
+    )
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.logical_event_key == item.consumed_item_id,
+        )
+    )
+    assert event is not None
+    source = db.get(NutritionSourceObservation, event.source_observation_id)
+    assert source is not None
+    assert source.presence_state == PresenceState.SUPPLIED.value
+    assert event.presence_state == PresenceState.SUPPLIED.value
+    assert event.amount is None
+    assert event.amount_unit is None
+
+    fields = {
+        field.provider_field_path: field
+        for field in db.scalars(
+            select(NutritionFieldObservation).where(
+                NutritionFieldObservation.source_observation_id == source.id,
+            )
+        )
+    }
+    amount_field = fields["amount"]
+    assert amount_field.presence_state == PresenceState.MISSING.value
+    assert amount_field.canonical_value is None
+    for path, value in {
+        "nutrients.energy": Decimal("518"),
+        "nutrients.protein": Decimal("10"),
+        "nutrients.carb": Decimal("30"),
+        "nutrients.fat": Decimal("13"),
+    }.items():
+        assert fields[path].presence_state == PresenceState.SUPPLIED.value
+        assert fields[path].canonical_value == value
+    assert fields["nutrients.fiber"].presence_state == PresenceState.EXPLICIT_ZERO.value
+    assert fields["nutrients.fiber"].canonical_value == Decimal("0")
+    assert fields["nutrients.sugar"].presence_state == PresenceState.MISSING.value
+    assert fields["nutrients.sugar"].canonical_value is None
+
+    assert nutrition_detail_available_ids(db, user_id=user.id, events=[event]) == {event.id}
+    detail = read_nutrition_meal_detail(
+        db,
+        user_id=user.id,
+        event_id=event.id,
+        allowed_sources=((PROVIDER, connection.id),),
+    )
+    assert detail is not None
+    assert detail.display_name == "Chicken"
+    assert detail.dietary_energy_kcal == Decimal("518")
+    assert detail.protein_g == Decimal("10")
+    assert detail.carbohydrates_g == Decimal("30")
+    assert detail.fat_g == Decimal("13")
+    assert detail.serving_amount is None
+    assert detail.serving_unit is None
+
+
+
+def test_simple_product_zero_amount_remains_explicit_and_idempotent(db, user):
+    connection = _connection(db, user)
+    diary = _diary(simple=True, summary=False)
+    item = replace(diary.consumed_simple_products[0], amount=Decimal("0"))
+    diary = replace(
+        diary,
+        consumed_products=(),
+        consumed_simple_products=(item,),
+        product_profiles=(),
+    )
+
+    _ingest(db, user, diary, connection=connection)
+    event = db.scalar(
+        select(NutritionConsumptionEvent).where(
+            NutritionConsumptionEvent.logical_event_key == item.consumed_item_id,
+        )
+    )
+    assert event is not None
+    assert event.presence_state == PresenceState.EXPLICIT_ZERO.value
+    source = db.get(NutritionSourceObservation, event.source_observation_id)
+    assert source is not None
+    assert source.presence_state == PresenceState.EXPLICIT_ZERO.value
+    amount_field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == source.id,
+            NutritionFieldObservation.provider_field_path == "amount",
+        )
+    )
+    assert amount_field is not None
+    assert amount_field.presence_state == PresenceState.EXPLICIT_ZERO.value
+
+    _ingest(db, user, diary, connection=connection)
+
+    revisions = db.scalars(
+        select(NutritionConsumptionEvent)
+        .where(NutritionConsumptionEvent.logical_event_key == item.consumed_item_id)
+        .order_by(NutritionConsumptionEvent.revision)
+    ).all()
+    assert [revision.id for revision in revisions] == [event.id]
+    assert revisions[0].revision == 1
+    assert db.scalar(select(func.count()).select_from(NutritionExternalIdentityLink)) == 1
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected_presence"),
+    [
+        (Decimal("2.5"), PresenceState.SUPPLIED.value),
+        (None, PresenceState.MISSING.value),
+    ],
+)
+def test_product_presence_remains_derived_from_amount(db, user, amount, expected_presence):
+    connection = _connection(db, user)
+    _ingest(
+        db,
+        user,
+        _diary(product_amount=amount, simple=False, summary=False),
+        connection=connection,
+    )
+    event = db.scalar(select(NutritionConsumptionEvent))
+    assert event is not None
+    source = db.get(NutritionSourceObservation, event.source_observation_id)
+    assert source is not None
+    assert event.amount == amount
+    assert source.presence_state == expected_presence
+    assert event.presence_state == expected_presence
+    amount_field = db.scalar(
+        select(NutritionFieldObservation).where(
+            NutritionFieldObservation.source_observation_id == source.id,
+            NutritionFieldObservation.provider_field_path == "amount",
+        )
+    )
+    assert amount_field is not None
+    assert amount_field.presence_state == expected_presence
+
+
 def test_profile_metadata_eans_servings_and_no_ean_event_link(db, user):
     _ingest(db, user, simple=False, summary=False)
     assert db.scalar(select(NutritionFoodProfile)) is not None

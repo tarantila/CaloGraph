@@ -686,6 +686,7 @@ def _event_observation(
     item: YazioConsumedProduct | YazioConsumedSimpleProduct,
     namespace: str,
     kind: str,
+    record_presence: str,
     content_context: str | None = None,
 ) -> NutritionSourceObservation:
     metadata = _safe_metadata(item.metadata)
@@ -707,7 +708,7 @@ def _event_observation(
         provider_timezone=item.provider_timezone,
         timezone_source="provider" if item.provider_timezone else None,
         time_confidence="exact" if item.provider_civil_datetime else "date_only",
-        presence_state=_presence(item.amount),
+        presence_state=record_presence,
         coverage_state=CoverageState.COMPLETE.value,
         resolution_state=ResolutionState.RESOLVED.value,
         lineage_state=LineageState.CONFIRMED.value,
@@ -736,6 +737,7 @@ def _product_event(
         item=item,
         namespace="yazio.consumed_item",
         kind=ObservationKind.CONSUMPTION_EVENT.value,
+        record_presence=_presence(item.amount),
         content_context=snapshot.content_hash if snapshot else None,
     )
     identity = get_or_create_external_identity(
@@ -866,11 +868,43 @@ def _simple_event(
     source_instance_id: UUID,
     item: YazioConsumedSimpleProduct,
 ) -> None:
-    observation = _event_observation(db, user_id=user_id, run_id=run_id, source_instance_id=source_instance_id, item=item, namespace="yazio.simple_product", kind=ObservationKind.SIMPLE_PRODUCT.value)
+    safe_amount = _database_safe_value(item.amount)
+    record_presence = _presence(safe_amount)
+    if record_presence == PresenceState.MISSING.value:
+        record_presence = PresenceState.SUPPLIED.value
+    observation = _event_observation(
+        db,
+        user_id=user_id,
+        run_id=run_id,
+        source_instance_id=source_instance_id,
+        item=item,
+        namespace="yazio.simple_product",
+        kind=ObservationKind.SIMPLE_PRODUCT.value,
+        record_presence=record_presence,
+    )
     identity = get_or_create_external_identity(db, user_id=user_id, provider_key=_PROVIDER, namespace="yazio.simple_product", identity_value=item.consumed_item_id, identity_kind="simple_product", source_instance_id=source_instance_id, provider_metadata=_safe_metadata(item.metadata))
     metadata = _metadata_with(item.metadata, name=item.name, is_ai_generated=item.metadata.get("is_ai_generated"))
-    safe_amount = _database_safe_value(item.amount)
-    event = get_or_create_consumption_event(db, user_id=user_id, source_observation_id=observation.id, provider_key=_PROVIDER, source_instance_id=source_instance_id, event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value, logical_event_key=item.consumed_item_id, provider_civil_datetime=_civil(item.provider_civil_datetime), provider_timezone=item.provider_timezone, local_date=item.local_date, daytime=item.daytime, amount=safe_amount, amount_unit=None, presence_state=_presence(safe_amount), coverage_state=CoverageState.COMPLETE.value, resolution_state=ResolutionState.RESOLVED.value, lineage_state=LineageState.CONFIRMED.value, content_hash=_fingerprint(_simple_data(item)), provider_metadata=metadata)
+    event = get_or_create_consumption_event(
+        db,
+        user_id=user_id,
+        source_observation_id=observation.id,
+        provider_key=_PROVIDER,
+        source_instance_id=source_instance_id,
+        event_kind=ConsumptionEventKind.SIMPLE_PRODUCT.value,
+        logical_event_key=item.consumed_item_id,
+        provider_civil_datetime=_civil(item.provider_civil_datetime),
+        provider_timezone=item.provider_timezone,
+        local_date=item.local_date,
+        daytime=item.daytime,
+        amount=safe_amount,
+        amount_unit=None,
+        presence_state=record_presence,
+        coverage_state=CoverageState.COMPLETE.value,
+        resolution_state=ResolutionState.RESOLVED.value,
+        lineage_state=LineageState.CONFIRMED.value,
+        content_hash=_fingerprint(_simple_data(item)),
+        provider_metadata=metadata,
+    )
     _provenance(db, user_id=user_id, source_observation_id=observation.id, consumption_event_id=event.id)
     get_or_create_identity_link(db, user_id=user_id, external_identity_id=identity.id, link_role="event_identity", consumption_event_id=event.id)
     _field(db, user_id=user_id, source_observation_id=observation.id, provider_field_path="amount", value=safe_amount, metric_key=None, canonical_unit=None, provider_raw_unit=None, role=ObservationRole.PROVIDER.value, provider_metadata=item.metadata)
