@@ -56,6 +56,12 @@ def _fingerprint(label: str) -> str:
 def _now() -> datetime:
     return datetime.now(UTC)
 
+def _provider_timezone(canonical: datetime) -> str:
+    offset = canonical.utcoffset()
+    if offset is None:
+        raise ValueError("Synthetic canonical timestamp must have a UTC offset")
+    return f"{int(offset.total_seconds())}s"
+
 
 def _verification_date() -> date:
     configured = os.getenv("E2E_VERIFICATION_DATE")
@@ -205,6 +211,7 @@ def _seed_nutrition(
         event_id = uuid4()
         civil = datetime.combine(day, datetimes[index])
         canonical = datetime.combine(day, datetimes[index], tzinfo=BERLIN)
+        provider_timezone = _provider_timezone(canonical)
         metadata = {"fixture": True}
         if metadata_names[index] is not None:
             metadata["food_display_name"] = metadata_names[index]
@@ -223,7 +230,7 @@ def _seed_nutrition(
             source_revision=1,
             observation_fingerprint=_fingerprint(f"observation:{user_id}:{index}"),
             provider_civil_datetime=civil,
-            provider_timezone="7200s",
+            provider_timezone=provider_timezone,
             canonical_start_at=canonical,
             canonical_end_at=canonical + timedelta(minutes=1),
             local_date=day,
@@ -290,7 +297,7 @@ def _seed_nutrition(
                 revision=1,
                 food_snapshot_id=snapshot_id,
                 provider_civil_datetime=civil,
-                provider_timezone="7200s",
+                provider_timezone=provider_timezone,
                 canonical_start_at=canonical,
                 canonical_end_at=canonical + timedelta(minutes=1),
                 local_date=day,
