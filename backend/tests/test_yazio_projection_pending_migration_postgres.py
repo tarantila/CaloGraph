@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+import test_yazio_simple_product_presence_migration as simple_product_presence_migration
 from alembic.config import Config
 from sqlalchemy.engine import make_url
 from test_yazio_projection_pending_migration import (
@@ -62,6 +63,19 @@ def isolated_postgres(monkeypatch):
         admin_engine.dispose()
 
 
+def test_simple_product_presence_migration_is_narrow_and_idempotent_on_postgres(isolated_postgres):
+    engine, _ = isolated_postgres
+    source_ids, event_ids = simple_product_presence_migration._seed(engine)
+    before = simple_product_presence_migration._snapshot(engine)
+    expected = simple_product_presence_migration._expected_after(before, source_ids, event_ids)
+
+    simple_product_presence_migration._apply(engine)
+
+    assert simple_product_presence_migration._snapshot(engine) == expected
+    simple_product_presence_migration._apply(engine)
+    assert simple_product_presence_migration._snapshot(engine) == expected
+
+
 def test_full_postgres_chain_has_one_pending_column_and_index(isolated_postgres):
     engine, config = isolated_postgres
     with engine.connect() as connection:
@@ -71,7 +85,7 @@ def test_full_postgres_chain_has_one_pending_column_and_index(isolated_postgres)
 
     _assert_pending_schema(engine)
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "20261021_0040"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "20261026_0041"
 
 
 def test_existing_postgres_schema_upgrade_backfills_only_completed_canonical_sdk_ranges(isolated_postgres):
@@ -86,7 +100,7 @@ def test_existing_postgres_schema_upgrade_backfills_only_completed_canonical_sdk
     # by a stamped upgrade that would silently skip the column-add branch.
     command.stamp(config, "20261006_0039")
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261021_0040")
 
     _assert_pending_schema(engine)
     with engine.connect() as connection:

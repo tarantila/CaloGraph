@@ -256,6 +256,45 @@ def test_simple_product_confirmed_event_wins_over_summary(db, user):
     }
 
 
+def test_amountless_simple_product_presence_does_not_change_metric_resolution(db, user):
+    connection = _connection(db, user)
+    item = replace(_simple("simple-without-amount", Decimal("20")), amount=None)
+    _ingest(db, user, connection, _diary(simple_products=(item,)))
+    event = _event(db, user, item.consumed_item_id)
+    source = db.get(NutritionSourceObservation, event.source_observation_id)
+    assert source is not None
+
+    # Projection metric candidates are governed by field-level safety, not the
+    # record-presence correction used by strict meal readers.
+    source.presence_state = PresenceState.MISSING.value
+    event.presence_state = PresenceState.MISSING.value
+    db.flush()
+    before_repair = resolve_yazio_metric(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key=METRIC,
+    )
+
+    source.presence_state = PresenceState.SUPPLIED.value
+    event.presence_state = PresenceState.SUPPLIED.value
+    db.flush()
+    after_repair = resolve_yazio_metric(
+        db,
+        user_id=user.id,
+        source_instance_id=connection.id,
+        local_date=DAY,
+        metric_key=METRIC,
+    )
+
+    assert before_repair.value == after_repair.value == Decimal("20")
+    assert before_repair.selected_granularity is after_repair.selected_granularity is ProjectionGranularity.EVENT
+    assert before_repair.reason_code is after_repair.reason_code is ReasonCode.EVENT_COMPLETE_CONFIRMED
+    assert before_repair.lineage_state is after_repair.lineage_state is LineageState.CONFIRMED
+    assert before_repair.source_lineage == after_repair.source_lineage
+
+
 def test_confirmed_simple_plus_uncertain_product_aggregates_but_summary_wins(db, user):
     connection = _connection(db, user)
     _ingest(
