@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.32.4"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,18 +7,18 @@ name = "calograph-backend"
 version = "0.7.0"
 description = "Self-hosted Apple Health nutrition analytics backend"
 license = "PolyForm-Noncommercial-1.0.0"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.15,<3.16"
 dependencies = [
   "alembic==1.20.1",
   "argon2-cffi==25.1.0",
   "cryptography==50.0.2",
   "defusedxml==0.7.1",
-  "fastapi==0.161.1",
+  "fastapi==0.162.0",
   "httpx2==2.16.0",
   "psycopg[binary]==3.3.6",
   "pyotp==2.10.0",
-  "pydantic==2.14.1",
-  "pydantic-settings==2.16.1",
+  "pydantic==2.14.2",
+  "pydantic-settings==2.16.2",
   "python-multipart==0.0.32",
   "qrcode==8.2",
   "requests==2.34.2",
@@ -33,12 +33,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "hypothesis==6.170.8",
-  "mypy==2.4.0",
+  "hypothesis==6.170.13",
+  "mypy==2.4.1",
   "pip-audit==2.10.1",
-  "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
-  "ruff==0.17.2",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.4.1",
+  "ruff==0.17.3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -50,7 +50,7 @@ addopts = "-q --strict-markers"
 asyncio_mode = "auto"
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py315"
 line-length = 100
 
 [tool.ruff.lint]
@@ -58,7 +58,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 ignore = ["B008", "E501"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.15"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic"]

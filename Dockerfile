@@ -4,9 +4,9 @@
 # Backend
 # -----------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 
-FROM python:3.14.8-alpine3.23@sha256:e7cff362a12454395f8dc99607c21a602ea880cdce03538877b90c2ba932b16f AS backend-base
+FROM python:3.15.0-alpine3.23@sha256:d64bc17e0dff27c5c4a31f616450d032aa73d6325855127ce3a305bf1384c8d5 AS backend-base
 RUN apk upgrade --no-cache
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -19,7 +19,10 @@ WORKDIR /app
 
 COPY --from=uv /uv /usr/local/bin/uv
 COPY backend/pyproject.toml backend/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN apk add --no-cache --virtual .build-deps \
+        build-base cargo libffi-dev openssl-dev libuv-dev \
+    && uv sync --frozen --no-dev --no-install-project \
+    && apk del .build-deps
 
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
@@ -45,7 +48,7 @@ COPY frontend/src/analysis-presentation.json ./frontend/src/analysis-presentatio
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-FROM python:3.14.8-alpine3.23@sha256:e7cff362a12454395f8dc99607c21a602ea880cdce03538877b90c2ba932b16f AS backend-runtime
+FROM python:3.15.0-alpine3.23@sha256:d64bc17e0dff27c5c4a31f616450d032aa73d6325855127ce3a305bf1384c8d5 AS backend-runtime
 RUN apk upgrade --no-cache
 
 ARG APP_VERSION=development
@@ -85,23 +88,23 @@ COPY --chmod=444 THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
 COPY --from=backend-base /third-party-licenses/backend /licenses/backend
 COPY --chmod=444 THIRD_PARTY_LICENSES/yazio-sdk-MIT.txt /licenses/yazio-sdk-MIT.txt
 COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
-RUN test -d /usr/local/lib/python3.14/site-packages/pip \
-    && test -d /usr/local/lib/python3.14/ensurepip \
+RUN test -d /usr/local/lib/python3.15/site-packages/pip \
+    && test -d /usr/local/lib/python3.15/ensurepip \
     && test -L /usr/local/bin/pip \
     && test -x /usr/local/bin/pip3 \
-    && test -x /usr/local/bin/pip3.14 \
+    && test -x /usr/local/bin/pip3.15 \
     && rm -rf \
-        /usr/local/lib/python3.14/site-packages/pip \
-        /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
-        /usr/local/lib/python3.14/ensurepip \
+        /usr/local/lib/python3.15/site-packages/pip \
+        /usr/local/lib/python3.15/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.15/ensurepip \
         /usr/local/bin/pip \
         /usr/local/bin/pip3 \
-        /usr/local/bin/pip3.14 \
-    && test ! -e /usr/local/lib/python3.14/site-packages/pip \
-    && test ! -e /usr/local/lib/python3.14/ensurepip \
+        /usr/local/bin/pip3.15 \
+    && test ! -e /usr/local/lib/python3.15/site-packages/pip \
+    && test ! -e /usr/local/lib/python3.15/ensurepip \
     && test ! -e /usr/local/bin/pip \
     && test ! -e /usr/local/bin/pip3 \
-    && test ! -e /usr/local/bin/pip3.14
+    && test ! -e /usr/local/bin/pip3.15
 RUN chmod 0555 /licenses
 
 RUN test -r /licenses/CaloGraph-LICENSE.md \
@@ -114,7 +117,7 @@ EXPOSE 8000
 ENTRYPOINT ["backend-entrypoint"]
 CMD ["serve"]
 
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS backup-agent-runtime
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS backup-agent-runtime
 
 ARG APP_VERSION=development
 ARG APP_UID=10001
@@ -146,7 +149,7 @@ ENTRYPOINT ["/app/scripts/backup-agent.sh"]
 # Frontend
 # -----------------------------------------------------------------------------
 
-FROM node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS frontend-dependencies
+FROM node:26.13.0-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS frontend-dependencies
 
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
@@ -175,7 +178,7 @@ RUN npm run build \
           cp "$license_file" "$destination"; \
         done
 
-FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea AS frontend-e2e
+FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f AS frontend-e2e
 
 WORKDIR /work
 COPY frontend/package.json frontend/package-lock.json ./

@@ -28,11 +28,12 @@ forces all development-only callers onto the patched 5.0.8 release for
 CVE-2026-14257 without accepting the unrelated breaking changes proposed by a
 forced general audit rewrite.
 
-The backend uses the official Python 3.14 Alpine 3.23 image. During F-10
-validation, the contemporaneous Debian slim image produced 23 high or critical
-OS findings with no available fixed package version. The Alpine variant passed
-the same strict Trivy gate with no suppressions and also passed the complete
-backend, migration, browser, backup, and restore checks.
+The backend now uses the official Python 3.15 Alpine 3.23 image. During the
+earlier F-10 comparison of the Python 3.14 baseline, the contemporaneous Debian
+slim image produced 23 high or critical OS findings with no available fixed
+package version; the Python 3.14 Alpine variant passed the same strict Trivy
+gate without suppressions and passed the then-current integration checks.
+Current runtime images are independently subject to the strict CI Trivy gate.
 
 ## Image validation and publication
 
