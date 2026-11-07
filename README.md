@@ -41,13 +41,16 @@ moral judgment or external telemetry.
 
 ## Highlights
 
-- **Multi-user by design:** each account has isolated imports, samples, targets,
-  achievements, tokens and personal integrations.
+- **Analysis V2:** a customizable analysis workspace for nutrition,
+  micronutrients, activity and weight, with persistent reorderable cards,
+  shared period controls, detailed charts, and meal and food drill-downs.
 - **Versioned nutrition analytics:** daily calories and macros, historically
-  effective budgets and targets, trends, calendar and data-quality views.
+  effective budgets and targets, calendar, coverage and data-quality views.
 - **Activity-aware budgets:** optional imported activity-calorie credits can
   increase the effective daily calorie budget without turning CaloGraph into a
   workout tracker.
+- **Multi-user by design:** each account has isolated imports, samples, targets,
+  achievements, tokens and personal integrations.
 - **Portable data:** ZIP export/import and separate CSV archive export are
   available; CSV import is not currently supported.
 - **Managed account lifecycle:** the first administrator can be created through
@@ -60,10 +63,6 @@ CaloGraph is actively evolving. Planned areas of development include:
 
 - **AI-assisted nutrition analysis:** use structured nutrition, meal and food
   data for deeper, opt-in analysis beyond charts and daily aggregates.
-- **Expanded trends and micronutrient analytics:** rebuild the trends and
-  micronutrient views around richer long-term analysis, period-over-period
-  comparisons, data coverage and clearer macro- and micronutrient insights,
-  with optional reference-value context where appropriate.
 - **Richer Apple Health ingestion:** explore additional nutrition and meal-level
   data where the available Apple Health export paths provide reliable metadata.
 
