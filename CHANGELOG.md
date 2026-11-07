@@ -5,63 +5,184 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Theme
+## [0.7.0] - 2026-11-07
 
-- Globale Darstellung: System, Hell und Dunkel in Konto → Allgemeine Einstellungen; die Auswahl wird lokal im Browser gespeichert und Diagramme wechseln ohne Neuladen mit.
+### Highlights
 
-### YAZIO synchronization
-
-- Restored the versioned YAZIO SDK mobile-client credential defaults. Normal
-  SDK operation requires only `YAZIO_ENABLED=true`;
-  `YAZIO_SDK_CLIENT_ID` and `YAZIO_SDK_CLIENT_SECRET` remain optional
-  maintainer/emergency overrides.
-- Completed the SDK-only direct-sync cutover, retaining `yazio-sdk==0.4.0`
-  and removing the exporter runtime, provider selector, and nutrition-domain
-  rollout switch. Compatible historical `days.json` and `nutrients.json`
-  imports remain available without an SDK connection or exporter installation;
-  existing imported data and historical connector provenance are preserved.
-
-### Data source priorities
-
-- When a preference list is explicitly saved, only its ordered providers form
-  the fallback chain; omitted providers are not added implicitly.
-- Accounts without a saved preference retain the existing registry fallback
-  during the migration period.
-
+- Introduces the authenticated Analysis workspace at `/analyse`, with a
+  personal hub for weight, activity, nutrition, and micronutrient analyses.
+- Adds canonical nutrition evidence and daily projections, with per-user
+  provider priorities for Nutrition, Activity Energy, and Weight.
+- Adds Google Health and Withings account integrations while retaining
+  existing Apple Health imports and YAZIO file-import compatibility.
 
 ### Analysis
 
-- Added a protected six-route Analyse workspace for nutrition trends,
-  micronutrients, activity, and weight while preserving existing routes.
-- Added the authenticated canonical micronutrient period and daily-series API,
-  with per-day provider provenance and null-versus-zero coverage semantics.
-- Analysis V2 cards and detail surfaces now use semantic energy/fat and coverage colors, discrete measured weight points, and responsive drag/keyboard interactions.
-- Analysis V2 card visuals now use domain-specific weight violet, active-energy amber, and micronutrient emerald roles. Reordered card content emphasizes the current KPI and trend chart, with a compact metric rail and subtle drag insertion marker.
-- All configurable product ranges now share the same reader-aware picker: the desktop `7 days | 30 days | 90 days | Individuell` bar keeps unsupported presets disabled in place, while mobile offers only supported choices. The default is 30 days; six months and one year are 180 and 365 inclusive rolling days. Existing reader limits and API all-data semantics are unchanged.
-- The Overview's running-week summary remains independent of its selected chart range: it reuses a trends response only when the requested bounds cover the current week, otherwise loading that bounded week separately.
-- In development/test, only the exact reserved demo account can use canonical
-  `analysis_demo` nutrition in Overview Summary and Trends; other users,
-  production, provider preferences, other readers, and Legacy `HealthSample`
-  rows are unchanged.
-- Weight summaries and details connect only actual, date-spaced measurements with violet lines, point markers, and subtle areas. Missing dates never synthesize weight samples or break the line; activity retains amber zero-based bars and missing-day gaps, while micronutrient metric details retain their existing Emerald trends and actual series gaps.
-- Added localized analysis catalogue filtering and an explicit no-results state.
-- The micronutrient overview uses semi-transparent daily bars beneath same-color, gap-aware trend lines and point markers, with subtle fades and a wide responsive chart lane; real gaps, recorded zeros, and period-preserving detail links remain intact.
-- The Analysis hub presents four removable domain defaults and optional available metrics in one persisted mixed-order `Meine Analysen` list. A grouped manager adds and removes cards; card titles navigate while drag and overflow controls remain separate.
-- The Analysis hub keeps equal desktop card rows, places its add tile last, and lets long meal names wrap when no calories are available.
-- The disposable Analysis demo seeds the canonical mixed-card baseline and
-  audits only exact pre-canonical, migrated-legacy, and API-projected preference states.
+- The Analysis hub combines default domain cards and available metrics in one
+  persistent, user-ordered list. Users can add, remove, and reorder cards;
+  pointer and keyboard controls remain accessible.
+- Adds overview and detail analyses for measured weight, active energy,
+  nutrition metrics, micronutrients, and meals. Coverage distinguishes absent
+  data from recorded zeroes; charts do not fabricate measurements for missing
+  days.
+- Adds a shared period picker that respects each reader's supported ranges,
+  carries selected periods into detail views, and adapts to narrow screens.
+- Improves responsive layouts, focus handling, keyboard operation, and
+  accessible card actions throughout the Analysis workspace.
+- Calendar reuses shared status presentation, and the sidebar stays stable
+  during long-page scrolling.
+- The existing `/trends` route and Trends view remain available. The sidebar
+  groups Trends and other existing analytics routes under Analysis; they are
+  not redirected or retired.
 
-- Analysis hub coverage labels use domain-specific counts without repeated
-  calendar denominators or completeness grades; coverage calculations and API
-  contracts are unchanged.
-- The Activity card reports canonical Active Energy only. Steps and BMI remain unavailable without canonical readers; `Mahlzeiten heute` uses the existing nutrition reader and account-local date.
-- Weight and activity details show measured-day values and period coverage
-  without filling missing days with zero.
-- Analysis cards support accessible reordering with keyboard controls.
-- Analysis cards place the domain icon above the accessible drag handle, keep
-  the title beside the left rail, and use available container width for the
-  responsive card grid. Weight detail now orders its KPI, chart, period
-  statistics, coverage, and measurements in that sequence.
+### Nutrition data and source priorities
+
+- Introduces an append-oriented Nutrition Domain for provider observations,
+  consumed events, source-scoped identities, revisions, and provenance.
+  Provider-aware resolution builds daily projections for canonical readers.
+- Provider priorities are downstream of ingestion: connected sources contribute
+  evidence independently of selection. Priority chooses later resolution and
+  reader winners; it does not decide which providers may be fetched.
+- Per-user ordered priority lists define the complete fallback chain for
+  Nutrition, Activity Energy, and Weight. Unavailable or no-data sources may
+  fall through; invalid, ambiguous, or not-ready evidence fails closed.
+  Providers are not merged for the same semantic metric and date.
+- Existing preferences are preserved during priority bootstrap. Where more
+  than one source is available without an explicit policy, CaloGraph requires
+  a selection instead of silently choosing a winner.
+
+### Integrations
+
+#### Google Health
+
+- Adds per-user OAuth and client credentials, encrypted credential/token
+  storage, and user-scoped synchronization for Nutrition, Activity, and Weight.
+- Nutrition uses canonical evidence and projections; Activity and Weight
+  continue to feed compatible measurement readers. OAuth credentials are
+  configured per user, not as deployment-wide client secrets. The callback is
+  derived from the configured public URL.
+
+#### Withings
+
+- Adds per-user client credentials and encrypted OAuth token handling. Manual
+  synchronization imports Weight, Activity Energy, and supported body
+  composition measurements into the existing measurement model.
+- Withings is not a Nutrition provider. The integration is disabled by default;
+  users configure their own credentials under Account → Integrations.
+
+#### YAZIO
+
+- Makes the pinned `yazio-sdk==0.4.0` integration using YAZIO API v22 the sole
+  direct-sync implementation. The exporter-backed direct provider, provider
+  selector, and persistence rollout branching are removed. The upstream API is
+  undocumented and may change.
+- Manual, scheduled, and historical synchronization use the same configured,
+  encrypted connection and canonical range flow. Compatibility HealthSamples
+  retain dietary energy, macros, and optional activity energy and weight;
+  ImportBatches and stable source identities remain for existing readers.
+- The `sync-yazio` CLI uses that configured connection and range operation; it
+  no longer accepts transient email, password, or source-identifier inputs.
+- Durable projection-pending replay keeps committed evidence recoverable:
+  projection or finalization failures do not mark a sync successful or advance
+  a historical cursor. Retrying the same range repairs projections without
+  duplicating evidence.
+- Meal detail preserves safe simple-product names and provider-local times.
+  Meal groups follow breakfast, lunch, dinner, snack, then uncategorized
+  ordering. Named simple products remain detail-visible without a supplied
+  serving amount; missing quantities are labeled as unspecified, not invented.
+- Migration `20261026_0041` repairs record-presence state for qualifying
+  historical SDK-v22 simple products. It does not rewrite legacy connector
+  provenance or invent amounts.
+- Compatible `days.json` and `nutrients.json` imports remain independent of the
+  SDK and exporter runtime. The external `yazio-exporter` is only an optional
+  producer of compatible files.
+- The SDK aggregate does not establish complete daily micronutrient or fiber
+  coverage. Successful SDK sync does not advance the legacy micronutrient
+  synchronization marker, and missing values are not synthesized.
+
+### Appearance
+
+- Adds System, Light, and Dark appearance choices under Account → General
+  settings. The selection is stored in the browser, follows the operating
+  system in System mode, and updates chart colors with the active theme.
+
+### Configuration and operations
+
+- `YAZIO_PROVIDER` and `YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED` are no longer
+  active settings. `YAZIO_ENABLED` controls the single supported SDK
+  integration; `YAZIO_SCHEDULER_ENABLED` defaults to `true`. The production
+  template keeps `YAZIO_ENABLED=false`; enabling the scheduler alone does not
+  enable YAZIO. `YAZIO_SDK_CLIENT_ID` and `YAZIO_SDK_CLIENT_SECRET` are
+  optional maintainer overrides; normal operation uses versioned defaults.
+  No new required deployment variable is introduced.
+- Adds `GOOGLE_HEALTH_ENABLED=false` and `WITHINGS_ENABLED=false`. Google and
+  Withings client credentials are per-user; optional
+  `WITHINGS_REDIRECT_URI` can override the callback URL.
+- Adds default-off analytics rollout settings:
+  `ANALYTICS_DAILY_SHADOW_READ_ENABLED`,
+  `ANALYTICS_DAILY_SHADOW_MAX_DAYS` (31),
+  `ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED`,
+  `ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS` (31),
+  `ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED`,
+  `ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED`,
+  `ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED`,
+  `ANALYTICS_DAILY_CANONICAL_READ_ENABLED`,
+  `ANALYTICS_CALENDAR_CANONICAL_READ_ENABLED`,
+  `ANALYTICS_WEEKLY_CANONICAL_READ_ENABLED`,
+  `ANALYTICS_WEEKDAYS_CANONICAL_READ_ENABLED`, and
+  `ANALYTICS_TRENDS_CANONICAL_READ_ENABLED`. The micronutrient metadata
+  shadow setting is accepted by the backend but is not listed in the example
+  environment templates.
+- Container updates resolve the public `age` recipient file from the invocation
+  environment or `.env` without executing `.env`, validate it and Compose, and
+  create an encrypted database backup before pulling images. Optional secrets
+  backups remain opt-in. The update then stops the backend and YAZIO scheduler
+  before migration/startup; a failed or partial writer stop fails closed.
+- CI tests the exact container images, blocks high/critical Trivy findings,
+  generates SPDX SBOMs, and publishes image provenance and SBOM attestations
+  for eligible public GHCR releases.
+
+### Database upgrades
+
+- Revisions `20260908_0025`–`20260910_0028` establish Nutrition evidence,
+  projections, provenance, and source-scoped identities;
+  `20260910_0029`–`20260920_0033` add Google Health connections and migrate
+  provider priorities; `20260922_0034`–`20260924_0036` add Withings;
+  `20260927_0037`–`20261006_0039` persist Analysis preferences. Apply the full
+  chain through `20261026_0041` with the normal Alembic upgrade path; no manual
+  schema migration is required.
+- The source-identity and preference migrations preserve user data and stop
+  rather than discard orphaned, ambiguous, or malformed preference records.
+  Migration `20260920_0033` requires existing Google Health connections to
+  re-authorize with per-user client credentials.
+- Migration `20261021_0040` adds durable `projection_pending` acknowledgements
+  and marks completed SDK-v22 ranges for replay, rebuilding projections after
+  interrupted lifecycle work.
+- Migration `20261026_0041` repairs only qualifying SDK-v22 simple-product
+  record-presence values. Amounts, nutrient values, serving data, revisions,
+  and historical legacy provenance remain unchanged; no YAZIO resync is
+  needed for this repair.
+
+### Security and runtime
+
+- Backend and frontend remain version `0.7.0`. The runtime baseline is Python
+  3.15.0 on Alpine 3.23 and Node 26.13.0; frontend dependencies include stable
+  Vue 3.5.44, `vue-i18n` 11.4.18, Vue Router 5.4.0, and Vitest 5.0.5.
+- Updates include `oauthlib` 4.0.1, `pyasn1` 0.6.5, `msgpack` 1.2.4,
+  `certifi` 2026.10.19, and the `uv` 0.13.6 build image.
+- The current main CI reports no known backend dependency vulnerabilities and
+  zero frontend npm audit vulnerabilities.
+- Stable Vue 3.5 does not export a type currently referenced by vue-i18n 11
+  declarations. TypeScript's `skipLibCheck` is narrowly used for dependency
+  declaration compatibility; the normal `vue-tsc --noEmit` application
+  typecheck remains enabled.
+
+### Known limitations
+
+- YAZIO's direct API is undocumented and may change; the SDK does not provide
+  complete daily micronutrient or fiber aggregates.
+- Withings does not provide Nutrition data. Steps and BMI do not yet have
+  canonical Analysis readers.
 
 ## [0.6.5] - 2026-09-07
 
@@ -894,7 +1015,9 @@ documented reverse-proxy configuration is already in use.
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/tarantila/CaloGraph/compare/v0.6.5...v0.7.0
+[0.6.5]: https://github.com/tarantila/CaloGraph/compare/v0.6.4...v0.6.5
 [0.5.0]: https://github.com/tarantila/CaloGraph/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...v0.4.1
