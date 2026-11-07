@@ -31,9 +31,9 @@ follows [Semantic Versioning](https://semver.org/).
   accessible card actions throughout the Analysis workspace.
 - Calendar reuses shared status presentation, and the sidebar stays stable
   during long-page scrolling.
-- The existing `/trends` route and Trends view remain available. The sidebar
-  groups Trends and other existing analytics routes under Analysis; they are
-  not redirected or retired.
+- The legacy `/trends` route and view remain available but no longer have a
+  standalone primary-navigation entry; the Analysis workspace takes that place,
+  and visiting `/trends` keeps Analysis active in navigation.
 
 ### Nutrition data and source priorities
 
@@ -1018,6 +1018,11 @@ documented reverse-proxy configuration is already in use.
 [Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/tarantila/CaloGraph/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/tarantila/CaloGraph/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/tarantila/CaloGraph/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/tarantila/CaloGraph/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/tarantila/CaloGraph/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/tarantila/CaloGraph/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/tarantila/CaloGraph/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tarantila/CaloGraph/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/tarantila/CaloGraph/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tarantila/CaloGraph/compare/v0.4.0...v0.4.1
