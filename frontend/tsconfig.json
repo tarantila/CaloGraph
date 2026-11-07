@@ -5,6 +5,8 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
+    // vue-i18n 11.4.18 references a type missing from stable Vue 3.5 declarations.
+    "skipLibCheck": true,
     "jsx": "preserve",
     "resolveJsonModule": true,
     "isolatedModules": true,

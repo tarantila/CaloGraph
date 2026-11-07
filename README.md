@@ -196,9 +196,10 @@ Apple Health / Health Auto Export / YAZIO
 - [Import API](docs/import-api.md)
 - [YAZIO synchronization](docs/yazio-sync.md)
 
-Backend development uses Python 3.14 and the project lockfile; frontend
-development uses the package lockfile. The repository CI workflow contains the
-supported checks. Do not use development defaults for a public deployment.
+Backend development uses Python 3.15 and the project lockfile; frontend
+development uses Node 26 and the package lockfile. The repository CI workflow
+contains the supported checks. Do not use development defaults for a public
+deployment.
 
 ### Analysis demo (disposable developer databases only)
 
