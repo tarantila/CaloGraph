@@ -1,6 +1,6 @@
 services:
   backend:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.5}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-edge}
     build:
       target: backend-development
     command:
@@ -22,12 +22,16 @@ services:
     read_only: false
 
   yazio-scheduler:
-    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.5}
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-edge}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
     environment:
       YAZIO_ENABLED: "true"
       YAZIO_SCHEDULER_ENABLED: "true"
   frontend:
-    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.5}
+    image: calograph-frontend-dev:${CALOGRAPH_VERSION:-edge}
     build:
       target: frontend-development
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
