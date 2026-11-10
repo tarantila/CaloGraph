@@ -140,7 +140,21 @@ assert_override_config() {
     and (.services["backup-agent"].read_only == true)
     and ((.services["backup-agent"].cap_drop | index("ALL")) != null)
     and ((.services["backup-agent"].security_opt | index("no-new-privileges:true")) != null)
-  ' <<<"$override_config" >/dev/null || fail 'secrets override boundary is incorrect.'
+  ' <<<"$override_config" >/dev/null || {
+    docker compose version >&2
+    jq --version >&2
+    jq -c '{
+      project: .name,
+      backup_include_secrets: .services["backup-agent"].environment.BACKUP_INCLUDE_SECRETS,
+      secrets_source_file: .services["backup-agent"].environment.SECRETS_SOURCE_FILE,
+      secrets_source_dir: .services["backup-agent"].environment.SECRETS_SOURCE_DIR,
+      input_mounts: [.services["backup-agent"].volumes[] | select((.target // "") | startswith("/backup-input/")) | {type, source, target, read_only, bind}],
+      read_only: .services["backup-agent"].read_only,
+      cap_drop: .services["backup-agent"].cap_drop,
+      security_opt: .services["backup-agent"].security_opt
+    }' <<<"$override_config" >&2
+    fail 'secrets override boundary is incorrect.'
+  }
 }
 
 
