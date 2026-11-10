@@ -41,7 +41,7 @@ RUN uv sync --frozen --no-dev \
 
 FROM backend-base AS backend-development
 
-RUN uv sync --frozen --all-extras
+RUN apk add --no-cache bash && uv sync --frozen --all-extras
 COPY backend/tests ./tests
 COPY frontend/src/analysis-presentation.json ./frontend/src/analysis-presentation.json
 

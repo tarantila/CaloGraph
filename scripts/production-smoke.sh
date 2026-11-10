@@ -4,6 +4,12 @@ umask 077
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 project_name=${PRODUCTION_SMOKE_PROJECT:-calograph-production-smoke}
+case "$project_name" in
+  ''|calograph|calograph-dev|calograph-analysis-v2-review)
+    printf 'PRODUCTION_SMOKE_PROJECT must name an isolated disposable project.\n' >&2
+    exit 1 ;;
+esac
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_PROFILES
 smoke_edge_subnet=${PRODUCTION_SMOKE_EDGE_SUBNET:-172.31.250.0/24}
 smoke_edge_gateway_ip=${PRODUCTION_SMOKE_EDGE_GATEWAY_IP:-172.31.250.1}
 smoke_frontend_proxy_ip=${PRODUCTION_SMOKE_FRONTEND_PROXY_IP:-172.31.250.10}
@@ -23,15 +29,14 @@ legacy_secrets="$smoke_root/legacy-secrets"
 
 compose() {
   docker compose \
+    -f "$project_root/docker-compose.yml" \
     --project-name "$project_name" \
     --env-file "$smoke_env" \
     "$@"
 }
 
 backup_compose() {
-  docker compose \
-    -f docker-compose.yml \
-    -f docker-compose.backup-secrets.yml \
+  "$project_root/scripts/backup-compose.sh" \
     --project-name "$project_name" \
     --env-file "$smoke_env" \
     "$@"

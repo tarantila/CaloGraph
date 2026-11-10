@@ -319,6 +319,16 @@ jobs:
           overwrite: true
           retention-days: 30
       - run: sudo apt-get update && sudo apt-get install --yes age
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: 0.13.6
+      - name: Verify resolved development and isolated workflow contracts
+        env:
+          CALOGRAPH_REQUIRE_COMPOSE_TESTS: "1"
+        run: >-
+          uv run --no-project --with pytest==9.2.0
+          pytest --noconftest -c /dev/null
+          backend/tests/test_compose_layout.py backend/tests/test_backup_compose.py
       - run: cp .env.example .env
       - run: ./scripts/init-secrets.sh
       - name: Verify container update recipient resolution
@@ -357,10 +367,6 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 3
-      - if: always()
-        run: docker compose logs --no-color --tail=300
-      - if: always()
-        run: docker compose down --volumes --remove-orphans
 
   publish-images:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

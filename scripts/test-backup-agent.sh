@@ -3,6 +3,13 @@ set -Eeuo pipefail
 umask 077
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+project_name=${BACKUP_TEST_PROJECT:-calograph-backup-tests}
+case "$project_name" in
+  ''|calograph|calograph-dev|calograph-analysis-v2-review)
+    printf 'BACKUP_TEST_PROJECT must name an isolated disposable project.\n' >&2
+    exit 1 ;;
+esac
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_PROFILES
 test_root=$(mktemp -d)
 cleanup() {
   local status=$?
@@ -65,14 +72,14 @@ EOF
 compose_config() {
   local override=$1
   if [[ "$override" == true ]]; then
-    docker compose \
-      -f "$project_root/docker-compose.yml" \
-      -f "$project_root/docker-compose.backup-secrets.yml" \
+    "$project_root/scripts/backup-compose.sh" \
+      --project-name "$project_name" \
       --env-file "$compose_env" \
       --profile backup config --format json
   else
     docker compose \
       -f "$project_root/docker-compose.yml" \
+      --project-name "$project_name" \
       --env-file "$compose_env" \
       --profile backup config --format json
   fi
@@ -108,6 +115,8 @@ assert_base_config() {
 }
 
 assert_override_config() {
+  # Compose 2.38.2 omits false-valued create_host_path from normalized JSON.
+  # test_backup_compose.py asserts the generated override explicitly sets false.
   jq -e '
     (.services | keys | map(select(. == "backup-agent")) | length == 1)
     and (.services | has("backup-agent-secrets") | not)
@@ -121,6 +130,7 @@ assert_override_config() {
           and all($input_mounts[];
               .type == "bind"
               and .read_only == true
+              and ((.bind.create_host_path // false) == false)
               and (.source | type == "string" and length > 0))
           and any($input_mounts[];
               .target == "/backup-input/environment.env")
@@ -132,12 +142,59 @@ assert_override_config() {
     and (.services["backup-agent"].read_only == true)
     and ((.services["backup-agent"].cap_drop | index("ALL")) != null)
     and ((.services["backup-agent"].security_opt | index("no-new-privileges:true")) != null)
-  ' <<<"$override_config" >/dev/null || fail 'secrets override boundary is incorrect.'
+  ' <<<"$override_config" >/dev/null || {
+    docker compose version >&2
+    jq --version >&2
+    jq -c '{
+      project: .name,
+      backup_include_secrets: .services["backup-agent"].environment.BACKUP_INCLUDE_SECRETS,
+      secrets_source_file: .services["backup-agent"].environment.SECRETS_SOURCE_FILE,
+      secrets_source_dir: .services["backup-agent"].environment.SECRETS_SOURCE_DIR,
+      input_mounts: [.services["backup-agent"].volumes[] | select((.target // "") | startswith("/backup-input/")) | {type, source, target, read_only, bind}],
+      read_only: .services["backup-agent"].read_only,
+      cap_drop: .services["backup-agent"].cap_drop,
+      security_opt: .services["backup-agent"].security_opt
+    }' <<<"$override_config" >&2
+    fail 'secrets override boundary is incorrect.'
+  }
 }
 
 
 assert_base_config
 assert_override_config
+
+# A flag in dotenv/process environment cannot grant source mounts by itself.
+base_config=$(BACKUP_INCLUDE_SECRETS=true compose_config false)
+assert_base_config
+
+# The explicit wrapper rejects wrong-type/missing/symlink sources before mounts.
+for invalid_file in "$test_root/missing" "$source_dir"; do
+  if BACKUP_SECRETS_SOURCE_FILE="$invalid_file" compose_config true >/dev/null 2>&1; then
+    fail 'wrapper accepted a missing or wrong-type source file.'
+  fi
+done
+ln -s "$source_env" "$test_root/source-link"
+if BACKUP_SECRETS_SOURCE_FILE="$test_root/source-link" compose_config true >/dev/null 2>&1; then
+  fail 'wrapper accepted a symlink source.'
+fi
+# Compose must see literal dollars/spaces, not a second interpolation pass.
+literal_file="$test_root/environment \$literal.env"
+literal_dir="$test_root/secrets \$literal"
+cp "$source_env" "$literal_file"
+mkdir "$literal_dir"
+literal_config=$(BACKUP_SECRETS_SOURCE_FILE="$literal_file" \
+  BACKUP_SECRETS_SOURCE_DIR="$literal_dir" compose_config true)
+if ! jq -e --arg file "$literal_file" --arg directory "$literal_dir" '
+  [.services["backup-agent"].volumes[]
+    | select(.target | startswith("/backup-input/"))
+    | .source | gsub("\\$\\$"; "$")] as $sources
+  | any($sources[]; . == $file) and any($sources[]; . == $directory)
+' <<<"$literal_config" >/dev/null; then
+  resolved_paths=$(jq -c '[.services["backup-agent"].volumes[]
+    | select(.target | startswith("/backup-input/")) | .source]' <<<"$literal_config")
+  printf 'Backup-agent test: unexpected serialized literal source paths: %s\n' "$resolved_paths" >&2
+  fail 'wrapper changed literal source paths.'
+fi
 
 identity_file="$test_root/backup-identity.txt"
 age-keygen -o "$identity_file" >/dev/null 2>&1
