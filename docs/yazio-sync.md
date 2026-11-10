@@ -164,9 +164,12 @@ requires that enabled connection and uses its encrypted credentials, stable
 source identifier, user locks, and the same canonical sync flow as the UI and
 scheduler. It does not accept ad-hoc email/password or source-identifier
 overrides and does not prompt for credentials.
+The commands below explicitly target production/runtime Compose with
+`docker-compose.yml`. For local development, replace it with
+`docker-compose-dev.yml`.
 
 ```bash
-docker compose exec backend python -m app.cli sync-yazio --username admin
+docker compose -f docker-compose.yml exec backend python -m app.cli sync-yazio --username admin
 ```
 
 Without date options, the CLI retrieves the previous 60 days including today.
@@ -174,13 +177,14 @@ Use `--days` for a different trailing window (1–366 days), or an explicit
 inclusive range of at most 366 days:
 
 ```bash
-docker compose exec backend python -m app.cli sync-yazio \
+docker compose -f docker-compose.yml exec backend python -m app.cli sync-yazio \
   --username admin --days 7
-docker compose exec backend python -m app.cli sync-yazio \
+docker compose -f docker-compose.yml exec backend python -m app.cli sync-yazio \
   --username admin \
   --from-date 2026-01-01 \
   --end-date 2026-03-31
 ```
+
 
 For longer ranges, queue `sync-yazio-history` instead. The stable default
 source identifier is `yazio:<CaloGraph user UUID>`; neither the YAZIO email
@@ -196,7 +200,7 @@ Compose mounts it only into the backend and scheduler.
 Generate the key once:
 
 ```bash
-docker compose run --rm --no-deps backend \
+docker compose -f docker-compose.yml run --rm --no-deps backend \
   python -m app.cli generate-credential-key
 ```
 
@@ -207,13 +211,13 @@ If a key is generated manually, write the resulting value to the file named by
 and then recreate the backend and scheduler:
 
 ```bash
-docker compose up -d --no-build --force-recreate backend yazio-scheduler
+docker compose -f docker-compose.yml up -d --no-build --force-recreate backend yazio-scheduler
 ```
 
 Configure a personal connection:
 
 ```bash
-docker compose exec backend python -m app.cli configure-yazio \
+docker compose -f docker-compose.yml exec backend python -m app.cli configure-yazio \
   --username admin \
   --email name@example.com \
   --from-date 2026-01-01 \
@@ -252,10 +256,10 @@ Operators can inspect status, disable automation, or queue the same background
 range job without the browser:
 
 ```bash
-docker compose exec backend python -m app.cli yazio-status --username admin
-docker compose exec backend python -m app.cli sync-yazio-history --username admin \
+docker compose -f docker-compose.yml exec backend python -m app.cli yazio-status --username admin
+docker compose -f docker-compose.yml exec backend python -m app.cli sync-yazio-history --username admin \
   --from-date 2026-01-01 --end-date 2026-03-31
-docker compose exec backend python -m app.cli disable-yazio --username admin
+docker compose -f docker-compose.yml exec backend python -m app.cli disable-yazio --username admin
 ```
 
 Each user has at most one personal YAZIO connection. Imported samples, import

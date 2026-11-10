@@ -2,82 +2,52 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-project_name=calograph-verification-e2e
-port=${E2E_PORT:-8188}
+project_name=${VERIFICATION_E2E_PROJECT:-calograph-verification-e2e}
+case "$project_name" in
+  ''|calograph|calograph-dev|calograph-analysis-v2-review)
+    printf 'VERIFICATION_E2E_PROJECT must name an isolated test project.\n' >&2
+    exit 1 ;;
+esac
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_PROFILES
 verification_date=${E2E_VERIFICATION_DATE:-$(TZ=Europe/Berlin date +%F)}
-temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/calograph-verification-e2e.XXXXXX")
-secrets_dir="$temporary_root/secrets"
-env_file="$temporary_root/.env"
-mkdir -p "$secrets_dir"
-chmod 700 "$temporary_root" "$secrets_dir"
 cleanup() {
   status=$?
-  trap - EXIT INT TERM
-  if ! compose down --volumes --remove-orphans >/dev/null 2>&1; then
-    printf 'Verification E2E Compose cleanup failed.\n' >&2
-    status=1
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ]; then
+    compose logs --no-color --tail=300 verification-postgres verification-backend verification-frontend >&2 || true
   fi
-  if ! rm -rf "$temporary_root"; then
-    printf 'Verification E2E temporary-file cleanup failed.\n' >&2
+  # PostgreSQL is tmpfs; do not remove unrelated globally declared volumes.
+  if ! compose down --remove-orphans; then
+    printf 'Verification E2E Compose cleanup failed.\n' >&2
     status=1
   fi
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-for secret in postgres_password session_secret rate_limit_secret; do
-  openssl rand -hex 32 >"$secrets_dir/$secret"
-  chmod 444 "$secrets_dir/$secret"
-done
-for secret in credential_encryption_key mfa_encryption_key; do
-  openssl rand -base64 32 | tr '+/' '-_' >"$secrets_dir/$secret"
-  chmod 444 "$secrets_dir/$secret"
-done
-
-cat >"$env_file" <<EOF
-ENVIRONMENT=development
-POSTGRES_DB=calograph_verification
-POSTGRES_USER=calograph_verification
-POSTGRES_PASSWORD_FILE=$secrets_dir/postgres_password
-SESSION_SECRET_FILE=$secrets_dir/session_secret
-RATE_LIMIT_SECRET_FILE=$secrets_dir/rate_limit_secret
-CREDENTIAL_ENCRYPTION_KEY_FILE=$secrets_dir/credential_encryption_key
-MFA_ENCRYPTION_KEY_FILE=$secrets_dir/mfa_encryption_key
-CALOGRAPH_PUBLIC_URL=http://127.0.0.1:$port
-CALOGRAPH_BIND_ADDRESS=127.0.0.1
-CALOGRAPH_PORT=$port
-CALOGRAPH_EDGE_SUBNET=10.251.0.0/24
-CALOGRAPH_EDGE_GATEWAY_IP=10.251.0.1
-CALOGRAPH_DATA_SUBNET=10.252.0.0/24
-CALOGRAPH_FRONTEND_PROXY_IP=10.251.0.10
-COOKIE_SECURE=false
-ENABLE_HSTS=false
-TRUSTED_HOSTS=localhost,127.0.0.1,frontend
-TRUSTED_ORIGINS=http://localhost:$port,http://127.0.0.1:$port,http://frontend:8080
-E2E_VERIFICATION_DATE=$verification_date
-BACKUP_AGENT_ENABLED=false
-RELEASE_STATUS_ENABLED=false
-EOF
+export E2E_VERIFICATION_DATE="$verification_date"
 
 compose() {
-  docker compose \
-    --project-name "$project_name" \
-    --env-file "$env_file" \
-    --file "$project_root/docker-compose.yml" \
-    --file "$project_root/docker-compose.test.yml" \
-    --file "$project_root/docker-compose.verification.yml" \
-    "$@"
+  ENVIRONMENT=test CALOGRAPH_PUBLIC_URL=http://localhost:8188 COOKIE_SECURE=false ENABLE_HSTS=false \
+    TRUSTED_HOSTS=localhost,127.0.0.1 TRUSTED_ORIGINS=http://localhost:8188,http://127.0.0.1:8188 \
+    docker compose \
+      --project-name "$project_name" \
+      --env-file /dev/null \
+      --file "$project_root/docker-compose-dev.yml" \
+      --profile verification \
+      "$@"
 }
 
 compose config --quiet
 if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
-  compose up --detach --no-build --wait postgres backend frontend
+  compose up --detach --no-build --wait verification-postgres verification-backend verification-frontend
 else
-  compose up --detach --build --wait postgres backend frontend
+  compose up --detach --build --wait verification-postgres verification-backend verification-frontend
 fi
-compose exec --no-TTY backend alembic upgrade head
-compose exec --no-TTY backend python - \
+compose exec --no-TTY verification-backend alembic upgrade head
+compose exec --no-TTY verification-backend python - \
   < "$project_root/backend/tests/e2e_verification_seed.py"
-compose run --rm --build --no-deps e2e
+compose run --rm --build --no-deps verification

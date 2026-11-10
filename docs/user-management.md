@@ -19,8 +19,11 @@ disabled.
 
 The CLI remains supported and shares the first-user serialization boundary:
 
+This example targets local development. For a production/runtime checkout,
+select `docker-compose.yml` instead.
+
 ```bash
-docker compose exec backend python -m app.cli create-user
+docker compose -f docker-compose-dev.yml exec backend python -m app.cli create-user
 ```
 
 
@@ -123,12 +126,16 @@ and challenges, and revokes sessions and API tokens. It does not change the
 password, nutrition data, imports, profile, or encrypted YAZIO credentials, and
 it does not reactivate the account.
 
+These recovery commands target the production/runtime Compose service. For a
+local development instance, replace `docker-compose.yml` with
+`docker-compose-dev.yml`.
+
 The corresponding operator commands are:
 
 ```bash
-docker compose exec backend python -m app.cli issue-account-recovery \
+docker compose -f docker-compose.yml exec backend python -m app.cli issue-account-recovery \
   --username TARGET --admin-username ADMIN
-docker compose exec backend python -m app.cli reset-authenticators \
+docker compose -f docker-compose.yml exec backend python -m app.cli reset-authenticators \
   --username TARGET --admin-username ADMIN --confirm TARGET
 ```
 

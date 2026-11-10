@@ -19,36 +19,33 @@ EXACT_MINOR_TAG = re.compile(r"^postgres:\d+\.\d+-alpine$")
 PINNED_IMAGE = re.compile(r"^postgres:\d+\.\d+-alpine@sha256:[0-9a-f]{64}$")
 
 
-def _single_postgres_image(path: Path) -> str:
+def _postgres_images(path: Path) -> list[str]:
     images = re.findall(
         r"^\s*image:\s*(postgres:\S+)\s*$",
         path.read_text(encoding="utf-8"),
         flags=re.MULTILINE,
     )
-    assert len(images) == 1, f"expected exactly one PostgreSQL image in {path}"
-    return images[0]
+    assert images, f"expected PostgreSQL images in {path}"
+    return images
 
 
 def test_postgres_minor_pin_is_consistent_and_watched() -> None:
     """Keep the deliberate PostgreSQL pin and the update mechanism coupled."""
-    compose_image = _single_postgres_image(ROOT / "docker-compose.yml")
-    test_compose_image = _single_postgres_image(ROOT / "docker-compose.test.yml")
-    ci_image = _single_postgres_image(ROOT / ".github/workflows/ci.yml")
-
-    assert EXACT_MINOR_TAG.fullmatch(compose_image), (
-        "docker-compose.yml must pin PostgreSQL to an exact minor release"
-    )
-    assert EXACT_MINOR_TAG.fullmatch(test_compose_image), (
-        "docker-compose.test.yml must pin PostgreSQL to an exact minor release"
-    )
-    assert PINNED_IMAGE.fullmatch(ci_image), (
+    compose_images = _postgres_images(ROOT / "docker-compose.yml")
+    development_images = _postgres_images(ROOT / "docker-compose-dev.yml")
+    ci_images = _postgres_images(ROOT / ".github/workflows/ci.yml")
+    assert len(compose_images) == len(ci_images) == 1
+    assert len(development_images) >= 4, "dev, test, E2E and Review databases must be pinned"
+    for image in compose_images + development_images:
+        assert EXACT_MINOR_TAG.fullmatch(image), (
+            "all Compose PostgreSQL services must pin an exact minor release"
+        )
+    assert PINNED_IMAGE.fullmatch(ci_images[0]), (
         "the GitHub Actions PostgreSQL service must use the same exact minor and a digest"
     )
-
-    ci_tag = ci_image.split("@", maxsplit=1)[0]
-    assert compose_image == test_compose_image == ci_tag, (
-        "runtime, Compose integration tests, and GitHub Actions must test the same "
-        "PostgreSQL minor release"
+    ci_tag = ci_images[0].split("@", maxsplit=1)[0]
+    assert all(image == ci_tag for image in compose_images + development_images), (
+        "all runtime and integration PostgreSQL services must test the same minor release"
     )
 
     dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")

@@ -245,15 +245,13 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
     development = (repository_root / ".env.example").read_text()
     production = (repository_root / ".env.production.example").read_text()
     compose = (repository_root / "docker-compose.yml").read_text()
-    development_compose = (repository_root / "docker-compose.dev.yml").read_text()
-    verification_compose = (repository_root / "docker-compose.verification.yml").read_text()
+    development_compose = (repository_root / "docker-compose-dev.yml").read_text()
 
     for content in (
         development,
         production,
         compose,
         development_compose,
-        verification_compose,
     ):
         assert "YAZIO_PROVIDER" not in content
         assert "YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED" not in content
@@ -273,10 +271,9 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
     assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in compose
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in development_compose
-    assert development_compose.count('YAZIO_ENABLED: "true"') == 2
-    assert development_compose.count('YAZIO_SCHEDULER_ENABLED: "true"') == 2
-    assert 'YAZIO_ENABLED: "true"' in verification_compose
-    assert 'YAZIO_SCHEDULER_ENABLED: "false"' in verification_compose
+    assert development_compose.count('YAZIO_ENABLED: ${YAZIO_ENABLED:-true}') == 2
+    assert 'YAZIO_ENABLED: "true"' in development_compose
+    assert 'YAZIO_SCHEDULER_ENABLED: "false"' in development_compose
     operational_defaults = {
         "YAZIO_SYNC_INTERVAL_HOURS": "6",
         "YAZIO_SYNC_DAYS": "7",

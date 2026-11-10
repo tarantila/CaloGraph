@@ -119,9 +119,16 @@ cp .env.example .env
 ./scripts/init-secrets.sh
 # Review .env; keep CALOGRAPH_PUBLIC_URL on the address you use
 
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-docker compose ps
+docker compose -f docker-compose-dev.yml up -d --build
+docker compose -f docker-compose-dev.yml ps
 ```
+
+`make dev` runs the same detached build/start command. The standalone
+`docker-compose-dev.yml` starts PostgreSQL, the reload-enabled backend, the Vite
+frontend, and `yazio-scheduler`; do not combine it with production Compose.
+Local images default to `calograph-backend-dev:edge` and
+`calograph-frontend-dev:edge`. Set `CALOGRAPH_DEV_VERSION` to change their local
+tag independently of the production `CALOGRAPH_VERSION`.
 
 Open <http://localhost:8180>. On an empty instance, the sign-in page offers
 one-time creation of the first administrator. The browser setup creates only
@@ -130,7 +137,7 @@ the account; sign in to continue through the normal onboarding.
 There is a CLI alternative available when needed:
 
 ```sh
-docker compose exec backend python -m app.cli create-user
+docker compose -f docker-compose-dev.yml exec backend python -m app.cli create-user
 ```
 
 After initialization, further accounts are created only through
@@ -145,6 +152,11 @@ an Internet-facing proxy. Start production from
 origin, keep `INITIAL_ADMIN_SETUP_ENABLED=false` unless a controlled first-run
 window is explicitly intended, and follow the [production checklist](docs/production.md).
 The [reverse-proxy guide](docs/reverse-proxy.md) covers TLS and upload limits.
+
+The repository has exactly two Compose definitions: `docker-compose.yml` for
+production and standalone `docker-compose-dev.yml` for development and isolated
+checks. Production commands use only the production definition; no test runner,
+test database, Vite server, or review service is added to production.
 
 ## Privacy and security
 
@@ -200,6 +212,36 @@ development uses Node 26 and the package lockfile. The repository CI workflow
 contains the supported checks. Do not use development defaults for a public
 deployment.
 
+### Isolated check workflows
+
+The development definition includes the `test`, `e2e`, `verification`, and
+`analysis-review` profiles. **Profiles select services; they do not isolate
+projects, networks, volumes, secrets, or databases.** Never start a workflow with
+profile-wide `up` (or `--profile '*' up`): unprofiled development services would
+also start. Use the supported entrypoints, which select the exact services and
+separate project/resources:
+
+| Workflow | Entrypoint | Compose project |
+| --- | --- | --- |
+| Backend/frontend checks | `make test`, `make lint`, `make typecheck`, `make frontend-test` | `calograph-tests` |
+| PostgreSQL regressions (also invoked by `make test`) | `./scripts/test-postgres.sh` | `calograph-postgres-tests` |
+| Browser E2E | `make e2e` or `./scripts/e2e.sh` | `calograph-e2e` |
+| Synthetic-data verification E2E | `./scripts/verification-e2e.sh` | `calograph-verification-e2e` |
+| Persistent Analysis review | `make analysis-review-up` / `make analysis-review-down` | `calograph-analysis-v2-review` |
+
+Keep these workflows on disposable or dedicated synthetic databases. A Compose
+project name alone does not make a real source database safe; do not point
+workflow settings or secret sources at production or synchronized health data.
+
+Use `TEST_PROJECT`, `POSTGRES_TEST_PROJECT`, `E2E_PROJECT`,
+`VERIFICATION_E2E_PROJECT`, or `PRODUCTION_SMOKE_PROJECT` to give checks a
+unique disposable project name. E2E/Verification use the runtime backend and
+nginx frontend (`:8080`), never Vite, with synthetic credentials and tmpfs
+PostgreSQL; `E2E_USE_PREBUILT_IMAGES=true` retains the CI image path.
+The supported tmpfs-workflow cleanup removes containers/networks without
+`--volumes`. Do not use `down --volumes` with the development definition:
+profiles do not protect the globally declared persistent Review volume.
+
 ### Analysis demo (disposable developer databases only)
 
 Use `seed-analysis-demo` **only against a confirmed disposable development or
@@ -251,6 +293,17 @@ secret generator creates private review-only secrets, and the existing CLI
 privately prompts for the synthetic bootstrap and demo account passwords.
 Later starts migrate to the current Alembic head and skip seeding when the
 demo account already exists, preserving its data and preferences.
+
+The start command remains the supported restart path after a VM reboot. It
+selects only the review services from the `analysis-review` profile under
+`calograph-analysis-v2-review`, without the development scheduler or ordinary
+development stack. Secrets persist outside the repository at
+`${XDG_DATA_HOME:-$HOME/.local/share}/calograph/analysis-review/secrets`;
+locations under the repository or `/tmp` are rejected. An existing database
+volume must have this review project's Compose ownership labels and matching,
+readable secrets; the script refuses an unowned volume rather than adopting or
+resetting it. First initialization requires an interactive terminal for the
+private password prompts.
 
 ```sh
 make analysis-review-down
