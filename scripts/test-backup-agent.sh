@@ -115,6 +115,8 @@ assert_base_config() {
 }
 
 assert_override_config() {
+  # Compose 2.38.2 omits false-valued create_host_path from normalized JSON.
+  # test_backup_compose.py asserts the generated override explicitly sets false.
   jq -e '
     (.services | keys | map(select(. == "backup-agent")) | length == 1)
     and (.services | has("backup-agent-secrets") | not)
@@ -128,7 +130,7 @@ assert_override_config() {
           and all($input_mounts[];
               .type == "bind"
               and .read_only == true
-              and .bind.create_host_path == false
+              and ((.bind.create_host_path // false) == false)
               and (.source | type == "string" and length > 0))
           and any($input_mounts[];
               .target == "/backup-input/environment.env")
