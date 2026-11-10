@@ -200,6 +200,25 @@ development uses Node 26 and the package lockfile. The repository CI workflow
 contains the supported checks. Do not use development defaults for a public
 deployment.
 
+### Compose layout
+
+CaloGraph keeps one base Compose file plus narrowly scoped overlays or isolated
+runtimes:
+
+| File | Purpose |
+| --- | --- |
+| `docker-compose.yml` | Base runtime topology for normal local/private and production deployments; optional backup services remain profile-gated. |
+| `docker-compose.dev.yml` | Development overlay with hot reload, bind mounts, Vite and local `*-dev:edge` images. |
+| `docker-compose.test.yml` | CI/test-only services such as backend/frontend test runners, PostgreSQL test database and Playwright. |
+| `docker-compose.verification.yml` | Additional deterministic E2E verification overrides layered on base + test Compose. |
+| `docker-compose.analysis-review.yml` | Fully isolated persistent Analysis review runtime on port 8289 with its own database and secrets. |
+| `docker-compose.backup-secrets.yml` | Explicit opt-in override that mounts environment/secrets into the backup agent for encrypted secrets archives. |
+
+The extra files are intentionally not alternative production definitions. They
+separate development, test, verification, review and sensitive backup behavior
+from the normal runtime so those services and mounts are not enabled
+accidentally.
+
 ### Analysis demo (disposable developer databases only)
 
 Use `seed-analysis-demo` **only against a confirmed disposable development or
