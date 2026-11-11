@@ -16,14 +16,18 @@ def repository_root() -> Path:
     raise AssertionError('standalone development Compose definition is missing')
 
 
-def compose_config(*profiles: str) -> dict:
+def compose_config(
+    *profiles: str,
+    compose_file: str = 'docker-compose-dev.yml',
+    **overrides: str,
+) -> dict:
     if not shutil.which('docker'):
         if os.environ.get('CALOGRAPH_REQUIRE_COMPOSE_TESTS') == '1':
             pytest.fail('Docker Compose must be available for CI contract coverage')
         pytest.skip('Docker Compose is required for resolved configuration tests')
     root = repository_root()
     command = ['docker', 'compose', '--env-file', '/dev/null',
-               '-f', str(root / 'docker-compose-dev.yml')]
+               '-f', str(root / compose_file)]
     for profile in profiles:
         command.extend(['--profile', profile])
     environment = {
@@ -37,11 +41,52 @@ def compose_config(*profiles: str) -> dict:
         'ENABLE_HSTS': 'false',
         'TRUSTED_HOSTS': 'localhost,127.0.0.1',
         'TRUSTED_ORIGINS': 'http://localhost:8180,http://127.0.0.1:8180',
+        # Compose config only resolves these required paths; it never starts a
+        # service or opens the placeholder files.
+        'POSTGRES_PASSWORD_FILE': '/tmp/calograph-unused/postgres_password',
+        'SESSION_SECRET_FILE': '/tmp/calograph-unused/session_secret',
+        'RATE_LIMIT_SECRET_FILE': '/tmp/calograph-unused/rate_limit_secret',
+        'CREDENTIAL_ENCRYPTION_KEY_FILE': '/tmp/calograph-unused/credential_encryption_key',
+        'MFA_ENCRYPTION_KEY_FILE': '/tmp/calograph-unused/mfa_encryption_key',
     })
+    environment.update(overrides)
     result = subprocess.run([*command, 'config', '--format', 'json'], check=True,
                             capture_output=True, text=True,
                             env=environment)
     return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize('compose_file', ['docker-compose.yml', 'docker-compose-dev.yml'])
+def test_backend_forwards_micronutrient_rollout_and_reconcile_settings(compose_file: str) -> None:
+    defaults = compose_config(compose_file=compose_file)['services']['backend']['environment']
+    assert defaults['ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS'] == '31'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED'] == 'false'
+    assert defaults['RECONCILE_RATE_LIMIT'] == '12'
+    assert defaults['RECONCILE_IP_RATE_LIMIT'] == '24'
+    assert defaults['RECONCILE_RATE_LIMIT_WINDOW_SECONDS'] == '300'
+
+    configured = compose_config(
+        compose_file=compose_file,
+        ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS='17',
+        ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED='true',
+        RECONCILE_RATE_LIMIT='18',
+        RECONCILE_IP_RATE_LIMIT='36',
+        RECONCILE_RATE_LIMIT_WINDOW_SECONDS='600',
+    )['services']['backend']['environment']
+    assert configured['ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS'] == '17'
+    assert configured['ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED'] == 'true'
+    assert configured['RECONCILE_RATE_LIMIT'] == '18'
+    assert configured['RECONCILE_IP_RATE_LIMIT'] == '36'
+    assert configured['RECONCILE_RATE_LIMIT_WINDOW_SECONDS'] == '600'
 
 
 def test_default_development_builds_local_images_and_scheduler_waits_for_backend() -> None:
