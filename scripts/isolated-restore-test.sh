@@ -76,7 +76,7 @@ docker_bin=${DOCKER_BIN:-docker}
 command -v "$age_bin" >/dev/null 2>&1 || { printf 'age is required.\n' >&2; exit 1; }
 command -v "$docker_bin" >/dev/null 2>&1 || { printf 'docker is required.\n' >&2; exit 1; }
 
-image=${BACKUP_RESTORE_POSTGRES_IMAGE:-postgres:18.4-alpine}
+image=${BACKUP_RESTORE_POSTGRES_IMAGE:-postgres:18.6-alpine}
 [[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$ ]] || { printf 'PostgreSQL image name is invalid.\n' >&2; exit 64; }
 postgres_major=${BACKUP_RESTORE_POSTGRES_MAJOR:-18}
 [[ "$postgres_major" =~ ^[0-9]{2}$ && "$postgres_major" -ge 10 && "$postgres_major" -le 99 ]] || { printf 'PostgreSQL major is invalid.\n' >&2; exit 64; }

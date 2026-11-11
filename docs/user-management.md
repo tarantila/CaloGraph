@@ -238,21 +238,22 @@ to it automatically.
 
 ## Personal Google Health connection
 
-Google Health is connected exclusively through the official Google Health API
-v4. CaloGraph currently reads Nutrition Log data only with the read-only OAuth
-scope `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`;
-activity and weight are not obtained through Google Health. The official API
-also exposes Body Fat (`body-fat`) under the read-only OAuth scope
-`https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`,
-but CaloGraph currently excludes it from canonical persistence, the UI, and
-provider-priority selection; no Body-Fat implementation is included. The
-connection is stored encrypted per account. After authorization, users can
-start a manual nutrition synchronization for a bounded period under
-**Account → Integrations**.
+Google Health uses the official API v4 for nutrition, activity energy, and
+weight with three read-only scopes. Each user configures a personal OAuth
+client and authorizes their own Google account under **Konto → Integrationen**.
+Manual synchronization reports separate domain results. Provider availability
+requires user-owned evidence in the relevant domain, not just an OAuth grant.
+Body fat is not currently imported from Google Health. See
+[Google Health setup](google-health-setup.md) for the complete setup and limits.
 
-An active OAuth connection is available for provider selection only after
-canonical Google nutrition evidence exists. Without that evidence, the source
-remains visible but is reported as `no_data` and unavailable.
+## Personal Withings connection
+
+Each user configures a personal Withings OAuth client and connection under
+**Konto → Integrationen**. Manual synchronization imports supported body
+measurements and daily active energy; source selection is separate for weight
+and activity energy. Credentials and tokens are encrypted and account-scoped.
+See [Withings setup](withings-setup.md) for operator enablement, the explicit
+callback setting, required scopes, supported metrics, and connection lifecycle.
 
 ## Nutrition provider priority
 

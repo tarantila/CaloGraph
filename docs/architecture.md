@@ -15,6 +15,7 @@ persistent runtime dependency and is not bound to the host.
 iPhone exporter ── HTTPS/JSON ─────┐
 Apple Health XML/ZIP ─ browser ─────┼─ FastAPI ─ adapter ─ normalization ─ PostgreSQL
 YAZIO JSON / manual retrieval ──────┤
+Google Health / Withings ─ OAuth ───┤
 YAZIO ─ scheduler ─ user account ───┤
 Browser ─ Vue/Nginx ────────────────┘                                   ↓
 Browser ← Vue/Nginx ← user-scoped API responses ← analytics service ─────┘
@@ -23,7 +24,11 @@ Browser ← Vue/Nginx ← user-scoped API responses ← analytics service ──
 Adapters produce canonical samples. Only services write data, and analytics
 reads only the internal model. Every import batch, sample, and YAZIO connection
 has a `user_id`; database queries are always restricted to the authenticated
-user. A future native iOS app will use the existing `calograph_sync_v1` format.
+user. Google Health and Withings connections are likewise owned by the authenticated
+user. Their manual sync services read only that user's provider grant; the
+YAZIO scheduler does not schedule them. See [Google Health setup](google-health-setup.md)
+and [Withings setup](withings-setup.md). A future native iOS app will use the
+existing `calograph_sync_v1` format.
 
 Activity energy is normalized as the canonical `active_energy_kcal` metric.
 Analytics applies it only when the target version valid on that day enables

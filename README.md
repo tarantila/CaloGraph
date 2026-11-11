@@ -7,12 +7,14 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted, multi-user nutrition analytics for Apple Health and YAZIO</strong>
+  <strong>Self-hosted nutrition and health analytics for Apple Health, Google Health, Withings and YAZIO</strong>
 </p>
 
 <p align="center">
   <a href="#quick-start-localprivate">Quick start</a> |
   <a href="docs/apple-health-setup.md">Apple Health</a> |
+  <a href="docs/google-health-setup.md">Google Health</a> |
+  <a href="docs/withings-setup.md">Withings</a> |
   <a href="docs/yazio-sync.md">YAZIO sync</a> |
   <a href="docs/production.md">Production</a> |
   <a href="#operations-and-development">Documentation</a>
@@ -20,10 +22,11 @@
 
 ---
 
-CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
-YAZIO data. It combines daily nutrition, versioned budgets and targets, optional
-activity-calorie credits, trends, achievements, and data-quality views without
-moral judgment or external telemetry.
+CaloGraph is a self-hosted, multi-user nutrition and health dashboard for
+Apple Health, Google Health, Withings, and YAZIO data. It combines daily
+nutrition, versioned budgets and targets, optional activity-calorie credits,
+trends, achievements, and data-quality views without moral judgment or external
+telemetry.
 
 > [!WARNING]
 > **CaloGraph is under active development.** Version `0.x` releases may contain
@@ -44,6 +47,12 @@ moral judgment or external telemetry.
 - **Analysis V2:** a customizable analysis workspace for nutrition,
   micronutrients, activity and weight, with persistent reorderable cards,
   shared period controls, detailed charts, and meal and food drill-downs.
+- **Google Health integration:** connect your own Google account through the
+  official API to import available nutrition, active energy, and weight with
+  personal OAuth credentials. See [Google Health setup](docs/google-health-setup.md).
+- **Withings integration:** import weight, supported body composition, and
+  daily active energy through a personal OAuth connection. See
+  [Withings setup](docs/withings-setup.md).
 - **Versioned nutrition analytics:** daily calories and macros, historically
   effective budgets and targets, calendar, coverage and data-quality views.
 - **Activity-aware budgets:** optional imported activity-calorie credits can
@@ -73,7 +82,7 @@ time.
 ## Multi-user by design
 
 Run one instance for multiple accounts. Health samples, imports, target history,
-achievements, import tokens and each personal YAZIO connection are scoped to
+achievements, import tokens and personal provider connections are scoped to
 their owner. Administrators manage account metadata, lifecycle and one-time
 invitations; the administration UI does not expose another account’s nutrition
 values. The deployment operator controls the database, secrets and backups.
@@ -94,6 +103,22 @@ the [import API](docs/import-api.md).
 Upload Apple Health’s `export.xml` or ZIP in CaloGraph. Apple Health often lacks
 reliable food, recipe and meal names, so CaloGraph analyzes daily nutrient totals
 rather than inventing meal detail.
+
+### Google Health
+
+Connect your own Google Health account through the official API v4 and manually
+synchronize available nutrition, active energy, and weight. Each user configures
+their own Google Cloud OAuth client in **Konto → Integrationen**. The integration
+is optional and disabled by default. See [Google Health setup](docs/google-health-setup.md)
+for permissions, the exact callback, and Testing-mode token expiry.
+
+### Withings
+
+Connect a personal Withings account to manually synchronize weight, supported
+body-composition measurements, and daily active energy. Client credentials and
+OAuth authorization are scoped to the signed-in account. The integration is
+optional and disabled by default. See [Withings setup](docs/withings-setup.md)
+for developer-app registration, callback configuration, and supported metrics.
 
 ### Experimental YAZIO integration
 
@@ -161,8 +186,9 @@ test database, Vite server, or review service is added to production.
 ## Privacy and security
 
 CaloGraph ships no telemetry, analytics or CDN dependencies. Imported data is
-stored in the operator’s deployment. Direct YAZIO sync is an explicit outbound
-integration. Sessions, CSRF checks, trusted hosts/origins, password policy,
+stored in the operator’s deployment. Direct Google Health, Withings, and YAZIO
+synchronization are explicit outbound integrations. Sessions, CSRF checks,
+trusted hosts/origins, password policy,
 rate limits and security events are part of the application boundary; review
 [SECURITY.md](SECURITY.md) and the [security monitoring guide](docs/security-monitoring.md).
 
@@ -181,7 +207,7 @@ boundaries; choose one path for overlapping days. See
 [analytics definitions](docs/analytics-definitions.md).
 
 ```text
-Apple Health / Health Auto Export / YAZIO
+Apple Health / Health Auto Export / Google Health / Withings / YAZIO
                  │
                  ▼
        account-scoped import adapters
@@ -205,6 +231,8 @@ Apple Health / Health Auto Export / YAZIO
 - [Supply-chain and image retention](docs/supply-chain.md)
 - [Data export and portable import](docs/data-export.md)
 - [Import API](docs/import-api.md)
+- [Google Health setup](docs/google-health-setup.md)
+- [Withings setup](docs/withings-setup.md)
 - [YAZIO synchronization](docs/yazio-sync.md)
 
 Backend development uses Python 3.15 and the project lockfile; frontend

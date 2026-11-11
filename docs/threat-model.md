@@ -55,14 +55,23 @@ backups, and the availability of the private application.
   messages contain variable names rather than secret values. Generated OpenAPI
   routes are disabled by the production template. HSTS is required, while
   descendant-host enforcement remains an explicit operator choice.
-- **YAZIO credentials:** manual retrieval does not persist credentials.
-  Scheduled sync stores each user's email and password using authenticated
-  Fernet encryption. The host-side key file is mounted only into the backend
-  and scheduler and must be protected and backed up together with database
+- **YAZIO credentials:** every direct manual or scheduled sync requires the
+  user's configured connection. Its email and password are stored using
+  authenticated Fernet encryption; access tokens are not persisted.
+  Compatible historical file imports require no connection or credentials and
+  make no YAZIO network requests. The host-side key file is mounted only
+  into the backend and scheduler and must be protected and backed up together with database
   backups. Stored source identifiers use an internal random user UUID rather
   than an email-derived digest. Credentials reach the isolated transport
   process through standard input rather than process arguments or environment
   variables.
+- **Google Health and Withings OAuth:** client secrets and provider tokens are
+  encrypted and scoped to the owning CaloGraph account. Authorization state is
+  short-lived, single-use, and account-bound; Google also uses S256 PKCE.
+  Manual synchronization uses the authenticated user's connection, preserves
+  provider provenance, and reports domains separately. Local disconnect clears
+  the stored grant but does not revoke permission at the provider or delete
+  imported data. Protect the credential key and encrypted backups together.
 - **Unofficial third-party interface:** SDK-only direct sync uses the pinned
   `yazio-sdk==0.4.0` through an isolated transport process, a fixed provider
   endpoint, explicit network timeouts, rejected redirects, no automatic

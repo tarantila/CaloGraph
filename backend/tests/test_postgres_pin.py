@@ -48,6 +48,18 @@ def test_postgres_minor_pin_is_consistent_and_watched() -> None:
         "all runtime and integration PostgreSQL services must test the same minor release"
     )
 
+    restore_script = (ROOT / "scripts/isolated-restore-test.sh").read_text(encoding="utf-8")
+    restore_default = re.search(
+        r"BACKUP_RESTORE_POSTGRES_IMAGE:-(postgres:[^}]+)", restore_script,
+    )
+    assert restore_default is not None, "the isolated restore must have an explicit default image"
+    assert restore_default.group(1) == ci_tag, (
+        "the default isolated restore must use the runtime PostgreSQL release"
+    )
+    smoke_script = (ROOT / "scripts/production-smoke.sh").read_text(encoding="utf-8")
+    for smoke_image in re.findall(r"BACKUP_RESTORE_POSTGRES_IMAGE=(postgres:\S+)", smoke_script):
+        assert smoke_image == ci_tag, "smoke restore overrides must use the runtime release"
+
     dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
     assert re.search(
         r'^\s*-\s*package-ecosystem:\s*["\']?docker-compose["\']?\s*$',
