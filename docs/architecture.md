@@ -173,6 +173,16 @@ partial aggregate. These registry capabilities do not depend on whether a user
 has records. Weight summaries derive only from the endpoint's sparse daily
 points. Missing days remain missing, and source-comparison views remain
 separate from Analysis.
+
+Within the mounted Analysis hub, completed responses and in-flight reader
+requests are reused for the current account, time zone, and date range.
+Changing card membership or order only loads missing data; it does not reset
+the other cards. A range or account-context change discards that state, and
+explicit retries reload failed readers. Meals Today waits only for its
+nutrition reader, independently of the other cards. This reuse is confined to
+view memory: authenticated API responses retain `private, no-store`, while
+static assets use the existing browser cache policy.
+
 The shared frontend `PeriodPicker` is controlled by its route view. Views own
 the reader, data loading, URL query state, and reader changes; the component
 owns only the uncommitted date draft and emits one `apply` event. Quick presets

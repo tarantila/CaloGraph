@@ -66,6 +66,7 @@ async function installSyntheticAnalysisApi(
     activeCards: [...(options.activeCards ?? initialCards)],
     mealGroupCount: options.mealGroupCount ?? 2,
     persistedWrites: [] as string[][],
+    analyticsReads: [] as string[],
     mealReads: [] as Array<{ start: string | null; end: string | null }>,
     dailyMealReads: [] as Array<{ date: string | null; view: string | null }>,
   }
@@ -73,6 +74,9 @@ async function installSyntheticAnalysisApi(
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname.replace(/^\/api\/v1/u, '')
+    if (path.startsWith('/analytics/') && path !== '/analytics/registry') {
+      state.analyticsReads.push(`${path}${url.search}`)
+    }
     if (path === '/settings/analysis-preferences' && route.request().method() === 'PUT') {
       const body = route.request().postDataJSON() as { active_card_ids: string[] }
       expect(Object.keys(body)).toEqual(['active_card_ids'])
@@ -176,6 +180,27 @@ async function moveVitaminAUp(page: Page) {
   await vitamin.locator('.analysis-overflow-trigger').click()
   await vitamin.locator('.analysis-overflow-menu button').first().click()
 }
+
+test('keeps loaded card content and reader requests when removing a micronutrient', async ({ page }) => {
+  const state = await installSyntheticAnalysisApi(page)
+  await openHub(page)
+  await expect(page.locator('.analysis-card-list [role="status"]')).toHaveCount(0)
+  await expect(page.locator('[data-card-key="micronutrients"] .analysis-nutrient-trend-chart')).toHaveCount(3)
+  const weightValue = page.locator('[data-card-key="weight"] .analysis-metric-value')
+  await expect(weightValue).toHaveText('69,5 kg')
+  const readsBefore = [...state.analyticsReads]
+
+  const vitamin = page.locator('.analysis-card-list [data-card-key="vitamin_a_ug"]')
+  await vitamin.locator('.analysis-overflow-trigger').click()
+  await vitamin.locator('[data-card-remove]').click()
+  const remainingCards = initialCards.filter((key) => key !== 'vitamin_a_ug')
+  await expect.poll(() => state.persistedWrites).toEqual([remainingCards])
+  await expect.poll(() => readCardOrder(page)).toEqual(remainingCards)
+  await expect(vitamin).toHaveCount(0)
+  await expect(weightValue).toHaveText('69,5 kg')
+  await expect(page.locator('.analysis-card-list [role="status"]')).toHaveCount(0)
+  expect(state.analyticsReads).toEqual(readsBefore)
+})
 
 test('uses one persistent mixed card list and deduplicates domain representatives', async ({ page }) => {
   const nutritionSummaryCards = [...DEFAULT_CARDS, 'dietary_energy_kcal', 'protein_g', 'vitamin_a_ug']
