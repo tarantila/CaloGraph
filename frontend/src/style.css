@@ -876,7 +876,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 @media (min-width: 801px) and (max-width: 880px) {
-  .analytics-page-heading-content > .analysis-period-picker .analysis-period-popover {
+  .analytics-page-heading-content > .analysis-period-picker .analysis-period-popover,
+  .dashboard-heading-actions > .analysis-period-picker .analysis-period-popover {
     left: 0;
     right: auto;
   }

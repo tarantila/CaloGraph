@@ -29,14 +29,14 @@ test:
 
 lint:
 	$(TEST_COMPOSE) run --rm --build backend-ci ruff check app tests
-	$(TEST_COMPOSE) run --rm frontend-ci npm run lint
+	$(TEST_COMPOSE) run --rm --build frontend-ci npm run lint
 
 typecheck:
 	$(TEST_COMPOSE) run --rm --build backend-ci mypy app
-	$(TEST_COMPOSE) run --rm frontend-ci npm run typecheck
+	$(TEST_COMPOSE) run --rm --build frontend-ci npm run typecheck
 
 frontend-test:
-	$(TEST_COMPOSE) run --rm frontend-ci npm run test:unit
+	$(TEST_COMPOSE) run --rm --build frontend-ci npm run test:unit
 
 e2e:
 	./scripts/e2e.sh

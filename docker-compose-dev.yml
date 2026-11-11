@@ -410,10 +410,7 @@ services:
     command:
     - sh
     - -c
-    - alembic upgrade head && pytest tests/test_rate_limit_postgres.py tests/test_account_recovery_postgres.py tests/test_user_lifecycle_migration_postgres.py
-      tests/test_yazio_sync_postgres.py tests/test_yazio_migration_postgres.py tests/test_yazio_projection_pending_migration_postgres.py
-      tests/test_target_maintenance_migration_postgres.py tests/test_activity_energy_targets_migration_postgres.py tests/test_user_onboarding_migration_postgres.py
-      tests/test_analysis_preferences_migration_postgres.py tests/test_apple_health_nutrition_postgres.py
+    - alembic upgrade head && pytest tests/test_*_postgres.py
     networks:
     - test-data
     profiles:
@@ -470,7 +467,7 @@ services:
       CALOGRAPH_PUBLIC_URL: http://frontend:8080
       COOKIE_SECURE: "false"
       TRUSTED_HOSTS: localhost,127.0.0.1,frontend
-      TRUSTED_ORIGINS: http://frontend:8080,http://localhost:${E2E_PORT:-8187},http://127.0.0.1:${E2E_PORT:-8187}
+      TRUSTED_ORIGINS: http://frontend:8080,http://localhost:${E2E_PORT:-8187},http://127.0.0.1:${E2E_PORT:-8187},http://localhost:8080,http://127.0.0.1:8080
       TRUSTED_PROXY_NETWORKS: 10.250.0.10/32
       ENABLE_API_DOCS: "false"
       ENABLE_HSTS: "false"
@@ -578,6 +575,26 @@ services:
         condition: service_healthy
     networks:
     - e2e-edge
+    profiles:
+    - e2e
+  analysis-acceptance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-e2e
+    environment:
+      BASE_URL: http://localhost:8080
+    command:
+    - npx
+    - playwright
+    - test
+    - tests/e2e/product-wide-period-picker.spec.ts
+    - --project=chromium
+    - --workers=1
+    depends_on:
+      e2e-frontend:
+        condition: service_healthy
+    network_mode: service:e2e-frontend
     profiles:
     - e2e
   verification-postgres:

@@ -225,7 +225,7 @@ separate project/resources:
 | --- | --- | --- |
 | Backend/frontend checks | `make test`, `make lint`, `make typecheck`, `make frontend-test` | `calograph-tests` |
 | PostgreSQL regressions (also invoked by `make test`) | `./scripts/test-postgres.sh` | `calograph-postgres-tests` |
-| Browser E2E | `make e2e` or `./scripts/e2e.sh` | `calograph-e2e` |
+| Browser E2E, including the real authenticated Analysis period acceptance | `make e2e` or `./scripts/e2e.sh` | `calograph-e2e` |
 | Synthetic-data verification E2E | `./scripts/verification-e2e.sh` | `calograph-verification-e2e` |
 | Persistent Analysis review | `make analysis-review-up` / `make analysis-review-down` | `calograph-analysis-v2-review` |
 

@@ -306,8 +306,10 @@ watch(
   { flush: 'sync' },
 )
 watch(
-  () => [start.value, end.value, period.value, auth.user?.id ?? null, auth.user?.timezone ?? 'UTC'] as const,
-  () => {
+  [() => start.value, () => end.value, () => period.value, () => auth.user?.id ?? null, () => auth.user?.timezone ?? 'UTC'],
+  ([nextStart, nextEnd, nextPeriod, userId, timezone], [previousStart, previousEnd, previousPeriod, previousUserId, previousTimezone]) => {
+    if (nextStart === previousStart && nextEnd === previousEnd && nextPeriod === previousPeriod
+      && userId === previousUserId && timezone === previousTimezone) return
     if (route.path !== pagePath) return
     if (requestedRange !== `${period.value}/${start.value}/${end.value}`) void load()
     else void syncQuery()

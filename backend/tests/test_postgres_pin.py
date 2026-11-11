@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -54,3 +55,38 @@ def test_postgres_minor_pin_is_consistent_and_watched() -> None:
         dependabot,
         flags=re.MULTILINE,
     ), "the exact PostgreSQL pin must be watched by Dependabot's docker-compose ecosystem"
+
+
+def test_all_postgres_regression_modules_are_selected_by_ci_and_compose() -> None:
+    """Use one discovery rule so new isolated PostgreSQL tests cannot silently drift."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose-dev.yml").read_text(encoding="utf-8")
+    discovery = "tests/test_*_postgres.py"
+    ci_job = ci.split("\n  backend-postgres:\n", maxsplit=1)[1].split(
+        "\n  frontend:\n", maxsplit=1
+    )[0]
+    compose_service = compose.split("\n  backend-postgres-ci:\n", maxsplit=1)[1].split(
+        "\n  e2e-postgres:\n", maxsplit=1
+    )[0]
+    assert f"run: uv run pytest {discovery}" in ci_job
+    assert f"alembic upgrade head && pytest {discovery}" in compose_service
+
+
+def test_opted_in_postgres_tests_use_discoverable_module_names() -> None:
+    """Real opt-in gates must live in modules selected by the shared test glob."""
+    tests_dir = Path(__file__).resolve().parent
+    test_modules = sorted(tests_dir.glob("test_*.py"))
+    assert test_modules, f"expected backend test modules in {tests_dir}"
+    gated_modules = []
+    for path in test_modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(
+            isinstance(node, ast.Name) and node.id == "POSTGRES_TESTS_ENABLED"
+            for node in ast.walk(tree)
+        ) and not path.name.endswith("_postgres.py"):
+            gated_modules.append(path.name)
+
+    assert not gated_modules, (
+        "PostgreSQL opt-in tests must be discovered by tests/test_*_postgres.py: "
+        f"{gated_modules}"
+    )

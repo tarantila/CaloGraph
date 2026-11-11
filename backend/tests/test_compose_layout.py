@@ -80,6 +80,17 @@ def test_browser_graphs_use_runtime_images_synthetic_tmpfs_database_and_no_dev_d
     assert services[f'{prefix}-backend']['environment']['YAZIO_SCHEDULER_ENABLED'] == 'false'
 
 
+def test_analysis_acceptance_shares_only_the_isolated_frontend_loopback() -> None:
+    services = compose_config('e2e')['services']
+    acceptance = services['analysis-acceptance']
+    backend = services['e2e-backend']['environment']
+    assert acceptance['network_mode'] == 'service:e2e-frontend'
+    assert acceptance['environment']['BASE_URL'] == 'http://localhost:8080'
+    assert 'http://localhost:8080' in backend['TRUSTED_ORIGINS']
+    assert 'http://127.0.0.1:8080' in backend['TRUSTED_ORIGINS']
+    assert acceptance['command'][-2:] == ['--project=chromium', '--workers=1']
+
+
 def test_review_retains_owned_volume_and_does_not_require_review_variables_for_other_profiles() -> None:
     config = compose_config('analysis-review')
     services = config['services']
