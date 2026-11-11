@@ -622,6 +622,10 @@ const nutritionMacroDateRange = computed(() => hubChartDateRange(
 ))
 
 let previewLoadId = 0
+let previewContextSignature = ''
+const previewRequests = new Map<string, Promise<unknown>>()
+const previewTasks = new Map<string, Promise<void>>()
+const failedPreviewRequests = new Set<string>()
 
 let workspaceLoadId = 0
 
@@ -658,6 +662,10 @@ let lastPreviewSignature = ''
 
 function invalidateReaderResponses(): void {
   previewLoadId += 1
+  previewContextSignature = ''
+  previewRequests.clear()
+  previewTasks.clear()
+  failedPreviewRequests.clear()
   lastPreviewSignature = ''
   weightResponse.value = null
   activityResponse.value = null
@@ -678,7 +686,6 @@ function invalidateReaderResponses(): void {
 }
 
 watch(readerIdentity, () => {
-  invalidateReaderResponses()
   committedAllRange.value = null
   if (workspaceReady.value) normalizePeriodForCapabilities()
 }, { flush: 'sync' })
@@ -728,45 +735,32 @@ async function loadWorkspace(): Promise<void> {
   if (!currentWorkspace(loadId, userId) || !workspaceReady.value) return
   await syncPeriodQuery()
 }
-function currentNutritionResponse(): AnalysisNutritionResponse | null {
-  return nutritionResponse.value
-}
-
-
 async function loadPreviews(): Promise<void> {
   if (!workspaceReady.value || !auth.user) return
   const userId = auth.user.id
   const { start, end } = range.value
   const params = new URLSearchParams({ start, end }).toString()
+  const contextSignature = `${userId}|${auth.user.timezone}|${start}|${end}`
+  if (contextSignature !== previewContextSignature) {
+    invalidateReaderResponses()
+    previewContextSignature = contextSignature
+  }
   const micronutrientKeys = selectedMicronutrientEntries.value.map(({ entry }) => entry.analysis_key)
   const needsMicronutrients = true
   const requestedReaders: PreviewReader[] = ['weight', 'activity', 'nutrition', 'micronutrients']
-  const signature = `${start}|${end}|${requestedReaders.join(',')}|${[...micronutrientKeys].sort().join(',')}`
+  const signature = `${start}|${end}|${requestedReaders.join(',')}|${[...micronutrientKeys].sort().join(',')}|meals:${activeCardIds.value.includes('meals_today')}`
   if (signature === lastPreviewSignature) return
   lastPreviewSignature = signature
-  const loadId = ++previewLoadId
-  weightResponse.value = null
-  activityResponse.value = null
-  nutritionResponse.value = null
-  micronutrientSummary.value = null
-  mealsTodayResponse.value = null
-  mealsTodayError.value = ''
-  mealsTodayState.value = activeCardIds.value.includes('meals_today') ? 'loading' : 'idle'
-  for (const reader of ['weight', 'activity', 'nutrition', 'micronutrients'] as const) {
-    readerStates[reader] = requestedReaders.includes(reader) ? 'loading' : 'idle'
-    readerErrors[reader] = ''
-  }
-  const requestedMicronutrients = new Set(micronutrientKeys)
-  for (const key of Object.keys(micronutrientResponses)) {
-    if (requestedMicronutrients.has(key)) continue
-    delete micronutrientResponses[key]
-    delete micronutrientStates[key]
-    delete micronutrientErrors[key]
-  }
-  for (const key of micronutrientKeys) {
-    micronutrientResponses[key] = null
-    micronutrientStates[key] = 'loading'
-    micronutrientErrors[key] = ''
+  const loadId = previewLoadId
+  function cachedRequest<T>(key: string, makeRequest: () => Promise<T>): Promise<T> {
+    const cached = previewRequests.get(key)
+    if (cached) return cached as Promise<T>
+    const request = makeRequest().catch((cause: unknown) => {
+      if (currentPreview(loadId, userId)) failedPreviewRequests.add(key)
+      throw cause
+    })
+    previewRequests.set(key, request)
+    return request
   }
   if (needsMicronutrients && !analysisRangeWithinDays(start, end, 365)) {
     readerStates.micronutrients = 'error'
@@ -778,42 +772,58 @@ async function loadPreviews(): Promise<void> {
     return
   }
 
-  const requests = requestedReaders.filter((reader) => reader !== 'micronutrients').map(async (reader) => {
-    try {
-      if (reader === 'weight') {
-        const response = await api<WeightResponse>(`/analytics/weight?${params}`)
-        if (currentPreview(loadId, userId)) weightResponse.value = response
-      } else if (reader === 'activity') {
-        const response = await api<VerificationActivityResponse>(
-          `/analytics/verification/activity?${params}&view=canonical`,
-        )
-        if (currentPreview(loadId, userId)) activityResponse.value = response
-      } else {
-        const response = await api<AnalysisNutritionResponse>(`/analytics/nutrition/analysis?${params}`)
-        if (currentPreview(loadId, userId)) nutritionResponse.value = response
-      }
-      if (currentPreview(loadId, userId)) readerStates[reader] = 'ready'
-    } catch (cause) {
-      if (currentPreview(loadId, userId)) {
-        readerErrors[reader] = localizeApiError(cause, 'analysisV2.loadFailed')
-        readerStates[reader] = 'error'
-        lastPreviewSignature = ''
-      }
+  const requests: Promise<void>[] = []
+  for (const reader of requestedReaders.filter((item) => item !== 'micronutrients')) {
+    const path = reader === 'weight' ? `/analytics/weight?${params}`
+      : reader === 'activity' ? `/analytics/verification/activity?${params}&view=canonical`
+        : `/analytics/nutrition/analysis?${params}`
+    const existing = previewTasks.get(path)
+    if (existing) {
+      requests.push(existing)
+      continue
     }
-  })
-  const metricRequests = new Map<string, Promise<void>>()
+    if (readerStates[reader] === 'ready' || readerStates[reader] === 'error') continue
+    readerStates[reader] = 'loading'
+    let task: Promise<void>
+    task = (async () => {
+      try {
+        if (reader === 'weight') {
+          const response = await cachedRequest(path, () => api<WeightResponse>(path))
+          if (currentPreview(loadId, userId)) weightResponse.value = response
+        } else if (reader === 'activity') {
+          const response = await cachedRequest(path, () => api<VerificationActivityResponse>(path))
+          if (currentPreview(loadId, userId)) activityResponse.value = response
+        } else {
+          const response = await cachedRequest(path, () => api<AnalysisNutritionResponse>(path))
+          if (currentPreview(loadId, userId)) nutritionResponse.value = response
+        }
+        if (currentPreview(loadId, userId)) readerStates[reader] = 'ready'
+      } catch (cause) {
+        if (currentPreview(loadId, userId)) {
+          readerErrors[reader] = localizeApiError(cause, 'analysisV2.loadFailed')
+          readerStates[reader] = 'error'
+          lastPreviewSignature = ''
+        }
+      }
+    })().finally(() => {
+      if (previewTasks.get(path) === task) previewTasks.delete(path)
+    })
+    previewTasks.set(path, task)
+    requests.push(task)
+  }
   function requestMetric(key: string): Promise<void> {
-    const existing = metricRequests.get(key)
+    const metricParams = new URLSearchParams({ start, end, metric_key: key }).toString()
+    const path = `/analytics/nutrition/micronutrients?${metricParams}`
+    const existing = previewTasks.get(path)
     if (existing) return existing
-    micronutrientResponses[key] = null
+    const state = micronutrientStates[key] ?? 'idle'
+    if (state === 'ready' || state === 'error') return Promise.resolve()
     micronutrientStates[key] = 'loading'
     micronutrientErrors[key] = ''
-    const request = (async () => {
+    let task: Promise<void>
+    task = (async () => {
       try {
-        const metricParams = new URLSearchParams({ start, end, metric_key: key }).toString()
-        const response = await api<AnalysisMicronutrientResponse>(
-          `/analytics/nutrition/micronutrients?${metricParams}`,
-        )
+        const response = await cachedRequest(path, () => api<AnalysisMicronutrientResponse>(path))
         if (currentPreview(loadId, userId)) {
           micronutrientResponses[key] = response
           micronutrientStates[key] = 'ready'
@@ -825,62 +835,113 @@ async function loadPreviews(): Promise<void> {
           lastPreviewSignature = ''
         }
       }
-    })()
-    metricRequests.set(key, request)
-    return request
+    })().finally(() => {
+      if (previewTasks.get(path) === task) previewTasks.delete(path)
+    })
+    previewTasks.set(path, task)
+    return task
   }
   for (const key of micronutrientKeys) requests.push(requestMetric(key))
-  requests.push((async () => {
-    try {
-      const response = await api<AnalysisMicronutrientResponse>(
-        `/analytics/nutrition/micronutrients?${params}`,
-      )
-      if (!currentPreview(loadId, userId)) return
-      micronutrientSummary.value = response
-      readerStates.micronutrients = 'ready'
-      await Promise.all(trendNutrients.value
-        .filter((metric) => metric.days_with_data > 0)
-        .map((metric) => requestMetric(metric.metric_key)))
-    } catch (cause) {
-      if (currentPreview(loadId, userId)) {
-        readerErrors.micronutrients = localizeApiError(cause, 'analysisV2.loadFailed')
-        readerStates.micronutrients = 'error'
-        lastPreviewSignature = ''
-      }
-    }
-  })())
-  await Promise.all(requests)
-  if (activeCardIds.value.includes('meals_today')) {
-    const currentNutrition = currentNutritionResponse()
-    const loadedToday = currentNutrition?.days.some((day) => day.date === today.value)
-    if (loadedToday && currentNutrition) {
-      mealsTodayResponse.value = currentNutrition
-      mealsTodayState.value = 'ready'
-    } else {
+  const summaryPath = `/analytics/nutrition/micronutrients?${params}`
+  const summaryTask = previewTasks.get(summaryPath)
+  if (summaryTask) requests.push(summaryTask)
+  else if (readerStates.micronutrients !== 'ready' && readerStates.micronutrients !== 'error') {
+    const path = summaryPath
+    readerStates.micronutrients = 'loading'
+    let task: Promise<void>
+    task = (async () => {
       try {
-        const todayParams = new URLSearchParams({ start: today.value, end: today.value })
-        const response = await api<AnalysisNutritionResponse>(
-          `/analytics/nutrition/analysis?${todayParams.toString()}`,
-        )
-        if (currentPreview(loadId, userId)) {
-          mealsTodayResponse.value = response
-          mealsTodayState.value = 'ready'
-        }
+        const response = await cachedRequest(path, () => api<AnalysisMicronutrientResponse>(path))
+        if (!currentPreview(loadId, userId)) return
+        micronutrientSummary.value = response
+        readerStates.micronutrients = 'ready'
       } catch (cause) {
         if (currentPreview(loadId, userId)) {
-          mealsTodayError.value = localizeApiError(cause, 'analysisV2.loadFailed')
-          mealsTodayState.value = 'error'
+          readerErrors.micronutrients = localizeApiError(cause, 'analysisV2.loadFailed')
+          readerStates.micronutrients = 'error'
           lastPreviewSignature = ''
         }
       }
+    })().finally(() => {
+      if (previewTasks.get(path) === task) previewTasks.delete(path)
+    })
+    previewTasks.set(path, task)
+    requests.push(task)
+  }
+  const currentSummaryTask = previewTasks.get(summaryPath)
+    ?? (readerStates.micronutrients === 'ready' ? Promise.resolve() : null)
+  const trendsTask = currentSummaryTask?.then(() => {
+    if (!currentPreview(loadId, userId)) return
+    return Promise.all(trendNutrients.value
+      .filter((metric) => metric.days_with_data > 0)
+      .map((metric) => requestMetric(metric.metric_key)))
+  }) ?? Promise.resolve()
+  let mealsPromise: Promise<void> = Promise.resolve()
+  if (activeCardIds.value.includes('meals_today')) {
+    if (mealsTodayState.value !== 'ready' && mealsTodayState.value !== 'error') mealsTodayState.value = 'loading'
+    const loadMealsToday = (): Promise<void> => {
+      const todayPath = `/analytics/nutrition/analysis?${new URLSearchParams({ start: today.value, end: today.value }).toString()}`
+      return cachedRequest(todayPath, () => api<AnalysisNutritionResponse>(todayPath))
+        .then((response) => {
+          if (currentPreview(loadId, userId)) {
+            mealsTodayResponse.value = response
+            mealsTodayState.value = 'ready'
+          }
+        }).catch((cause: unknown) => {
+          if (currentPreview(loadId, userId)) {
+            mealsTodayError.value = localizeApiError(cause, 'analysisV2.loadFailed')
+            mealsTodayState.value = 'error'
+          }
+        })
+    }
+    const rangeIncludesToday = end === today.value
+    const rangeHasToday = (response: AnalysisNutritionResponse | null): response is AnalysisNutritionResponse =>
+      Boolean(response?.days.some((day) => day.date === today.value))
+    if (rangeIncludesToday && rangeHasToday(nutritionResponse.value)) {
+      mealsTodayResponse.value = nutritionResponse.value
+      mealsTodayState.value = 'ready'
+    } else if (rangeIncludesToday && readerStates.nutrition === 'loading') {
+      const nutritionPath = `/analytics/nutrition/analysis?${params}`
+      const pendingNutrition = previewTasks.get(nutritionPath)
+      const nutritionPromise: Promise<AnalysisNutritionResponse> = pendingNutrition
+        ? pendingNutrition.then(() => nutritionResponse.value!)
+        : cachedRequest(nutritionPath, () => api<AnalysisNutritionResponse>(nutritionPath))
+          .then((response) => {
+            if (!currentPreview(loadId, userId)) return response
+            if (readerStates.nutrition !== 'ready') {
+              nutritionResponse.value = response
+              readerStates.nutrition = 'ready'
+            }
+            return response
+          })
+      mealsPromise = nutritionPromise.then((response) => {
+        if (!currentPreview(loadId, userId)) return
+        if (rangeHasToday(response)) {
+          mealsTodayResponse.value = response
+          mealsTodayState.value = 'ready'
+          return
+        }
+        return loadMealsToday()
+      }).catch(() => {
+        if (currentPreview(loadId, userId)) return loadMealsToday()
+      })
+    } else {
+      mealsPromise = loadMealsToday()
     }
   }
+  await Promise.all([...requests, mealsPromise, trendsTask])
   const hasRequiredReaderError = readerStates.weight === 'error'
     || readerStates.activity === 'error'
     || readerStates.nutrition === 'error'
     || readerStates.micronutrients === 'error'
     || selectedMicronutrientEntries.value.some(({ entry }) => micronutrientStates[entry.analysis_key] === 'error')
-  if (currentPreview(loadId, userId) && period.value === 'all' && !allRange.value && !hasRequiredReaderError) {
+  const hasPendingRequiredReader = readerStates.weight !== 'ready'
+    || readerStates.activity !== 'ready'
+    || readerStates.nutrition !== 'ready'
+    || readerStates.micronutrients !== 'ready'
+    || selectedMicronutrientEntries.value.some(({ entry }) => micronutrientStates[entry.analysis_key] !== 'ready')
+  if (currentPreview(loadId, userId) && period.value === 'all' && !allRange.value
+    && !hasRequiredReaderError && !hasPendingRequiredReader) {
     committedAllRange.value = null
     period.value = '30'
     customRange.value = null
@@ -1535,8 +1596,21 @@ function hubCardRoute(key: string) {
   return entryRoute(key)
 }
 function retryHubReaders(): void {
-  if (workspaceReady.value) void loadPreviews()
-  else void loadWorkspace()
+  if (!workspaceReady.value) {
+    void loadWorkspace()
+    return
+  }
+  for (const key of failedPreviewRequests) previewRequests.delete(key)
+  failedPreviewRequests.clear()
+  for (const reader of ['weight', 'activity', 'nutrition', 'micronutrients'] as const) {
+    if (readerStates[reader] === 'error') readerStates[reader] = 'idle'
+  }
+  for (const key of Object.keys(micronutrientStates)) {
+    if (micronutrientStates[key] === 'error') micronutrientStates[key] = 'idle'
+  }
+  if (mealsTodayState.value === 'error') mealsTodayState.value = 'idle'
+  lastPreviewSignature = ''
+  void loadPreviews()
 }
 
 function cardMetric(key: string) {
