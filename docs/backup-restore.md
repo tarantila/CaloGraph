@@ -201,7 +201,7 @@ The script requires an owner-only private identity, a regular non-linked
 artifact, a safe basename, and a valid adjacent checksum. It verifies the
 checksum before decryption, then streams `age --decrypt` directly into
 `pg_restore` in a disposable isolated PostgreSQL container. The image defaults
-to `postgres:18.4-alpine` and can be selected with the safe
+to `postgres:18.6-alpine` and can be selected with the safe
 `BACKUP_RESTORE_POSTGRES_IMAGE` variable. A temporary network and volume are
 used; the normal `postgres-data` volume, live database, and CaloGraph Compose
 network are never mounted or contacted. Silent schema and consistency

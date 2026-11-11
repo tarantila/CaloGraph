@@ -3,9 +3,13 @@
 The native iOS app, which is not part of the current MVP, should use the
 documented `calograph_sync_v1` format.
 
-- Request HealthKit read permissions only for dietary energy and supported
-  macro- and micronutrients. Activity, steps, exercise minutes, hydration,
-  weight, and body fat remain outside CaloGraph's scope.
+- Request HealthKit read permissions only for the data types supported by the
+  current [import contract](import-api.md): dietary energy, supported macro-
+  and micronutrients, active energy, and body mass. Active energy is normalized
+  to `active_energy_kcal`; it affects the budget only when the applicable
+  target version enables activity credit. Body mass is normalized to
+  `weight_kg`. Steps, exercise minutes, hydration, and body fat remain outside
+  the supported import scope.
 - Explain consent for every data type and never transfer data without explicit
   authorization.
 - Implement incremental synchronization with `HKAnchoredObjectQuery` and a

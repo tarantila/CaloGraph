@@ -9,7 +9,7 @@ between untrusted change validation and trusted publication.
 - Every third-party GitHub Action is pinned to a full commit SHA.
 - Dockerfile and CI base images retain a readable version tag and are pinned to
   an immutable manifest digest. Operational Compose deliberately tracks the
-  explicit `postgres:18.4-alpine` patch tag so compatible image rebuilds can be
+  explicit `postgres:18.6-alpine` patch tag so compatible image rebuilds can be
   consumed without editing the file.
 - `npm ci` is followed by both production-only and complete dependency audits.
 - `pip-audit` checks an exported production lock set and the complete
