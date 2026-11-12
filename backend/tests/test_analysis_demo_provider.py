@@ -488,6 +488,18 @@ def test_daily_nutrition_verification_includes_demo_only_in_canonical_view(
                 "metric_key": "vitamin_a_ug",
             },
         )
+        empty_analysis = client.get(
+            "/api/v1/analytics/nutrition/analysis",
+            params={"start": empty_day.isoformat(), "end": empty_day.isoformat()},
+        )
+        empty_micronutrients = client.get(
+            "/api/v1/analytics/nutrition/micronutrients",
+            params={
+                "start": empty_day.isoformat(),
+                "end": empty_day.isoformat(),
+                "metric_key": "vitamin_a_ug",
+            },
+        )
         monkeypatch.setitem(app.dependency_overrides, analytics.current_user, lambda: user)
         ordinary_user = client.get(
             "/api/v1/analytics/verification/nutrition",
@@ -508,12 +520,21 @@ def test_daily_nutrition_verification_includes_demo_only_in_canonical_view(
     ]
     assert canonical.json()["providers"] == []
     assert empty_canonical.status_code == 200, empty_canonical.text
-    empty_group = empty_canonical.json()["canonical"]
-    assert empty_group is not None
-    assert empty_group["provider_key"] == "analysis_demo"
-    assert empty_group["status"] == "no_data"
-    assert empty_group["record_count"] == 0
-    assert empty_group["events"] == []
+    assert empty_canonical.json()["canonical"] is None
+    assert empty_canonical.json()["providers"] == []
+    assert empty_analysis.status_code == 200, empty_analysis.text
+    empty_nutrition_day = empty_analysis.json()["days"][0]
+    assert empty_nutrition_day["provider_key"] is None
+    assert all(empty_nutrition_day[metric] is None for metric in METRICS[:7])
+    assert empty_nutrition_day["meals"] == []
+    assert empty_micronutrients.status_code == 200, empty_micronutrients.text
+    assert empty_micronutrients.json()["series"] == [
+        {"date": empty_day.isoformat(), "provider_key": None, "value": None},
+    ]
+    empty_vitamin = empty_micronutrients.json()["metrics"][0]
+    assert empty_vitamin["total"] is None
+    assert empty_vitamin["days_with_data"] == 0
+    assert empty_vitamin["contributors"] == []
     assert ordinary_user.status_code == 200, ordinary_user.text
     assert ordinary_user.json()["canonical"] is None
     assert ordinary_user.json()["providers"] == []

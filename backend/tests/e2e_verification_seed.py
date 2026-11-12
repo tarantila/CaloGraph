@@ -225,7 +225,7 @@ def _seed_nutrition(
             source_instance_id=google_id,
             connector_variant="synthetic-verification",
             observation_kind=ObservationKind.CONSUMPTION_EVENT.value,
-            source_namespace="synthetic.google.health",
+            source_namespace="google_health.nutrition_log",
             source_record_id=f"synthetic-event-{index + 1}",
             source_revision=1,
             observation_fingerprint=_fingerprint(f"observation:{user_id}:{index}"),

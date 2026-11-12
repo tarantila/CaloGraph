@@ -815,16 +815,23 @@ def micronutrients(
                 start=start,
                 end=end,
             )
-        canonical = read_canonical_micronutrient_period(
-            db,
-            user_id=user.id,
-            provider_key=selection.provider_key,
-            source_instance_id=selection.source_instance_id,
-            provider_sources=provider_sources,
-            start=start,
-            end=end,
-            read_context=canonical_read_context,
-        )
+        try:
+            canonical = read_canonical_micronutrient_period(
+                db,
+                user_id=user.id,
+                provider_key=selection.provider_key,
+                source_instance_id=selection.source_instance_id,
+                provider_sources=provider_sources,
+                start=start,
+                end=end,
+                read_context=canonical_read_context,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProblemHTTPException(
+                status_code=503,
+                detail="Der konfigurierte Nutrition-Provider konnte nicht sicher gelesen werden.",
+                problem_type=PROVIDER_SELECTION_NOT_READY,
+            ) from exc
         response = canonical.to_public(start=start, end=end, source=None)
     if selection is None and settings.analytics_micronutrients_canonical_read_enabled:
         assert legacy is not None

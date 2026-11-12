@@ -43,6 +43,8 @@ class _PeriodResolver:
                     value=(
                         Decimal("1800")
                         if metric_key == "dietary_energy_kcal" and current == start
+                        else Decimal("1")
+                        if metric_key in {"protein_g", "carbohydrates_g", "fat_g"} and current == start
                         else Decimal("0")
                         if metric_key == "iron_mg" and current == start
                         else None
@@ -169,8 +171,14 @@ def test_canonical_micronutrients_aggregate_long_range_without_average_of_averag
     end = start + timedelta(days=61)
     values = {
         (start, "dietary_energy_kcal"): Decimal("1800"),
+        (start, "protein_g"): Decimal("80"),
+        (start, "carbohydrates_g"): Decimal("200"),
+        (start, "fat_g"): Decimal("60"),
         (start, "iron_mg"): Decimal("0"),
         (start + timedelta(days=31), "dietary_energy_kcal"): Decimal("600"),
+        (start + timedelta(days=31), "protein_g"): Decimal("40"),
+        (start + timedelta(days=31), "carbohydrates_g"): Decimal("80"),
+        (start + timedelta(days=31), "fat_g"): Decimal("20"),
         (start + timedelta(days=31), "iron_mg"): Decimal("40"),
     }
 

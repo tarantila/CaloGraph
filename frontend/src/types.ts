@@ -119,7 +119,7 @@ export interface AnalysisMicronutrientMetric {
 
 export interface AnalysisMicronutrientDay {
   date: string
-  provider_key: string
+  provider_key: string | null
   value: number | null
 }
 

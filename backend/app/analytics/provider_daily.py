@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.activity import ACTIVE_ENERGY_METRIC
+from app.analytics.nutrition_day import has_valid_nutrition_day, usable_nutrition_value
 from app.analytics.service import (
     TrackingInputs,
     _build_daily_point,
@@ -36,17 +37,6 @@ _PRIMARY_DAILY_POINT_METRICS: Final[tuple[tuple[str, str], ...]] = (
 class ProviderDailyReadError(RuntimeError):
     """A selected provider cannot produce a safe canonical daily response."""
 
-def _has_usable_value(candidate: object) -> bool:
-    return (
-        getattr(candidate, "value", None) is not None
-        and getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
-        and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
-        and getattr(candidate, "presence_state", None)
-        in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
-    )
-
-
-
 def _tracking_inputs(day_candidates: Mapping[str, ProviderCandidate]) -> TrackingInputs:
     has_primary_evidence = any(
         getattr(candidate, "presence_state", None)
@@ -66,40 +56,13 @@ def _tracking_inputs(day_candidates: Mapping[str, ProviderCandidate]) -> Trackin
     return TrackingInputs("incomplete", 0, ("Ernährungsdaten vorhanden, aber kein Kalorienwert",))
 
 
-def _provider_has_evidence(day_candidates: Mapping[str, ProviderCandidate]) -> bool:
-    for metric_key in DAILY_PROJECTION_METRICS:
-        candidate = day_candidates.get(metric_key)
-        if candidate is None:
-            return False
-        if getattr(candidate, "resolution_state", None) in {
-            ResolutionState.CONFLICT,
-            ResolutionState.DUPLICATE_CANDIDATE,
-        }:
-            raise ProviderDailyReadError(
-                f"canonical provider returned unsafe resolution for {metric_key}"
-            )
-        if (
-            getattr(candidate, "coverage_state", None) is not CoverageState.COMPLETE
-            or getattr(candidate, "resolution_state", None) is not ResolutionState.RESOLVED
-        ):
-            return False
-    return any(_has_usable_value(candidate) for candidate in day_candidates.values())
-
 def _candidate_values(day_candidates: Mapping[str, ProviderCandidate]) -> dict[str, Decimal]:
-    for metric_key in DAILY_PROJECTION_METRICS:
-        resolution_state = getattr(day_candidates[metric_key], "resolution_state", None)
-        if resolution_state in {ResolutionState.CONFLICT, ResolutionState.DUPLICATE_CANDIDATE}:
-            raise ProviderDailyReadError(
-                f"canonical provider returned unsafe {resolution_state.value} for {metric_key}"
-            )
-
     values: dict[str, Decimal] = {}
     for metric_key, daily_point_field in _PRIMARY_DAILY_POINT_METRICS:
         candidate = day_candidates[metric_key]
-        if _has_usable_value(candidate):
-            value = getattr(candidate, "value", None)
-            if value is not None:
-                values[daily_point_field] = value
+        value = usable_nutrition_value(candidate)
+        if value is not None:
+            values[daily_point_field] = value
     return values
 def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
     if not days:
@@ -177,9 +140,9 @@ def read_provider_daily_points(
                     (current_provider_key, local_date)
                 ))
                 is not None
-                and _provider_has_evidence(candidates)
+                and has_valid_nutrition_day(candidates)
             )
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise ProviderDailyReadError("canonical provider returned an invalid period") from exc
 
     targets = list(
@@ -225,24 +188,23 @@ def read_provider_daily_points(
     points: list[DailyPoint] = []
     for offset in range((end - start).days + 1):
         local_date = start + timedelta(days=offset)
-        fallback_candidates: Mapping[str, ProviderCandidate] | None = None
         day_candidates: Mapping[str, ProviderCandidate] | None = None
         for current_provider_key, _source_instance_id in provider_sources:
             candidates = candidates_by_provider_date.get((current_provider_key, local_date))
             if candidates is None:
                 continue
-            if fallback_candidates is None:
-                fallback_candidates = candidates
-            if _provider_has_evidence(candidates):
-                day_candidates = candidates
-                break
-        if day_candidates is None:
-            day_candidates = fallback_candidates
-        if day_candidates is None:
-            raise ProviderDailyReadError("canonical provider returned no data for a requested day")
+            try:
+                if has_valid_nutrition_day(candidates):
+                    day_candidates = candidates
+                    break
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProviderDailyReadError("canonical provider returned an invalid day") from exc
         try:
-            values = _candidate_values(day_candidates)
-            tracking_inputs = _tracking_inputs(day_candidates)
+            values = _candidate_values(day_candidates) if day_candidates is not None else {}
+            tracking_inputs = (
+                _tracking_inputs(day_candidates) if day_candidates is not None
+                else TrackingInputs("no_data", 0, ("Keine Ernährungsdaten vorhanden",))
+            )
         except (KeyError, TypeError) as exc:
             raise ProviderDailyReadError("canonical provider returned an incomplete metric scope") from exc
         points.append(
