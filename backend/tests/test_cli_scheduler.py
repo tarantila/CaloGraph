@@ -11,7 +11,7 @@ from app.models import AccountRecoveryToken, ImportBatch
 from app.services.analysis_demo import demo_user_id
 
 
-def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch) -> None:
+def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch, capsys) -> None:
     class FrozenDate(date):
         @classmethod
         def today(cls):
@@ -33,6 +33,14 @@ def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch) -> N
     batch = db.scalar(select(ImportBatch).where(ImportBatch.user_id == demo_user_id()))
     assert batch is not None
     assert batch.client_identifier == "analysis-demo:v2:2026-09-30"
+    output = capsys.readouterr()
+    assert output.out == (
+        "Analyse-Demokonto bereit.\n"
+        "Benutzername: calograph-analysis-demo\n"
+        f"Interne ID: {demo_user_id()}\n"
+    )
+    assert output.err == ""
+    assert "synthetic-test-password" not in output.out
 
 
 def test_seed_cli_opts_into_one_current_day_supplement(db, user, monkeypatch) -> None:

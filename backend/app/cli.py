@@ -35,6 +35,7 @@ from app.services.admin_reauth import (
     verify_admin_reauthentication,
 )
 from app.services.analysis_demo import (
+    ANALYSIS_DEMO_USERNAME,
     AnalysisDemoOwnershipError,
     AnalysisDemoUnavailable,
     ensure_analysis_demo_calendar_target,
@@ -251,7 +252,9 @@ def seed_analysis_demo_command(args: argparse.Namespace) -> None:
         raise SystemExit(str(exc)) from exc
     except UserOperationBusy as exc:
         raise SystemExit("Für dieses Benutzerkonto läuft gerade eine andere Operation.") from exc
-    print(f"Analyse-Demokonto bereit: {user_id}")
+    print("Analyse-Demokonto bereit.")
+    print(f"Benutzername: {ANALYSIS_DEMO_USERNAME}")
+    print(f"Interne ID: {user_id}")
 
 
 def remove_analysis_demo_command(_: argparse.Namespace) -> None:
