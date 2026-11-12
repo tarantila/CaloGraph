@@ -181,6 +181,66 @@ async function moveVitaminAUp(page: Page) {
   await vitamin.locator('.analysis-overflow-menu button').first().click()
 }
 
+for (const language of ['de', 'en'] as const) {
+  test(`shows localized loading bars and respects reduced motion (${language})`, async ({ page }, testInfo) => {
+    await installSyntheticAnalysisApi(page, { language })
+    let releaseWeight!: () => void
+    const pendingWeight = new Promise<void>((resolve) => { releaseWeight = resolve })
+    await page.route('**/api/v1/analytics/weight?**', async (route) => {
+      await pendingWeight
+      await route.fallback()
+    })
+    try {
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
+      await openHub(page)
+      const card = page.locator('.analysis-card-list [data-card-key="weight"]')
+      const status = card.getByRole('status')
+      const bars = status.locator('.analysis-loading-bars > span')
+      await expect(status).toHaveText(language === 'de' ? 'Wird geladen …' : 'Loading …')
+      await expect(bars).toHaveCount(3)
+      await expect(status.locator('.analysis-loading-bars')).toHaveAttribute('aria-hidden', 'true')
+      await expect.poll(() => bars.first().evaluate((bar) => getComputedStyle(bar).animationName))
+        .not.toBe('none')
+
+      const initialBounds = await card.boundingBox()
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      for (const bar of await bars.all()) {
+        await expect.poll(() => bar.evaluate((element) => getComputedStyle(element).animationName)).toBe('none')
+        expect(await bar.evaluate((element) => getComputedStyle(element).transform)).toBe('none')
+      }
+      await expect(status).toBeVisible()
+      expect(await card.boundingBox()).toEqual(initialBounds)
+
+      for (const theme of ['dark', 'light']) {
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value }, theme)
+        const colors = await status.evaluate((element) => ({
+          text: getComputedStyle(element).color,
+          background: getComputedStyle(element.closest('.analysis-card')!).backgroundColor,
+          bar: getComputedStyle(element.querySelector('.analysis-loading-bars > span')!).backgroundColor,
+        }))
+        expect(colors.text).not.toBe(colors.background)
+        expect(colors.bar).not.toBe(colors.background)
+        if (language === 'de') {
+          await card.screenshot({ path: testInfo.outputPath(`loading-bars-${theme}.png`) })
+        }
+      }
+      await page.setViewportSize({ width: 390, height: 844 })
+      await expect(status).toBeInViewport()
+      const statusBounds = await status.boundingBox()
+      const loaderBounds = await status.locator('.analysis-loading-bars').boundingBox()
+      expect(loaderBounds!.x).toBeGreaterThanOrEqual(statusBounds!.x)
+      expect(loaderBounds!.x + loaderBounds!.width).toBeLessThanOrEqual(statusBounds!.x + statusBounds!.width)
+
+      releaseWeight()
+      await expect(status).toHaveCount(0)
+      await expect(card.locator('.analysis-metric-value')).toHaveText(language === 'de' ? '69,5 kg' : '69.5 kg')
+      await expect(card.locator('.analysis-loading-bars')).toHaveCount(0)
+    } finally {
+      releaseWeight()
+    }
+  })
+}
+
 test('keeps loaded card content and reader requests when removing a micronutrient', async ({ page }) => {
   const state = await installSyntheticAnalysisApi(page)
   await openHub(page)
