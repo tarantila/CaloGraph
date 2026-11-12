@@ -829,6 +829,17 @@ def _nutrition_selection(provider_key: str, source_instance_id) -> NutritionProv
     return NutritionProviderSelection(provider_key, source_instance_id)
 
 
+def _mock_nutrition_day_source(
+    monkeypatch: pytest.MonkeyPatch, provider_key: str, source_instance_id
+) -> None:
+    """Keep presentation-only fixtures independent of core-day candidate setup."""
+    monkeypatch.setattr(
+        verification,
+        "read_nutrition_day_source",
+        lambda _db, **_kwargs: (provider_key, source_instance_id),
+    )
+
+
 def test_nutrition_canonical_returns_selected_provider_summary_and_events(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -861,33 +872,24 @@ def test_nutrition_canonical_returns_selected_provider_summary_and_events(
         food_name="Yazio lunch",
         metrics={"dietary_energy_kcal": Decimal("999")},
     )
-    calls: list[tuple[str, object]] = []
     monkeypatch.setattr(
         verification,
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", google_source),
     )
+    _mock_nutrition_day_source(monkeypatch, "google_health", google_source)
     monkeypatch.setattr(
-        verification,
-        "read_provider_daily_points",
-        lambda _db, *, provider_key, source_instance_id, **_kwargs: (
-            calls.append((provider_key, source_instance_id))
-            or [
-                _nutrition_daily_point(
-                    calories_kcal=Decimal("640.25"),
-                    protein_g=Decimal("31.5"),
-                    carbohydrates_g=Decimal("72"),
-                    fat_g=Decimal("19"),
-                )
-            ]
-        ),
+        verification, "read_provider_daily_points",
+        lambda _db, **_kwargs: [_nutrition_daily_point(
+            calories_kcal=Decimal("640.25"), protein_g=Decimal("31.5"),
+            carbohydrates_g=Decimal("72"), fat_g=Decimal("19"),
+        )],
     )
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
     )
 
-    assert calls == [("google_health", google_source)]
     assert response.providers == []
     assert response.canonical is not None
     assert response.canonical.model_dump() == {
@@ -1023,7 +1025,7 @@ def test_nutrition_uses_snapshot_metadata_and_safe_food_fallback(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1118,7 +1120,7 @@ def test_yazio_simple_product_uses_event_name_without_overriding_snapshot_or_sou
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "yazio", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1190,7 +1192,7 @@ def test_yazio_provider_civil_time_is_kept_without_canonical_time_and_precedes_i
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "yazio", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1229,7 +1231,7 @@ def test_google_date_only_civil_midnight_without_canonical_time_remains_untimed(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1259,7 +1261,7 @@ def test_nutrition_amount_without_unit_is_not_displayable(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1290,7 +1292,7 @@ def test_nutrition_missing_meal_type_is_dash_compatible_none(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1332,7 +1334,7 @@ def test_nutrition_ignores_superseded_event_revision(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1407,9 +1409,9 @@ def test_nutrition_read_is_user_scoped(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
     monkeypatch.setattr(
-        verification,
-        "read_provider_daily_points",
+        verification, "read_provider_daily_points",
         lambda *_args, **_kwargs: [_nutrition_daily_point(calories_kcal=Decimal("321"))],
     )
 
@@ -1461,7 +1463,7 @@ def test_nutrition_omits_moved_event_after_a_newer_revision_moves_dates(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("google_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "google_health", source_instance_id)
 
     old_response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=old_day, view="canonical"
@@ -1500,7 +1502,7 @@ def test_nutrition_exposes_safe_partial_apple_field_metrics(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("apple_health", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "apple_health", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"
@@ -1582,7 +1584,7 @@ def test_nutrition_exposes_safe_yazio_provider_and_derived_event_metrics(
         "resolve_nutrition_provider",
         lambda _db, **_kwargs: _nutrition_selection("yazio", source_instance_id),
     )
-    monkeypatch.setattr(verification, "read_provider_daily_points", lambda *_args, **_kwargs: [])
+    _mock_nutrition_day_source(monkeypatch, "yazio", source_instance_id)
 
     response = verification.read_nutrition_verification(
         db, user_id=user.id, local_date=day, view="canonical"

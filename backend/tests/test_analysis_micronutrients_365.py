@@ -455,7 +455,7 @@ def test_analysis_reader_preserves_day_winner_across_chunks(
                     local_date=current,
                     user_id=user_id,
                     source_instance_id=source_instance_id,
-                    macro_evidence=fallback_value is None,
+                    macro_evidence=True,
                     macro_coverage=(
                         CoverageState.PARTIAL
                         if fallback_value is None
@@ -476,7 +476,7 @@ def test_analysis_reader_preserves_day_winner_across_chunks(
                     local_date=current,
                     user_id=user_id,
                     source_instance_id=source_instance_id,
-                    macro_evidence=fallback_value is None,
+                    macro_evidence=True,
                     nutrient_value=(
                         Decimal("0") if fallback_value is None else Decimal("99")
                     ),
@@ -517,11 +517,13 @@ def test_analysis_reader_preserves_day_winner_across_chunks(
         for item in result.metrics[0].contributors
     ] == expected_contributors
     assert result.selected_provider.provider_key == "google_health"
-    assert calls == [
+    expected_calls = [
         ("google_health", DAY, DAY + timedelta(days=30)),
         ("google_health", last, last),
-        ("yazio", last, last),
     ]
+    if fallback_value is None:
+        expected_calls.append(("yazio", last, last))
+    assert calls == expected_calls
     assert [point.date for point in result.series] == [
         DAY + timedelta(days=offset) for offset in range(32)
     ]

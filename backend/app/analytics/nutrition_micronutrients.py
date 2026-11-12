@@ -8,9 +8,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.analytics.nutrition_day import has_valid_nutrition_day, usable_nutrition_value
 from app.analytics.provider_selection import NutritionProviderSelection
 from app.micronutrients import MICRONUTRIENT_BY_METRIC, MICRONUTRIENTS
-from app.nutrition.enums import CoverageState, PresenceState, ResolutionState
 from app.nutrition.resolution import (
     DAILY_PROJECTION_METRICS,
     MAX_PROVIDER_PERIOD_DAYS,
@@ -35,34 +35,10 @@ class AnalysisMicronutrientReadError(RuntimeError):
 
 
 def _usable(candidate: ProviderCandidate) -> Decimal | None:
-    if candidate.resolution_state in {
-        ResolutionState.CONFLICT,
-        ResolutionState.DUPLICATE_CANDIDATE,
-    }:
-        raise AnalysisMicronutrientReadError("unsafe canonical nutrient candidate")
-    if (
-        candidate.coverage_state is CoverageState.COMPLETE
-        and candidate.resolution_state is ResolutionState.RESOLVED
-        and candidate.presence_state in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
-    ):
-        return candidate.value
-    return None
-
-
-def _has_primary_evidence(day: Mapping[str, ProviderCandidate]) -> bool:
-    for metric_key in DAILY_PROJECTION_METRICS:
-        candidate = day[metric_key]
-        if candidate.resolution_state in {
-            ResolutionState.CONFLICT,
-            ResolutionState.DUPLICATE_CANDIDATE,
-        }:
-            raise AnalysisMicronutrientReadError("unsafe canonical primary candidate")
-        if (
-            candidate.coverage_state is not CoverageState.COMPLETE
-            or candidate.resolution_state is not ResolutionState.RESOLVED
-        ):
-            return False
-    return any(_usable(day[key]) is not None for key in DAILY_PROJECTION_METRICS)
+    try:
+        return usable_nutrition_value(candidate)
+    except ValueError as exc:
+        raise AnalysisMicronutrientReadError("unsafe canonical nutrient candidate") from exc
 
 
 def read_analysis_micronutrients(
@@ -86,12 +62,11 @@ def read_analysis_micronutrients(
     if not sources or len({provider_key for provider_key, _ in sources}) != len(sources):
         raise AnalysisMicronutrientReadError("invalid canonical provider source chain")
 
-    winning: list[tuple[str, Mapping[str, ProviderCandidate]]] = []
+    winning: list[tuple[str, Mapping[str, ProviderCandidate]] | None] = []
     try:
         for offset in range(0, len(dates), MAX_PROVIDER_PERIOD_DAYS):
             chunk_dates = dates[offset : offset + MAX_PROVIDER_PERIOD_DAYS]
             selected: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
-            first: dict[date, tuple[str, Mapping[str, ProviderCandidate]]] = {}
             for provider_key, source_instance_id in sources:
                 if len(selected) == len(chunk_dates):
                     break
@@ -107,25 +82,20 @@ def read_analysis_micronutrients(
                 )
                 for current in remaining:
                     candidates = matrix[current]
-                    first.setdefault(current, (provider_key, candidates))
-                    for key in metric_keys:
-                        _usable(candidates[key])
-                    if _has_primary_evidence(candidates):
+                    if has_valid_nutrition_day(candidates):
                         selected[current] = (provider_key, candidates)
             for current in chunk_dates:
-                winner = selected.get(current) or first.get(current)
-                if winner is None:
-                    raise AnalysisMicronutrientReadError(
-                        "canonical provider returned no requested date"
-                    )
-                winning.append(winner)
+                winning.append(selected.get(current))
     except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisMicronutrientReadError(
             "canonical provider period is unreadable"
         ) from exc
 
     values_by_metric: dict[str, list[Decimal | None]] = {
-        item.metric_type: [_usable(candidates[item.metric_type]) for _, candidates in winning]
+        item.metric_type: [
+            _usable(winner[1][item.metric_type]) if winner is not None else None
+            for winner in winning
+        ]
         for item in definitions
     }
     metrics: list[AnalysisMicronutrientMetricResponse] = []
@@ -133,9 +103,9 @@ def read_analysis_micronutrients(
         values = values_by_metric[item.metric_type]
         present = [value for value in values if value is not None]
         contributor_days = {provider_key: 0 for provider_key, _ in sources}
-        for (provider_key, _), value in zip(winning, values, strict=True):
-            if value is not None:
-                contributor_days[provider_key] += 1
+        for winner, value in zip(winning, values, strict=True):
+            if winner is not None and value is not None:
+                contributor_days[winner[0]] += 1
         metrics.append(
             AnalysisMicronutrientMetricResponse(
                 metric_key=item.metric_type,
@@ -164,7 +134,7 @@ def read_analysis_micronutrients(
         series=(
             [
                 AnalysisMicronutrientDayResponse(
-                    date=current, provider_key=winner[0], value=value
+                    date=current, provider_key=winner[0] if winner is not None else None, value=value
                 )
                 for current, winner, value in zip(
                     dates, winning, values_by_metric[metric_key], strict=True

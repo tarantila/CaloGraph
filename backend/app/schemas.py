@@ -736,7 +736,7 @@ class AnalysisMicronutrientMetricResponse(BaseModel):
 
 class AnalysisMicronutrientDayResponse(BaseModel):
     date: date
-    provider_key: str
+    provider_key: str | None
     value: Decimal | None
 
     @field_serializer("value", when_used="json")
