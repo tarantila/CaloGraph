@@ -8,6 +8,7 @@ project_name=calograph-analysis-v2-review
 database_name=calograph_analysis_v2_test
 volume_name=calograph-analysis-v2-review-postgres-data
 demo_username=calograph-analysis-demo
+admin_username=calograph-analysis-review-admin
 
 state_home=${XDG_DATA_HOME:-${HOME:?HOME must be set}/.local/share}
 secrets_dir=$(realpath -m -- "$state_home/calograph/analysis-review/secrets")
@@ -128,10 +129,10 @@ run_up() {
       [ -t 0 ] || fail 'Die Erstinitialisierung benötigt ein Terminal für die private Passwortabfrage.'
       verify_target_database
       compose run --rm --no-deps review-backend python -m app.cli create-user \
-        --username calograph-analysis-review-admin --admin --skip-onboarding
+        --username "$admin_username" --admin --skip-onboarding
       verify_target_database
     else
-      other_user_count=$(compose exec -T review-postgres psql -X -U calograph -d "$database_name" -Atq -c "SELECT count(*) FROM users WHERE username <> 'calograph-analysis-review-admin'")
+      other_user_count=$(compose exec -T review-postgres psql -X -U calograph -d "$database_name" -Atq -c "SELECT count(*) FROM users WHERE username <> '$admin_username'")
       [ "$other_user_count" = 0 ] || fail 'Review-DB enthält weitere Benutzer ohne Demo-Account; Seed wird nicht gestartet.'
     fi
     [ -t 0 ] || fail 'Der Demo-Seed benötigt ein Terminal für die private Passwortabfrage.'
@@ -145,6 +146,8 @@ run_up() {
   compose exec -T review-backend python -c 'import json, urllib.request; request = urllib.request.Request("http://127.0.0.1:8000/health/ready", headers={"Host": "localhost"}); response = urllib.request.urlopen(request, timeout=5); result = json.load(response); assert response.status == 200 and result.get("status") == "ready"'
   curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8289/health >/dev/null
   printf 'Analysis-Review bereit: http://localhost:8289\n'
+  printf '\nReview-Zugänge:\n  Demo:  %s\n  Admin: %s\n' "$demo_username" "$admin_username"
+  printf '\nPasswörter werden aus Sicherheitsgründen nicht angezeigt.\n'
 }
 
 run_down() {
