@@ -43,6 +43,12 @@ projections, and legacy writes are translated into the canonical sequence
 under the user-row lock and transaction. Registry validation rejects
 unavailable or non-card-capable metrics before persistence.
 
+The frontend currently hides the built-in micronutrient category card, while
+retaining its saved preference ID and backend reader capability. A visible
+micronutrient metric card and its category breadcrumb provide navigation to
+the category. This presentation choice does not remove canonical analyses or
+change provider selection.
+
 ## Operational decisions
 
 `ENVIRONMENT` is explicit. Before production migrations or the scheduler loop,
@@ -211,18 +217,21 @@ survive. Picker changes replace the current navigation entry; Summary, Metric,
 and breadcrumb links navigate normally while retaining the selected range.
 Back/Forward restores the range attached to each route entry.
 
-The real authenticated browser acceptance is:
+The real authenticated browser acceptance is part of `make e2e` and
+`./scripts/e2e.sh`. The script provisions the reserved synthetic Analysis
+account inside its disposable PostgreSQL `tmpfs` database and runs:
 
 ```bash
-npm run test:e2e -- tests/e2e/product-wide-period-picker.spec.ts --project=chromium --workers=1
+./scripts/e2e.sh
 ```
 
-Run it only with a confirmed isolated local Development/Test runtime and the
-dedicated synthetic demo sign-in privately supplied to the test process:
-`CALOGRAPH_ANALYSIS_DEMO_SAFE_RUNTIME=1`, a local `BASE_URL`, and
-`CALOGRAPH_ANALYSIS_DEMO_PASSWORD`. The test fails closed if these are absent.
-Do not fall back to a default target or API mocks, and never print or persist
-the demo credential.
+The runner shares only the isolated E2E frontend's network namespace and uses
+its loopback address. It sets `CALOGRAPH_ANALYSIS_DEMO_SAFE_RUNTIME=1`, a local
+`BASE_URL`, and a dedicated synthetic `CALOGRAPH_ANALYSIS_DEMO_PASSWORD` for
+that process. The test fails closed unless the account identity is confirmed.
+Do not point the test at another runtime or replace its real login and reader
+requests with API mocks. The password is synthetic and is never printed or
+persisted.
 
 
 

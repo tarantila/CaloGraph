@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Response } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Request, type Response } from '@playwright/test'
 
 test.use({ trace: 'off', locale: 'de-DE' })
 
@@ -81,11 +81,21 @@ function inclusiveDays(url: URL): number {
   return (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / dayMs + 1
 }
 
-function periodResponse(page: Page, path: string, days: number): Promise<Response> {
-  return page.waitForResponse((response) => {
-    const url = new URL(response.url())
-    return response.request().method() === 'GET' && url.pathname === path && inclusiveDays(url) === days
-  })
+function periodResponse(page: Page, path: string, days: number, afterDocumentNavigation = false): Promise<Response> {
+  // A previous page's in-flight reader can emit headers immediately before reload
+  // cancels its body. Only accept requests issued after this action's waiter.
+  const requests = new Set<Request>()
+  let documentRequested = !afterDocumentNavigation
+  const observeRequest = (request: Request): void => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documentRequested = true
+    const url = new URL(request.url())
+    if (documentRequested && request.method() === 'GET' && url.pathname === path && inclusiveDays(url) === days) {
+      requests.add(request)
+    }
+  }
+  page.on('request', observeRequest)
+  return page.waitForResponse((response) => requests.has(response.request()))
+    .finally(() => page.off('request', observeRequest))
 }
 
 function rangeResponse(page: Page, path: string, start: string, end: string): Promise<Response> {
@@ -131,10 +141,16 @@ function germanDate(isoDate: string): string {
 async function noOverflow(page: Page, popover?: Locator): Promise<void> {
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
   if (popover) {
-    expect(await popover.evaluate((element) => {
+    const geometry = await popover.evaluate((element) => {
       const box = element.getBoundingClientRect()
-      return element.scrollWidth > element.clientWidth + 1 || box.left < -1 || box.right > window.innerWidth + 1
-    })).toBe(false)
+      return {
+        scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+        left: box.left, right: box.right, viewport: window.innerWidth,
+      }
+    })
+    expect(geometry.scrollWidth > geometry.clientWidth + 1 || geometry.left < -1
+      || geometry.right > geometry.viewport + 1,
+    `Popover overflow at ${page.url()}: ${JSON.stringify(geometry)}`).toBe(false)
   }
 }
 
@@ -222,7 +238,10 @@ for (const width of [1440, 820, 768, 390, 320]) {
       page.on('response', onResponse)
       try {
         await popover.locator('[data-period="7"]').click()
-        await expect.poll(() => new URL(page.url()).searchParams.get('period')).toBe('7')
+        await expect.poll(
+          () => new URL(page.url()).searchParams.get('period'),
+          { message: `Period was not persisted for ${route.path} at ${width}px: ${page.url()}` },
+        ).toBe('7')
         await expect(popover).not.toBeVisible()
         // Category-only routes and a hub with no selected readers have nothing to wait for.
         if (expectedReaders.length) {
@@ -242,6 +261,24 @@ for (const width of [1440, 820, 768, 390, 320]) {
     }
   })
 }
+
+test('keeps the selected Analysis period when the route refreshes the same account profile', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(localUrl('/analyse/aktivitaet'))
+  await expect.poll(() => new URL(page.url()).searchParams.get('period')).toBe('30')
+
+  let profileRefreshes = 0
+  await page.route('**/api/v1/auth/me', async (route) => {
+    profileRefreshes += 1
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await route.continue()
+  })
+
+  const { popover } = await openPicker(page, 1440)
+  await popover.locator('[data-period="7"]').click()
+  await expect.poll(() => new URL(page.url()).searchParams.get('period')).toBe('7')
+  expect(profileRefreshes).toBe(1)
+})
 
 test('Aktivität behält kanonische Sieben-Tage-Fenster ohne gemeinsamen Zeitraumwähler', async ({ page }) => {
   const initialResponse = page.waitForResponse((response) => {
@@ -376,11 +413,24 @@ for (const scenario of analysis365Scenarios) {
     }
     assertUrlRange(scenario.period, range)
 
-    const categoryRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', scenario.days)
-    await page.locator('.analysis-card-list [data-card-key="micronutrients"] .analysis-card-heading a').click()
-    await readRange(await categoryRead, range)
-    await expect(page).toHaveURL(/\/analyse\/mikronaehrstoffe(?:\?|#|$)/u)
-    assertUrlRange(scenario.period, range)
+    const openMicronutrientCategoryFromHub = async (
+      expectedRange: { start: string; end: string }, days = scenario.days,
+    ): Promise<void> => {
+      // The category card is intentionally hidden; follow the visible metric and breadcrumb.
+      const metricRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', days)
+      await page.locator('.analysis-card-list a[href^="/analyse/mikronaehrstoffe/"]').first().click()
+      await readRange(await metricRead, expectedRange, days)
+      await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+      await expect(page.locator('.analysis-detail-page')).toBeVisible()
+      assertUrlRange(scenario.period, expectedRange)
+      const categoryRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', days)
+      await page.locator('.analysis-breadcrumbs a[href^="/analyse/mikronaehrstoffe?"]').click()
+      await readRange(await categoryRead, expectedRange, days)
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
+      await expect(page.locator('.analysis-catalog-page')).toBeVisible()
+      assertUrlRange(scenario.period, expectedRange)
+    }
+    await openMicronutrientCategoryFromHub(range)
     const picker = page.locator('.analysis-period-picker')
     await expect(picker.locator('.analysis-period-strip [data-period="90"]')).toBeEnabled()
     await picker.locator('.analysis-period-custom-button').click()
@@ -389,14 +439,19 @@ for (const scenario of analysis365Scenarios) {
     await expect(popover.locator('[data-period="all"]')).toHaveCount(0)
     await page.keyboard.press('Escape')
 
+    // Historical custom ranges can be empty; available analyses remain navigable
+    // through the explicit all-metrics view instead of requiring seeded values.
+    await page.getByRole('group', { name: 'Mikronährstoffe anzeigen' })
+      .getByRole('button', { name: 'Alle', exact: true }).click()
     const metricLink = page.locator('a[href^="/analyse/mikronaehrstoffe/"]').first()
     const detailRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', scenario.days)
     await metricLink.click()
     await readRange(await detailRead, range)
     await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
     assertUrlRange(scenario.period, range)
 
-    const reloadRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', scenario.days)
+    const reloadRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', scenario.days, true)
     await page.reload()
     await readRange(await reloadRead, range)
     assertUrlRange(scenario.period, range)
@@ -406,32 +461,36 @@ for (const scenario of analysis365Scenarios) {
     await categoryBreadcrumb.click()
     await readRange(await categoryBreadcrumbRead, range)
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
+    await expect(page.locator('.analysis-catalog-page')).toBeVisible()
     assertUrlRange(scenario.period, range)
     await page.goBack()
     await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
     assertUrlRange(scenario.period, range)
     await page.goForward()
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
+    await expect(page.locator('.analysis-catalog-page')).toBeVisible()
 
     await page.goBack()
     await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
-    const hubBreadcrumb = page.locator('.analysis-breadcrumbs a[href^="/analyse?"]').first()
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
+    const hubBreadcrumb = page.locator('.analysis-detail-page .analysis-breadcrumbs a[href^="/analyse?"]').first()
     const hubReads = readerPathsForHub.map((path) => periodResponse(page, path, scenario.days))
     await hubBreadcrumb.click()
     const breadcrumbResponses = await Promise.all(hubReads)
     await Promise.all(breadcrumbResponses.map((response) => readRange(response, range)))
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse')
+    await expect(page.locator('.analysis-card-list')).toBeVisible()
     assertUrlRange(scenario.period, range)
     await page.goBack()
     await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
     assertUrlRange(scenario.period, range)
     await page.goForward()
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse')
+    await expect(page.locator('.analysis-card-list')).toBeVisible()
 
-    const summaryLink = page.locator('.analysis-card-list [data-card-key="micronutrients"] .analysis-card-heading a')
-    const categoryPeriodRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', scenario.days)
-    await summaryLink.click()
-    await readRange(await categoryPeriodRead, range)
+    await openMicronutrientCategoryFromHub(range)
     const nextPeriod = scenario.period === '365' ? '90' : '365'
     const nextDays = nextPeriod === '90' ? 90 : 365
     const nextRange = rangeEndingAt(today, nextDays)
@@ -441,10 +500,20 @@ for (const scenario of analysis365Scenarios) {
     await readRange(await replacementRead, nextRange, nextDays)
     assertUrlRange(nextPeriod, nextRange)
     await page.goBack()
+    await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
+    assertUrlRange(scenario.period, range)
+    await page.goBack()
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse')
+    await expect(page.locator('.analysis-card-list')).toBeVisible()
+    assertUrlRange(scenario.period, range)
+    await page.goForward()
+    await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+    await expect(page.locator('.analysis-detail-page')).toBeVisible()
     assertUrlRange(scenario.period, range)
     await page.goForward()
     await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
+    await expect(page.locator('.analysis-catalog-page')).toBeVisible()
     assertUrlRange(nextPeriod, nextRange)
 
     if (scenario.period === '90') {
@@ -454,12 +523,7 @@ for (const scenario of analysis365Scenarios) {
       const historyHubResponses = await Promise.all(historyHubReads)
       await Promise.all(historyHubResponses.map((response) => readRange(response, hub90Range, 90)))
 
-      const historySummary = page.locator('.analysis-card-list [data-card-key="micronutrients"] .analysis-card-heading a')
-      const historyOverviewRead = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', 90)
-      await historySummary.click()
-      await readRange(await historyOverviewRead, hub90Range, 90)
-      await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
-      assertUrlRange('90', hub90Range)
+      await openMicronutrientCategoryFromHub(hub90Range, 90)
 
       const custom365 = { start: '2023-04-01', end: '2024-03-30' }
       const custom365Read = periodResponse(page, '/api/v1/analytics/nutrition/micronutrients', 365)
@@ -472,10 +536,20 @@ for (const scenario of analysis365Scenarios) {
       assertUrlRange('custom', custom365)
 
       await page.goBack()
+      await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+      await expect(page.locator('.analysis-detail-page')).toBeVisible()
+      assertUrlRange('90', hub90Range)
+      await page.goBack()
       await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse')
+      await expect(page.locator('.analysis-card-list')).toBeVisible()
+      assertUrlRange('90', hub90Range)
+      await page.goForward()
+      await expect.poll(() => new URL(page.url()).pathname).toMatch(/^\/analyse\/mikronaehrstoffe\/[^/]+$/u)
+      await expect(page.locator('.analysis-detail-page')).toBeVisible()
       assertUrlRange('90', hub90Range)
       await page.goForward()
       await expect.poll(() => new URL(page.url()).pathname).toBe('/analyse/mikronaehrstoffe')
+      await expect(page.locator('.analysis-catalog-page')).toBeVisible()
       assertUrlRange('custom', custom365)
     }
 
@@ -500,6 +574,16 @@ for (const scenario of analysis365Scenarios) {
       await page.keyboard.press('Escape')
       await expect(opener).toBeFocused()
       await opener.press('Enter')
+      await expect(picker.locator('.analysis-period-option').first()).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(picker.getByRole('button', { name: 'Zeitraum anwenden', exact: true })).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(picker.locator('.date-input-picker-button').nth(1)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(dates.nth(1)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(picker.locator('.date-input-picker-button').nth(0)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
       await expect(dates.nth(0)).toBeFocused()
       await page.keyboard.press('Tab')
       await expect(picker.locator('.date-input-picker-button').nth(0)).toBeFocused()

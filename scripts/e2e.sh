@@ -40,6 +40,7 @@ else
   e2e_username="e2e-admin-$(date +%s)-$$"
 fi
 e2e_password=${E2E_PASSWORD:-e2e-password-change-me}
+analysis_demo_password=${E2E_ANALYSIS_DEMO_PASSWORD:-analysis-demo-ci-synthetic-password}
 
 cd "$project_root"
 if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
@@ -47,6 +48,7 @@ if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
 else
   compose up -d --build --wait e2e-postgres e2e-backend e2e-frontend
 fi
+
 compose exec -T e2e-backend python -m app.cli create-user \
   --username "$e2e_username" \
   --password "$e2e_password" \
@@ -72,3 +74,11 @@ else
     -e E2E_IMPORT_TOKEN="$e2e_token" \
     e2e npx playwright test --workers=1 --grep-invert='verification-data\.spec\.ts'
 fi
+# Seed the reserved synthetic Analysis account through the supported CLI in
+# this isolated, tmpfs-backed database. The password is supplied on stdin.
+printf '%s\n' "$analysis_demo_password" | compose exec -T e2e-backend python -m app.cli seed-analysis-demo
+compose run --build --rm --no-deps \
+  -e CALOGRAPH_ANALYSIS_DEMO_SAFE_RUNTIME=1 \
+  -e BASE_URL=http://localhost:8080 \
+  -e CALOGRAPH_ANALYSIS_DEMO_PASSWORD="$analysis_demo_password" \
+  analysis-acceptance
