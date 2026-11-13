@@ -14,6 +14,10 @@
   `ai_provider_credentials` stores only encrypted key bytes and uses the
   composite key `(user_id, connection_id)` as a cascading foreign key to the
   owning connection, preventing credentials from crossing user boundaries.
+- `ai_provider_checks`: account-scoped idempotent metadata-check claims and
+  bounded normalized outcomes; records the configuration and privacy versions.
+  The composite connection foreign key cascades deletion. A claim without a
+  result is never automatically repeated after a worker interruption.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

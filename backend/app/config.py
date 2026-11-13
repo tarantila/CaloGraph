@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     initial_admin_setup_enabled: bool = False
     calograph_public_url: str = "http://localhost:8180"
     google_health_enabled: bool = False
+    ai_allowed_endpoints: str = Field(default="", max_length=16_384, repr=False)
     withings_enabled: bool = False
     withings_redirect_uri: str | None = Field(
         default=None,
@@ -494,6 +495,54 @@ class Settings(BaseSettings):
                 "Encryption keys must be valid Fernet keys"
             ) from exc
         return value
+
+    @field_validator("ai_allowed_endpoints")
+    @classmethod
+    def valid_ai_allowed_endpoints(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        endpoints = [item.strip() for item in value.split(",")]
+        if len(endpoints) > 20 or any(not item for item in endpoints):
+            raise ValueError("AI endpoint allowlist must contain at most 20 base URLs")
+        normalized: set[tuple[str, str, int | None, str]] = set()
+        for endpoint in endpoints:
+            try:
+                parsed = urlsplit(endpoint)
+                hostname = parsed.hostname
+                port = parsed.port
+            except ValueError:
+                raise ValueError("AI endpoint allowlist contains an invalid base URL") from None
+            if (
+                parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.netloc
+                or not hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or "\\" in parsed.path
+                or "%" in parsed.path
+                or any(part in {".", ".."} for part in parsed.path.split("/"))
+                or any(ord(char) < 32 or ord(char) == 127 for char in endpoint)
+                or "%" in hostname
+            ):
+                raise ValueError("AI endpoint allowlist contains an invalid base URL")
+            try:
+                canonical_host = hostname.rstrip(".").encode("idna").decode("ascii").lower()
+            except UnicodeError:
+                raise ValueError("AI endpoint allowlist contains an invalid hostname") from None
+            if not canonical_host or canonical_host.startswith("."):
+                raise ValueError("AI endpoint allowlist contains an invalid hostname")
+            if port == 0:
+                raise ValueError("AI endpoint allowlist contains an invalid port")
+            default_port = 443 if parsed.scheme.lower() == "https" else 80
+            canonical_port = None if port in (None, default_port) else port
+            canonical_path = parsed.path.rstrip("/")
+            key = (parsed.scheme.lower(), canonical_host, canonical_port, canonical_path)
+            if key in normalized:
+                raise ValueError("AI endpoint allowlist contains duplicate base URLs")
+            normalized.add(key)
+        return ",".join(endpoints)
 
     @field_validator("yazio_scheduler_poll_seconds")
     @classmethod
