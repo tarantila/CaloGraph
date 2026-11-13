@@ -8,6 +8,12 @@
   area; composite primary key `(user_id, data_area, priority)`. Versioned,
   effective-dated `source_priority_policies` and `source_priority_rules`
   preserve the source chain used for historical resolution.
+- `ai_provider_connections`: per-user AI provider configuration, keyed by the
+  composite primary key `(user_id, id)`; model, endpoint, enablement, timeout,
+  and configuration version are stored separately from credentials.
+  `ai_provider_credentials` stores only encrypted key bytes and uses the
+  composite key `(user_id, connection_id)` as a cascading foreign key to the
+  owning connection, preventing credentials from crossing user boundaries.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

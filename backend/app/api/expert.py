@@ -3,13 +3,12 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Security
-from fastapi.security import APIKeyCookie
 from sqlalchemy.orm import Session
 
 from app.analytics.nutrition_analysis import AnalysisNutritionReadError
 from app.analytics.provider_selection import NutritionProviderNotReady, NutritionProviderUnavailable
 from app.auth.dependencies import current_user
-from app.auth.security import session_cookie_name
+from app.auth.openapi import session_scheme
 from app.database import get_db
 from app.expert.contracts import NutritionDaysPage, NutritionDaysQuery
 from app.expert.service import ExpertAccessDenied, NutritionExpertReader
@@ -21,12 +20,6 @@ from app.problem_types import (
 )
 from app.schemas import ProblemDetail
 
-session_scheme = APIKeyCookie(
-    name=session_cookie_name(),
-    scheme_name="CaloGraphSession",
-    description="Authenticated CaloGraph browser session; not a delegated external tool credential.",
-    auto_error=False,  # current_user remains the sole runtime session validator.
-)
 router = APIRouter(
     prefix="/expert", tags=["Nutrition Expert"], dependencies=[Security(session_scheme)],
 )

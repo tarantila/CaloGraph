@@ -7,6 +7,7 @@ import pytest
 import sqlalchemy as sa
 import test_yazio_simple_product_presence_migration as simple_product_presence_migration
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 from test_yazio_projection_pending_migration import (
     COMPATIBILITY_TABLES,
@@ -85,7 +86,7 @@ def test_full_postgres_chain_has_one_pending_column_and_index(isolated_postgres)
 
     _assert_pending_schema(engine)
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "20261026_0041"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(config).get_current_head()
 
 
 def test_existing_postgres_schema_upgrade_backfills_only_completed_canonical_sdk_ranges(isolated_postgres):
