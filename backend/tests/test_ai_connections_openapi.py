@@ -40,7 +40,10 @@ def test_connection_public_response_has_no_secret_fields_and_write_is_documented
     operations = [operation for path in contract["paths"].values() for operation in path.values()]
     assert all(item["security"] == [{"CaloGraphSession": []}] for item in operations)
     ids = {item["operationId"] for item in operations}
-    assert ids == {"ai_list_connections", "ai_get_connection", "ai_put_connection", "ai_delete_connection"}
+    assert ids == {
+        "ai_list_connections", "ai_get_connection", "ai_put_connection", "ai_delete_connection",
+        "ai_get_provider_catalog", "ai_get_latest_connection_check", "ai_put_connection_check",
+    }
     mutation = contract["paths"]["/api/v1/settings/ai/connections/{connection_id}"]["put"]
     assert "Idempotently" in mutation["description"]
     assert "201" in mutation["responses"]

@@ -116,9 +116,82 @@ and credentials; demo reset/removal refuses accounts with added connections.
 Saving or enabling configuration makes no network request and grants no consent
 to transmit nutrition or health data. Stored local/loopback URLs are configuration
 only; a future outbound adapter must enforce its destination policy before use.
-This resource has no connection-test or model-discovery endpoint yet.
 ChatGPT-plan access remains a distinct mandatory v1 provider and requires its
 supported authentication flow; API keys cannot configure it through this resource.
+
+## Explicit connection checks and destination policy
+
+`GET /api/v1/settings/ai/providers` describes settings availability, authentication
+and model-discovery support. Unknown generation/streaming/tool/schema capabilities
+remain null. ChatGPT-plan is explicitly planned, separate from API-key providers.
+
+`PUT /api/v1/settings/ai/connections/{connection_id}/checks/{check_id}` requires
+CSRF, the current `configuration_version` and explicit acknowledgement of
+`connection-metadata-2026-11-13`. It sends credentials and technical request metadata
+to retrieve the model list, without a prompt or any nutrition/health data. This
+acknowledgement is recorded with the check, owner, version and timestamp; it does
+not authorize future analysis requests or health-data transmission.
+
+The account-scoped client UUID identifies one request. Its claim is committed
+before network I/O and identical retries replay the result for at least 24 hours.
+A conflicting payload returns 409. An incomplete claim becomes `interrupted`
+after five minutes and is never automatically re-executed. New checks require a
+new UUID. Checks are limited to 10/minute and 100 retained entries per account;
+entries older than 24h are removed when a new check starts. Mutations retain the
+exclusive account-operation lock during the bounded check. Account/connection
+deletion cascades to check history.
+
+`GET /api/v1/settings/ai/connections/{connection_id}/checks/latest` returns the
+latest check for the current configuration, or null. Configuration changes make
+old results inapplicable. A successful model-list request is metadata evidence,
+not a generation test. Results contain at most 100 model IDs, a truncation flag,
+and nullable selected-model availability. Partial lists do not prove that an
+unlisted model is unavailable. Local/gateway 404/405 model-list responses allow
+manual selection without claiming verified authentication or generation.
+
+OpenAI API, Anthropic and Gemini use fixed HTTPS model-list endpoints. Custom
+local/OpenAI-compatible base URLs require an exact operator-controlled
+`AI_ALLOWED_ENDPOINTS` entry (comma-separated base URLs). Saving configuration
+does not grant that permission. Only explicitly approved local destinations may
+use HTTP; credentials over HTTP remain visible to that endpoint/network. Never
+add an internal administrative service or a metadata endpoint to this allowlist.
+Model IDs are transmitted as metadata only when needed; they are never URL paths
+selected by a model or browser input in these checks.
+
+The transport validates all DNS answers and pins a validated numeric destination
+while retaining the original TLS hostname/SNI and certificate verification. Native
+destinations require global addresses. Approved custom endpoints may additionally
+use RFC1918, loopback or ULA addresses. Link-local/metadata, multicast, unspecified
+and reserved destinations are blocked. Redirects, environment proxies and retries
+are disabled. DNS resources, total time and response bytes are bounded; compressed
+responses are rejected. Checks use a maximum 30-second deadline and a 256-KiB
+response ceiling. Errors never expose provider bodies, headers, credentials or
+raw network exception text. Only normalized bounded model metadata is persisted.
+
+Endpoint references: [OpenAI models](https://developers.openai.com/api/reference/resources/models/methods/list),
+[Anthropic models](https://platform.claude.com/docs/en/api/models/list),
+[Gemini models](https://aistudio.google.com/api-reference/models).
+
+## ChatGPT-plan authentication track
+
+As checked on 2026-11-13, the official
+[plan-usage guide](https://developers.openai.com/siwc/token-sharing-open-source)
+documents dynamic registration for open-source/local applications and directs
+paid or remotely hosted applications to an interest form. The
+[self-hosted VM guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
+requires completing OAuth locally and securely transferring the selected grant
+to a VM with its own stable host ID. A browser's loopback callback reaches the
+browser machine. The [client-ID guide](https://developers.openai.com/siwc/request-client-id)
+describes selected-partner access.
+
+These pages establish an official integration direction, but do not settle
+CaloGraph's centrally hosted multi-account browser authorization flow or its
+client eligibility. Official access/flow confirmation is still required before
+implementing that adapter. Keep per-account/per-workspace grants, PKCE/state/nonce,
+serialized refresh rotation and revocation as separate authentication contracts.
+No private ChatGPT backend endpoint, browser cookie or existing tool credential
+store is used. ChatGPT-plan remains required for v1; this unresolved authentication
+boundary does not prevent independent provider-settings implementation.
 
 ## OpenAPI validation
 

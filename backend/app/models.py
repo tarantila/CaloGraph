@@ -194,6 +194,26 @@ class AIProviderCredential(Base):
     connection: Mapped[AIProviderConnection] = relationship(back_populates="credential")
 
 
+class AIProviderCheck(Base):
+    __tablename__ = "ai_provider_checks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_provider_checks_connection",
+        ),
+        CheckConstraint("configuration_version >= 1", name="ck_ai_provider_checks_version"),
+        Index("ix_ai_provider_checks_owner_connection", "user_id", "connection_id", "started_at"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    privacy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
 class UserProviderPriority(Base):
     __tablename__ = "user_provider_priorities"
     __table_args__ = (
