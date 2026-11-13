@@ -154,7 +154,7 @@ async def inactive_user_operation(
         status_code=409,
         media_type=(
             "application/problem+json"
-            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+            if request.url.path.startswith(("/api/v1/expert/", "/api/v1/settings/ai/")) else "application/json"
         ),
         content={
             "type": getattr(_exc, "problem_type", "about:blank"),
@@ -176,7 +176,7 @@ async def busy_user_operation(
         status_code=409,
         media_type=(
             "application/problem+json"
-            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+            if request.url.path.startswith(("/api/v1/expert/", "/api/v1/settings/ai/")) else "application/json"
         ),
         content={
             "type": getattr(_exc, "problem_type", "about:blank"),
@@ -239,7 +239,7 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
         status_code=422,
         media_type=(
             "application/problem+json"
-            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+            if request.url.path.startswith(("/api/v1/expert/", "/api/v1/settings/ai/")) else "application/json"
         ),
         content={
             "type": "urn:calograph:problem:validation-error",

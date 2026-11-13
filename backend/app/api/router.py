@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api import (
     achievements,
     admin,
+    ai_connections,
     analytics,
     auth,
     expert,
@@ -18,6 +19,7 @@ from app.api import (
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(achievements.router)
 api_router.include_router(auth.router)
+api_router.include_router(ai_connections.router)
 api_router.include_router(expert.router)
 api_router.include_router(imports.router)
 api_router.include_router(analytics.router)

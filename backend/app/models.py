@@ -88,6 +88,9 @@ class User(Base):
     withings_oauth_flows: Mapped[list[WithingsOAuthFlow]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    ai_provider_connections: Mapped[list[AIProviderConnection]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     onboarding: Mapped[UserOnboarding | None] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
     )
@@ -111,6 +114,84 @@ class UserProviderPreference(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
+
+class AIProviderConnection(Base):
+    __tablename__ = "ai_provider_connections"
+    __table_args__ = (
+        CheckConstraint("length(trim(label)) > 0", name="ck_ai_provider_connections_label"),
+        CheckConstraint(
+            "provider_kind IN ("
+            "'openai_api', 'chatgpt_plan', 'anthropic', 'gemini', 'local', 'gateway')",
+            name="ck_ai_provider_connections_provider_kind",
+        ),
+        CheckConstraint("length(trim(model_id)) > 0", name="ck_ai_provider_connections_model_id"),
+        CheckConstraint(
+            "(provider_kind IN ('local', 'gateway') AND base_url IS NOT NULL "
+            "AND length(trim(base_url)) > 0) OR "
+            "(provider_kind NOT IN ('local', 'gateway') AND base_url IS NULL)",
+            name="ck_ai_provider_connections_base_url",
+        ),
+        CheckConstraint(
+            "timeout_seconds >= 5 AND timeout_seconds <= 300",
+            name="ck_ai_provider_connections_timeout",
+        ),
+        CheckConstraint(
+            "configuration_version >= 1",
+            name="ck_ai_provider_connections_configuration_version",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048))
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    timeout_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60, server_default="60"
+    )
+    configuration_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    user: Mapped[User] = relationship(back_populates="ai_provider_connections")
+    credential: Mapped[AIProviderCredential | None] = relationship(
+        back_populates="connection", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class AIProviderCredential(Base):
+    __tablename__ = "ai_provider_credentials"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    encrypted_api_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE",
+            name="fk_ai_provider_credentials_connection",
+        ),
+        CheckConstraint(
+            "length(encrypted_api_key) > 0",
+            name="ck_ai_provider_credentials_encrypted_api_key",
+        ),
+    )
+
+    connection: Mapped[AIProviderConnection] = relationship(back_populates="credential")
 
 
 class UserProviderPriority(Base):
