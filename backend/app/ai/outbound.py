@@ -194,7 +194,7 @@ def _endpoint(value: str) -> _Endpoint:
     if port == 0:
         raise OutboundError("destination_blocked")
     try:
-        ipaddress.ip_address(host)
+        host = ipaddress.ip_address(host).compressed
     except ValueError:
         if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*", host):
             raise OutboundError("destination_blocked") from None

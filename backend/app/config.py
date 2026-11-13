@@ -2,6 +2,7 @@ import ipaddress
 import logging
 import os
 import sys
+from contextlib import suppress
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -533,6 +534,8 @@ class Settings(BaseSettings):
                 raise ValueError("AI endpoint allowlist contains an invalid hostname") from None
             if not canonical_host or canonical_host.startswith("."):
                 raise ValueError("AI endpoint allowlist contains an invalid hostname")
+            with suppress(ValueError):
+                canonical_host = ipaddress.ip_address(canonical_host).compressed
             if port == 0:
                 raise ValueError("AI endpoint allowlist contains an invalid port")
             default_port = 443 if parsed.scheme.lower() == "https" else 80

@@ -342,3 +342,25 @@ def test_slowly_trickled_response_header_cannot_extend_absolute_deadline(
     elapsed = time.monotonic() - started
     assert error.value.code == "timeout"
     assert elapsed < 1.8
+
+
+def test_expanded_ipv6_allowlist_matches_normalized_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.ai.connections_contracts import ProviderConnectionPut
+    from app.ai.outbound import _endpoint
+    from app.config import Settings
+
+    expanded = "http://[0:0:0:0:0:0:0:1]:11434/v1"
+    compressed = "http://[::1]:11434/v1"
+    configured = ProviderConnectionPut(label="Local", provider_kind="local", model_id="synthetic", base_url=expanded)
+    assert _endpoint(expanded).base_url == _endpoint(str(configured.base_url)).base_url == compressed
+    monkeypatch.setattr(settings, "ai_allowed_endpoints", expanded)
+
+    def resolve(*args, **kwargs):
+        # Reaching DNS proves the allowlist accepted HttpUrl's canonical form.
+        raise OutboundError("unavailable")
+    monkeypatch.setattr("app.ai.outbound._resolve", resolve)
+    with pytest.raises(OutboundError) as error:
+        fetch_provider_json(str(configured.base_url), "/models", headers={}, timeout_seconds=1, native=False)
+    assert error.value.code == "unavailable"
+    with pytest.raises(ValueError):
+        Settings(environment="test", ai_allowed_endpoints=f"{expanded},{compressed}")
