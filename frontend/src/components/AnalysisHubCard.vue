@@ -178,7 +178,6 @@ const t = i18n.global.t.bind(i18n.global)
   .analysis-card { height: 18rem; box-sizing: border-box; grid-template-rows: auto minmax(0, 1fr) auto; align-content: stretch; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .analysis-loading-bars > span { animation: none; opacity: .65; }
   .analysis-card-reorder-move, .analysis-card { transition: none; }
   .analysis-card.is-dragging { --analysis-card-drag-scale: 1; transform: none; }
 }

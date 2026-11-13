@@ -182,7 +182,7 @@ async function moveVitaminAUp(page: Page) {
 }
 
 for (const language of ['de', 'en'] as const) {
-  test(`shows localized loading bars and respects reduced motion (${language})`, async ({ page }, testInfo) => {
+  test(`keeps localized loading bars animated with either motion preference (${language})`, async ({ page }, testInfo) => {
     await installSyntheticAnalysisApi(page, { language })
     let releaseWeight!: () => void
     const pendingWeight = new Promise<void>((resolve) => { releaseWeight = resolve })
@@ -201,12 +201,21 @@ for (const language of ['de', 'en'] as const) {
       await expect(status.locator('.analysis-loading-bars')).toHaveAttribute('aria-hidden', 'true')
       await expect.poll(() => bars.first().evaluate((bar) => getComputedStyle(bar).animationName))
         .not.toBe('none')
-
       const initialBounds = await card.boundingBox()
-      await page.emulateMedia({ reducedMotion: 'reduce' })
-      for (const bar of await bars.all()) {
-        await expect.poll(() => bar.evaluate((element) => getComputedStyle(element).animationName)).toBe('none')
-        expect(await bar.evaluate((element) => getComputedStyle(element).transform)).toBe('none')
+      for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+        await page.emulateMedia({ reducedMotion })
+        for (const bar of await bars.all()) {
+          await expect.poll(() => bar.evaluate((element) => element.getAnimations().length)).toBe(1)
+          const initial = await bar.evaluate((element) => ({
+            time: Number(element.getAnimations()[0]!.currentTime),
+            transform: getComputedStyle(element).transform,
+          }))
+          await expect.poll(() => bar.evaluate((element) => Number(element.getAnimations()[0]!.currentTime)))
+            .toBeGreaterThan(initial.time)
+          await expect.poll(() => bar.evaluate((element) => getComputedStyle(element).transform), {
+            intervals: [50, 100, 150],
+          }).not.toBe(initial.transform)
+        }
       }
       await expect(status).toBeVisible()
       expect(await card.boundingBox()).toEqual(initialBounds)
