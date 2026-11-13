@@ -454,6 +454,7 @@ def read_analysis_nutrition(
     selection: NutritionProviderSelection,
     start: date,
     end: date,
+    include_meals: bool = True,
 ) -> AnalysisNutritionResponse:
     if (
         type(start) is not date or type(end) is not date
@@ -479,7 +480,10 @@ def read_analysis_nutrition(
                         winners[day] = (provider_key, source_id, candidates)
     except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisNutritionReadError("canonical nutrition provider period is unreadable") from exc
-    meals = _named_meals(db, user_id=user_id, winners=winners, start=start, end=end)
+    meals = (
+        _named_meals(db, user_id=user_id, winners=winners, start=start, end=end)
+        if include_meals else {}
+    )
     return AnalysisNutritionResponse(
         start_date=start,
         end_date=end,

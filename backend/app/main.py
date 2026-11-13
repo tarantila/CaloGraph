@@ -152,6 +152,10 @@ async def inactive_user_operation(
     _log_import_rejection(request, 409)
     return JSONResponse(
         status_code=409,
+        media_type=(
+            "application/problem+json"
+            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+        ),
         content={
             "type": getattr(_exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",
@@ -170,6 +174,10 @@ async def busy_user_operation(
     _log_import_rejection(request, 409)
     return JSONResponse(
         status_code=409,
+        media_type=(
+            "application/problem+json"
+            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+        ),
         content={
             "type": getattr(_exc, "problem_type", "about:blank"),
             "title": "Anfrage fehlgeschlagen",
@@ -229,6 +237,10 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     del exc
     return JSONResponse(
         status_code=422,
+        media_type=(
+            "application/problem+json"
+            if request.url.path.startswith("/api/v1/expert/") else "application/json"
+        ),
         content={
             "type": "urn:calograph:problem:validation-error",
             "title": "Validierung fehlgeschlagen",

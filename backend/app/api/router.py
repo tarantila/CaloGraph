@@ -5,6 +5,7 @@ from app.api import (
     admin,
     analytics,
     auth,
+    expert,
     google_health,
     imports,
     settings,
@@ -17,6 +18,7 @@ from app.api import (
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(achievements.router)
 api_router.include_router(auth.router)
+api_router.include_router(expert.router)
 api_router.include_router(imports.router)
 api_router.include_router(analytics.router)
 api_router.include_router(settings.router)

@@ -1,0 +1,522 @@
+{
+  "paths": {
+    "/api/v1/expert/nutrition-days": {
+      "get": {
+        "description": "Authenticated account-local dates, including missing days. One winning provider owns every value of a day; secondary omissions never fall back. Decimal values are strings; null means missing/unusable and zero is present. No meal names or profile data are returned. Pages reflect live data, not a shared snapshot. This GET performs no AI calls.",
+        "operationId": "expert_get_nutrition_days",
+        "parameters": [
+          {
+            "description": "Inclusive first account-local calendar date.",
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "description": "Inclusive first account-local calendar date.",
+              "format": "date",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Inclusive last date; at most 365 calendar days.",
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "description": "Inclusive last date; at most 365 calendar days.",
+              "format": "date",
+              "title": "End",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 31,
+              "maximum": 31,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Exclusive calendar-date cursor from next_after; retain start and end.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive calendar-date cursor from next_after; retain start and end.",
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NutritionDaysPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The account is not authenticated or is inactive."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "An account lifecycle operation temporarily prevents access."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid range, cursor, page size, or unknown query parameter."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The configured canonical nutrition sources cannot be read safely."
+          }
+        },
+        "security": [
+          {
+            "CaloGraphSession": []
+          }
+        ],
+        "summary": "Read a bounded page of canonical nutrition days",
+        "tags": [
+          "Nutrition Expert"
+        ]
+      }
+    }
+  },
+  "schemas": {
+    "NutritionDay": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "provider_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual whole-day winner, or null.",
+          "title": "Provider Key"
+        },
+        "values": {
+          "$ref": "#/components/schemas/NutritionValues"
+        }
+      },
+      "required": [
+        "date",
+        "provider_key",
+        "values"
+      ],
+      "title": "NutritionDay",
+      "type": "object"
+    },
+    "NutritionDaysPage": {
+      "additionalProperties": false,
+      "properties": {
+        "days": {
+          "items": {
+            "$ref": "#/components/schemas/NutritionDay"
+          },
+          "maxItems": 31,
+          "minItems": 1,
+          "title": "Days",
+          "type": "array"
+        },
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/components/schemas/NutritionEvidence"
+          },
+          "maxItems": 217,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "next_after": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null on the last page. Pagination is live, not a cross-request snapshot.",
+          "title": "Next After"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "timezone",
+        "days",
+        "evidence",
+        "next_after"
+      ],
+      "title": "NutritionDaysPage",
+      "type": "object"
+    },
+    "NutritionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "id": {
+          "description": "Reference scoped to this read, not a durable snapshot ID.",
+          "maxLength": 100,
+          "title": "Id",
+          "type": "string"
+        },
+        "metric": {
+          "enum": [
+            "dietary_energy_kcal",
+            "protein_g",
+            "carbohydrates_g",
+            "fat_g",
+            "fiber_g",
+            "sugar_g",
+            "saturated_fat_g"
+          ],
+          "title": "Metric",
+          "type": "string"
+        },
+        "provider_key": {
+          "title": "Provider Key",
+          "type": "string"
+        },
+        "unit": {
+          "enum": [
+            "kcal",
+            "g"
+          ],
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "date",
+        "provider_key",
+        "metric",
+        "value",
+        "unit"
+      ],
+      "title": "NutritionEvidence",
+      "type": "object"
+    },
+    "NutritionValues": {
+      "additionalProperties": false,
+      "description": "Every field is required; null is absent/unusable, never an imputed zero.\n\nJSON decimals are strings to retain canonical precision. Explicit zero is\npresent evidence. Presence is not proof of a complete food diary.",
+      "properties": {
+        "carbohydrates_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Carbohydrates G"
+        },
+        "dietary_energy_kcal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dietary Energy Kcal"
+        },
+        "fat_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fat G"
+        },
+        "fiber_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fiber G"
+        },
+        "protein_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Protein G"
+        },
+        "saturated_fat_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Saturated Fat G"
+        },
+        "sugar_g": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sugar G"
+        }
+      },
+      "required": [
+        "dietary_energy_kcal",
+        "protein_g",
+        "carbohydrates_g",
+        "fat_g",
+        "fiber_g",
+        "sugar_g",
+        "saturated_fat_g"
+      ],
+      "title": "NutritionValues",
+      "type": "object"
+    }
+  },
+  "securitySchemes": {
+    "CaloGraphSession": {
+      "description": "Authenticated CaloGraph browser session; not a delegated external tool credential.",
+      "in": "cookie",
+      "name": "calograph_session",
+      "type": "apiKey"
+    }
+  }
+}
