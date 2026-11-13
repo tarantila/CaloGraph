@@ -214,6 +214,19 @@ class AIProviderCheck(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
+class AIActiveConnection(Base):
+    __tablename__ = "ai_active_connections"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_active_connections_connection",
+        ),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+
+
 class UserProviderPriority(Base):
     __tablename__ = "user_provider_priorities"
     __table_args__ = (

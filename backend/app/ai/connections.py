@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.ai.connections_contracts import (
@@ -15,7 +15,7 @@ from app.ai.connections_contracts import (
     ProviderConnectionPut,
     ProviderConnectionView,
 )
-from app.models import AIProviderConnection, AIProviderCredential, User
+from app.models import AIActiveConnection, AIProviderConnection, AIProviderCredential, User
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     decrypt_credential,
@@ -154,6 +154,10 @@ class ProviderConnectionService:
                         ))
                     else:
                         credential.encrypted_api_key = encrypted
+            if not payload.enabled:
+                self._db.execute(delete(AIActiveConnection).where(
+                    AIActiveConnection.user_id == self._owner.id, AIActiveConnection.connection_id == connection_id,
+                ))
             self._db.commit()
             return self._view(record), created
 

@@ -88,6 +88,7 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
                     "(user_id, id, connection_id, configuration_version, privacy_version, started_at) "
                     "VALUES (:user_id, :id, :connection_id, 1, 'synthetic-privacy-version', :now)"
                 ), {"user_id": user_id, "id": uuid4(), "connection_id": shared_connection_id, "now": now})
+                connection.execute(text("INSERT INTO ai_active_connections (user_id, connection_id) VALUES (:user_id, :connection_id)"), {"user_id": user_id, "connection_id": shared_connection_id})
             connection.execute(
                 text(
                     "INSERT INTO ai_provider_connections "
@@ -181,6 +182,8 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT count(*) FROM ai_provider_checks WHERE user_id=:id"), {"id": owner_id}) == 0
             assert connection.scalar(text("SELECT count(*) FROM ai_provider_checks WHERE user_id=:id"), {"id": other_id}) == 1
+            assert connection.scalar(text("SELECT count(*) FROM ai_active_connections WHERE user_id=:id"), {"id": owner_id}) == 0
+            assert connection.scalar(text("SELECT count(*) FROM ai_active_connections WHERE user_id=:id"), {"id": other_id}) == 1
             assert connection.scalar(
                 text("SELECT count(*) FROM ai_provider_connections WHERE user_id = :user_id"),
                 {"user_id": owner_id},
@@ -207,6 +210,7 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
             assert "ai_provider_connections" not in tables
             assert "ai_provider_credentials" not in tables
             assert "ai_provider_checks" not in tables
+            assert "ai_active_connections" not in tables
         command.upgrade(alembic_config, "head")
         command.check(alembic_config)
         with engine.connect() as connection:

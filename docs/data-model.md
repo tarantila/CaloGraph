@@ -18,6 +18,9 @@
   bounded normalized outcomes; records the configuration and privacy versions.
   The composite connection foreign key cascades deletion. A claim without a
   result is never automatically repeated after a worker interruption.
+- `ai_active_connections`: one optional active AI connection per account. Both
+  account and composite connection foreign keys cascade deletion. Disabling the
+  selected connection clears this preference in the same transaction.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

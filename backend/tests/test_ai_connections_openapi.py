@@ -43,6 +43,7 @@ def test_connection_public_response_has_no_secret_fields_and_write_is_documented
     assert ids == {
         "ai_list_connections", "ai_get_connection", "ai_put_connection", "ai_delete_connection",
         "ai_get_provider_catalog", "ai_get_latest_connection_check", "ai_put_connection_check",
+        "ai_get_settings", "ai_put_settings",
     }
     mutation = contract["paths"]["/api/v1/settings/ai/connections/{connection_id}"]["put"]
     assert "Idempotently" in mutation["description"]
