@@ -4,7 +4,7 @@
 # Backend
 # -----------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 FROM python:3.15.0-alpine3.23@sha256:d64bc17e0dff27c5c4a31f616450d032aa73d6325855127ce3a305bf1384c8d5 AS backend-base
 RUN apk upgrade --no-cache
@@ -117,7 +117,7 @@ EXPOSE 8000
 ENTRYPOINT ["backend-entrypoint"]
 CMD ["serve"]
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS backup-agent-runtime
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS backup-agent-runtime
 
 ARG APP_VERSION=development
 ARG APP_UID=10001
