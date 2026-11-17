@@ -5,6 +5,16 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Integrations
+
+- Adds opt-in periodic Withings synchronization for connected accounts. It
+  reuses the configured per-user credentials, OAuth refresh, and existing
+  weight/body-measurement and daily activity-energy sync. The scheduler is
+  disabled by default; `WITHINGS_SCHEDULER_ENABLED` enables it,
+  `WITHINGS_SYNC_INTERVAL_HOURS` defaults to 24, `WITHINGS_SYNC_DAYS` to 7,
+  and `WITHINGS_SCHEDULER_POLL_SECONDS` to 60. No database migration is
+  required.
+
 ## [0.7.0] - 2026-11-07
 
 ### Highlights

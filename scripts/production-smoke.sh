@@ -243,6 +243,58 @@ do
   fi
 done
 
+if ! compose create withings-scheduler >/dev/null; then
+  fail "Withings scheduler container could not be created for secret-scope checks."
+fi
+withings_scheduler_id=$(compose ps -aq withings-scheduler)
+withings_scheduler_environment=$(docker inspect \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' "$withings_scheduler_id")
+for forbidden_name in \
+  DATABASE_URL \
+  DATABASE_PASSWORD \
+  POSTGRES_PASSWORD \
+  SESSION_SECRET \
+  RATE_LIMIT_SECRET \
+  CREDENTIAL_ENCRYPTION_KEY \
+  MFA_ENCRYPTION_KEY \
+  MFA_ENCRYPTION_KEY_FILE \
+  WITHINGS_CLIENT_ID \
+  WITHINGS_CLIENT_SECRET
+do
+  if printf '%s\n' "$withings_scheduler_environment" | grep -q "^${forbidden_name}="; then
+    fail "Withings scheduler exposes ${forbidden_name} as an environment variable."
+  fi
+done
+for required_environment in \
+  DATABASE_PASSWORD_FILE=/run/secrets/postgres_password \
+  RATE_LIMIT_SECRET_FILE=/run/secrets/rate_limit_secret \
+  CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryption_key
+do
+  if ! printf '%s\n' "$withings_scheduler_environment" \
+    | grep -Fqx "$required_environment"; then
+    fail "Withings scheduler is missing required secret-file environment configuration."
+  fi
+done
+withings_scheduler_mounts=$(docker inspect \
+  --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$withings_scheduler_id")
+for required_mount in \
+  /run/secrets/postgres_password \
+  /run/secrets/rate_limit_secret \
+  /run/secrets/credential_encryption_key
+do
+  if ! printf '%s\n' "$withings_scheduler_mounts" | grep -qx "$required_mount"; then
+    fail "Withings scheduler is missing ${required_mount}."
+  fi
+done
+for forbidden_mount in \
+  /run/secrets/session_secret \
+  /run/secrets/mfa_encryption_key
+do
+  if printf '%s\n' "$withings_scheduler_mounts" | grep -qx "$forbidden_mount"; then
+    fail "Withings scheduler received ${forbidden_mount}."
+  fi
+done
+
 if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \
   http://127.0.0.1:18180/health >/dev/null; then

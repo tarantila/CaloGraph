@@ -33,15 +33,16 @@ set -eu
 printf 'docker:%s\n' "$*" >>"$TRACE_FILE"
 case "${FAKE_STOP_RESULT:-success}" in
   complete)
-    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+    if [ "$*" = "compose stop backend yazio-scheduler withings-scheduler" ]; then
       printf 'stop-result:none-stopped\n' >>"$TRACE_FILE"
       exit 1
     fi
     ;;
   partial)
-    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+    if [ "$*" = "compose stop backend yazio-scheduler withings-scheduler" ]; then
       printf 'stop-result:backend-stopped\n' >>"$TRACE_FILE"
-      printf 'stop-result:yazio-scheduler-failed\n' >>"$TRACE_FILE"
+      printf 'stop-result:yazio-scheduler-stopped\n' >>"$TRACE_FILE"
+      printf 'stop-result:withings-scheduler-failed\n' >>"$TRACE_FILE"
       exit 1
     fi
     ;;
@@ -104,18 +105,19 @@ expect_writer_stop_failure() {
       assert_trace \
         'docker:compose config --quiet' \
         "backup-postgres:$recipients" \
-        'docker:compose pull postgres backend frontend yazio-scheduler' \
-        'docker:compose stop backend yazio-scheduler' \
+        'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+        'docker:compose stop backend yazio-scheduler withings-scheduler' \
         'stop-result:none-stopped'
       ;;
     partial)
       assert_trace \
         'docker:compose config --quiet' \
         "backup-postgres:$recipients" \
-        'docker:compose pull postgres backend frontend yazio-scheduler' \
-        'docker:compose stop backend yazio-scheduler' \
+        'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+        'docker:compose stop backend yazio-scheduler withings-scheduler' \
         'stop-result:backend-stopped' \
-        'stop-result:yazio-scheduler-failed'
+        'stop-result:yazio-scheduler-stopped' \
+        'stop-result:withings-scheduler-failed'
       ;;
     *) fail "unknown mocked writer-stop result: $stop_result." ;;
   esac
@@ -141,8 +143,8 @@ run_update "BACKUP_AGE_RECIPIENTS_FILE=$environment_recipients"
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$environment_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 expect_writer_stop_failure complete
@@ -162,8 +164,8 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$fallback_recipients" \
   "backup-secrets:$fallback_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -178,8 +180,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$single_quoted_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -200,8 +202,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -225,8 +227,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -241,8 +243,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$escaped_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -263,8 +265,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -282,8 +284,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 

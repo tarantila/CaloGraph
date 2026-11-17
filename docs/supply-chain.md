@@ -123,11 +123,11 @@ CALOGRAPH_VERSION=vX.Y.Z
 Then pull and start without allowing a local source rebuild:
 
 ```bash
-docker compose pull backend frontend yazio-scheduler
-docker compose up -d --no-build --wait backend frontend yazio-scheduler
+docker compose pull backend frontend yazio-scheduler withings-scheduler
+docker compose up -d --no-build --wait backend frontend yazio-scheduler withings-scheduler
 ```
 
-The backend and scheduler deliberately use the same backend image.
+The backend and both provider schedulers deliberately use the same backend image.
 
 The first GHCR publication creates private packages. Before documenting an
 anonymous installation, make `calograph-backend`, `calograph-frontend`, and

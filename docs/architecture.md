@@ -5,9 +5,10 @@
 `frontend` contains the statically built Vue 3 application and Nginx. Nginx
 serves the SPA and proxies `/api/` internally to `backend`. `backend` is a
 FastAPI monolith with modular HTTP, authentication, import, service, and
-analytics layers. `yazio-scheduler` uses the same backend image and starts due
-YAZIO imports without exposing another HTTP port. `postgres` is the only
-persistent runtime dependency and is not bound to the host.
+analytics layers. `yazio-scheduler` and `withings-scheduler` use the same
+backend image for their provider-specific periodic work without exposing
+additional HTTP ports. `postgres` is the only persistent runtime dependency
+and is not bound to the host.
 
 ## Data flow
 
@@ -16,7 +17,7 @@ iPhone exporter ── HTTPS/JSON ─────┐
 Apple Health XML/ZIP ─ browser ─────┼─ FastAPI ─ adapter ─ normalization ─ PostgreSQL
 YAZIO JSON / manual retrieval ──────┤
 YAZIO ─ scheduler ─ user account ───┤
-Browser ─ Vue/Nginx ────────────────┘                                   ↓
+Withings ─ scheduler ─ user account ─┤
 Browser ← Vue/Nginx ← user-scoped API responses ← analytics service ─────┘
 ```
 

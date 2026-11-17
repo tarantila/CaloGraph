@@ -15,17 +15,16 @@
   instead so database and YAZIO keys are not rotated accidentally, followed by
   `scripts/migrate-mfa-secret.sh` when adding MFA to an installation that
   already uses file-backed secrets.
-- Compose mounts the five source files as service-scoped secrets under
-  `/run/secrets`; it does not place their values or a password-bearing database
-  URL in container environments. PostgreSQL receives only its password,
-  `backend` receives all five, `yazio-scheduler` receives only the database
-  password, YAZIO credential key, and shared rate-limit key required by the
-  deployment-wide provider circuit breaker, and `frontend` receives none. The
-  scheduler never receives the session or MFA-encryption key.
-- The default `docker-compose.yml` defines only the four runtime services.
-  Test runners and the ephemeral test database are isolated in
-  `docker-compose.test.yml` and are not part of normal production Compose
-  commands.
+- Compose mounts service-scoped source files under `/run/secrets`; it does not
+  place values or a password-bearing database URL in container environments.
+  PostgreSQL receives only its password, `backend` receives all five files,
+  and each provider scheduler receives only the database password,
+  credential-encryption key, and shared rate-limit key. `frontend` receives
+  none. Neither scheduler receives the session or MFA-encryption key.
+- The default `docker-compose.yml` defines PostgreSQL, backend, frontend, and
+  the YAZIO and Withings schedulers. The backup agent is available only through
+  its explicit profile. Test runners and the ephemeral test database are
+  isolated in `docker-compose.test.yml`.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.
@@ -56,21 +55,20 @@
 
 ## Runtime
 
-The Compose services use `restart: unless-stopped`, internal health checks,
-`no-new-privileges`, read-only filesystems for the frontend and Python
-services, and bounded Docker log rotation. The YAZIO scheduler writes a
-heartbeat to its ephemeral `/tmp`; its health check detects a stuck scheduler
-independently of the backend.
+The Compose services use `restart: unless-stopped`, `no-new-privileges`,
+read-only filesystems for frontend and Python services, and bounded Docker log
+rotation. The YAZIO scheduler writes a heartbeat to ephemeral `/tmp`; its
+health check detects a stuck scheduler independently of the backend.
 
 Runtime traffic is split across three Docker networks. `frontend` and
-`backend` share the `edge` network, `backend`, `yazio-scheduler`, and
-`postgres` share the externally isolated `data` network, and only the
-scheduler joins the additional `egress` network. PostgreSQL therefore has no
-external gateway and is not reachable from the frontend. The frontend,
-backend, and scheduler drop every Linux capability. PostgreSQL also drops all
-capabilities and adds back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`,
-and `SETUID`, which its official entrypoint needs for fresh initialization and
-the switch to its unprivileged runtime user.
+`backend` share the `edge` network; `backend`, `yazio-scheduler`,
+`withings-scheduler`, and `postgres` share the externally isolated `data`
+network. Both provider schedulers also join `egress`. PostgreSQL therefore has
+no external gateway and is not reachable from the frontend. The frontend,
+backend, and both schedulers drop every Linux capability. PostgreSQL also drops
+all capabilities and adds back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`,
+`SETGID`, and `SETUID`, which its official entrypoint needs for initialization
+and the switch to its unprivileged runtime user.
 
 The root `Dockerfile` provides separate `backend-runtime` and
 `frontend-runtime` targets. Both production targets switch to an unprivileged
@@ -153,6 +151,21 @@ bounding repeated full-history calculations. A `429` response does not
 invalidate the authenticated session; the frontend retries reconciliation on
 the next authenticated bootstrap or explicit import.
 
+Withings periodic synchronization runs in the separate `withings-scheduler`
+service and is opt-in. Enable both `WITHINGS_ENABLED=true` and
+`WITHINGS_SCHEDULER_ENABLED=true`, then recreate `backend` and
+`withings-scheduler`. It processes only active per-user connections with
+configured credentials and required scopes, reuses the manual sync and OAuth
+refresh path, and records operation status in the Integration UI. Weight/body
+measurements and daily activity energy retain independent partial-success
+handling. `WITHINGS_SYNC_INTERVAL_HOURS` defaults to 24,
+`WITHINGS_SYNC_DAYS` to a seven-day inclusive rolling window, and
+`WITHINGS_SCHEDULER_POLL_SECONDS` to 60. The lookback must be at least
+`ceil(interval hours / 24) + 2` days, preserving overlap across local-date and
+DST boundaries so partial daily data is revisited.
+Set `WITHINGS_SCHEDULER_ENABLED=false` and recreate the scheduler to stop
+background synchronization without disconnecting accounts.
+
 Direct YAZIO access is enabled by `YAZIO_ENABLED=true` and uses only the pinned
 `yazio-sdk==0.4.0` integration. Manual and scheduled sync require a personal
 configured connection; no provider selection or Nutrition Domain rollout
@@ -190,9 +203,9 @@ container. They remain disabled by default because legitimate Apple Health
 histories and self-hosted machines vary widely in size; Docker-host or parent
 cgroup constraints still apply. For an internet-facing installation, measure
 the workload and uncomment the concrete `FRONTEND_*`, `BACKEND_*`,
-`YAZIO_SCHEDULER_*`, and `POSTGRES_*` starting values in the environment
-template. A 2-GiB backend ceiling is the initial recommendation for the
-default 500-MiB upload configuration. Keep it comfortably above
+`YAZIO_SCHEDULER_*`, `WITHINGS_SCHEDULER_*`, and `POSTGRES_*` starting values in
+the environment template. A 2-GiB backend ceiling is the initial recommendation
+for the default 500-MiB upload configuration. Keep it comfortably above
 `BACKEND_TMPFS_BYTES` because tmpfs pages count toward container memory usage.
 Leaving the variables unset is an explicit operational acceptance of the
 host-level resource-exhaustion risk.
@@ -204,16 +217,16 @@ same migration.
 
 ## Fail-closed production validation
 
-The backend checks production safety before running migrations. The YAZIO
-scheduler performs a role-specific check before entering its loop and therefore
-does not need access to web-session or reverse-proxy secrets. Backend startup
-is rejected when the public origin is not HTTPS, secure cookies or HSTS are
-disabled, known development secrets or database passwords are present, secrets
-are reused, effective proxy trust remains loopback-only or uses the generic
-Docker address pool, direct YAZIO access has no valid Fernet key, or upload
-capacities contradict each other. IPv4 proxy networks broader than `/16` and
-IPv6 networks broader than `/64` are rejected. Development and test
-environments remain able to use localhost HTTP.
+The backend checks production safety before running migrations. Both provider
+schedulers perform role-specific checks before entering their loops and
+therefore do not need access to web-session or reverse-proxy secrets. Backend
+startup is rejected when the public origin is not HTTPS, secure cookies or HSTS
+are disabled, known development secrets or database passwords are present,
+secrets are reused, effective proxy trust remains loopback-only or uses the
+generic Docker address pool, enabled YAZIO or Withings credentials lack a valid
+Fernet key, or upload capacities contradict each other. IPv4 proxy networks
+broader than `/16` and IPv6 networks broader than `/64` are rejected.
+Development and test environments remain able to use localhost HTTP.
 
 Changing only `ENVIRONMENT=production` is therefore intentionally insufficient.
 The real domain, exact Docker subnet, independent secrets, and TLS policy must
@@ -224,7 +237,7 @@ Check status:
 ```bash
 docker compose config --quiet
 docker compose ps
-docker compose logs --no-color --tail=100 backend yazio-scheduler frontend
+docker compose logs --no-color --tail=100 backend yazio-scheduler withings-scheduler frontend
 curl --fail http://127.0.0.1:8180/health
 ```
 
@@ -257,13 +270,12 @@ The recommended process is documented in
 `scripts/update-containers.sh`. Every update begins with a validated database
 dump. Source updates and container updates remain separate, auditable steps.
 The YAZIO SDK-only cutover uses an update quiescence step: after pulling
-images, `scripts/update-containers.sh` stops the old `backend` and
-`yazio-scheduler` before starting the new backend and applying migrations.
-Do not run an external one-off YAZIO sync concurrently; old writers must not
-create completed Nutrition runs without the durable projection-retry marker.
-If migration or startup fails after that stop, leave the writer services
-stopped until the new version is repaired; do not restart an old writer image
-against the migrated schema.
+images, `scripts/update-containers.sh` stops the old `backend`,
+`yazio-scheduler`, and `withings-scheduler` before starting the new backend and
+applying migrations. Both provider schedulers are database writers and must
+remain stopped during this window. If migration or startup fails after that
+stop, leave the writer services stopped until the new version is repaired; do
+not restart an old writer image against the migrated schema.
 
 Release images are available from GHCR after the complete CI, exact-image
 browser/production-smoke tests, and high/critical vulnerability gate succeed.
