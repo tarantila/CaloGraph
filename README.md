@@ -7,12 +7,14 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted, multi-user nutrition analytics for Apple Health and YAZIO</strong>
+  <strong>Self-hosted nutrition and health analytics for Apple Health, Google Health, Withings and YAZIO</strong>
 </p>
 
 <p align="center">
   <a href="#quick-start-localprivate">Quick start</a> |
   <a href="docs/apple-health-setup.md">Apple Health</a> |
+  <a href="docs/google-health-setup.md">Google Health</a> |
+  <a href="docs/withings-setup.md">Withings</a> |
   <a href="docs/yazio-sync.md">YAZIO sync</a> |
   <a href="docs/production.md">Production</a> |
   <a href="#operations-and-development">Documentation</a>
@@ -20,10 +22,11 @@
 
 ---
 
-CaloGraph is a self-hosted, multi-user nutrition dashboard for Apple Health and
-YAZIO data. It combines daily nutrition, versioned budgets and targets, optional
-activity-calorie credits, trends, achievements, and data-quality views without
-moral judgment or external telemetry.
+CaloGraph is a self-hosted, multi-user nutrition and health dashboard for
+Apple Health, Google Health, Withings, and YAZIO data. It combines daily
+nutrition, versioned budgets and targets, optional activity-calorie credits,
+trends, achievements, and data-quality views without moral judgment or external
+telemetry.
 
 > [!WARNING]
 > **CaloGraph is under active development.** Version `0.x` releases may contain
@@ -44,6 +47,12 @@ moral judgment or external telemetry.
 - **Analysis V2:** a customizable analysis workspace for nutrition,
   micronutrients, activity and weight, with persistent reorderable cards,
   shared period controls, detailed charts, and meal and food drill-downs.
+- **Google Health integration:** connect your own Google account through the
+  official API to import available nutrition, active energy, and weight with
+  personal OAuth credentials. See [Google Health setup](docs/google-health-setup.md).
+- **Withings integration:** import weight, supported body composition, and
+  daily active energy through a personal OAuth connection. See
+  [Withings setup](docs/withings-setup.md).
 - **Versioned nutrition analytics:** daily calories and macros, historically
   effective budgets and targets, calendar, coverage and data-quality views.
 - **Activity-aware budgets:** optional imported activity-calorie credits can
@@ -73,7 +82,7 @@ time.
 ## Multi-user by design
 
 Run one instance for multiple accounts. Health samples, imports, target history,
-achievements, import tokens and each personal YAZIO connection are scoped to
+achievements, import tokens and personal provider connections are scoped to
 their owner. Administrators manage account metadata, lifecycle and one-time
 invitations; the administration UI does not expose another account’s nutrition
 values. The deployment operator controls the database, secrets and backups.
@@ -94,6 +103,22 @@ the [import API](docs/import-api.md).
 Upload Apple Health’s `export.xml` or ZIP in CaloGraph. Apple Health often lacks
 reliable food, recipe and meal names, so CaloGraph analyzes daily nutrient totals
 rather than inventing meal detail.
+
+### Google Health
+
+Connect your own Google Health account through the official API v4 and manually
+synchronize available nutrition, active energy, and weight. Each user configures
+their own Google Cloud OAuth client in **Konto → Integrationen**. The integration
+is optional and disabled by default. See [Google Health setup](docs/google-health-setup.md)
+for permissions, the exact callback, and Testing-mode token expiry.
+
+### Withings
+
+Connect a personal Withings account to manually synchronize weight, supported
+body-composition measurements, and daily active energy. Client credentials and
+OAuth authorization are scoped to the signed-in account. The integration is
+optional and disabled by default. See [Withings setup](docs/withings-setup.md)
+for developer-app registration, callback configuration, and supported metrics.
 
 ### Experimental YAZIO integration
 
@@ -119,9 +144,17 @@ cp .env.example .env
 ./scripts/init-secrets.sh
 # Review .env; keep CALOGRAPH_PUBLIC_URL on the address you use
 
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-docker compose ps
+docker compose -f docker-compose-dev.yml up -d --build
+docker compose -f docker-compose-dev.yml ps
 ```
+
+`make dev` runs the same detached build/start command. The standalone
+`docker-compose-dev.yml` starts PostgreSQL, the reload-enabled backend, and the
+Vite frontend. The backend owns the PostgreSQL-coordinated provider scheduler;
+there is no separate scheduler container. Do not combine development with
+production Compose. Local images default to `calograph-backend-dev:edge` and
+`calograph-frontend-dev:edge`. Set `CALOGRAPH_DEV_VERSION` to change their local
+tag independently of the production `CALOGRAPH_VERSION`.
 
 Open <http://localhost:8180>. On an empty instance, the sign-in page offers
 one-time creation of the first administrator. The browser setup creates only
@@ -130,7 +163,7 @@ the account; sign in to continue through the normal onboarding.
 There is a CLI alternative available when needed:
 
 ```sh
-docker compose exec backend python -m app.cli create-user
+docker compose -f docker-compose-dev.yml exec backend python -m app.cli create-user
 ```
 
 After initialization, further accounts are created only through
@@ -146,11 +179,17 @@ origin, keep `INITIAL_ADMIN_SETUP_ENABLED=false` unless a controlled first-run
 window is explicitly intended, and follow the [production checklist](docs/production.md).
 The [reverse-proxy guide](docs/reverse-proxy.md) covers TLS and upload limits.
 
+The repository has exactly two Compose definitions: `docker-compose.yml` for
+production and standalone `docker-compose-dev.yml` for development and isolated
+checks. Production commands use only the production definition; no test runner,
+test database, Vite server, or review service is added to production.
+
 ## Privacy and security
 
 CaloGraph ships no telemetry, analytics or CDN dependencies. Imported data is
-stored in the operator’s deployment. Direct YAZIO sync is an explicit outbound
-integration. Sessions, CSRF checks, trusted hosts/origins, password policy,
+stored in the operator’s deployment. Direct Google Health, Withings, and YAZIO
+synchronization are explicit outbound integrations. Sessions, CSRF checks,
+trusted hosts/origins, password policy,
 rate limits and security events are part of the application boundary; review
 [SECURITY.md](SECURITY.md) and the [security monitoring guide](docs/security-monitoring.md).
 
@@ -169,7 +208,7 @@ boundaries; choose one path for overlapping days. See
 [analytics definitions](docs/analytics-definitions.md).
 
 ```text
-Apple Health / Health Auto Export / YAZIO
+Apple Health / Health Auto Export / Google Health / Withings / YAZIO
                  │
                  ▼
        account-scoped import adapters
@@ -193,12 +232,44 @@ Apple Health / Health Auto Export / YAZIO
 - [Supply-chain and image retention](docs/supply-chain.md)
 - [Data export and portable import](docs/data-export.md)
 - [Import API](docs/import-api.md)
+- [Google Health setup](docs/google-health-setup.md)
+- [Withings setup](docs/withings-setup.md)
 - [YAZIO synchronization](docs/yazio-sync.md)
 
 Backend development uses Python 3.15 and the project lockfile; frontend
 development uses Node 26 and the package lockfile. The repository CI workflow
 contains the supported checks. Do not use development defaults for a public
 deployment.
+
+### Isolated check workflows
+
+The development definition includes the `test`, `e2e`, `verification`, and
+`analysis-review` profiles. **Profiles select services; they do not isolate
+projects, networks, volumes, secrets, or databases.** Never start a workflow with
+profile-wide `up` (or `--profile '*' up`): unprofiled development services would
+also start. Use the supported entrypoints, which select the exact services and
+separate project/resources:
+
+| Workflow | Entrypoint | Compose project |
+| --- | --- | --- |
+| Backend/frontend checks | `make test`, `make lint`, `make typecheck`, `make frontend-test` | `calograph-tests` |
+| PostgreSQL regressions (also invoked by `make test`) | `./scripts/test-postgres.sh` | `calograph-postgres-tests` |
+| Browser E2E, including the real authenticated Analysis period acceptance | `make e2e` or `./scripts/e2e.sh` | `calograph-e2e` |
+| Synthetic-data verification E2E | `./scripts/verification-e2e.sh` | `calograph-verification-e2e` |
+| Persistent Analysis review | `make analysis-review-up` / `make analysis-review-down` | `calograph-analysis-v2-review` |
+
+Keep these workflows on disposable or dedicated synthetic databases. A Compose
+project name alone does not make a real source database safe; do not point
+workflow settings or secret sources at production or synchronized health data.
+
+Use `TEST_PROJECT`, `POSTGRES_TEST_PROJECT`, `E2E_PROJECT`,
+`VERIFICATION_E2E_PROJECT`, or `PRODUCTION_SMOKE_PROJECT` to give checks a
+unique disposable project name. E2E/Verification use the runtime backend and
+nginx frontend (`:8080`), never Vite, with synthetic credentials and tmpfs
+PostgreSQL; `E2E_USE_PREBUILT_IMAGES=true` retains the CI image path.
+The supported tmpfs-workflow cleanup removes containers/networks without
+`--volumes`. Do not use `down --volumes` with the development definition:
+profiles do not protect the globally declared persistent Review volume.
 
 ### Analysis demo (disposable developer databases only)
 
@@ -251,6 +322,17 @@ secret generator creates private review-only secrets, and the existing CLI
 privately prompts for the synthetic bootstrap and demo account passwords.
 Later starts migrate to the current Alembic head and skip seeding when the
 demo account already exists, preserving its data and preferences.
+
+The start command remains the supported restart path after a VM reboot. It
+selects only the review services from the `analysis-review` profile under
+`calograph-analysis-v2-review`, without the development scheduler or ordinary
+development stack. Secrets persist outside the repository at
+`${XDG_DATA_HOME:-$HOME/.local/share}/calograph/analysis-review/secrets`;
+locations under the repository or `/tmp` are rejected. An existing database
+volume must have this review project's Compose ownership labels and matching,
+readable secrets; the script refuses an unowned volume rather than adopting or
+resetting it. First initialization requires an interactive terminal for the
+private password prompts.
 
 ```sh
 make analysis-review-down

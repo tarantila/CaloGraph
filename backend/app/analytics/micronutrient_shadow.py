@@ -15,11 +15,11 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.analytics.nutrition_day import has_valid_nutrition_day, usable_nutrition_value
 from app.analytics.service import PRIMARY_NUTRITION_METRICS, serialize_decimal
 from app.database import SessionLocal
 from app.micronutrients import MICRONUTRIENT_METRIC_TYPES, MICRONUTRIENTS
 from app.models import HealthSample
-from app.nutrition.enums import CoverageState, ResolutionState
 from app.nutrition.models import NutritionSourceObservation
 from app.nutrition.resolution import iter_provider_period_chunks
 from app.nutrition.resolution.metrics import CANONICAL_NUTRITION_METRICS
@@ -325,34 +325,6 @@ def _contiguous_date_ranges(days: set[date]) -> tuple[tuple[date, date], ...]:
     return tuple(ranges)
 
 
-def _provider_has_complete_evidence(
-    candidates: Mapping[str, Any],
-    *,
-    require_micronutrient: bool,
-) -> bool:
-    def is_complete(candidate: Any) -> bool:
-        return (
-            getattr(candidate, "value", None) is not None
-            and getattr(candidate, "coverage_state", None) is CoverageState.COMPLETE
-            and getattr(candidate, "resolution_state", None) is ResolutionState.RESOLVED
-        )
-
-    if not require_micronutrient:
-        return any(
-            getattr(candidate, "value", None) is not None
-            for candidate in candidates.values()
-        )
-    has_primary = any(
-        is_complete(candidates.get(metric_type))
-        for metric_type in PRIMARY_NUTRITION_METRICS
-    )
-    has_micronutrient = any(
-        is_complete(candidates.get(metric_type))
-        for metric_type in MICRONUTRIENT_METRIC_TYPES
-    )
-    return has_primary and has_micronutrient
-
-
 def read_canonical_micronutrient_period(
     db: Session,
     *,
@@ -366,8 +338,6 @@ def read_canonical_micronutrient_period(
 ) -> MicronutrientPeriodResult:
     totals_by_metric: dict[str, Decimal] = defaultdict(Decimal)
     days_by_metric: dict[str, int] = defaultdict(int)
-    primary_recorded_days = 0
-    all_value_days = 0
     ordered_sources = (
         tuple(provider_sources)
         if provider_sources is not None
@@ -436,35 +406,20 @@ def read_canonical_micronutrient_period(
                 ),
             ):
                 for current_date, candidate_values in candidates_by_day.items():
-                    if _provider_has_complete_evidence(
-                        candidate_values,
-                        require_micronutrient=len(ordered_sources) > 1,
-                    ):
+                    if has_valid_nutrition_day(candidate_values):
                         selected_candidates_by_date[current_date] = candidate_values
                         unresolved_dates.discard(current_date)
     for candidate_values in selected_candidates_by_date.values():
-        primary_has_value = any(
-            (candidate := candidate_values.get(metric_type)) is not None
-            and candidate.value is not None
-            and candidate.value > 0
-            for metric_type in PRIMARY_NUTRITION_METRICS
-        )
-        any_value = False
         for metric_type in MICRONUTRIENT_METRIC_TYPES:
             candidate = candidate_values.get(metric_type)
-            value = candidate.value if candidate is not None else None
+            value = usable_nutrition_value(candidate) if candidate is not None else None
             if value is None:
                 continue
             totals_by_metric[metric_type] += value
             days_by_metric[metric_type] += 1
-            any_value = True
-        if primary_has_value:
-            primary_recorded_days += 1
-        if any_value:
-            all_value_days += 1
     if read_context is not None:
         read_context.mark_complete()
-    recorded_days = primary_recorded_days or all_value_days
+    recorded_days = len(selected_candidates_by_date)
     metrics: list[MicronutrientMetricResult] = []
     for definition in MICRONUTRIENTS:
         total = totals_by_metric.get(definition.metric_type)

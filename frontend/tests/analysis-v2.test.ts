@@ -2957,6 +2957,9 @@ describe('Analysis V1 hub summaries', () => {
         && !new URL(path, 'https://calograph.test').searchParams.has('metric_key')).at(-1)!
     const retried = new URL(retriedPath, 'https://calograph.test')
     expect(attempts).toBe(2)
+    for (const prefix of ['/analytics/weight?', '/analytics/nutrition/analysis?', '/analytics/verification/activity?']) {
+      expect(apiMock.mock.calls.filter(([path]) => String(path).startsWith(prefix))).toHaveLength(1)
+    }
     expect(retried.searchParams.get('start')).toBe(first.searchParams.get('start'))
     expect(retried.searchParams.get('end')).toBe(first.searchParams.get('end'))
     expect(router.currentRoute.value.query.period).toBe('365')
@@ -3625,9 +3628,12 @@ describe('Analysis V1 hub summaries', () => {
     expect(folateAttempts).toBe(1)
     expect(folateCard.find('[role="alert"]').exists()).toBe(true)
     expect(wrapper.get('.analysis-card-list > li[data-card-key="vitamin_a_ug"]').text()).toContain('100 ug')
+    const successfulWeightReads = apiMock.mock.calls.filter(([path]) => String(path).startsWith('/analytics/weight?')).length
     await folateCard.get('[role="alert"] button').trigger('click')
     await flushPromises()
     expect(folateAttempts).toBe(2)
+    expect(apiMock.mock.calls.filter(([path]) => String(path).startsWith('/analytics/weight?')))
+      .toHaveLength(successfulWeightReads)
     expect(folateCard.find('[role="alert"]').exists()).toBe(false)
     expect(folateCard.text()).toContain('240 ug')
     expect(folateCard.text()).not.toMatch(/\d+ Tage mit Daten/i)
@@ -4216,6 +4222,96 @@ describe('Analysis V1 hub summaries', () => {
     expect(calciumTrend?.findAll('polygon')).toHaveLength(0)
     expect(activitySummary.findAll('.analysis-mini-chart polygon')).toHaveLength(0)
     expect(wrapper.text()).not.toMatch(/8\.942\s*Schritte|Stabil/)
+    wrapper.unmount()
+  })
+
+  it('reuses loaded Hub data when a metric card is removed and added again', async () => {
+    serveSeededHub(true)
+    const { wrapper } = await mountAnalysis('/analyse' + rangeQuery, [
+      'weight', 'nutrition', 'micronutrients', 'activity', 'vitamin_a_ug',
+    ])
+    const metricPath = apiMock.mock.calls
+      .map(([path]) => String(path))
+      .find((path) => path.includes('metric_key=vitamin_a_ug'))
+    expect(metricPath).toBeDefined()
+    const requestCounts = new Map<string, number>()
+    for (const [path] of apiMock.mock.calls) {
+      const key = String(path)
+      if (!key.startsWith('/analytics/')) continue
+      requestCounts.set(key, (requestCounts.get(key) ?? 0) + 1)
+    }
+
+    await removeHubCard(wrapper, 'vitamin_a_ug')
+    await flushPromises()
+    expect(wrapper.find('.analysis-card-list [data-card-key="vitamin_a_ug"]').exists()).toBe(false)
+    await clickManagerAction(wrapper, 'vitamin_a_ug')
+    await flushPromises()
+
+    expect(wrapper.get('.analysis-card-list [data-card-key="vitamin_a_ug"] .analysis-metric-value').text())
+      .toContain('100 ug')
+    for (const [path, count] of requestCounts) {
+      expect(apiMock.mock.calls.filter(([calledPath]) => String(calledPath) === path)).toHaveLength(count)
+    }
+    wrapper.unmount()
+  })
+
+  it('shares an in-flight metric request across card removal and re-addition', async () => {
+    serveSeededHub(true)
+    const pendingVitamin = Promise.withResolvers<AnalysisMicronutrientResponse>()
+    const fallback = apiMock.getMockImplementation()!
+    let vitaminRequests = 0
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path.includes('metric_key=vitamin_a_ug')) {
+        vitaminRequests += 1
+        return pendingVitamin.promise
+      }
+      return fallback(path, options)
+    })
+    const { wrapper } = await mountAnalysis('/analyse' + rangeQuery, [
+      'weight', 'nutrition', 'micronutrients', 'activity', 'vitamin_a_ug',
+    ])
+    expect(vitaminRequests).toBe(1)
+    await removeHubCard(wrapper, 'vitamin_a_ug')
+    await flushPromises()
+    await clickManagerAction(wrapper, 'vitamin_a_ug')
+    await flushPromises()
+    expect(vitaminRequests).toBe(1)
+    expect(wrapper.find('[data-card-key="vitamin_a_ug"] [role="status"]').exists()).toBe(true)
+
+    pendingVitamin.resolve(micronutrientResponse('vitamin_a_ug'))
+    await flushPromises()
+    expect(wrapper.get('[data-card-key="vitamin_a_ug"] .analysis-metric-value').text()).toContain('100 ug')
+    wrapper.unmount()
+  })
+
+  it.each([true, false])('shows today meals while another reader is pending (today included: %s)', async (todayIncluded) => {
+    const meals = [mealEntry('Haferflocken', '08:15:00', 410, 'breakfast')]
+    const today = serveMealsToday(meals, 410)
+    const pendingWeight = Promise.withResolvers<WeightResponse>()
+    const fallback = apiMock.getMockImplementation()!
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      if (path.startsWith('/analytics/weight?')) return pendingWeight.promise
+      if (todayIncluded && path.startsWith('/analytics/nutrition/analysis?')) {
+        const params = new URLSearchParams(path.split('?')[1])
+        return Promise.resolve({
+          ...mealsTodayResponse(today, meals, 410),
+          start_date: params.get('start')!, end_date: params.get('end')!, period_days: 30,
+        })
+      }
+      return fallback(path, options)
+    })
+    const { wrapper } = await mountAnalysis('/analyse?period=30', [
+      'weight', 'nutrition', 'micronutrients', 'activity', 'meals_today',
+    ])
+    const mealsCard = wrapper.get('[data-card-key="meals_today"]')
+    expect(mealsCard.get('.analysis-metric-value').text()).toBe('410 kcal')
+    expect(mealsCard.get('.analysis-meal-count').text()).toBe('1 Mahlzeit · 1 Eintrag')
+    expect(wrapper.find('[data-card-key="weight"] [role="status"]').exists()).toBe(true)
+    expect(apiMock.mock.calls.filter(([path]) => path ===
+      `/analytics/nutrition/analysis?start=${today}&end=${today}`)).toHaveLength(todayIncluded ? 0 : 1)
+
+    pendingWeight.resolve(structuredClone(weight))
+    await flushPromises()
     wrapper.unmount()
   })
   it('formats all Hub kcal values as locale integers without changing source precision', async () => {
@@ -7163,6 +7259,48 @@ describe('Analysis Hub and Catalog response-owned period contracts', () => {
       await flushPromises()
       expect(router.currentRoute.value.query.period).toBe('30')
     }
+  })
+
+  it('keeps Hub All when a failed reader is retried while another All reader is pending', async () => {
+    serveCapabilities({ ...supportedHubAll })
+    const respond = apiMock.getMockImplementation()!
+    const pendingWeight = Promise.withResolvers<void>()
+    const pendingNutritionRetry = Promise.withResolvers<void>()
+    let allNutritionAttempts = 0
+    apiMock.mockImplementation((path: string, options?: RequestInit) => {
+      const params = new URLSearchParams(path.split('?')[1] ?? '')
+      const isAllRange = params.get('start') === '2026-03-01'
+        && params.get('end') === '2026-03-31'
+      if (isAllRange && path.startsWith(`${readers.weight}?`)) {
+        return pendingWeight.promise.then(() => respond(path, options))
+      }
+      if (isAllRange && path.startsWith(`${readers.nutrition}?`)) {
+        allNutritionAttempts += 1
+        if (allNutritionAttempts === 1) return Promise.reject(new Error('temporary nutrition failure'))
+        return pendingNutritionRetry.promise.then(() => respond(path, options))
+      }
+      return respond(path, options)
+    })
+    const { router, wrapper } = await mountAnalysis('/analyse?period=30', [
+      'weight', 'nutrition', 'micronutrients', 'activity',
+    ])
+    await wrapper.getComponent(PeriodPicker).get('.analysis-period-custom-button').trigger('click')
+    await wrapper.get('.analysis-period-option[data-period="all"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.period).toBe('all')
+    expect(allNutritionAttempts).toBe(1)
+    await wrapper.get('[data-card-key="nutrition"] [role="alert"] button').trigger('click')
+    await flushPromises()
+    expect(allNutritionAttempts).toBe(2)
+
+    pendingWeight.resolve()
+    await flushPromises()
+    expect(router.currentRoute.value.query.period).toBe('all')
+
+    pendingNutritionRetry.resolve()
+    await flushPromises()
+    expect(router.currentRoute.value.query.period).toBe('all')
+    wrapper.unmount()
   })
 
   it.each(['unknown reader', 'missing static contract'] as const)('does not skip an available selected entry with a %s', async (reason) => {

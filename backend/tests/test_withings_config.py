@@ -125,4 +125,4 @@ def test_withings_scheduler_requires_credential_key_in_production() -> None:
     )
 
     with pytest.raises(ProductionConfigurationError, match="WITHINGS_ENABLED"):
-        configured.validate_runtime_security("scheduler")
+        configured.validate_runtime_security()

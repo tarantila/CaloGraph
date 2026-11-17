@@ -111,6 +111,33 @@ def test_admin_audit_and_overview_return_persisted_login_activity(client, user, 
     assert audit.json()["items"][0]["event"] == "auth.login.succeeded"
 
 
+@pytest.mark.parametrize(
+    ("yazio_enabled", "yazio_scheduler_enabled", "withings_enabled", "withings_scheduler_enabled", "expected"),
+    [
+        (True, True, False, False, True),
+        (False, False, True, True, True),
+        (False, False, False, False, False),
+    ],
+)
+def test_system_status_combines_provider_scheduler_configuration(
+    client, user, db, monkeypatch, yazio_enabled, yazio_scheduler_enabled,
+    withings_enabled, withings_scheduler_enabled, expected,
+) -> None:
+    user.is_admin = True
+    db.commit()
+    _login(client, "admin")
+    monkeypatch.setattr(settings, "yazio_enabled", yazio_enabled)
+    monkeypatch.setattr(settings, "yazio_scheduler_enabled", yazio_scheduler_enabled)
+    monkeypatch.setattr(settings, "withings_enabled", withings_enabled)
+    monkeypatch.setattr(
+        settings, "withings_scheduler_enabled", withings_scheduler_enabled
+    )
+
+    response = client.get("/api/v1/admin/system")
+
+    assert response.status_code == 200
+    assert response.json()["provider_scheduler_enabled"] is expected
+
 def test_system_and_overview_share_security_audit_metrics(client, user, db) -> None:
     user.is_admin = True
     db.commit()

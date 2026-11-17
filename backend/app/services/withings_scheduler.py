@@ -1,177 +1,162 @@
+"""Recurring Withings synchronization through the canonical domain service."""
+
 from __future__ import annotations
 
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
-from typing import Protocol
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import SessionLocal
 from app.models import User, WithingsConnection
 from app.services.user_operation_lock import (
-    InactiveUserOperation,
     UserOperationBusy,
     exclusive_user_lifecycle_operation,
 )
 from app.withings.constants import WITHINGS_REQUIRED_SCOPES
-from app.withings.sync import WithingsSyncResult, WithingsSyncService
+from app.withings.sync import WithingsSyncService
 
 LOGGER = logging.getLogger(__name__)
-WITHINGS_INTER_ACCOUNT_DELAY_SECONDS = 1.0
-
-SessionFactory = Callable[[], Session]
 
 
-class _SyncService(Protocol):
-    def sync(
-        self,
-        *,
-        user_id: UUID,
-        requested_start: date,
-        requested_end: date,
-        db: Session,
-        _operation_locked: bool,
-    ) -> WithingsSyncResult: ...
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _connected(connection: WithingsConnection) -> bool:
-    return (
+def _eligible(user: User | None, connection: WithingsConnection | None, now: datetime) -> bool:
+    if user is None or not user.is_active or connection is None:
+        return False
+    if not (
         connection.state == "active"
-        and bool(connection.client_id and connection.client_id.strip())
-        and bool(connection.encrypted_client_secret)
-        and bool(connection.encrypted_access_token)
-        and bool(connection.encrypted_refresh_token)
+        and connection.client_id
+        and connection.client_id.strip()
+        and connection.encrypted_client_secret
+        and connection.encrypted_access_token
+        and connection.encrypted_refresh_token
         and WITHINGS_REQUIRED_SCOPES.issubset(set(connection.granted_scopes or ()))
+    ):
+        return False
+    return connection.last_attempt_at is None or _utc(connection.last_attempt_at) <= (
+        now - timedelta(hours=settings.withings_sync_interval_hours)
     )
 
 
-def _due(connection: WithingsConnection, *, cutoff: datetime) -> bool:
-    last_attempt = connection.last_attempt_at
-    return last_attempt is None or _as_utc(last_attempt) <= cutoff
-
-
-def _ordered_connections(session_factory: SessionFactory, *, cutoff: datetime) -> list[UUID]:
-    with session_factory() as db:
-        connections = list(
-            db.scalars(
-                select(WithingsConnection)
-                .join(User, User.id == WithingsConnection.user_id)
-                .where(
-                    User.is_active.is_(True),
-                    WithingsConnection.state == "active",
-                )
-            )
-        )
-    eligible = [
-        (connection.user_id, connection.last_attempt_at)
-        for connection in connections
-        if _connected(connection) and _due(connection, cutoff=cutoff)
-    ]
-    eligible.sort(
-        key=lambda item: (
-            item[1] is not None,
-            _as_utc(item[1]) if item[1] is not None else datetime.min.replace(tzinfo=UTC),
-            str(item[0]),
-        )
-    )
-    return [user_id for user_id, _last_attempt_at in eligible]
-
-
-def _sync_one(
-    user_id: UUID,
-    *,
-    session_factory: SessionFactory,
-    sync_service: _SyncService,
-    now: datetime,
-    cutoff: datetime,
-) -> WithingsSyncResult | None:
-    with session_factory() as db, exclusive_user_lifecycle_operation(db, user_id):
-        user = db.scalar(select(User).where(User.id == user_id))
-        connection = db.scalar(
-            select(WithingsConnection).where(WithingsConnection.user_id == user_id)
-        )
-        if (
-            user is None
-            or not user.is_active
-            or connection is None
-            or not _connected(connection)
-            or not _due(connection, cutoff=cutoff)
-        ):
-            return None
-
-        connection.last_attempt_at = now
-        db.commit()
-
-        end = now.astimezone(ZoneInfo(user.timezone)).date()
-        start = end - timedelta(days=settings.withings_sync_days - 1)
-        return sync_service.sync(
-            user_id=user.id,
-            requested_start=start,
-            requested_end=end,
-            db=db,
-            _operation_locked=True,
-        )
+def _sleep_between_connections() -> None:
+    time.sleep(1)
 
 
 def run_due_withings_syncs(
     *,
-    session_factory: SessionFactory | None = None,
-    sync_service: _SyncService | None = None,
+    session_factory: Callable[[], Session] | None = None,
+    sync_service: WithingsSyncService | None = None,
     now: datetime | None = None,
     between_connections: Callable[[], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
-    """Run due accounts through the canonical, separately committed Withings sync."""
+    """Return attempted/succeeded counts; partial-domain failures are not successes.
+
+    The caller owns the scheduler leader epoch. Its continuation gate is checked
+    before pacing, after pacing, and under the user lock before any attempt.
+    Already-started canonical work finishes normally, preserving domain commits.
+    """
     if not settings.withings_enabled or not settings.withings_scheduler_enabled:
         return 0, 0
+    if should_continue is not None and not should_continue():
+        return 0, 0
+    if session_factory is None:
+        from app.database import SessionLocal
 
-    factory = session_factory or SessionLocal
-    service = sync_service or WithingsSyncService(session_factory=factory)
-    cycle_now = _as_utc(now or datetime.now(UTC))
-    cutoff = cycle_now - timedelta(hours=settings.withings_sync_interval_hours)
-    user_ids = _ordered_connections(factory, cutoff=cutoff)
-    attempted = succeeded = 0
-
-    for index, user_id in enumerate(user_ids):
-        if index:
-            if between_connections is None:
-                time.sleep(WITHINGS_INTER_ACCOUNT_DELAY_SECONDS)
-            else:
-                between_connections()
-        try:
-            result = _sync_one(
-                user_id,
-                session_factory=factory,
-                sync_service=service,
-                now=cycle_now,
-                cutoff=cutoff,
+        session_factory = SessionLocal
+    service = sync_service or WithingsSyncService(session_factory=session_factory)
+    timestamp = _utc(now or datetime.now(UTC))
+    cutoff = timestamp - timedelta(hours=settings.withings_sync_interval_hours)
+    with session_factory() as db:
+        rows = db.execute(
+            select(User, WithingsConnection)
+            .join(WithingsConnection, WithingsConnection.user_id == User.id)
+            .where(
+                User.is_active.is_(True),
+                WithingsConnection.state == "active",
+                WithingsConnection.client_id.is_not(None),
+                func.trim(WithingsConnection.client_id) != "",
+                WithingsConnection.encrypted_client_secret.is_not(None),
+                WithingsConnection.encrypted_access_token.is_not(None),
+                WithingsConnection.encrypted_refresh_token.is_not(None),
+                or_(
+                    WithingsConnection.last_attempt_at.is_(None),
+                    WithingsConnection.last_attempt_at <= cutoff,
+                ),
             )
-        except (InactiveUserOperation, UserOperationBusy):
+            .order_by(WithingsConnection.created_at, WithingsConnection.id)
+        )
+        candidates = [
+            (connection.id, user.id)
+            for user, connection in rows
+            if _eligible(user, connection, timestamp)
+        ]
+
+    attempted = succeeded = 0
+    pace = between_connections or _sleep_between_connections
+    for index, (connection_id, user_id) in enumerate(candidates):
+        if should_continue is not None and not should_continue():
+            break
+        if index:
+            pace()
+            if should_continue is not None and not should_continue():
+                break
+        if not settings.withings_enabled or not settings.withings_scheduler_enabled:
+            break
+        try:
+            with session_factory() as db, exclusive_user_lifecycle_operation(
+                db, user_id
+            ):
+                user = db.get(User, user_id, populate_existing=True)
+                connection = db.get(WithingsConnection, connection_id, populate_existing=True)
+                if (
+                    user is None
+                    or connection is None
+                    or not _eligible(user, connection, timestamp)
+                ):
+                    continue
+                if should_continue is not None and not should_continue():
+                    break
+                end_day = timestamp.astimezone(ZoneInfo(user.timezone)).date()
+                start_day = end_day - timedelta(days=settings.withings_sync_days - 1)
+                connection.last_attempt_at = timestamp
+                db.commit()
+                attempted += 1
+                try:
+                    result = service.sync(
+                        user_id=user_id,
+                        requested_start=start_day,
+                        requested_end=end_day,
+                        db=db,
+                        _operation_locked=True,
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    connection = db.get(
+                        WithingsConnection, connection_id, populate_existing=True
+                    )
+                    if connection is not None:
+                        connection.last_attempt_at = timestamp
+                        connection.last_error_category = "provider_error"
+                        connection.last_error = "provider_error"
+                        db.commit()
+                    LOGGER.warning(
+                        "withings.periodic.sync_failed exception_type=%s", type(exc).__name__
+                    )
+                else:
+                    if result.status in {"success", "no_data"}:
+                        succeeded += 1
+        except UserOperationBusy:
             continue
         except Exception as exc:
-            attempted += 1
             LOGGER.warning(
-                "withings_scheduler_account_failed error_type=%s",
-                type(exc).__name__,
+                "withings.periodic.sync_failed exception_type=%s", type(exc).__name__
             )
-            continue
-        if result is None:
-            continue
-        attempted += 1
-        if result.status in {"success", "no_data"}:
-            succeeded += 1
     return attempted, succeeded
-
-
-__all__ = ["run_due_withings_syncs"]

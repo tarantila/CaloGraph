@@ -6,6 +6,14 @@ JSON imports use `Authorization: Bearer cg_…`. Tokens carry only the `import`
 scope, are shown once, and are stored exclusively as hashes.
 
 
+## Provider setup guides
+
+For browser setup, supported data, consent, and troubleshooting, see
+[Google Health](google-health-setup.md) and [Withings](withings-setup.md).
+Both integrations use account-scoped OAuth connections rather than import tokens.
+Withings manual synchronization is `POST /api/v1/withings/sync?days=30`
+(1–366 days); it returns separate `weight` and `activity_energy` results.
+
 ## Google Health per-user integration
 
 Google Health is an optional, user-owned integration. Set

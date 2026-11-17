@@ -12,8 +12,8 @@ from sqlalchemy import and_, exists, not_, or_, select, true
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.analytics.nutrition_day import has_valid_nutrition_day, usable_nutrition_value
 from app.analytics.provider_selection import NutritionProviderSelection
-from app.analytics.service import PRIMARY_NUTRITION_METRICS
 from app.analytics.verification import (
     _metadata_text,
     _normalized_meal_type,
@@ -61,25 +61,10 @@ class AnalysisNutritionReadError(RuntimeError):
 
 
 def _value(candidate: ProviderCandidate) -> Decimal | None:
-    if candidate.resolution_state in {ResolutionState.CONFLICT, ResolutionState.DUPLICATE_CANDIDATE}:
-        raise AnalysisNutritionReadError("unsafe canonical nutrition candidate")
-    if (
-        candidate.coverage_state is CoverageState.COMPLETE
-        and candidate.resolution_state is ResolutionState.RESOLVED
-        and candidate.presence_state in {PresenceState.SUPPLIED, PresenceState.EXPLICIT_ZERO}
-    ):
-        return candidate.value
-    return None
-
-
-def _has_eligible_primary_evidence(candidates: Mapping[str, ProviderCandidate]) -> bool:
-    # Evaluate every metric first so secondary conflicts and duplicate candidates still fail closed.
-    values = {key: _value(candidates[key]) for key in DAILY_PROJECTION_METRICS}
-    return all(
-        candidates[key].coverage_state is CoverageState.COMPLETE
-        and candidates[key].resolution_state is ResolutionState.RESOLVED
-        for key in PRIMARY_NUTRITION_METRICS
-    ) and any(values[key] is not None for key in PRIMARY_NUTRITION_METRICS)
+    try:
+        return usable_nutrition_value(candidate)
+    except ValueError as exc:
+        raise AnalysisNutritionReadError("unsafe canonical nutrition candidate") from exc
 
 
 def _current_event_condition(event: type[NutritionConsumptionEvent]) -> ColumnElement[bool]:
@@ -490,7 +475,7 @@ def read_analysis_nutrition(
                 metric_keys=DAILY_PROJECTION_METRICS,
             ):
                 for day, candidates in matrix.items():
-                    if day not in winners and _has_eligible_primary_evidence(candidates):
+                    if day not in winners and has_valid_nutrition_day(candidates):
                         winners[day] = (provider_key, source_id, candidates)
     except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisNutritionReadError("canonical nutrition provider period is unreadable") from exc

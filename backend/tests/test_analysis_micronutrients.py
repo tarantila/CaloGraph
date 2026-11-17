@@ -201,7 +201,7 @@ def test_selected_day_preserves_explicit_zero_and_missing_as_distinct(
     )
 
     assert [(point.date, point.provider_key, point.value) for point in result.series] == [
-        (DAY, "yazio", None), (dates[1], "yazio", Decimal("0")),
+        (DAY, None, None), (dates[1], "yazio", Decimal("0")),
     ]
     assert result.metrics[0].total == Decimal("0")
     assert result.metrics[0].days_with_data == 1
@@ -508,6 +508,8 @@ def test_analysis_api_reads_canonical_yazio_micronutrients_for_saved_priority(
         diary.product_profiles[0],
         nutrients=replace(
             diary.product_profiles[0].nutrients,
+            carb=Decimal("10"),
+            fat=Decimal("3"),
             additional={"vitamin.a": Decimal("0.000001")},
         ),
     )

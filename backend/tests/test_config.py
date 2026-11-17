@@ -245,15 +245,13 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
     development = (repository_root / ".env.example").read_text()
     production = (repository_root / ".env.production.example").read_text()
     compose = (repository_root / "docker-compose.yml").read_text()
-    development_compose = (repository_root / "docker-compose.dev.yml").read_text()
-    verification_compose = (repository_root / "docker-compose.verification.yml").read_text()
+    development_compose = (repository_root / "docker-compose-dev.yml").read_text()
 
     for content in (
         development,
         production,
         compose,
         development_compose,
-        verification_compose,
     ):
         assert "YAZIO_PROVIDER" not in content
         assert "YAZIO_NUTRITION_DOMAIN_WRITE_ENABLED" not in content
@@ -268,15 +266,14 @@ def test_yazio_templates_and_compose_keep_sdk_credentials_optional() -> None:
         assert "YAZIO_SDK_USER_AGENT" not in content
         assert "YAZIO_SDK_CLIENT_ID" not in content
     assert "YAZIO_ENABLED: ${YAZIO_ENABLED:-false}" in compose
-    assert compose.count("YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}") == 2
-    assert compose.count("YAZIO_SDK_CLIENT_ID: ${YAZIO_SDK_CLIENT_ID-}") == 2
-    assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 2
+    assert compose.count("YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}") == 1
+    assert compose.count("YAZIO_SDK_CLIENT_ID: ${YAZIO_SDK_CLIENT_ID-}") == 1
+    assert compose.count("YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}") == 1
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in compose
     assert "${YAZIO_SDK_CLIENT_SECRET:-" not in development_compose
-    assert development_compose.count('YAZIO_ENABLED: "true"') == 2
-    assert development_compose.count('YAZIO_SCHEDULER_ENABLED: "true"') == 2
-    assert 'YAZIO_ENABLED: "true"' in verification_compose
-    assert 'YAZIO_SCHEDULER_ENABLED: "false"' in verification_compose
+    assert development_compose.count('YAZIO_ENABLED: ${YAZIO_ENABLED:-true}') == 1
+    assert 'YAZIO_ENABLED: "true"' in development_compose
+    assert 'YAZIO_SCHEDULER_ENABLED: "false"' in development_compose
     operational_defaults = {
         "YAZIO_SYNC_INTERVAL_HOURS": "6",
         "YAZIO_SYNC_DAYS": "7",
@@ -515,62 +512,6 @@ def test_invalid_secret_files_fail_without_leaking_content(
     assert "x" * 64 not in message
 
 
-def test_scheduler_production_validation_only_requires_its_own_secrets(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clear_direct_secret_environment(monkeypatch)
-    database_secret = write_secret(
-        tmp_path / "database-password",
-        "scheduler-database-password-0123456789",
-    )
-    credential_secret = write_secret(
-        tmp_path / "credential-key",
-        Fernet.generate_key(),
-    )
-    rate_limit_secret = write_secret(
-        tmp_path / "rate-limit-secret",
-        "scheduler-rate-limit-secret-0123456789",
-    )
-    configured = Settings(
-        _env_file=None,
-        environment="production",
-        database_password_file=str(database_secret),
-        credential_encryption_key_file=str(credential_secret),
-        rate_limit_secret_file=str(rate_limit_secret),
-        yazio_enabled=True,
-        yazio_sdk_client_secret="test-only-yazio-sdk-secret",
-    )
-
-    configured.validate_runtime_security("scheduler")
-    with pytest.raises(ProductionConfigurationError):
-        configured.validate_runtime_security("backend")
-
-
-def test_scheduler_rejects_default_rate_limit_secret(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clear_direct_secret_environment(monkeypatch)
-    configured = Settings(
-        _env_file=None,
-        environment="production",
-        database_password_file=str(
-            write_secret(
-                tmp_path / "database-password",
-                "scheduler-database-password-0123456789",
-            )
-        ),
-        credential_encryption_key_file=str(
-            write_secret(tmp_path / "credential-key", Fernet.generate_key())
-        ),
-        yazio_enabled=True,
-        yazio_sdk_client_secret="test-only-yazio-sdk-secret",
-    )
-
-    with pytest.raises(ProductionConfigurationError, match="RATE_LIMIT_SECRET"):
-        configured.validate_runtime_security("scheduler")
-
 
 def test_valid_production_configuration_passes_runtime_check() -> None:
     valid_production_settings().validate_runtime_security()
@@ -624,7 +565,17 @@ def test_production_backend_requires_dedicated_mfa_encryption_key() -> None:
     configured = valid_production_settings(mfa_encryption_key="")
 
     with pytest.raises(ProductionConfigurationError, match="MFA_ENCRYPTION_KEY"):
-        configured.validate_runtime_security("backend")
+        configured.validate_runtime_security()
+
+def test_production_withings_requires_credential_encryption_key() -> None:
+    configured = valid_production_settings(
+        yazio_enabled=False,
+        withings_enabled=True,
+        credential_encryption_key="",
+    )
+
+    with pytest.raises(ProductionConfigurationError, match="CREDENTIAL_ENCRYPTION_KEY"):
+        configured.validate_runtime_security()
 
 
 def test_development_configuration_allows_local_http() -> None:

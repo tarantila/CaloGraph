@@ -107,7 +107,12 @@ const t = i18n.global.t.bind(i18n.global)
       </div>
     </header>
 
-    <p v-if="props.state === 'loading'" class="analysis-card-state" role="status">{{ t('common.loading') }}</p>
+    <div v-if="props.state === 'loading'" class="analysis-card-state analysis-card-loading" role="status">
+      <span class="analysis-loading-bars" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+      <span>{{ t('common.loading') }}</span>
+    </div>
     <div v-else-if="props.state === 'error'" class="analysis-card-error" role="alert">
       <p>{{ props.error }}</p>
       <button class="button secondary" type="button" @click="emit('retry')">{{ t('analysisV2.retry') }}</button>
@@ -148,6 +153,16 @@ const t = i18n.global.t.bind(i18n.global)
 .analysis-overflow-menu button:disabled { color: var(--muted); cursor: not-allowed; }
 .analysis-card-content { display: grid; align-content: start; gap: .4rem; min-width: 0; min-height: 0; padding: .1rem .15rem; color: var(--ink); font-weight: 400; }
 .analysis-card-state { align-self: center; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.analysis-card-loading { display: grid; justify-items: center; align-content: center; gap: .75rem; min-height: 6rem; padding-block: .5rem; }
+/* Adapted from aryamitra06's Uiverse loader; MIT license in THIRD_PARTY_NOTICES.md. */
+.analysis-loading-bars { display: flex; align-items: center; justify-content: center; gap: 5px; width: 44px; height: 48px; color: var(--accent); }
+.analysis-loading-bars > span { flex: 0 0 3px; height: 18px; border-radius: 10px; background: currentColor; opacity: .5; animation: analysis-loading-bars 1s linear infinite; }
+.analysis-loading-bars > span:nth-child(2) { height: 32px; animation-delay: .25s; }
+.analysis-loading-bars > span:nth-child(3) { animation-delay: .5s; }
+@keyframes analysis-loading-bars {
+  20% { opacity: 1; transform: scaleY(1.5); }
+  40%, 100% { opacity: .5; transform: scaleY(1); }
+}
 .analysis-card-error { display: grid; justify-items: start; align-content: start; gap: .5rem; min-width: 0; color: var(--danger); overflow-wrap: anywhere; }
 .analysis-card-error p { margin: 0; }
 .analysis-card-error button { position: relative; z-index: 2; }
@@ -163,6 +178,7 @@ const t = i18n.global.t.bind(i18n.global)
   .analysis-card { height: 18rem; box-sizing: border-box; grid-template-rows: auto minmax(0, 1fr) auto; align-content: stretch; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .analysis-loading-bars > span { animation: none; opacity: .65; }
   .analysis-card-reorder-move, .analysis-card { transition: none; }
   .analysis-card.is-dragging { --analysis-card-drag-scale: 1; transform: none; }
 }

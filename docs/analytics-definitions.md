@@ -147,6 +147,17 @@ evidence and contributes to totals and coverage; missing or unusable values
 remain `null`. The optional EU reference value is secondary context only; this
 endpoint does not calculate percentages or assign a health-status label.
 
+All preference-selected canonical nutrition readers use the same whole-day
+provider rule described below, including general micronutrients, Daily,
+Calendar, Weekly, Weekdays, Trends, and the canonical nutrition day view.
+Missing fiber, sugar, saturated fat,
+or micronutrients never makes an otherwise valid core day fall back to another
+provider. A day without a valid core-day source has no nutrition values; Analyse
+micronutrient series report `provider_key: null` and `value: null` for that date.
+The general micronutrient reader counts selected core-valid nutrition days,
+including explicit zero, for its existing average and coverage calculation.
+Explicit legacy `source` requests retain their compatibility semantics.
+
 ### Canonical Analyse nutrition days and meals
 
 `GET /api/v1/analytics/nutrition/analysis` is authenticated and reads one

@@ -1,10 +1,7 @@
 import argparse
 import getpass
-import logging
 import sys
-import time
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -15,11 +12,8 @@ from app.auth.password_policy import (
     PasswordPolicyError,
     validate_new_password,
 )
-from app.auth.security import create_api_token, hash_password, purge_expired_sessions
-from app.config import (
-    ProductionConfigurationError,
-    settings,
-)
+from app.auth.security import create_api_token, hash_password
+from app.config import settings
 from app.database import SessionLocal
 from app.models import (
     InstanceBootstrap,
@@ -29,12 +23,12 @@ from app.models import (
     YazioConnection,
 )
 from app.security_events import log_security_event, security_reference
-from app.services.account_recovery import purge_account_recovery_tokens
 from app.services.admin_reauth import (
     AdminReauthenticationRejected,
     verify_admin_reauthentication,
 )
 from app.services.analysis_demo import (
+    ANALYSIS_DEMO_USERNAME,
     AnalysisDemoOwnershipError,
     AnalysisDemoUnavailable,
     ensure_analysis_demo_calendar_target,
@@ -46,9 +40,7 @@ from app.services.credential_crypto import (
     generate_credential_key,
 )
 from app.services.import_service import purge_expired_raw_payloads
-from app.services.passkeys import purge_expired_webauthn_challenges
-from app.services.rate_limit import RateLimitExceeded, purge_expired_rate_limit_buckets
-from app.services.security_audit import purge_expired_security_audit_events
+from app.services.rate_limit import RateLimitExceeded
 from app.services.user_lifecycle import (
     UserLifecycleRejected,
     issue_account_recovery,
@@ -60,21 +52,16 @@ from app.services.user_operation_lock import (
     exclusive_initial_user_operation,
     shared_user_operation,
 )
-from app.services.withings_scheduler import run_due_withings_syncs
 from app.services.yazio_sync import (
-    YAZIO_INTER_ACCOUNT_DELAY_SECONDS,
     YazioConnectionNotConfigured,
     YazioSyncError,
     configure_yazio_connection,
     effective_sync_days,
     effective_sync_interval_minutes,
     enqueue_historical_yazio_sync,
-    run_due_yazio_syncs,
     run_manual_yazio_sync,
     validate_yazio_credentials,
 )
-
-logger = logging.getLogger("calograph.cli")
 
 
 def create_user(args: argparse.Namespace) -> None:
@@ -252,7 +239,9 @@ def seed_analysis_demo_command(args: argparse.Namespace) -> None:
         raise SystemExit(str(exc)) from exc
     except UserOperationBusy as exc:
         raise SystemExit("Für dieses Benutzerkonto läuft gerade eine andere Operation.") from exc
-    print(f"Analyse-Demokonto bereit: {user_id}")
+    print("Analyse-Demokonto bereit.")
+    print(f"Benutzername: {ANALYSIS_DEMO_USERNAME}")
+    print(f"Interne ID: {user_id}")
 
 
 def remove_analysis_demo_command(_: argparse.Namespace) -> None:
@@ -451,121 +440,6 @@ def queue_yazio_history(args: argparse.Namespace) -> None:
     print("Historischer YAZIO-Zeitraum wurde für den Scheduler vorgemerkt.")
 
 
-def _touch_yazio_scheduler_heartbeat() -> None:
-    Path("/tmp/yazio-scheduler-heartbeat").touch()
-
-def _wait_between_yazio_connections() -> None:
-    time.sleep(YAZIO_INTER_ACCOUNT_DELAY_SECONDS)
-    _touch_yazio_scheduler_heartbeat()
-
-
-def run_yazio_scheduler(args: argparse.Namespace) -> None:
-    try:
-        settings.validate_runtime_security("scheduler")
-    except ProductionConfigurationError as exc:
-        raise SystemExit(str(exc)) from None
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    logger.info(
-        "yazio_scheduler_started poll_seconds=%s jitter_minutes=%s",
-        settings.yazio_scheduler_poll_seconds,
-        settings.yazio_scheduler_jitter_minutes,
-    )
-    last_security_cleanup = 0.0
-    while True:
-        try:
-            _touch_yazio_scheduler_heartbeat()
-            attempted, succeeded = run_due_yazio_syncs(
-                after_connection=_touch_yazio_scheduler_heartbeat,
-                between_connections=_wait_between_yazio_connections,
-            )
-            monotonic_now = time.monotonic()
-            if monotonic_now - last_security_cleanup >= 3600:
-                with SessionLocal() as db:
-                    rate_limit_deleted = purge_expired_rate_limit_buckets(
-                        db,
-                        settings.rate_limit_retention_hours,
-                    )
-                    recovery_token_deleted = purge_account_recovery_tokens(db)
-                    session_deleted = purge_expired_sessions(db)
-                    webauthn_challenge_deleted = purge_expired_webauthn_challenges(db)
-                    security_audit_deleted = purge_expired_security_audit_events(db)
-                    db.commit()
-                last_security_cleanup = monotonic_now
-                if rate_limit_deleted:
-                    logger.info(
-                        "rate_limit_cleanup deleted=%s",
-                        rate_limit_deleted,
-                    )
-                if session_deleted:
-                    logger.info("session_cleanup deleted=%s", session_deleted)
-                if webauthn_challenge_deleted:
-                    logger.info(
-                        "webauthn_challenge_cleanup deleted=%s",
-                        webauthn_challenge_deleted,
-                    )
-                if recovery_token_deleted:
-                    logger.info(
-                        "account_recovery_token_cleanup deleted=%s",
-                        recovery_token_deleted,
-                    )
-                if security_audit_deleted:
-                    logger.info("security_audit_cleanup deleted=%s", security_audit_deleted)
-        except Exception:
-            logger.exception("yazio_scheduler_cycle_failed")
-            if args.once:
-                raise
-            attempted = succeeded = 0
-        if attempted:
-            logger.info(
-                "yazio_scheduler_cycle attempted=%s succeeded=%s",
-                attempted,
-                succeeded,
-            )
-        _touch_yazio_scheduler_heartbeat()
-        if args.once:
-            print(f"{attempted} fällige Verbindung(en), {succeeded} erfolgreich.")
-            return
-        time.sleep(settings.yazio_scheduler_poll_seconds)
-
-
-def run_withings_scheduler(args: argparse.Namespace) -> None:
-    try:
-        settings.validate_runtime_security("scheduler")
-    except ProductionConfigurationError as exc:
-        raise SystemExit(str(exc)) from None
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    logger.info(
-        "withings_scheduler_started poll_seconds=%s",
-        settings.withings_scheduler_poll_seconds,
-    )
-    while True:
-        attempted = succeeded = 0
-        try:
-            attempted, succeeded = run_due_withings_syncs()
-        except Exception as exc:
-            logger.error(
-                "withings_scheduler_cycle_failed error_type=%s",
-                type(exc).__name__,
-            )
-            if args.once:
-                raise SystemExit("Withings scheduler cycle failed.") from None
-        if attempted:
-            logger.info(
-                "withings_scheduler_cycle attempted=%s succeeded=%s",
-                attempted,
-                succeeded,
-            )
-        if args.once:
-            print(f"{attempted} fällige Withings-Verbindung(en), {succeeded} erfolgreich.")
-            return
-        time.sleep(settings.withings_scheduler_poll_seconds)
-
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m app.cli")
@@ -680,18 +554,6 @@ def parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--username", default="admin")
     status.set_defaults(handler=yazio_status)
-    scheduler = commands.add_parser(
-        "run-yazio-scheduler",
-        help="Fällige verschlüsselte YAZIO-Verbindungen synchronisieren",
-    )
-    scheduler.add_argument("--once", action="store_true")
-    scheduler.set_defaults(handler=run_yazio_scheduler)
-    scheduler = commands.add_parser(
-        "run-withings-scheduler",
-        help="Fällige Withings-Verbindungen synchronisieren",
-    )
-    scheduler.add_argument("--once", action="store_true")
-    scheduler.set_defaults(handler=run_withings_scheduler)
     return root
 
 

@@ -86,7 +86,9 @@ describe('RecoveryView', () => {
     expect(wrapper.text()).toContain('Password changed.')
     expect(wrapper.text()).toContain('The account remains disabled.')
     expect(wrapper.find('form').exists()).toBe(false)
-    expect(sessionStorage.length).toBe(0)
+    expect(Object.keys(sessionStorage)).toEqual(['vue-router:scroll'])
+    expect(sessionStorage.getItem('vue-router:scroll')).not.toContain('recovery_secret')
+    expect(sessionStorage.getItem('vue-router:scroll')).not.toContain('replacement-password-is-long')
   })
 
   it('supports manual token entry and shows password-policy details without consuming local state', async () => {

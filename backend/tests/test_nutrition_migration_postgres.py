@@ -54,4 +54,5 @@ def test_a1_migration_creates_scoped_append_only_schema():
         assert "fk_nutrition_identity_links_identity_user" in link_constraints
     finally:
         command.downgrade(config, PREVIOUS_REVISION)
+        command.upgrade(config, "head")
         engine.dispose()

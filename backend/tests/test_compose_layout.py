@@ -1,0 +1,155 @@
+"""Inspect the resolved Compose contract without starting containers or reading .env."""
+
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+def repository_root() -> Path:
+    for root in (Path(__file__).resolve().parents[2], Path('/workspace')):
+        if (root / 'docker-compose-dev.yml').exists():
+            return root
+    raise AssertionError('standalone development Compose definition is missing')
+
+
+def compose_config(
+    *profiles: str,
+    compose_file: str = 'docker-compose-dev.yml',
+    **overrides: str,
+) -> dict:
+    if not shutil.which('docker'):
+        if os.environ.get('CALOGRAPH_REQUIRE_COMPOSE_TESTS') == '1':
+            pytest.fail('Docker Compose must be available for CI contract coverage')
+        pytest.skip('Docker Compose is required for resolved configuration tests')
+    root = repository_root()
+    command = ['docker', 'compose', '--env-file', '/dev/null',
+               '-f', str(root / compose_file)]
+    for profile in profiles:
+        command.extend(['--profile', profile])
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key in {'PATH', 'HOME', 'DOCKER_CONFIG', 'DOCKER_HOST'}
+    }
+    environment.update({
+        'ENVIRONMENT': 'test',
+        'CALOGRAPH_PUBLIC_URL': 'http://localhost:8180',
+        'COOKIE_SECURE': 'false',
+        'ENABLE_HSTS': 'false',
+        'TRUSTED_HOSTS': 'localhost,127.0.0.1',
+        'TRUSTED_ORIGINS': 'http://localhost:8180,http://127.0.0.1:8180',
+        # Compose config only resolves these required paths; it never starts a
+        # service or opens the placeholder files.
+        'POSTGRES_PASSWORD_FILE': '/tmp/calograph-unused/postgres_password',
+        'SESSION_SECRET_FILE': '/tmp/calograph-unused/session_secret',
+        'RATE_LIMIT_SECRET_FILE': '/tmp/calograph-unused/rate_limit_secret',
+        'CREDENTIAL_ENCRYPTION_KEY_FILE': '/tmp/calograph-unused/credential_encryption_key',
+        'MFA_ENCRYPTION_KEY_FILE': '/tmp/calograph-unused/mfa_encryption_key',
+    })
+    environment.update(overrides)
+    result = subprocess.run([*command, 'config', '--format', 'json'], check=True,
+                            capture_output=True, text=True,
+                            env=environment)
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize('compose_file', ['docker-compose.yml', 'docker-compose-dev.yml'])
+def test_backend_forwards_micronutrient_rollout_and_reconcile_settings(compose_file: str) -> None:
+    defaults = compose_config(compose_file=compose_file)['services']['backend']['environment']
+    assert defaults['ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS'] == '31'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED'] == 'false'
+    assert defaults['ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED'] == 'false'
+    assert defaults['RECONCILE_RATE_LIMIT'] == '12'
+    assert defaults['RECONCILE_IP_RATE_LIMIT'] == '24'
+    assert defaults['RECONCILE_RATE_LIMIT_WINDOW_SECONDS'] == '300'
+
+    configured = compose_config(
+        compose_file=compose_file,
+        ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS='17',
+        ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED='true',
+        ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED='true',
+        RECONCILE_RATE_LIMIT='18',
+        RECONCILE_IP_RATE_LIMIT='36',
+        RECONCILE_RATE_LIMIT_WINDOW_SECONDS='600',
+    )['services']['backend']['environment']
+    assert configured['ANALYTICS_MICRONUTRIENTS_SHADOW_READ_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_SHADOW_MAX_DAYS'] == '17'
+    assert configured['ANALYTICS_MICRONUTRIENTS_METADATA_SHADOW_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_PUBLIC_PROVIDER_METADATA_ENABLED'] == 'true'
+    assert configured['ANALYTICS_MICRONUTRIENTS_CANONICAL_READ_ENABLED'] == 'true'
+    assert configured['RECONCILE_RATE_LIMIT'] == '18'
+    assert configured['RECONCILE_IP_RATE_LIMIT'] == '36'
+    assert configured['RECONCILE_RATE_LIMIT_WINDOW_SECONDS'] == '600'
+
+
+@pytest.mark.parametrize('compose_file', ['docker-compose.yml', 'docker-compose-dev.yml'])
+def test_default_runtime_has_no_separate_provider_scheduler(compose_file: str) -> None:
+    config = compose_config(compose_file=compose_file)
+    services = {
+        name: service for name, service in config['services'].items()
+        if not service.get('profiles')
+    }
+    assert set(services) == {'postgres', 'backend', 'frontend'}
+    backend = services['backend']
+    environment = backend['environment']
+    assert environment['WITHINGS_ENABLED'] == 'false'
+    assert environment['WITHINGS_SCHEDULER_ENABLED'] == 'false'
+    assert environment['WITHINGS_SYNC_INTERVAL_HOURS'] == '24'
+    assert environment['WITHINGS_SYNC_DAYS'] == '7'
+    assert environment['WITHINGS_SCHEDULER_POLL_SECONDS'] == '60'
+    assert 'yazio-scheduler' not in config['services']
+    if compose_file == 'docker-compose-dev.yml':
+        frontend = services['frontend']
+        assert backend['build']['target'] == 'backend-development'
+        assert frontend['build']['target'] == 'frontend-development'
+        assert backend['image'] == 'calograph-backend-dev:edge'
+        assert frontend['image'] == 'calograph-frontend-dev:edge'
+        assert frontend['ports'][0]['target'] == 5173
+
+@pytest.mark.parametrize('profile,prefix', [('e2e', 'e2e'), ('verification', 'verification')])
+def test_browser_graphs_use_runtime_images_synthetic_tmpfs_database_and_no_dev_dependencies(profile, prefix) -> None:
+    services = compose_config(profile)['services']
+    names = {f'{prefix}-postgres', f'{prefix}-backend', f'{prefix}-frontend', prefix}
+    for name in names:
+        assert set(services[name].get('depends_on', {})) <= names
+    assert services[f'{prefix}-backend']['build']['target'] == 'backend-runtime'
+    assert services[f'{prefix}-frontend']['build']['target'] == 'frontend-runtime'
+    database = services[f'{prefix}-postgres']
+    assert database['tmpfs'] == ['/var/lib/postgresql']
+    assert 'backend' in services[f'{prefix}-backend']['networks'][f'{prefix}-edge']['aliases']
+    assert 'frontend' in services[f'{prefix}-frontend']['networks'][f'{prefix}-edge']['aliases']
+    assert not database.get('volumes')
+    assert services[prefix]['environment']['BASE_URL'] == 'http://frontend:8080'
+    assert services[f'{prefix}-backend']['environment']['YAZIO_SCHEDULER_ENABLED'] == 'false'
+
+
+def test_analysis_acceptance_shares_only_the_isolated_frontend_loopback() -> None:
+    services = compose_config('e2e')['services']
+    acceptance = services['analysis-acceptance']
+    backend = services['e2e-backend']['environment']
+    assert acceptance['network_mode'] == 'service:e2e-frontend'
+    assert acceptance['environment']['BASE_URL'] == 'http://localhost:8080'
+    assert 'http://localhost:8080' in backend['TRUSTED_ORIGINS']
+    assert 'http://127.0.0.1:8080' in backend['TRUSTED_ORIGINS']
+    assert acceptance['command'][-2:] == ['--project=chromium', '--workers=1']
+
+
+def test_review_retains_owned_volume_and_does_not_require_review_variables_for_other_profiles() -> None:
+    config = compose_config('analysis-review')
+    services = config['services']
+    assert services['review-postgres']['environment']['POSTGRES_DB'] == 'calograph_analysis_v2_test'
+    assert services['review-postgres']['volumes'][0]['source'] == 'postgres-data'
+    assert config['volumes']['postgres-data']['name'] == 'calograph-analysis-v2-review-postgres-data'
+    frontend = services['review-frontend']
+    assert frontend['ports'][0]['host_ip'] == '127.0.0.1'
+    assert frontend['ports'][0]['published'] == '8289'
+    assert services['review-backend']['environment']['RUN_MIGRATIONS'] == 'false'
+    for secret in services['review-backend']['secrets']:
+        assert secret['target'] == secret['source'].removeprefix('review-')

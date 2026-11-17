@@ -326,11 +326,13 @@ watch(
 
 
 watch(
-  () => [
-    route.params.metric, start.value, end.value, period.value,
-    auth.user?.id ?? null, auth.user?.timezone ?? 'UTC',
-  ] as const,
-  () => {
+  [
+    () => route.params.metric, () => start.value, () => end.value, () => period.value,
+    () => auth.user?.id ?? null, () => auth.user?.timezone ?? 'UTC',
+  ],
+  ([nextMetric, nextStart, nextEnd, nextPeriod, userId, timezone], [previousMetric, previousStart, previousEnd, previousPeriod, previousUserId, previousTimezone]) => {
+    if (nextMetric === previousMetric && nextStart === previousStart && nextEnd === previousEnd
+      && nextPeriod === previousPeriod && userId === previousUserId && timezone === previousTimezone) return
     const rangeKey = `${period.value}/${start.value}/${end.value}`
     if (!metric.value || !analysisRangeWithinDays(start.value, end.value, maxDays)
       || requestedRange !== rangeKey) void load()

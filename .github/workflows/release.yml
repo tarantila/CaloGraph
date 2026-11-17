@@ -26,7 +26,12 @@ jobs:
     env:
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
       - name: Validate release invocation
+        id: invocation
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -40,35 +45,30 @@ jobs:
             printf 'Release darf nur per workflow_dispatch gestartet werden.\n' >&2
             exit 1
           }
-          [[ "$EVENT_REF" == refs/heads/main ]] || {
-            printf 'Release darf nur aus refs/heads/main gestartet werden.\n' >&2
-            exit 1
-          }
-          expected_workflow_ref="$REPOSITORY/.github/workflows/release.yml@refs/heads/main"
-          [[ "$WORKFLOW_REF" == "$expected_workflow_ref" ]] || {
-            printf 'Release-Workflow stammt nicht aus main: %s\n' "$WORKFLOW_REF" >&2
-            exit 1
-          }
+          release_branch=$(scripts/release/validate-release-ref.sh \
+            "$EVENT_REF" "$WORKFLOW_REF" "$REPOSITORY")
           [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             printf 'Ungültige Release-Version: %s\n' "$RELEASE_VERSION" >&2
             exit 1
           }
+          printf 'release_branch=%s\n' "$release_branch" >>"$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: refs/heads/main
-          fetch-depth: 0
 
-      - name: Freeze current main commit
+      - name: Freeze selected release branch commit
         id: freeze
         shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.invocation.outputs.release_branch }}
         run: |
           set -Eeuo pipefail
-          git fetch origin main
-          release_commit=$(git rev-parse 'refs/remotes/origin/main^{commit}')
+          git fetch origin \
+            "$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+          release_commit=$(git rev-parse \
+            "refs/remotes/origin/$RELEASE_BRANCH^{commit}")
           [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
           printf 'RELEASE_COMMIT=%s\n' "$release_commit"
           printf 'release_commit=%s\n' "$release_commit" >>"$GITHUB_OUTPUT"
+          printf 'release_branch=%s\n' "$RELEASE_BRANCH" >>"$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,7 +82,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
-        run: scripts/release/validate-release.sh "$RELEASE_VERSION" "$RELEASE_COMMIT"
+          RELEASE_BRANCH: ${{ steps.freeze.outputs.release_branch }}
+        run: scripts/release/validate-release.sh \
+          "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BRANCH"
+
 
       - name: Validate release metadata before tag creation
         shell: bash

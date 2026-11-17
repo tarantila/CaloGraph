@@ -3,17 +3,21 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session as OrmSession
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app import security_events
 from app.auth.security import create_api_token, create_session
 from app.cli import configure_yazio, create_token, disable_yazio
-from app.database import SessionLocal
+from app.database import Base, SessionLocal
 from app.importers.json_adapter import AdapterResult
 from app.models import (
     ApiToken,
@@ -737,34 +741,61 @@ def test_lifecycle_rollback_emits_failure_but_no_success_event(
 
 
 def test_two_concurrent_admin_deactivations_cannot_both_succeed(
-    user: User,
-    db: OrmSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    user.is_admin = True
-    second_admin = _add_user(db, user, "concurrent-admin", is_admin=True)
-    db.commit()
+    # StaticPool's single in-memory connection cannot serve concurrent transactions.
+    # Keep the local-lock regression on SQLite, with one connection per worker.
+    engine = create_engine(
+        URL.create("sqlite+pysqlite", database=str(tmp_path / "lifecycle.sqlite")),
+        poolclass=NullPool,
+        connect_args={"check_same_thread": True},
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _record) -> None:
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr("app.services.security_audit.SessionLocal", sessions)
     barrier = Barrier(2)
 
     def run(actor_id, target_id) -> str:
-        barrier.wait()
-        with SessionLocal() as worker_db:
+        barrier.wait(timeout=10)
+        with sessions() as worker_db:
             try:
                 deactivate_user(worker_db, actor_id, target_id)
             except UserLifecycleRejected as exc:
                 return exc.reason
         return "success"
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(
-                lambda pair: run(*pair),
-                [(user.id, second_admin.id), (second_admin.id, user.id)],
-            )
-        )
+    try:
+        Base.metadata.create_all(engine)
+        with sessions() as db:
+            admins = [
+                User(username=name, password_hash="test-password-hash", is_admin=True)
+                for name in ("concurrent-admin-one", "concurrent-admin-two")
+            ]
+            db.add_all(admins)
+            db.commit()
+            first_id, second_id = (admin.id for admin in admins)
 
-    db.expire_all()
-    assert results.count("success") == 1
-    assert sum(db.scalars(select(User.is_active).where(User.is_admin.is_(True)))) == 1
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda pair: run(*pair),
+                    [(first_id, second_id), (second_id, first_id)],
+                    timeout=30,
+                )
+            )
+
+        assert results.count("success") == 1
+        assert results.count("operation_busy") + results.count("not_admin") == 1
+        with sessions() as db:
+            assert sum(db.scalars(select(User.is_active).where(User.is_admin.is_(True)))) == 1
+            assert db.scalar(select(func.count()).select_from(SecurityAuditEvent)) == 1
+    finally:
+        engine.dispose()
 
 
 def test_local_shared_lock_supports_cross_thread_dependency_teardown(

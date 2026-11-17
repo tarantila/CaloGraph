@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.activity import ACTIVE_ENERGY_METRIC, ACTIVITY_PROVIDER_SOURCE_TYPE_GROUPS
+from app.analytics.nutrition_day import read_nutrition_day_source
 from app.analytics.provider_daily import ProviderDailyReadError, read_provider_daily_points
 from app.analytics.provider_selection import (
+    NutritionProviderNotReady,
     NutritionProviderSelection,
     NutritionProviderSelectionError,
     resolve_nutrition_provider,
@@ -38,6 +40,7 @@ from app.nutrition.models import (
     NutritionSourceObservation,
 )
 from app.nutrition.resolution.metrics import canonical_unit
+from app.nutrition.resolution.providers import ProviderNotAvailableError
 from app.nutrition.resolution.sources import resolve_default_provider_sources
 from app.provider_preferences import ACTIVITY_ENERGY_DATA_AREA
 from app.schemas import (
@@ -896,8 +899,23 @@ def read_nutrition_verification(
                 canonical=None,
                 providers=[],
             )
+        try:
+            source = read_nutrition_day_source(
+                db, user_id=user_id, local_date=local_date,
+                provider_sources=(
+                    selection.provider_sources
+                    or ((selection.provider_key, selection.source_instance_id),)
+                ),
+            )
+        except (ProviderNotAvailableError, ValueError, KeyError, TypeError) as exc:
+            raise NutritionProviderNotReady("canonical nutrition day is unreadable") from exc
+        if source is None:
+            return VerificationNutritionResponse(
+                date=local_date, view=view, canonical=None, providers=[],
+            )
+        provider_key, source_instance_id = source
         source_instances: Mapping[str, UUID | None] = {
-            selection.provider_key: selection.source_instance_id
+            provider_key: source_instance_id
         }
         events = _read_current_nutrition_events(
             db,
@@ -925,7 +943,7 @@ def read_nutrition_verification(
             source_instances=source_instances,
         )
         canonical_events = [
-            item for item in events if item.provider_key == selection.provider_key
+            item for item in events if item.provider_key == provider_key
         ]
         return VerificationNutritionResponse(
             date=local_date,
@@ -933,8 +951,8 @@ def read_nutrition_verification(
             canonical=_nutrition_provider_group(
                 db,
                 user_id=user_id,
-                provider_key=selection.provider_key,
-                source_instance_id=selection.source_instance_id,
+                provider_key=provider_key,
+                source_instance_id=source_instance_id,
                 local_date=local_date,
                 events=canonical_events,
                 metrics_by_source=metrics_by_source,

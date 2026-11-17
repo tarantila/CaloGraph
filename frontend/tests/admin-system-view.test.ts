@@ -27,8 +27,7 @@ function response(status: 'current' | 'update_available' | 'development' | 'unkn
     security_audit_enabled: true,
     security_audit_events_24h: 37,
     failed_logins_24h: 2,
-    yazio_scheduler_enabled: true,
-    yazio_scheduler_available: true,
+    provider_scheduler_enabled: true,
   }
 }
 
@@ -67,7 +66,7 @@ describe('admin system status', () => {
     expect(wrapper.text()).toContain('Datenbank')
     expect(wrapper.text()).toContain('Betriebsbereit')
     expect(wrapper.text()).not.toContain('Healthy')
-    expect(wrapper.text()).toContain('YAZIO-Scheduler')
+    expect(wrapper.text()).toContain('Datenquellen-Synchronisierung')
     const auditCard = wrapper.get('.system-audit-card')
     expect(auditCard.text()).toContain('37')
     expect(auditCard.text()).toContain('Ereignisse / 24 h')

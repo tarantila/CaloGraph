@@ -590,6 +590,9 @@ def test_yazio_legacy_and_canonical_micronutrients_have_decimal_parity(
                     local_date=day,
                     nutrients=YazioNutrientValues(
                         energy=Decimal("1800"),
+                        protein=Decimal("80"),
+                        carb=Decimal("200"),
+                        fat=Decimal("60"),
                         additional={"mineral.iron": Decimal("0.007")},
                     ),
                     energy_goal=None,
@@ -738,7 +741,9 @@ def test_apple_legacy_and_canonical_micronutrients_have_parity(
     )
     parity = micronutrient_shadow.compare_micronutrient_periods(legacy, canonical)
 
-    assert parity.classification is MicronutrientParityClassification.TOTAL_MISMATCH
+    assert parity.classification is MicronutrientParityClassification.RECORDED_DAYS_MISMATCH
+    assert canonical.recorded_days == 0
+    assert all(item.total is None for item in canonical.nutrients)
 
 
 def test_micronutrient_shadow_settings_default_to_disabled_and_thirty_one_days() -> None:

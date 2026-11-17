@@ -4,6 +4,12 @@ umask 077
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 project_name=${PRODUCTION_SMOKE_PROJECT:-calograph-production-smoke}
+case "$project_name" in
+  ''|calograph|calograph-dev|calograph-analysis-v2-review)
+    printf 'PRODUCTION_SMOKE_PROJECT must name an isolated disposable project.\n' >&2
+    exit 1 ;;
+esac
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_PROFILES
 smoke_edge_subnet=${PRODUCTION_SMOKE_EDGE_SUBNET:-172.31.250.0/24}
 smoke_edge_gateway_ip=${PRODUCTION_SMOKE_EDGE_GATEWAY_IP:-172.31.250.1}
 smoke_frontend_proxy_ip=${PRODUCTION_SMOKE_FRONTEND_PROXY_IP:-172.31.250.10}
@@ -23,15 +29,14 @@ legacy_secrets="$smoke_root/legacy-secrets"
 
 compose() {
   docker compose \
+    -f "$project_root/docker-compose.yml" \
     --project-name "$project_name" \
     --env-file "$smoke_env" \
     "$@"
 }
 
 backup_compose() {
-  docker compose \
-    -f docker-compose.yml \
-    -f docker-compose.backup-secrets.yml \
+  "$project_root/scripts/backup-compose.sh" \
     --project-name "$project_name" \
     --env-file "$smoke_env" \
     "$@"
@@ -199,102 +204,10 @@ if compose exec -T frontend sh -c 'test -e /run/secrets'; then
   fail "Frontend received a secrets mount."
 fi
 
-if ! compose create yazio-scheduler >/dev/null; then
-  fail "YAZIO scheduler container could not be created for secret-scope checks."
+runtime_services=$(compose config --services)
+if printf '%s\n' "$runtime_services" | grep -Eq '(^|-)scheduler$|^background-worker$'; then
+  fail "A separate provider scheduler service remains in the runtime Compose configuration."
 fi
-scheduler_id=$(compose ps -aq yazio-scheduler)
-scheduler_environment=$(docker inspect \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' "$scheduler_id")
-for forbidden_name in \
-  DATABASE_URL \
-  DATABASE_PASSWORD \
-  POSTGRES_PASSWORD \
-  SESSION_SECRET \
-  RATE_LIMIT_SECRET \
-  CREDENTIAL_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY_FILE
-do
-  if printf '%s\n' "$scheduler_environment" | grep -q "^${forbidden_name}="; then
-    fail "YAZIO scheduler exposes ${forbidden_name} as an environment variable."
-  fi
-done
-if ! printf '%s\n' "$scheduler_environment" \
-  | grep -q '^RATE_LIMIT_SECRET_FILE=/run/secrets/rate_limit_secret$'; then
-  fail "YAZIO scheduler is missing its shared rate-limit secret file."
-fi
-scheduler_mounts=$(docker inspect \
-  --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$scheduler_id")
-for required_mount in \
-  /run/secrets/postgres_password \
-  /run/secrets/rate_limit_secret \
-  /run/secrets/credential_encryption_key
-do
-  if ! printf '%s\n' "$scheduler_mounts" | grep -qx "$required_mount"; then
-    fail "YAZIO scheduler is missing ${required_mount}."
-  fi
-done
-for forbidden_mount in \
-  /run/secrets/session_secret \
-  /run/secrets/mfa_encryption_key
-do
-  if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
-    fail "YAZIO scheduler received ${forbidden_mount}."
-  fi
-done
-
-if ! compose create withings-scheduler >/dev/null; then
-  fail "Withings scheduler container could not be created for secret-scope checks."
-fi
-withings_scheduler_id=$(compose ps -aq withings-scheduler)
-withings_scheduler_environment=$(docker inspect \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' "$withings_scheduler_id")
-for forbidden_name in \
-  DATABASE_URL \
-  DATABASE_PASSWORD \
-  POSTGRES_PASSWORD \
-  SESSION_SECRET \
-  RATE_LIMIT_SECRET \
-  CREDENTIAL_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY_FILE \
-  WITHINGS_CLIENT_ID \
-  WITHINGS_CLIENT_SECRET
-do
-  if printf '%s\n' "$withings_scheduler_environment" | grep -q "^${forbidden_name}="; then
-    fail "Withings scheduler exposes ${forbidden_name} as an environment variable."
-  fi
-done
-for required_environment in \
-  DATABASE_PASSWORD_FILE=/run/secrets/postgres_password \
-  RATE_LIMIT_SECRET_FILE=/run/secrets/rate_limit_secret \
-  CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryption_key
-do
-  if ! printf '%s\n' "$withings_scheduler_environment" \
-    | grep -Fqx "$required_environment"; then
-    fail "Withings scheduler is missing required secret-file environment configuration."
-  fi
-done
-withings_scheduler_mounts=$(docker inspect \
-  --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$withings_scheduler_id")
-for required_mount in \
-  /run/secrets/postgres_password \
-  /run/secrets/rate_limit_secret \
-  /run/secrets/credential_encryption_key
-do
-  if ! printf '%s\n' "$withings_scheduler_mounts" | grep -qx "$required_mount"; then
-    fail "Withings scheduler is missing ${required_mount}."
-  fi
-done
-for forbidden_mount in \
-  /run/secrets/session_secret \
-  /run/secrets/mfa_encryption_key
-do
-  if printf '%s\n' "$withings_scheduler_mounts" | grep -qx "$forbidden_mount"; then
-    fail "Withings scheduler received ${forbidden_mount}."
-  fi
-done
-
 if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \
   http://127.0.0.1:18180/health >/dev/null; then
@@ -495,7 +408,6 @@ restore_test_status="$smoke_root/restore-test.json"
 if ! BACKUP_AGE_IDENTITY_FILE="$age_identity" \
   BACKUP_RESTORE_TEST_STATUS_FILE="$restore_test_status" \
   BACKUP_RESTORE_TEST_HOST_MODE=true \
-  BACKUP_RESTORE_POSTGRES_IMAGE=postgres:18.4-alpine \
   BACKUP_RESTORE_POSTGRES_MAJOR=18 \
   scripts/isolated-restore-test.sh "$database_backup"; then
   fail "Selected encrypted backup failed the isolated restore test."

@@ -9,7 +9,7 @@ between untrusted change validation and trusted publication.
 - Every third-party GitHub Action is pinned to a full commit SHA.
 - Dockerfile and CI base images retain a readable version tag and are pinned to
   an immutable manifest digest. Operational Compose deliberately tracks the
-  explicit `postgres:18.4-alpine` patch tag so compatible image rebuilds can be
+  explicit `postgres:18.6-alpine` patch tag so compatible image rebuilds can be
   consumed without editing the file.
 - `npm ci` is followed by both production-only and complete dependency audits.
 - `pip-audit` checks an exported production lock set and the complete
@@ -27,6 +27,35 @@ The `brace-expansion` override in `frontend/package.json` is deliberate. It
 forces all development-only callers onto the patched 5.0.8 release for
 CVE-2026-14257 without accepting the unrelated breaking changes proposed by a
 forced general audit rewrite.
+
+**Temporary npm audit exception: picomatch.**
+
+As of 2026-11-17, npm's latest `picomatch` is 4.0.7 and no patched release is
+available for [GHSA-fc5q-39xc-vjpf / CVE-2026-112366](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
+The production audit reports eight high findings and the complete audit 17;
+all are propagated from this single advisory, not independent vulnerabilities.
+The built Nginx frontend runtime has no Node executable or picomatch code.
+Its picomatch license and license-only `node_modules` directories are attribution,
+not executable dependencies; browser assets contain neither picomatch nor its
+parser, and Trivy detects no language-specific packages in that runtime.
+
+CI still runs both `npm audit --omit=dev --audit-level=high` and the complete
+`npm audit --audit-level=high`, using JSON output and the existing maximum of
+three attempts for transient registry/network failures. The purpose-specific
+`scripts/npm-audit-gate.mjs` validates the report, npm exit status/stderr, metadata
+counts, lockfile nodes, and every transitive `via` branch. Only the exact advisory
+above may justify a high finding, and every resolved picomatch instance must be
+the registry's exact 4.0.7 package. Any other high/critical advisory, additional
+picomatch advisory (at any severity), changed picomatch resolution, cycle,
+unknown evidence, malformed report, or npm runtime error fails the gate.
+Unrelated findings below high retain the existing audit threshold; clean,
+valid reports also pass. Deterministic synthetic gate tests run in this CI step.
+
+This is not a general advisory/package suppression. When a patched picomatch
+release becomes available, update the dependency resolution, remove this
+exception and its dedicated gate/tests, and restore ordinary high-threshold
+audit enforcement for both scopes while retaining transient-error retries.
+Reassess immediately if runtime exposure or advisory scope changes.
 
 The backend now uses the official Python 3.15 Alpine 3.23 image. During the
 earlier F-10 comparison of the Python 3.14 baseline, the contemporaneous Debian
@@ -123,11 +152,12 @@ CALOGRAPH_VERSION=vX.Y.Z
 Then pull and start without allowing a local source rebuild:
 
 ```bash
-docker compose pull backend frontend yazio-scheduler withings-scheduler
-docker compose up -d --no-build --wait backend frontend yazio-scheduler withings-scheduler
+docker compose pull backend frontend
+docker compose up -d --no-build --wait backend frontend
 ```
 
-The backend and both provider schedulers deliberately use the same backend image.
+The backend image contains both the API and the lifecycle-owned provider
+scheduler; no additional scheduler image or service is required.
 
 The first GHCR publication creates private packages. Before documenting an
 anonymous installation, make `calograph-backend`, `calograph-frontend`, and

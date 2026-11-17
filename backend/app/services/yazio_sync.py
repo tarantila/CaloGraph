@@ -989,6 +989,13 @@ def _run_yazio_connection_sync_locked(
             connection = db.get(YazioConnection, connection_id)
             if connection is None:
                 raise YazioConnectionNotConfigured("Keine YAZIO-Verbindung konfiguriert.")
+            if (
+                mode == "scheduled"
+                and not historical_pending
+                and connection.next_sync_at is not None
+                and _utc_datetime(connection.next_sync_at) > attempted_at
+            ):
+                return None
             connection.last_attempt_at = attempted_at
             if historical_pending:
                 history_start = connection.historical_sync_start_date
@@ -1092,24 +1099,33 @@ def _run_yazio_connection_sync_locked(
 def run_due_yazio_syncs(
     *,
     now: datetime | None = None,
-    after_connection: Callable[[], None] | None = None,
     between_connections: Callable[[], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
     if not settings.yazio_enabled or not settings.yazio_scheduler_enabled:
         return 0, 0
+    if should_continue is not None and not should_continue():
+        return 0, 0
     connection_ids = due_yazio_connection_ids(now)
-    succeeded = 0
+    attempted = succeeded = 0
     pace = between_connections or _sleep_between_yazio_connections
     for index, connection_id in enumerate(connection_ids):
+        if should_continue is not None and not should_continue():
+            break
         if index:
             pace()
+            if should_continue is not None and not should_continue():
+                break
+        attempted += 1
         try:
             if run_scheduled_yazio_sync(connection_id, now=now) is not None:
                 succeeded += 1
-        finally:
-            if after_connection is not None:
-                after_connection()
-    return len(connection_ids), succeeded
+        except Exception as exc:
+            logger.warning(
+                "yazio.scheduler.account_failed exception_type=%s",
+                type(exc).__name__,
+            )
+    return attempted, succeeded
 
 
 def _record_failure(

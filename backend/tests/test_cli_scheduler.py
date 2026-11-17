@@ -4,6 +4,7 @@ import argparse
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 import app.cli as cli
@@ -11,7 +12,7 @@ from app.models import AccountRecoveryToken, ImportBatch
 from app.services.analysis_demo import demo_user_id
 
 
-def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch) -> None:
+def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch, capsys) -> None:
     class FrozenDate(date):
         @classmethod
         def today(cls):
@@ -33,6 +34,14 @@ def test_seed_cli_anchors_window_to_berlin_local_day(db, user, monkeypatch) -> N
     batch = db.scalar(select(ImportBatch).where(ImportBatch.user_id == demo_user_id()))
     assert batch is not None
     assert batch.client_identifier == "analysis-demo:v2:2026-09-30"
+    output = capsys.readouterr()
+    assert output.out == (
+        "Analyse-Demokonto bereit.\n"
+        "Benutzername: calograph-analysis-demo\n"
+        f"Interne ID: {demo_user_id()}\n"
+    )
+    assert output.err == ""
+    assert "synthetic-test-password" not in output.out
 
 
 def test_seed_cli_opts_into_one_current_day_supplement(db, user, monkeypatch) -> None:
@@ -125,7 +134,16 @@ def test_seed_cli_adds_follow_up_meals_and_their_projection_days(db, user, monke
     ]
 
 
-def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypatch, capsys) -> None:
+
+
+@pytest.mark.parametrize("command", ["run-yazio-scheduler", "run-withings-scheduler"])
+def test_standalone_provider_scheduler_cli_is_removed(command) -> None:
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args([command])
+
+
+def test_scheduler_housekeeping_completes_security_cleanup_cycle(db, user) -> None:
+    from app.services.provider_scheduler import run_scheduler_housekeeping
 
     expired = AccountRecoveryToken(
         user_id=user.id,
@@ -136,30 +154,8 @@ def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypat
     db.add(expired)
     db.commit()
     expired_id = expired.id
-    monkeypatch.setattr(type(cli.settings), "validate_runtime_security", lambda _self, _purpose: None)
-    monkeypatch.setattr(cli, "_touch_yazio_scheduler_heartbeat", lambda: None)
-    monkeypatch.setattr(cli, "run_due_yazio_syncs", lambda **_kwargs: (0, 0))
-    monkeypatch.setattr(cli.time, "monotonic", lambda: 3601.0)
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db))
 
-    cli.run_yazio_scheduler(argparse.Namespace(once=True))
+    deleted = run_scheduler_housekeeping(session_factory=lambda: nullcontext(db))
 
-    assert capsys.readouterr().out == "0 fällige Verbindung(en), 0 erfolgreich.\n"
+    assert deleted["recovery_tokens"] == 1
     assert db.get(AccountRecoveryToken, expired_id) is None
-
-
-def test_withings_scheduler_cli_supports_one_shot_cycle(monkeypatch, capsys) -> None:
-    calls: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        cli,
-        "run_due_withings_syncs",
-        lambda **kwargs: (calls.append(kwargs) or (2, 1)),
-    )
-
-    args = cli.parser().parse_args(["run-withings-scheduler", "--once"])
-    assert args.handler is cli.run_withings_scheduler
-
-    args.handler(args)
-
-    assert len(calls) == 1
-    assert capsys.readouterr().out == "2 fällige Withings-Verbindung(en), 1 erfolgreich.\n"

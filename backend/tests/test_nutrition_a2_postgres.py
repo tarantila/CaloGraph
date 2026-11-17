@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
@@ -14,7 +15,6 @@ from app.models import (
     NutritionDailyProjection,
     NutritionProjectionHead,
     SourcePriorityPolicy,
-    User,
 )
 
 POSTGRES_TESTS_ENABLED = (
@@ -90,12 +90,44 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
         )
 
         with Session(engine) as db:
-            first = User(username="a2-postgres-first", password_hash="hash", timezone="UTC")
-            second = User(username="a2-postgres-second", password_hash="hash", timezone="UTC")
-            db.add_all([first, second])
-            db.flush()
+            users = sa.Table("users", sa.MetaData(), autoload_with=engine)
+            first_id, second_id = uuid4(), uuid4()
+            now = datetime.now(UTC)
+            db.execute(
+                users.insert(),
+                [
+                    {
+                        "id": first_id,
+                        "username": "a2-postgres-first",
+                        "password_hash": "hash",
+                        "language": "de",
+                        "timezone": "UTC",
+                        "week_starts_on": 0,
+                        "preferred_weight_unit": "kg",
+                        "raw_payload_retention_days": 0,
+                        "is_active": True,
+                        "is_admin": False,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                    {
+                        "id": second_id,
+                        "username": "a2-postgres-second",
+                        "password_hash": "hash",
+                        "language": "de",
+                        "timezone": "UTC",
+                        "week_starts_on": 0,
+                        "preferred_weight_unit": "kg",
+                        "raw_payload_retention_days": 0,
+                        "is_active": True,
+                        "is_admin": False,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                ],
+            )
             policy = SourcePriorityPolicy(
-                user_id=first.id,
+                user_id=first_id,
                 version=1,
                 effective_from=datetime(2026, 1, 1, tzinfo=UTC),
             )
@@ -104,7 +136,7 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
 
             db.add(
                 NutritionDailyProjection(
-                    user_id=second.id,
+                    user_id=second_id,
                     local_date=date(2026, 9, 7),
                     projection_version=1,
                     projection_algorithm_version="cross-user",
@@ -118,7 +150,7 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
             db.rollback()
 
             valid = NutritionDailyProjection(
-                user_id=first.id,
+                user_id=first_id,
                 local_date=date(2026, 9, 7),
                 projection_version=1,
                 projection_algorithm_version="a2-postgres",
@@ -132,7 +164,7 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
 
             db.add(
                 NutritionProjectionHead(
-                    user_id=first.id,
+                    user_id=first_id,
                     local_date=date(2026, 9, 8),
                     current_projection_id=valid.id,
                 )
@@ -143,7 +175,7 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
 
             db.add(
                 NutritionProjectionHead(
-                    user_id=second.id,
+                    user_id=second_id,
                     local_date=date(2026, 9, 7),
                     current_projection_id=valid.id,
                 )
@@ -153,4 +185,5 @@ def test_a2_postgres_catalog_and_cross_scope_constraints():
             db.rollback()
     finally:
         command.downgrade(config, "base")
+        command.upgrade(config, "head")
         engine.dispose()

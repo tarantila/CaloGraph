@@ -19,8 +19,11 @@ disabled.
 
 The CLI remains supported and shares the first-user serialization boundary:
 
+This example targets local development. For a production/runtime checkout,
+select `docker-compose.yml` instead.
+
 ```bash
-docker compose exec backend python -m app.cli create-user
+docker compose -f docker-compose-dev.yml exec backend python -m app.cli create-user
 ```
 
 
@@ -62,9 +65,9 @@ Administrators can manage another account through the lifecycle API:
 
 An administrator cannot deactivate or delete their own account. CaloGraph also
 serializes administrative lifecycle changes and ordinary account mutations
-across backend workers and the scheduler, so a deactivation or deletion cannot
-race with a new import, token, settings, authentication-factor, or YAZIO write.
-At least one active administrator is preserved.
+across backend workers, including provider-scheduler work, so a deactivation or
+deletion cannot race with a new import, token, settings, authentication-factor,
+or YAZIO write. At least one active administrator is preserved.
 
 The `is_active` and `deactivated_at` fields form one state: active accounts have
 no deactivation timestamp; inactive accounts always have one. Repeating a
@@ -123,12 +126,16 @@ and challenges, and revokes sessions and API tokens. It does not change the
 password, nutrition data, imports, profile, or encrypted YAZIO credentials, and
 it does not reactivate the account.
 
+These recovery commands target the production/runtime Compose service. For a
+local development instance, replace `docker-compose.yml` with
+`docker-compose-dev.yml`.
+
 The corresponding operator commands are:
 
 ```bash
-docker compose exec backend python -m app.cli issue-account-recovery \
+docker compose -f docker-compose.yml exec backend python -m app.cli issue-account-recovery \
   --username TARGET --admin-username ADMIN
-docker compose exec backend python -m app.cli reset-authenticators \
+docker compose -f docker-compose.yml exec backend python -m app.cli reset-authenticators \
   --username TARGET --admin-username ADMIN --confirm TARGET
 ```
 
@@ -211,9 +218,9 @@ Passkey sign-in is passwordless and requires local user verification, such as
 Windows Hello, Touch ID, Face ID, Android biometrics, or the device PIN.
 CaloGraph binds WebAuthn to the exact host and origin configured through
 `CALOGRAPH_PUBLIC_URL`; production therefore requires HTTPS. Registration
-challenges are tied to the current user session. Authentication and
-registration challenges expire after five minutes, are consumed once, and are
-cleaned up by the scheduler. Stored credential public keys are not secrets.
+challenges are tied to the current user session. Authentication and registration
+challenges expire after five minutes, are consumed once, and are cleaned up by
+backend leader housekeeping. Stored credential public keys are not secrets.
 
 ## Personal YAZIO connection
 
@@ -231,21 +238,22 @@ to it automatically.
 
 ## Personal Google Health connection
 
-Google Health is connected exclusively through the official Google Health API
-v4. CaloGraph currently reads Nutrition Log data only with the read-only OAuth
-scope `https://www.googleapis.com/auth/googlehealth.nutrition.readonly`;
-activity and weight are not obtained through Google Health. The official API
-also exposes Body Fat (`body-fat`) under the read-only OAuth scope
-`https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`,
-but CaloGraph currently excludes it from canonical persistence, the UI, and
-provider-priority selection; no Body-Fat implementation is included. The
-connection is stored encrypted per account. After authorization, users can
-start a manual nutrition synchronization for a bounded period under
-**Account → Integrations**.
+Google Health uses the official API v4 for nutrition, activity energy, and
+weight with three read-only scopes. Each user configures a personal OAuth
+client and authorizes their own Google account under **Konto → Integrationen**.
+Manual synchronization reports separate domain results. Provider availability
+requires user-owned evidence in the relevant domain, not just an OAuth grant.
+Body fat is not currently imported from Google Health. See
+[Google Health setup](google-health-setup.md) for the complete setup and limits.
 
-An active OAuth connection is available for provider selection only after
-canonical Google nutrition evidence exists. Without that evidence, the source
-remains visible but is reported as `no_data` and unavailable.
+## Personal Withings connection
+
+Each user configures a personal Withings OAuth client and connection under
+**Konto → Integrationen**. Manual synchronization imports supported body
+measurements and daily active energy; source selection is separate for weight
+and activity energy. Credentials and tokens are encrypted and account-scoped.
+See [Withings setup](withings-setup.md) for operator enablement, the explicit
+callback setting, required scopes, supported metrics, and connection lifecycle.
 
 ## Nutrition provider priority
 
