@@ -4,6 +4,7 @@ import argparse
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 import app.cli as cli
@@ -133,7 +134,15 @@ def test_seed_cli_adds_follow_up_meals_and_their_projection_days(db, user, monke
     ]
 
 
-def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypatch, capsys) -> None:
+
+
+def test_standalone_yazio_scheduler_cli_is_removed() -> None:
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args(["run-yazio-scheduler"])
+
+
+def test_scheduler_housekeeping_completes_security_cleanup_cycle(db, user) -> None:
+    from app.services.provider_scheduler import run_scheduler_housekeeping
 
     expired = AccountRecoveryToken(
         user_id=user.id,
@@ -144,13 +153,8 @@ def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypat
     db.add(expired)
     db.commit()
     expired_id = expired.id
-    monkeypatch.setattr(type(cli.settings), "validate_runtime_security", lambda _self, _purpose: None)
-    monkeypatch.setattr(cli, "_touch_yazio_scheduler_heartbeat", lambda: None)
-    monkeypatch.setattr(cli, "run_due_yazio_syncs", lambda **_kwargs: (0, 0))
-    monkeypatch.setattr(cli.time, "monotonic", lambda: 3601.0)
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db))
 
-    cli.run_yazio_scheduler(argparse.Namespace(once=True))
+    deleted = run_scheduler_housekeeping(session_factory=lambda: nullcontext(db))
 
-    assert capsys.readouterr().out == "0 fällige Verbindung(en), 0 erfolgreich.\n"
+    assert deleted["recovery_tokens"] == 1
     assert db.get(AccountRecoveryToken, expired_id) is None

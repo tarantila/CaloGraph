@@ -109,10 +109,11 @@ The wrapper creates one private, temporary JSON override for the existing
 `SECRETS_SOURCE_FILE=/backup-input/environment.env`, and
 `SECRETS_SOURCE_DIR=/backup-input/secrets`, and adds exactly two read-only
 long-syntax bind mounts with `bind.create_host_path: false`. The production
-definition, artifact/status volumes, hardening, and single scheduler remain
-unchanged. Missing or wrong-type sources and symlinks (including parent
-components) are rejected before starting the agent; directories are never
-silently created. Paths containing spaces and literal `$` are supported.
+definition, artifact/status volumes, hardening, and backend/backup-agent
+services remain unchanged. Missing or wrong-type sources and symlinks
+(including parent components) are rejected before starting the agent;
+directories are never silently created. Paths containing spaces and literal
+`$` are supported.
 
 Host source paths default to the project's `.env` file and `secrets/` directory.
 Shell values take precedence over the selected `--env-file` values; repeated

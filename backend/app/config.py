@@ -19,7 +19,6 @@ logging.getLogger("pydantic_settings").setLevel(logging.INFO)
 MAX_SECRET_FILE_BYTES = 16 * 1024
 APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS = 2
 BACKEND_TMPFS_RESERVE_BYTES = 16 * 1024 * 1024
-RuntimeRole = Literal["backend", "scheduler"]
 YAZIO_API_BASE_URL_DEFAULT = "https://yzapi.yazio.com"
 YAZIO_SDK_USER_AGENT_DEFAULT = (
     "YAZIO/26.30.1 (com.yazio.ios.YAZIO; build:2607271240; iOS 27.0.0) Ktor"
@@ -129,6 +128,10 @@ class Settings(BaseSettings):
     calograph_public_url: str = "http://localhost:8180"
     google_health_enabled: bool = False
     withings_enabled: bool = False
+    withings_scheduler_enabled: bool = False
+    withings_sync_interval_hours: int = Field(default=24, ge=1, le=168)
+    withings_sync_days: int = Field(default=7, ge=1, le=31)
+    withings_scheduler_poll_seconds: int = Field(default=60, ge=10, le=3600)
     withings_redirect_uri: str | None = Field(
         default=None,
         max_length=2048,
@@ -367,6 +370,18 @@ class Settings(BaseSettings):
         ).render_as_string(hide_password=False)
         return self
 
+    @model_validator(mode="after")
+    def validate_withings_sync_overlap(self) -> Settings:
+        if self.withings_scheduler_enabled:
+            # Include today's partial local day and a DST-safe overlap day.
+            minimum_days = (self.withings_sync_interval_hours + 23) // 24 + 2
+            if self.withings_sync_days < minimum_days:
+                raise ValueError(
+                    f"WITHINGS_SYNC_DAYS must be at least {minimum_days} "
+                    "for WITHINGS_SYNC_INTERVAL_HOURS when scheduling is enabled"
+                )
+        return self
+
     @field_validator("withings_redirect_uri", mode="before")
     @classmethod
     def normalize_withings_redirect_uri(cls, value: object) -> object:
@@ -509,77 +524,71 @@ class Settings(BaseSettings):
             raise ValueError("YAZIO_SCHEDULER_JITTER_MINUTES must be between 0 and 180")
         return value
 
-    def validate_runtime_security(self, role: RuntimeRole = "backend") -> None:
-        if role not in {"backend", "scheduler"}:
-            raise ValueError("unknown runtime role")
+    def validate_runtime_security(self) -> None:
         if self.environment != "production":
             return
 
         errors: list[str] = []
-        if role == "backend":
-            public_url = urlsplit(self.calograph_public_url)
-            public_host = (public_url.hostname or "").casefold()
-            configured_hosts = {
-                item.strip().casefold()
-                for item in self.trusted_hosts.split(",")
-                if item.strip()
-            }
-            configured_origins = {
-                item.strip().rstrip("/")
-                for item in self.trusted_origins.split(",")
-                if item.strip()
-            }
+        public_url = urlsplit(self.calograph_public_url)
+        public_host = (public_url.hostname or "").casefold()
+        configured_hosts = {
+            item.strip().casefold()
+            for item in self.trusted_hosts.split(",")
+            if item.strip()
+        }
+        configured_origins = {
+            item.strip().rstrip("/")
+            for item in self.trusted_origins.split(",")
+            if item.strip()
+        }
 
-            if public_url.scheme != "https":
-                errors.append("CALOGRAPH_PUBLIC_URL must use https://")
-            if (
-                not public_host
-                or public_host in {"localhost", "127.0.0.1", "::1"}
-                or public_host in {"example.com", "example.net", "example.org"}
-                or public_host.endswith(
-                    (".example", ".example.com", ".example.net", ".example.org", ".example.test")
-                )
-            ):
-                errors.append("CALOGRAPH_PUBLIC_URL must contain the real public hostname")
-            if not self.cookie_secure:
-                errors.append("COOKIE_SECURE must be true")
-            if not self.enable_hsts:
-                errors.append("ENABLE_HSTS must be true")
-            if public_host not in configured_hosts:
-                errors.append("TRUSTED_HOSTS must explicitly contain the public hostname")
-            if self.calograph_public_url not in configured_origins:
-                errors.append("TRUSTED_ORIGINS must explicitly contain CALOGRAPH_PUBLIC_URL")
-            if any("*" in host for host in configured_hosts):
-                errors.append("TRUSTED_HOSTS must not contain wildcard entries")
-            if any(not origin.startswith("https://") for origin in configured_origins):
-                errors.append("all production TRUSTED_ORIGINS entries must use https://")
+        if public_url.scheme != "https":
+            errors.append("CALOGRAPH_PUBLIC_URL must use https://")
+        if (
+            not public_host
+            or public_host in {"localhost", "127.0.0.1", "::1"}
+            or public_host in {"example.com", "example.net", "example.org"}
+            or public_host.endswith(
+                (".example", ".example.com", ".example.net", ".example.org", ".example.test")
+            )
+        ):
+            errors.append("CALOGRAPH_PUBLIC_URL must contain the real public hostname")
+        if not self.cookie_secure:
+            errors.append("COOKIE_SECURE must be true")
+        if not self.enable_hsts:
+            errors.append("ENABLE_HSTS must be true")
+        if public_host not in configured_hosts:
+            errors.append("TRUSTED_HOSTS must explicitly contain the public hostname")
+        if self.calograph_public_url not in configured_origins:
+            errors.append("TRUSTED_ORIGINS must explicitly contain CALOGRAPH_PUBLIC_URL")
+        if any("*" in host for host in configured_hosts):
+            errors.append("TRUSTED_HOSTS must not contain wildcard entries")
+        if any(not origin.startswith("https://") for origin in configured_origins):
+            errors.append("all production TRUSTED_ORIGINS entries must use https://")
 
-            proxy_networks = [
-                ipaddress.ip_network(item, strict=False)
-                for item in self.trusted_proxy_networks.split(",")
-                if item
-            ]
-            if all(network.is_loopback for network in proxy_networks):
-                errors.append(
-                    "TRUSTED_PROXY_NETWORKS must contain the actual frontend proxy IP"
-                )
-            if any(
-                network.prefixlen != network.max_prefixlen
-                for network in proxy_networks
-            ):
-                errors.append(
-                    "TRUSTED_PROXY_NETWORKS must use exact proxy IP addresses (/32 or /128)"
-                )
+        proxy_networks = [
+            ipaddress.ip_network(item, strict=False)
+            for item in self.trusted_proxy_networks.split(",")
+            if item
+        ]
+        if all(network.is_loopback for network in proxy_networks):
+            errors.append("TRUSTED_PROXY_NETWORKS must contain the actual frontend proxy IP")
+        if any(
+            network.prefixlen != network.max_prefixlen for network in proxy_networks
+        ):
+            errors.append(
+                "TRUSTED_PROXY_NETWORKS must use exact proxy IP addresses (/32 or /128)"
+            )
 
-            normalized_session_secret = self.session_secret.strip().casefold()
-            if (
-                normalized_session_secret in KNOWN_INSECURE_SECRETS
-                or "change_me" in normalized_session_secret
-                or "changeme" in normalized_session_secret
-            ):
-                errors.append("SESSION_SECRET uses a known development or placeholder value")
-            if self.session_secret == self.rate_limit_secret:
-                errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
+        normalized_session_secret = self.session_secret.strip().casefold()
+        if (
+            normalized_session_secret in KNOWN_INSECURE_SECRETS
+            or "change_me" in normalized_session_secret
+            or "changeme" in normalized_session_secret
+        ):
+            errors.append("SESSION_SECRET uses a known development or placeholder value")
+        if self.session_secret == self.rate_limit_secret:
+            errors.append("SESSION_SECRET and RATE_LIMIT_SECRET must be independent")
 
         normalized_rate_limit_secret = self.rate_limit_secret.strip().casefold()
         if (
@@ -601,34 +610,32 @@ class Settings(BaseSettings):
         ):
             errors.append("DATABASE_URL must contain a non-default database password")
 
-        if self.yazio_enabled and not self.credential_encryption_key:
+        if (self.yazio_enabled or self.withings_enabled) and not self.credential_encryption_key:
             errors.append(
-                "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED is true"
+                "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED or "
+                "WITHINGS_ENABLED is true"
             )
-        if role == "backend" and not self.mfa_encryption_key:
+        if not self.mfa_encryption_key:
             errors.append("MFA_ENCRYPTION_KEY is required for the backend")
 
-        if role == "backend":
-            if self.max_json_payload_bytes > self.max_upload_bytes:
-                errors.append("MAX_JSON_PAYLOAD_BYTES must not exceed MAX_UPLOAD_BYTES")
-            if self.max_zip_uncompressed_bytes < self.max_upload_bytes:
-                errors.append(
-                    "MAX_ZIP_UNCOMPRESSED_BYTES must not be smaller than MAX_UPLOAD_BYTES"
-                )
-            if self.nginx_max_upload_bytes < self.max_upload_bytes + 1024 * 1024:
-                errors.append(
-                    "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
-                )
-            required_backend_tmpfs_bytes = (
-                APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS * self.nginx_max_upload_bytes
-                + BACKEND_TMPFS_RESERVE_BYTES
+        if self.max_json_payload_bytes > self.max_upload_bytes:
+            errors.append("MAX_JSON_PAYLOAD_BYTES must not exceed MAX_UPLOAD_BYTES")
+        if self.max_zip_uncompressed_bytes < self.max_upload_bytes:
+            errors.append("MAX_ZIP_UNCOMPRESSED_BYTES must not be smaller than MAX_UPLOAD_BYTES")
+        if self.nginx_max_upload_bytes < self.max_upload_bytes + 1024 * 1024:
+            errors.append(
+                "NGINX_MAX_UPLOAD_BYTES needs multipart overhead above MAX_UPLOAD_BYTES"
             )
-            if self.backend_tmpfs_bytes < required_backend_tmpfs_bytes:
-                errors.append(
-                    "BACKEND_TMPFS_BYTES must cover "
-                    f"{APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS} concurrent uploads plus "
-                    f"{BACKEND_TMPFS_RESERVE_BYTES // (1024 * 1024)} MiB reserve"
-                )
+        required_backend_tmpfs_bytes = (
+            APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS * self.nginx_max_upload_bytes
+            + BACKEND_TMPFS_RESERVE_BYTES
+        )
+        if self.backend_tmpfs_bytes < required_backend_tmpfs_bytes:
+            errors.append(
+                "BACKEND_TMPFS_BYTES must cover "
+                f"{APPLE_HEALTH_UPLOAD_GLOBAL_SLOTS} concurrent uploads plus "
+                f"{BACKEND_TMPFS_RESERVE_BYTES // (1024 * 1024)} MiB reserve"
+            )
 
         if errors:
             formatted = "\n".join(f"- {error}" for error in errors)

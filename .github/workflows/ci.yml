@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - release/*
   pull_request:
 
 permissions:
@@ -143,9 +144,13 @@ jobs:
       - name: Audit npm dependencies
         working-directory: frontend
         shell: bash
+        env:
+          npm_config_update_notifier: "false"
         run: |
+          node --test ../scripts/test-npm-audit-gate.mjs
           audit_output="$(mktemp)"
-          trap 'rm -f "$audit_output"' EXIT
+          audit_stderr="$(mktemp)"
+          trap 'rm -f "$audit_output" "$audit_stderr"' EXIT
 
           audit_with_retry() {
             local attempt=1
@@ -153,19 +158,18 @@ jobs:
 
             while true; do
               set +e
-              npm audit "$@" >"$audit_output" 2>&1
+              npm audit --json "$@" >"$audit_output" 2>"$audit_stderr"
               status=$?
               set -e
               cat "$audit_output"
+              cat "$audit_stderr" >&2
 
-              if (( status == 0 )); then
-                return 0
-              fi
-
-              if ! grep -Eqi \
+              if (( status == 0 )) || ! grep -Eqi \
                 'Service Unavailable|audit endpoint returned an error|ECONNRESET|ETIMEDOUT|EAI_AGAIN' \
-                "$audit_output" || (( attempt >= 3 )); then
-                return "$status"
+                "$audit_output" "$audit_stderr" || (( attempt >= 3 )); then
+                node ../scripts/npm-audit-gate.mjs \
+                  "$audit_output" package-lock.json "$status" "$audit_stderr"
+                return $?
               fi
 
               printf 'Transient npm audit failure; retrying (%d/3).\n' "$attempt"
@@ -321,6 +325,8 @@ jobs:
       - run: ./scripts/init-secrets.sh
       - name: Verify container update recipient resolution
         run: ./scripts/test-update-containers.sh
+      - name: Verify release source and image publication policy
+        run: ./scripts/test-release-workflow.sh
       - name: Verify single backup-agent base and secrets override
         run: ./scripts/test-backup-agent.sh
       - name: Test the prebuilt runtime images
@@ -339,15 +345,15 @@ jobs:
           CALOGRAPH_VERSION: ci
           PRODUCTION_SMOKE_USE_PREBUILT_IMAGES: "true"
         run: ./scripts/production-smoke.sh
-      - name: Export verified runtime images for main publication
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Export verified runtime images for trusted branch publication
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
         shell: bash
         run: |
           mkdir -p image-bundle
           docker save calograph-backend:ci calograph-frontend:ci calograph-backup-agent:ci \
             | gzip > image-bundle/runtime-images.tar.gz
-      - name: Upload verified runtime images for main publication
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Upload verified runtime images for trusted branch publication
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runtime-images-${{ github.run_id }}
@@ -357,7 +363,7 @@ jobs:
           retention-days: 3
 
   publish-images:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     needs: [containers-and-e2e]
     concurrency:
@@ -375,6 +381,17 @@ jobs:
       CALOGRAPH_FRONTEND_IMAGE: calograph-frontend
       CALOGRAPH_BACKUP_AGENT_IMAGE: calograph-backup-agent
     steps:
+      - name: Enforce trusted image publication ref
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            exit 0
+          fi
+          [[ "$GITHUB_REF" =~ ^refs/heads/release/[^/]+$ ]] || {
+            printf 'Image publication is limited to main and release/* branches.\n' >&2
+            exit 1
+          }
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runtime-images-${{ github.run_id }}
@@ -506,6 +523,7 @@ jobs:
           sbom-path: sbom/calograph-backup-agent.spdx.json
           push-to-registry: true
       - name: Promote verified digest to edge
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           BACKEND_IMAGE: ${{ steps.images.outputs.backend }}

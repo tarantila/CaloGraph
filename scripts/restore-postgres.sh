@@ -86,7 +86,7 @@ compose --profile backup config --quiet
 scripts/verify-backup.sh "$backup_file"
 # Remove legacy orphans before the destructive restore so they cannot run during it.
 compose up -d --no-recreate --remove-orphans postgres
-compose --profile backup stop frontend backend yazio-scheduler backup-agent
+compose --profile backup stop frontend backend backup-agent
 
 if [[ "$backup_file" == *.age ]]; then
   "$age_bin" --decrypt --identity "$BACKUP_AGE_IDENTITY_FILE" "$backup_file" \

@@ -38,11 +38,12 @@ backups, and the availability of the private application.
   maintain an offline or immutable copy, define retention, and test restores.
 - **Container secret disclosure:** Compose mounts operator-controlled source
   files as service-scoped secrets under `/run/secrets`. `.env` contains only
-  their paths. Containers receive only the secrets required for their role and
-  no password-bearing database URL.
-  The scheduler does not receive browser-session or MFA-encryption keys.
-  Direct environment variables remain a legacy/test interface and cannot be
-  combined ambiguously with `_FILE` settings.
+  their paths. PostgreSQL receives only its database password, the frontend
+  receives no secrets, and the backend receives the application secrets it
+  needs. Provider scheduling runs inside the backend's trust boundary and does
+  not have a separate narrower secret grant. Direct environment variables
+  remain a legacy/test interface and cannot be combined ambiguously with
+  `_FILE` settings.
 - **Sensitive logs:** security events use a fixed JSON schema with allowlisted
   fields and HMAC-pseudonymized actor, client, and target references. Payloads,
   health values, credentials, tokens, filenames, and arbitrary exception text
@@ -59,11 +60,11 @@ backups, and the availability of the private application.
   user's configured connection. Its email and password are stored using
   authenticated Fernet encryption; access tokens are not persisted.
   Compatible historical file imports require no connection or credentials and
-  make no YAZIO network requests. The host-side key file is mounted only
-  into the backend and scheduler and must be protected and backed up together with database
-  backups. Stored source identifiers use an internal random user UUID rather
-  than an email-derived digest. Credentials reach the isolated transport
-  process through standard input rather than process arguments or environment
+  make no YAZIO network requests. The host-side key file is mounted into the
+  backend and must be protected and backed up together with database backups.
+  Stored source identifiers use an internal random user UUID rather than an
+  email-derived digest. Credentials reach the isolated transport process
+  through standard input rather than process arguments or environment
   variables.
 - **Google Health and Withings OAuth:** client secrets and provider tokens are
   encrypted and scoped to the owning CaloGraph account. Authorization state is
@@ -85,9 +86,9 @@ backups, and the availability of the private application.
   Repeated provider or deadline failures open a temporary shared circuit
   breaker, while authentication failures pause only the affected scheduled
   connection. `YAZIO_ENABLED` provides an operational kill switch without
-  adding Redis or a general-purpose queue. Backend and scheduler receive the
-  same rate-limit secret so provider failures map to the same HMAC-pseudonymized
-  circuit-breaker bucket.
+  adding Redis or a general-purpose queue. Provider scheduling runs inside the
+  backend, which uses the same rate-limit secret as request handling so
+  provider failures map to the same HMAC-pseudonymized circuit-breaker bucket.
 - **Account-recovery token theft or replay:** administrator-issued recovery
   tokens contain at least 256 bits of entropy, are stored only as
   installation-keyed HMAC digests, expire after 30 minutes, and can be consumed

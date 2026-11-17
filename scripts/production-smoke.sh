@@ -204,50 +204,10 @@ if compose exec -T frontend sh -c 'test -e /run/secrets'; then
   fail "Frontend received a secrets mount."
 fi
 
-if ! compose create yazio-scheduler >/dev/null; then
-  fail "YAZIO scheduler container could not be created for secret-scope checks."
+runtime_services=$(compose config --services)
+if printf '%s\n' "$runtime_services" | grep -Eq '(^|-)scheduler$|^background-worker$'; then
+  fail "A separate provider scheduler service remains in the runtime Compose configuration."
 fi
-scheduler_id=$(compose ps -aq yazio-scheduler)
-scheduler_environment=$(docker inspect \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' "$scheduler_id")
-for forbidden_name in \
-  DATABASE_URL \
-  DATABASE_PASSWORD \
-  POSTGRES_PASSWORD \
-  SESSION_SECRET \
-  RATE_LIMIT_SECRET \
-  CREDENTIAL_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY \
-  MFA_ENCRYPTION_KEY_FILE
-do
-  if printf '%s\n' "$scheduler_environment" | grep -q "^${forbidden_name}="; then
-    fail "YAZIO scheduler exposes ${forbidden_name} as an environment variable."
-  fi
-done
-if ! printf '%s\n' "$scheduler_environment" \
-  | grep -q '^RATE_LIMIT_SECRET_FILE=/run/secrets/rate_limit_secret$'; then
-  fail "YAZIO scheduler is missing its shared rate-limit secret file."
-fi
-scheduler_mounts=$(docker inspect \
-  --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$scheduler_id")
-for required_mount in \
-  /run/secrets/postgres_password \
-  /run/secrets/rate_limit_secret \
-  /run/secrets/credential_encryption_key
-do
-  if ! printf '%s\n' "$scheduler_mounts" | grep -qx "$required_mount"; then
-    fail "YAZIO scheduler is missing ${required_mount}."
-  fi
-done
-for forbidden_mount in \
-  /run/secrets/session_secret \
-  /run/secrets/mfa_encryption_key
-do
-  if printf '%s\n' "$scheduler_mounts" | grep -qx "$forbidden_mount"; then
-    fail "YAZIO scheduler received ${forbidden_mount}."
-  fi
-done
-
 if ! curl --fail --silent --show-error \
   --header 'Host: calograph-ci.internal' \
   http://127.0.0.1:18180/health >/dev/null; then

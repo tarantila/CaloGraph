@@ -149,9 +149,10 @@ docker compose -f docker-compose-dev.yml ps
 ```
 
 `make dev` runs the same detached build/start command. The standalone
-`docker-compose-dev.yml` starts PostgreSQL, the reload-enabled backend, the Vite
-frontend, and `yazio-scheduler`; do not combine it with production Compose.
-Local images default to `calograph-backend-dev:edge` and
+`docker-compose-dev.yml` starts PostgreSQL, the reload-enabled backend, and the
+Vite frontend. The backend owns the PostgreSQL-coordinated provider scheduler;
+there is no separate scheduler container. Do not combine development with
+production Compose. Local images default to `calograph-backend-dev:edge` and
 `calograph-frontend-dev:edge`. Set `CALOGRAPH_DEV_VERSION` to change their local
 tag independently of the production `CALOGRAPH_VERSION`.
 

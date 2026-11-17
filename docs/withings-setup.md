@@ -18,6 +18,12 @@ Replace the example origin with the CaloGraph address. Unlike Google Health,
 Withings requires an explicit `WITHINGS_REDIRECT_URI`; CaloGraph does not derive
 it from `CALOGRAPH_PUBLIC_URL`. Use HTTPS; HTTP is accepted only for loopback
 development addresses. The backend needs its normal credential-encryption key.
+
+Periodic synchronization is separately opt-in. Set
+`WITHINGS_SCHEDULER_ENABLED=true` as well as `WITHINGS_ENABLED=true` to enable
+background updates; both default to disabled. Runs execute inside the backend
+application lifecycle. Backend workers use a PostgreSQL advisory leader lock
+so only one worker schedules provider operations at a time.
 See [production configuration](production.md) and [backup guidance](backup-restore.md).
 
 Each user supplies their own Client ID and Client Secret through CaloGraph.
@@ -41,10 +47,10 @@ settings.
    for a bounded provider check, then **Synchronisieren** to import data.
 
 The browser synchronizes the last 30 calendar days. The API accepts `days`
-from 1 through 366, ending on the current day in the user's timezone.
-Synchronization is manual: CaloGraph does not currently subscribe to Withings
-webhooks or run scheduled Withings imports. Connecting alone does not backfill
-all history.
+from 1 through 366, ending on the current day in the user's timezone. When
+periodic synchronization is enabled, the backend checks accounts every 24 hours
+by default and syncs a rolling seven-day user-local window. Connecting alone
+does not backfill all history. CaloGraph does not subscribe to Withings webhooks.
 
 ## Imported data
 

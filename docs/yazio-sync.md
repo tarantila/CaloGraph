@@ -116,12 +116,12 @@ credentials, access tokens, or raw health payloads:
 
 ## Automatic synchronization
 
-The dedicated `yazio-scheduler` polls due connections and performs provider
-access outside the web backend. When several user accounts are due in one
-cycle, the scheduler processes them sequentially with a fixed 90-second
-interval between accounts. There is no wait before the first account or after
-the last account. Existing per-user locks, provider capacity limits, retry
-state, rate limits, circuit breaker, and scheduler heartbeat remain active.
+The backend application lifecycle coordinates periodic YAZIO and Withings
+work. Each Uvicorn worker attempts a PostgreSQL advisory leader lock; only the
+worker holding that database-session lock runs provider scheduling. YAZIO and
+Withings use independent configuration and polling lanes. Scheduler activity
+does not run in HTTP request handlers, and disabling one provider does not
+disable the other.
 
 ### Daily trigger on app and login entry points
 
@@ -134,9 +134,10 @@ exists.
 
 The web request only updates PostgreSQL scheduling state. It never contacts
 YAZIO or invokes the SDK, transport, credential validation, or payload fetch.
-The existing `yazio-scheduler` notices the due `next_sync_at` and performs the
-provider operation through its normal VPN-routed path. No additional operator
-or environment configuration is required.
+The backend's elected scheduler leader notices due `next_sync_at` work and
+performs the provider operation through the normal backend network path. No
+separate scheduler service or additional YAZIO environment configuration is
+required.
 
 ## Available methods
 
@@ -195,7 +196,8 @@ address nor an unkeyed digest of it is stored in health samples.
 For unattended operation, every YAZIO connection belongs to one CaloGraph
 user. Email and password are stored only in encrypted form in PostgreSQL. The
 separate key remains in the host-side `secrets/credential_encryption_key` file;
-Compose mounts it only into the backend and scheduler.
+Compose mounts it only into the backend, which owns manual and scheduled
+provider operations.
 
 Generate the key once:
 
@@ -208,10 +210,10 @@ For a new installation, `scripts/init-secrets.sh` already creates a valid key.
 If a key is generated manually, write the resulting value to the file named by
 `CREDENTIAL_ENCRYPTION_KEY_FILE` in `.env`, keep its parent directory at mode
 `0700`, apply read-only mode `0444` to the file for the non-root container UID,
-and then recreate the backend and scheduler:
+and then recreate the backend:
 
 ```bash
-docker compose -f docker-compose.yml up -d --no-build --force-recreate backend yazio-scheduler
+docker compose -f docker-compose.yml up -d --no-build --force-recreate backend
 ```
 
 Configure a personal connection:
@@ -396,8 +398,8 @@ a neutral adult reference, not a medical diagnosis.
   and transport errors are reduced to bounded, non-sensitive messages.
 - PostgreSQL advisory locks permit only one active YAZIO operation per
   CaloGraph user and two active operations across the deployment by default.
-  This coordination works across backend workers and the scheduler without
-  Redis.
+  The locks coordinate manual requests and scheduler work across backend
+  workers without Redis.
 - Five provider or deadline failures in a ten-minute window temporarily open a
   shared circuit breaker. Authentication failures do not open the circuit. An
   authentication failure pauses that user's scheduled sync until the

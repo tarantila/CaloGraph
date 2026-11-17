@@ -151,9 +151,44 @@ else
   printf 'Secret backup skipped. Set BACKUP_SECRETS=1 to create an age-encrypted copy.\n'
 fi
 
-docker compose pull postgres backend frontend yazio-scheduler
-printf 'Stopping old backend and YAZIO scheduler before the backend migration.\n'
-docker compose stop backend yazio-scheduler
-docker compose up -d --no-build --wait --remove-orphans
+docker compose pull postgres backend frontend
+
+# The removed Compose service may still be running under the existing project.
+# Validate every running replica's project before stopping any container; never
+# guess from the directory name or sweep other projects' orphan containers.
+backend_containers=$(docker compose ps --status running --quiet backend)
+if [ -z "$backend_containers" ]; then
+  printf 'Cannot identify the running backend containers; aborting update.\n' >&2
+  exit 1
+fi
+compose_project=
+for container in $backend_containers; do
+  container_project=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$container")
+  if [ -z "$container_project" ] || [ "$container_project" = '<no value>' ]; then
+    printf 'Cannot identify a running backend Compose project; aborting update.\n' >&2
+    exit 1
+  fi
+  if [ -n "$compose_project" ] && [ "$compose_project" != "$container_project" ]; then
+    printf 'Running backend containers have inconsistent Compose projects; aborting update.\n' >&2
+    exit 1
+  fi
+  compose_project=$container_project
+done
+running_legacy_containers=$(docker ps --quiet \
+  --filter "label=com.docker.compose.project=$compose_project" \
+  --filter 'label=com.docker.compose.service=yazio-scheduler')
+for container in $running_legacy_containers; do
+  docker stop "$container"
+done
+legacy_containers=$(docker ps --all --quiet \
+  --filter "label=com.docker.compose.project=$compose_project" \
+  --filter 'label=com.docker.compose.service=yazio-scheduler')
+for container in $legacy_containers; do
+  docker rm "$container"
+done
+
+printf 'Stopping old backend before the backend migration.\n'
+docker compose stop backend
+docker compose up -d --no-build --wait
 docker compose ps
 printf 'Container-Update abgeschlossen. Anwendung und YAZIO-Status jetzt prüfen.\n'

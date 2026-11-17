@@ -23,8 +23,7 @@ interface SystemStatus {
   security_audit_enabled: boolean
   security_audit_events_24h: number
   failed_logins_24h: number
-  yazio_scheduler_enabled: boolean
-  yazio_scheduler_available: boolean
+  provider_scheduler_enabled: boolean
 }
 
 const t = i18n.global.t.bind(i18n.global)
@@ -99,8 +98,8 @@ onMounted(async () => {
         </section>
         <section class="card admin-panel system-status-card">
           <div class="system-card-title"><PhTimer :size="19" aria-hidden="true" /><h2>{{ t('systemStatus.schedulerTitle') }}</h2></div>
-          <span :class="['system-status-badge', data.yazio_scheduler_enabled ? 'current' : 'unknown']">
-            {{ data.yazio_scheduler_enabled ? t('systemStatus.enabled') : t('systemStatus.disabled') }}
+          <span :class="['system-status-badge', data.provider_scheduler_enabled ? 'current' : 'unknown']">
+            {{ data.provider_scheduler_enabled ? t('systemStatus.enabled') : t('systemStatus.disabled') }}
           </span>
         </section>
       </div>

@@ -18,14 +18,14 @@
 - Compose mounts the five source files as service-scoped secrets under
   `/run/secrets`; it does not place their values or a password-bearing database
   URL in container environments. PostgreSQL receives only its password,
-  `backend` receives all five, `yazio-scheduler` receives only the database
-  password, YAZIO credential key, and shared rate-limit key required by the
-  deployment-wide provider circuit breaker, and `frontend` receives none. The
-  scheduler never receives the session or MFA-encryption key.
-- Production uses only `docker compose -f docker-compose.yml ...`: its four
-  default runtime services and opt-in backup agent are unchanged. Development,
-  test runners, ephemeral databases, E2E/Verification, and Analysis Review live
-  only in the standalone `docker-compose-dev.yml`. Do not combine the files.
+  `backend` receives all five, and `frontend` receives none. Provider scheduling
+  runs inside the backend and uses the same protected runtime configuration as
+  manual provider operations.
+- Production uses only `docker compose -f docker-compose.yml ...`: its three
+  default runtime services are PostgreSQL, backend, and frontend; the backup
+  agent remains opt-in. Development, test runners, ephemeral databases,
+  E2E/Verification, and Analysis Review live only in the standalone
+  `docker-compose-dev.yml`. Do not combine the files.
 - PostgreSQL remains on the internal Docker network without a host port.
 - Port `8180` remains bound to `127.0.0.1`; external access is provided only
   through a TLS reverse proxy.
@@ -58,19 +58,19 @@
 
 The Compose services use `restart: unless-stopped`, internal health checks,
 `no-new-privileges`, read-only filesystems for the frontend and Python
-services, and bounded Docker log rotation. The YAZIO scheduler writes a
-heartbeat to its ephemeral `/tmp`; its health check detects a stuck scheduler
-independently of the backend.
+services, and bounded Docker log rotation. Provider scheduling starts from the
+backend application lifespan after the entrypoint has completed migrations.
+Every backend worker attempts the same PostgreSQL advisory leader lock; only
+the leader runs the independent YAZIO and Withings scheduling lanes. Scheduler
+failures are logged without changing HTTP readiness.
 
-Runtime traffic is split across three Docker networks. `frontend` and
-`backend` share the `edge` network, `backend`, `yazio-scheduler`, and
-`postgres` share the externally isolated `data` network, and only the
-scheduler joins the additional `egress` network. PostgreSQL therefore has no
-external gateway and is not reachable from the frontend. The frontend,
-backend, and scheduler drop every Linux capability. PostgreSQL also drops all
-capabilities and adds back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`,
-and `SETUID`, which its official entrypoint needs for fresh initialization and
-the switch to its unprivileged runtime user.
+Runtime traffic is split across the browser-facing `edge` network and the
+internal `data` network. `frontend` and `backend` share `edge`; `backend` and
+`postgres` share `data`. PostgreSQL has no external gateway and is not
+reachable from the frontend. The frontend and backend drop every Linux
+capability. PostgreSQL also drops all capabilities and adds back only `CHOWN`,
+`DAC_OVERRIDE`, `FOWNER`, `SETGID`, and `SETUID`, which its official entrypoint
+needs for fresh initialization and the switch to its unprivileged runtime user.
 
 The root `Dockerfile` provides separate `backend-runtime` and
 `frontend-runtime` targets. Both production targets switch to an unprivileged
@@ -95,10 +95,10 @@ sessions use an `__Host-` cookie with `Secure`, `HttpOnly`, `Path=/`, no
 `Domain`, and `SameSite=Lax`. The server enforces a seven-day idle timeout and a
 30-day absolute timeout by default. `SESSION_IDLE_TIMEOUT_HOURS` can be lowered
 but cannot exceed seven days; `SESSION_ABSOLUTE_TIMEOUT_DAYS` can be lowered but
-cannot exceed 30 days. The scheduler deletes expired, idle, and revoked
-session rows hourly. Active session and import-token timestamps are written at
-most once every five minutes so read-heavy dashboard traffic does not turn into
-an equal number of database commits.
+cannot exceed 30 days. The backend's elected scheduler leader deletes expired,
+idle, and revoked session rows hourly. Active session and import-token timestamps
+are written at most once every five minutes so read-heavy dashboard traffic
+does not turn into an equal number of database commits.
 
 Users can enable TOTP in their account settings. The pending and enabled TOTP
 secret is encrypted with a dedicated key that is mounted only into the
@@ -168,31 +168,31 @@ Before public operation, keep the default explicit 3.05-second connect timeout,
 full-operation deadline unless measured provider behavior requires a change.
 Saving credentials and starting a manual sync share independent per-user and
 per-IP limits of two attempts per ten minutes. PostgreSQL advisory locks cap
-active YAZIO operations at two across all backend workers and the scheduler,
-while a database-backed circuit breaker pauses provider calls after five
-provider or deadline failures in ten minutes. No Redis service or
-general-purpose job queue is required. Historical YAZIO date ranges are
-persisted scheduler jobs and execute in sequential requests of at most 366
-days, so their runtime must not be assumed to fit in an HTTP request.
+active YAZIO operations at two across all backend workers, including the
+provider-scheduler leader, while a database-backed circuit breaker pauses
+provider calls after five provider or deadline failures in ten minutes. No
+Redis service or general-purpose job queue is required. Historical YAZIO date
+ranges are persisted scheduler jobs and execute in sequential requests of at
+most 366 days, so their runtime must not be assumed to fit in an HTTP request.
 
 Authentication failures are not retried and do not affect the shared circuit
 breaker. They disable scheduled sync only for the affected account; saving and
 successfully verifying new credentials enables it again. Set
-`YAZIO_ENABLED=false` and recreate the backend and scheduler to use the
-operational kill switch:
+`YAZIO_ENABLED=false` and recreate the backend to use the operational kill
+switch:
 
 ```bash
-docker compose up -d --force-recreate backend yazio-scheduler
+docker compose up -d --force-recreate backend
 ```
 
-Compose exposes optional CPU, memory, and PID ceilings for every runtime
+Compose exposes optional CPU, memory, and PID ceilings for each runtime
 container. They remain disabled by default because legitimate Apple Health
 histories and self-hosted machines vary widely in size; Docker-host or parent
 cgroup constraints still apply. For an internet-facing installation, measure
-the workload and uncomment the concrete `FRONTEND_*`, `BACKEND_*`,
-`YAZIO_SCHEDULER_*`, and `POSTGRES_*` starting values in the environment
-template. A 2-GiB backend ceiling is the initial recommendation for the
-default 500-MiB upload configuration. Keep it comfortably above
+the workload and uncomment the concrete `FRONTEND_*`, `BACKEND_*`, and
+`POSTGRES_*` starting values in the environment template. A 2-GiB backend
+ceiling is the initial recommendation for the default 500-MiB upload
+configuration. Keep it comfortably above
 `BACKEND_TMPFS_BYTES` because tmpfs pages count toward container memory usage.
 Leaving the variables unset is an explicit operational acceptance of the
 host-level resource-exhaustion risk.
@@ -204,16 +204,15 @@ same migration.
 
 ## Fail-closed production validation
 
-The backend checks production safety before running migrations. The YAZIO
-scheduler performs a role-specific check before entering its loop and therefore
-does not need access to web-session or reverse-proxy secrets. Backend startup
-is rejected when the public origin is not HTTPS, secure cookies or HSTS are
-disabled, known development secrets or database passwords are present, secrets
-are reused, effective proxy trust remains loopback-only or uses the generic
-Docker address pool, direct YAZIO access has no valid Fernet key, or upload
-capacities contradict each other. IPv4 proxy networks broader than `/16` and
-IPv6 networks broader than `/64` are rejected. Development and test
-environments remain able to use localhost HTTP.
+The backend checks production safety before running migrations. Its lifecycle
+starts provider scheduling only after the entrypoint has completed migrations.
+Backend startup is rejected when the public origin is not HTTPS, secure
+cookies or HSTS are disabled, known development secrets or database passwords
+are present, secrets are reused, effective proxy trust remains loopback-only or
+uses the generic Docker address pool, direct YAZIO access has no valid Fernet
+key, or upload capacities contradict each other. IPv4 proxy networks broader
+than `/16` and IPv6 networks broader than `/64` are rejected. Development and
+test environments remain able to use localhost HTTP.
 
 Changing only `ENVIRONMENT=production` is therefore intentionally insufficient.
 The real domain, exact Docker subnet, independent secrets, and TLS policy must
@@ -224,7 +223,7 @@ Check status:
 ```bash
 docker compose config --quiet
 docker compose ps
-docker compose logs --no-color --tail=100 backend yazio-scheduler frontend
+docker compose logs --no-color --tail=100 backend frontend
 curl --fail http://127.0.0.1:8180/health
 ```
 
@@ -239,11 +238,11 @@ that are actually required.
 
 Docker logs rotate per service across at most three files of 10 MB each. This
 does not provide durable audit retention and does not replace free-space
-monitoring. The backend and scheduler emit allowlisted, pseudonymous JSON
-security events; Internet-facing installations should forward them to a
-protected host or remote collector. Client IP addresses remain in the public
-proxy access log so host controls such as Fail2ban can act on them. Event fields,
-privacy rules, retention guidance, and alerting recommendations are documented
+monitoring. The backend emits allowlisted, pseudonymous JSON security events;
+Internet-facing installations should forward them to a protected host or
+remote collector. Client IP addresses remain in the public proxy access log so
+host controls such as Fail2ban can act on them.
+Event fields, privacy rules, retention guidance, and alerting recommendations are documented
 in [security-monitoring.md](security-monitoring.md). Pay particular attention to the
 PostgreSQL volume, encrypted backup storage, and failed YAZIO runs shown in the
 data-status view. Full-disk or volume encryption is still required for live
@@ -256,14 +255,15 @@ The recommended process is documented in
 [backup-restore.md](backup-restore.md) and reproduced by
 `scripts/update-containers.sh`. Every update begins with a validated database
 dump. Source updates and container updates remain separate, auditable steps.
-The YAZIO SDK-only cutover uses an update quiescence step: after pulling
-images, `scripts/update-containers.sh` stops the old `backend` and
-`yazio-scheduler` before starting the new backend and applying migrations.
+The update script stops and removes any legacy dedicated YAZIO scheduler
+container belonging to the current Compose project before stopping the backend
+and starting the new image for migrations. Cleanup is limited to the matching
+project/service labels and does not remove volumes or unrelated containers.
 Do not run an external one-off YAZIO sync concurrently; old writers must not
 create completed Nutrition runs without the durable projection-retry marker.
-If migration or startup fails after that stop, leave the writer services
-stopped until the new version is repaired; do not restart an old writer image
-against the migrated schema.
+If migration or startup fails after that stop, leave the backend stopped until
+the new version is repaired; do not restart an old writer image against the
+migrated schema.
 
 Release images are available from GHCR after the complete CI, exact-image
 browser/production-smoke tests, and high/critical vulnerability gate succeed.

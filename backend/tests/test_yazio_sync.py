@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from cryptography.fernet import Fernet
@@ -303,12 +304,12 @@ def test_manual_sync_imports_only_for_connection_user(
     assert stored.last_micronutrient_sync_at.replace(tzinfo=UTC) == datetime(2025, 1, 1, tzinfo=UTC)
     delay = stored.next_sync_at - stored.last_success_at
     assert timedelta(hours=6, minutes=1) <= delay <= timedelta(hours=6, minutes=30)
-    assert run_scheduled_yazio_sync(
-        connection.id, now=attempted_at + timedelta(hours=6),
-    ) is not None
+    scheduled_at = stored.next_sync_at.replace(tzinfo=UTC) + timedelta(seconds=1)
+    assert run_scheduled_yazio_sync(connection.id, now=scheduled_at) is not None
+    scheduled_end = scheduled_at.astimezone(ZoneInfo(user.timezone)).date()
     assert ranges == [
         (date(2026, 5, 25), date(2026, 7, 23)),
-        (date(2026, 7, 17), date(2026, 7, 23)),
+        (scheduled_end - timedelta(days=6), scheduled_end),
     ]
     db.expire_all()
     assert stored.last_micronutrient_sync_at.replace(tzinfo=UTC) == datetime(2025, 1, 1, tzinfo=UTC)
@@ -961,36 +962,30 @@ def test_due_yazio_sync_paces_between_accounts_and_isolates_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection_ids = [uuid4(), uuid4(), uuid4()]
-    results = {
-        connection_ids[0]: None,
-        connection_ids[1]: object(),
-        connection_ids[2]: object(),
-    }
+    results = {connection_ids[1]: object(), connection_ids[2]: object()}
     waits: list[int] = []
-    completed: list[object] = []
     attempted: list[object] = []
     monkeypatch.setattr(
         yazio_sync,
         "due_yazio_connection_ids",
         lambda _now: connection_ids,
     )
-    monkeypatch.setattr(
-        yazio_sync,
-        "run_scheduled_yazio_sync",
-        lambda connection_id, **_kwargs: (
-            attempted.append(connection_id) or results[connection_id]
-        ),
-    )
+
+    def schedule(connection_id, **_kwargs):
+        attempted.append(connection_id)
+        if connection_id == connection_ids[0]:
+            raise RuntimeError("synthetic account failure")
+        return results[connection_id]
+
+    monkeypatch.setattr(yazio_sync, "run_scheduled_yazio_sync", schedule)
 
     assert run_due_yazio_syncs(
         between_connections=lambda: waits.append(
             yazio_sync.YAZIO_INTER_ACCOUNT_DELAY_SECONDS
         ),
-        after_connection=lambda: completed.append(None),
     ) == (3, 2)
     assert attempted == connection_ids
     assert waits == [90, 90]
-    assert completed == [None, None, None]
 
 
 def test_due_yazio_sync_default_pacing_sleeps_exactly_once_for_two_accounts(
@@ -1012,6 +1007,52 @@ def test_due_yazio_sync_default_pacing_sleeps_exactly_once_for_two_accounts(
 
     assert run_due_yazio_syncs() == (2, 2)
     assert sleeps == [90]
+
+
+def test_due_yazio_sync_honors_leadership_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection_ids = [uuid4()]
+    attempted: list[object] = []
+    monkeypatch.setattr(settings, "yazio_enabled", True)
+    monkeypatch.setattr(settings, "yazio_scheduler_enabled", True)
+    monkeypatch.setattr(yazio_sync, "due_yazio_connection_ids", lambda _now: connection_ids)
+    monkeypatch.setattr(
+        yazio_sync,
+        "run_scheduled_yazio_sync",
+        lambda connection_id, **_kwargs: attempted.append(connection_id),
+    )
+
+    assert run_due_yazio_syncs(should_continue=lambda: False) == (0, 0)
+    assert attempted == []
+
+
+def test_scheduled_yazio_sync_rechecks_due_state_after_account_lock(
+    db: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_key(monkeypatch)
+    connection = configure_yazio_connection(user, "owner@example.com", "yazio-password")
+    stored = db.get(YazioConnection, connection.id)
+    assert stored is not None
+    stored.historical_sync_state = "completed"
+    now = datetime(2026, 7, 23, 8, tzinfo=UTC)
+    stored.next_sync_at = now + timedelta(hours=1)
+    stored.last_attempt_at = None
+    db.commit()
+    monkeypatch.setattr(settings, "yazio_scheduler_enabled", True)
+    monkeypatch.setattr(settings, "yazio_sdk_client_secret", "synthetic-sdk-secret")
+    monkeypatch.setattr(
+        yazio_sync,
+        "fetch_yazio_domain_transport",
+        lambda *_args, **_kwargs: pytest.fail("rescheduled connection reached provider"),
+    )
+
+    assert run_scheduled_yazio_sync(connection.id, now=now) is None
+    db.refresh(stored)
+    assert stored.last_attempt_at is None
+    assert stored.next_sync_at.replace(tzinfo=UTC) == now + timedelta(hours=1)
 
 
 def test_history_queue_rejects_disabled_connection(

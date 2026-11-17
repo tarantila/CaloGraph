@@ -65,9 +65,9 @@ Administrators can manage another account through the lifecycle API:
 
 An administrator cannot deactivate or delete their own account. CaloGraph also
 serializes administrative lifecycle changes and ordinary account mutations
-across backend workers and the scheduler, so a deactivation or deletion cannot
-race with a new import, token, settings, authentication-factor, or YAZIO write.
-At least one active administrator is preserved.
+across backend workers, including provider-scheduler work, so a deactivation or
+deletion cannot race with a new import, token, settings, authentication-factor,
+or YAZIO write. At least one active administrator is preserved.
 
 The `is_active` and `deactivated_at` fields form one state: active accounts have
 no deactivation timestamp; inactive accounts always have one. Repeating a
@@ -218,9 +218,9 @@ Passkey sign-in is passwordless and requires local user verification, such as
 Windows Hello, Touch ID, Face ID, Android biometrics, or the device PIN.
 CaloGraph binds WebAuthn to the exact host and origin configured through
 `CALOGRAPH_PUBLIC_URL`; production therefore requires HTTPS. Registration
-challenges are tied to the current user session. Authentication and
-registration challenges expire after five minutes, are consumed once, and are
-cleaned up by the scheduler. Stored credential public keys are not secrets.
+challenges are tied to the current user session. Authentication and registration
+challenges expire after five minutes, are consumed once, and are cleaned up by
+backend leader housekeeping. Stored credential public keys are not secrets.
 
 ## Personal YAZIO connection
 

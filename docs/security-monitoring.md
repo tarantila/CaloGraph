@@ -1,9 +1,10 @@
 # Security monitoring and audit events
 
 CaloGraph writes security-relevant application events as one JSON object per
-line on the `backend` or `yazio-scheduler` standard output stream. These events
-are separate from ordinary request and scheduler messages and can be selected
-by their `event` field.
+line on the `backend` standard output stream. Scheduler-supervisor lifecycle
+messages use the `provider_scheduler_` prefix; provider/account failures keep
+their provider-specific log categories. These messages remain distinct from
+security events.
 
 ```json
 {"actor_ref":"b0f6a7f319c80bbb","client_ref":"3f67e4f455445cbb","event":"auth.login.failed","outcome":"failure","reason":"invalid_credentials","request_id":"4c74058b4d224db4adff9a9b7ff8fdb4","timestamp":"2026-08-03T12:00:00.000Z"}

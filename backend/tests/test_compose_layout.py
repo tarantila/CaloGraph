@@ -89,24 +89,29 @@ def test_backend_forwards_micronutrient_rollout_and_reconcile_settings(compose_f
     assert configured['RECONCILE_RATE_LIMIT_WINDOW_SECONDS'] == '600'
 
 
-def test_default_development_builds_local_images_and_scheduler_waits_for_backend() -> None:
-    config = compose_config('*')
-    assert config['name'] == 'calograph-dev'
+@pytest.mark.parametrize('compose_file', ['docker-compose.yml', 'docker-compose-dev.yml'])
+def test_default_runtime_has_no_separate_provider_scheduler(compose_file: str) -> None:
+    config = compose_config(compose_file=compose_file)
     services = {
         name: service for name, service in config['services'].items()
         if not service.get('profiles')
     }
-    assert set(services) == {'postgres', 'backend', 'frontend', 'yazio-scheduler'}
-    backend, frontend, scheduler = (services[name] for name in ('backend', 'frontend', 'yazio-scheduler'))
-    assert backend['build']['target'] == 'backend-development'
-    assert frontend['build']['target'] == 'frontend-development'
-    assert backend['image'] == scheduler['image'] == 'calograph-backend-dev:edge'
-    assert frontend['image'] == 'calograph-frontend-dev:edge'
-    assert scheduler['pull_policy'] == 'never'
-    assert 'build' not in scheduler
-    assert scheduler['depends_on']['backend']['condition'] == 'service_healthy'
-    assert frontend['ports'][0]['target'] == 5173
-
+    assert set(services) == {'postgres', 'backend', 'frontend'}
+    backend = services['backend']
+    environment = backend['environment']
+    assert environment['WITHINGS_ENABLED'] == 'false'
+    assert environment['WITHINGS_SCHEDULER_ENABLED'] == 'false'
+    assert environment['WITHINGS_SYNC_INTERVAL_HOURS'] == '24'
+    assert environment['WITHINGS_SYNC_DAYS'] == '7'
+    assert environment['WITHINGS_SCHEDULER_POLL_SECONDS'] == '60'
+    assert 'yazio-scheduler' not in config['services']
+    if compose_file == 'docker-compose-dev.yml':
+        frontend = services['frontend']
+        assert backend['build']['target'] == 'backend-development'
+        assert frontend['build']['target'] == 'frontend-development'
+        assert backend['image'] == 'calograph-backend-dev:edge'
+        assert frontend['image'] == 'calograph-frontend-dev:edge'
+        assert frontend['ports'][0]['target'] == 5173
 
 @pytest.mark.parametrize('profile,prefix', [('e2e', 'e2e'), ('verification', 'verification')])
 def test_browser_graphs_use_runtime_images_synthetic_tmpfs_database_and_no_dev_dependencies(profile, prefix) -> None:

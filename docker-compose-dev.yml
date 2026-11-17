@@ -73,6 +73,10 @@ services:
       GOOGLE_HEALTH_ENABLED: ${GOOGLE_HEALTH_ENABLED:-false}
       WITHINGS_ENABLED: ${WITHINGS_ENABLED:-false}
       WITHINGS_REDIRECT_URI: ${WITHINGS_REDIRECT_URI-}
+      WITHINGS_SCHEDULER_ENABLED: ${WITHINGS_SCHEDULER_ENABLED:-false}
+      WITHINGS_SYNC_INTERVAL_HOURS: ${WITHINGS_SYNC_INTERVAL_HOURS:-24}
+      WITHINGS_SYNC_DAYS: ${WITHINGS_SYNC_DAYS:-7}
+      WITHINGS_SCHEDULER_POLL_SECONDS: ${WITHINGS_SCHEDULER_POLL_SECONDS:-60}
       INITIAL_ADMIN_SETUP_ENABLED: ${INITIAL_ADMIN_SETUP_ENABLED:-false}
       CALOGRAPH_PUBLIC_URL: ${CALOGRAPH_PUBLIC_URL:-http://localhost:8180}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -206,81 +210,6 @@ services:
       if [ "$$RUN_MIGRATIONS" = true ]; then alembic upgrade head; fi;
       exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       --proxy-headers --forwarded-allow-ips "$$TRUSTED_PROXY_NETWORKS"
-  yazio-scheduler:
-    image: calograph-backend-dev:${CALOGRAPH_DEV_VERSION:-edge}
-    restart: unless-stopped
-    command:
-    - python
-    - -m
-    - app.cli
-    - run-yazio-scheduler
-    environment:
-      ENVIRONMENT: development
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_NAME: ${POSTGRES_DB:-calograph}
-      DATABASE_USER: ${POSTGRES_USER:-calograph}
-      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
-      RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
-      CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
-      YAZIO_ENABLED: ${YAZIO_ENABLED:-true}
-      YAZIO_SCHEDULER_ENABLED: ${YAZIO_SCHEDULER_ENABLED:-true}
-      YAZIO_SDK_CLIENT_ID: ${YAZIO_SDK_CLIENT_ID-}
-      YAZIO_SDK_CLIENT_SECRET: ${YAZIO_SDK_CLIENT_SECRET-}
-      YAZIO_SYNC_INTERVAL_HOURS: ${YAZIO_SYNC_INTERVAL_HOURS:-6}
-      YAZIO_SYNC_DAYS: ${YAZIO_SYNC_DAYS:-7}
-      YAZIO_CONNECT_TIMEOUT_SECONDS: ${YAZIO_CONNECT_TIMEOUT_SECONDS:-3.05}
-      YAZIO_READ_TIMEOUT_SECONDS: ${YAZIO_READ_TIMEOUT_SECONDS:-15}
-      YAZIO_LOGIN_DEADLINE_SECONDS: ${YAZIO_LOGIN_DEADLINE_SECONDS:-25}
-      YAZIO_OPERATION_DEADLINE_SECONDS: ${YAZIO_OPERATION_DEADLINE_SECONDS:-300}
-      YAZIO_REQUEST_WORKERS: ${YAZIO_REQUEST_WORKERS:-3}
-      YAZIO_MAX_PARALLEL_OPERATIONS: ${YAZIO_MAX_PARALLEL_OPERATIONS:-2}
-      YAZIO_CIRCUIT_FAILURE_LIMIT: ${YAZIO_CIRCUIT_FAILURE_LIMIT:-5}
-      YAZIO_CIRCUIT_WINDOW_SECONDS: ${YAZIO_CIRCUIT_WINDOW_SECONDS:-600}
-      YAZIO_SCHEDULER_POLL_SECONDS: ${YAZIO_SCHEDULER_POLL_SECONDS:-60}
-      YAZIO_SCHEDULER_JITTER_MINUTES: ${YAZIO_SCHEDULER_JITTER_MINUTES:-30}
-      SESSION_IDLE_TIMEOUT_HOURS: ${SESSION_IDLE_TIMEOUT_HOURS:-168}
-      SESSION_ABSOLUTE_TIMEOUT_DAYS: ${SESSION_ABSOLUTE_TIMEOUT_DAYS:-30}
-      RATE_LIMIT_RETENTION_HOURS: ${RATE_LIMIT_RETENTION_HOURS:-24}
-      SECURITY_AUDIT_RETENTION_DAYS: ${SECURITY_AUDIT_RETENTION_DAYS:-90}
-      SECURITY_AUDIT_GEOIP_PROVIDER: ${SECURITY_AUDIT_GEOIP_PROVIDER:-disabled}
-      SECURITY_AUDIT_GEOIP_TIMEOUT_SECONDS: ${SECURITY_AUDIT_GEOIP_TIMEOUT_SECONDS:-2}
-      SECURITY_AUDIT_GEOIP_CACHE_SECONDS: ${SECURITY_AUDIT_GEOIP_CACHE_SECONDS:-3600}
-    secrets:
-    - postgres_password
-    - rate_limit_secret
-    - credential_encryption_key
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test:
-      - CMD
-      - python
-      - -c
-      - import os,time; from pathlib import Path; p=Path('/tmp/yazio-scheduler-heartbeat'); poll=int(os.environ.get('YAZIO_SCHEDULER_POLL_SECONDS','60'));
-        deadline=int(os.environ.get('YAZIO_OPERATION_DEADLINE_SECONDS','300')); raise SystemExit(0 if p.exists() and time.time()-p.stat().st_mtime
-        < max(poll+120,deadline+poll+60) else 1)
-      interval: 1m
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    networks:
-    - dev-data
-    - dev-egress
-    security_opt:
-    - no-new-privileges:true
-    cap_drop:
-    - ALL
-    init: true
-    stop_grace_period: 30s
-    read_only: true
-    mem_limit: ${YAZIO_SCHEDULER_MEMORY_LIMIT:-0}
-    cpus: ${YAZIO_SCHEDULER_CPU_LIMIT:-0}
-    pids_limit: ${YAZIO_SCHEDULER_PIDS_LIMIT:--1}
-    tmpfs:
-    - /tmp:size=64m,mode=1777
-    pull_policy: never
   frontend:
     image: calograph-frontend-dev:${CALOGRAPH_DEV_VERSION:-edge}
     build:
@@ -932,8 +861,6 @@ networks:
   dev-data:
     driver: bridge
     internal: true
-  dev-egress:
-    driver: bridge
   test-edge: {}
   test-data:
     internal: true

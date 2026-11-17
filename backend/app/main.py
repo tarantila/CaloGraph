@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from time import perf_counter
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -22,6 +24,7 @@ from app.security_events import (
 )
 from app.services.app_logs import record_app_log
 from app.services.data_export import export_status_cookie
+from app.services.provider_scheduler import ProviderSchedulerSupervisor
 from app.services.rate_limit import (
     RateLimitExceeded,
     normalize_audit_client_ip,
@@ -36,15 +39,29 @@ REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 settings.validate_runtime_security()
 validate_password_blocklist()
 
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    scheduler = ProviderSchedulerSupervisor()
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.stop()
+        await asyncio.to_thread(scheduler.join)
+
+
+
 app = FastAPI(
     title="CaloGraph API",
-    version="0.7.0",
+    version="0.7.1",
     description=(
         "Lokale Analyse- und Import-API. CaloGraph greift nicht serverseitig auf Apple Health "
         "oder iCloud zu."
     ),
     docs_url=None,
     openapi_url=None,
+    lifespan=app_lifespan,
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.include_router(api_router)

@@ -19,7 +19,6 @@ from app.services.backup_status import read_backup_status
 from app.services.geoip import lookup_client_ip
 from app.services.release_status import get_release_status
 from app.services.security_audit import security_audit_metrics_24h
-from app.services.yazio_sync import due_yazio_connection_ids
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -81,12 +80,9 @@ def system_status(_: User = Depends(require_admin), db: Session = Depends(get_db
         application_version = version("calograph-backend")
     except PackageNotFoundError:
         application_version = "unknown"
-    scheduler_available = False
-    if settings.yazio_enabled and settings.yazio_scheduler_enabled:
-        try:
-            scheduler_available = bool(due_yazio_connection_ids())
-        except Exception:
-            scheduler_available = False
+    provider_scheduler_enabled = (
+        settings.yazio_enabled and settings.yazio_scheduler_enabled
+    ) or (settings.withings_enabled and settings.withings_scheduler_enabled)
     return {
         "version": get_release_status(
             application_version,
@@ -97,8 +93,7 @@ def system_status(_: User = Depends(require_admin), db: Session = Depends(get_db
         "security_audit_enabled": True,
         "security_audit_events_24h": audit_metrics.audit_events,
         "failed_logins_24h": audit_metrics.failed_logins,
-        "yazio_scheduler_enabled": settings.yazio_enabled and settings.yazio_scheduler_enabled,
-        "yazio_scheduler_available": scheduler_available,
+        "provider_scheduler_enabled": provider_scheduler_enabled,
     }
 
 @router.get("/backup-status")

@@ -5,20 +5,40 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
+## [0.7.1] - 2026-11-17
 
-- Consolidated Compose into the unchanged production `docker-compose.yml` and
-  standalone `docker-compose-dev.yml`. `make dev` and
-  `docker compose -f docker-compose-dev.yml up -d --build` start PostgreSQL,
-  locally built `edge` backend/Vite images, and the shared-image YAZIO scheduler.
-- Moved test, runtime E2E/Verification, and persistent Analysis Review workflows
-  into explicitly selected profiles with separate projects and service graphs.
-  Review retains its private XDG secrets, ownership guards, loopback port 8289,
-  and existing database volume; ephemeral PostgreSQL workflows use tmpfs.
-- Replaced the tracked backup-secret overlay with `scripts/backup-compose.sh`,
-  an explicit opt-in wrapper generating a private temporary JSON override.
-  Source validation fails closed, mounts are read-only and never auto-created,
-  and restore preserves the running agent's exact mode and source paths.
+### Integrations
+
+- Adds opt-in periodic Withings synchronization for connected accounts. The
+  existing canonical OAuth-refresh and sync paths import weight/body
+  measurements and daily activity energy in a bounded seven-day user-local
+  window by default. Account failures are isolated and domain-level partial
+  success remains visible. Enable both `WITHINGS_ENABLED` and
+  `WITHINGS_SCHEDULER_ENABLED`; periodic scheduling remains disabled by
+  default.
+- Runs YAZIO and Withings scheduling under one PostgreSQL-coordinated leader
+  in the backend lifecycle. Provider lanes remain independently configurable;
+  no additional runtime scheduler container or database migration is needed.
+
+### Operations and development
+
+- Keeps production and standalone development in the two tracked Compose
+  definitions. Development starts locally built `edge` backend and Vite images
+  with PostgreSQL; test, E2E/Verification, and persistent Analysis Review
+  workflows remain isolated behind explicit profiles and project names.
+- Replaces the tracked backup-secret overlay with an explicit opt-in wrapper
+  that validates sources fail-closed and mounts them read-only.
+- Updates the Node build image to 26.13.1, uv to 0.13.8, and the backup-agent
+  Alpine base digest; updates Vue, Vue I18n, and Vue Router to compatible
+  maintenance releases.
+
+### Security
+
+- Updates the transitive `opentelemetry-api` lock from 1.45.1 to 1.45.2 to
+  address CVE-2026-126360 without changing application dependencies.
+- Temporarily permits only the unpatched `picomatch` 4.0.7 advisory
+  GHSA-fc5q-39xc-vjpf in npm dependency audits; the parser is not included
+  in the frontend runtime image or browser bundle.
 
 
 ## [0.7.0] - 2026-11-07
@@ -1028,9 +1048,9 @@ documented reverse-proxy configuration is already in use.
 - YAZIO credentials are stored encrypted.
 - Imports, targets, and analytics are consistently scoped to their user.
 
-[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/tarantila/CaloGraph/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tarantila/CaloGraph/compare/v0.6.5...v0.7.0
-[0.6.5]: https://github.com/tarantila/CaloGraph/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/tarantila/CaloGraph/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/tarantila/CaloGraph/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/tarantila/CaloGraph/compare/v0.6.1...v0.6.2
