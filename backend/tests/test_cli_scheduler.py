@@ -146,3 +146,20 @@ def test_one_shot_scheduler_completes_security_cleanup_cycle(db, user, monkeypat
 
     assert capsys.readouterr().out == "0 fällige Verbindung(en), 0 erfolgreich.\n"
     assert db.get(AccountRecoveryToken, expired_id) is None
+
+
+def test_withings_scheduler_cli_supports_one_shot_cycle(monkeypatch, capsys) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cli,
+        "run_due_withings_syncs",
+        lambda **kwargs: (calls.append(kwargs) or (2, 1)),
+    )
+
+    args = cli.parser().parse_args(["run-withings-scheduler", "--once"])
+    assert args.handler is cli.run_withings_scheduler
+
+    args.handler(args)
+
+    assert len(calls) == 1
+    assert capsys.readouterr().out == "2 fällige Withings-Verbindung(en), 1 erfolgreich.\n"

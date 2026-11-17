@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     calograph_public_url: str = "http://localhost:8180"
     google_health_enabled: bool = False
     withings_enabled: bool = False
+    withings_scheduler_enabled: bool = False
+    withings_sync_interval_hours: int = Field(default=24, ge=1, le=168)
+    withings_sync_days: int = Field(default=7, ge=1, le=31)
+    withings_scheduler_poll_seconds: int = Field(default=60, ge=10, le=3600)
     withings_redirect_uri: str | None = Field(
         default=None,
         max_length=2048,
@@ -365,6 +369,17 @@ class Settings(BaseSettings):
             port=self.database_port,
             database=self.database_name,
         ).render_as_string(hide_password=False)
+        return self
+
+    @model_validator(mode="after")
+    def valid_withings_scheduler_window(self) -> Settings:
+        if self.withings_scheduler_enabled:
+            minimum_days = (self.withings_sync_interval_hours + 23) // 24 + 2
+            if self.withings_sync_days < minimum_days:
+                raise ValueError(
+                    "WITHINGS_SYNC_DAYS must preserve a prior-date overlap "
+                    "for WITHINGS_SYNC_INTERVAL_HOURS"
+                )
         return self
 
     @field_validator("withings_redirect_uri", mode="before")
@@ -604,6 +619,10 @@ class Settings(BaseSettings):
         if self.yazio_enabled and not self.credential_encryption_key:
             errors.append(
                 "CREDENTIAL_ENCRYPTION_KEY is required when YAZIO_ENABLED is true"
+            )
+        if self.withings_enabled and not self.credential_encryption_key:
+            errors.append(
+                "CREDENTIAL_ENCRYPTION_KEY is required when WITHINGS_ENABLED is true"
             )
         if role == "backend" and not self.mfa_encryption_key:
             errors.append("MFA_ENCRYPTION_KEY is required for the backend")

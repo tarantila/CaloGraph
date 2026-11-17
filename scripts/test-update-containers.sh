@@ -17,6 +17,49 @@ fail() {
   exit 1
 }
 
+compose_config() {
+  local environment=$1
+  shift
+  env -i PATH="$PATH" HOME="${HOME:-/tmp}" \
+    ENVIRONMENT="$environment" \
+    CALOGRAPH_PUBLIC_URL=https://example.invalid \
+    COOKIE_SECURE=false \
+    TRUSTED_HOSTS=localhost,127.0.0.1 \
+    TRUSTED_ORIGINS=http://127.0.0.1:8180 \
+    ENABLE_HSTS=false \
+    CREDENTIAL_ENCRYPTION_KEY_FILE=/tmp/calograph-test-credential-key \
+    MFA_ENCRYPTION_KEY_FILE=/tmp/calograph-test-mfa-key \
+    POSTGRES_PASSWORD_FILE=/tmp/calograph-test-postgres-password \
+    RATE_LIMIT_SECRET_FILE=/tmp/calograph-test-rate-limit-secret \
+    SESSION_SECRET_FILE=/tmp/calograph-test-session-secret \
+    docker compose --env-file /dev/null "$@" config --format json
+}
+
+assert_withings_scheduler_waits_for_backend() {
+  local rendered_config=$1
+  if ! printf '%s\n' "$rendered_config" | jq -e '
+    .services.backend.depends_on.postgres.condition == "service_healthy"
+    and .services.backend.depends_on.postgres.required == true
+    and .services.backend.healthcheck != null
+    and .services["withings-scheduler"].depends_on.backend.condition == "service_healthy"
+    and .services["withings-scheduler"].depends_on.backend.required == true
+    and .services["withings-scheduler"].depends_on.postgres.condition == "service_healthy"
+    and .services["withings-scheduler"].environment.WITHINGS_ENABLED == "false"
+    and .services["withings-scheduler"].environment.WITHINGS_SCHEDULER_ENABLED == "false"
+  ' >/dev/null; then
+    fail 'Withings scheduler must require healthy backend and PostgreSQL while remaining disabled by default.'
+  fi
+}
+
+production_compose=$(compose_config production -f "$repo_root/docker-compose.yml")
+assert_withings_scheduler_waits_for_backend "$production_compose"
+development_compose=$(
+  compose_config development \
+    -f "$repo_root/docker-compose.yml" \
+    -f "$repo_root/docker-compose.dev.yml"
+)
+assert_withings_scheduler_waits_for_backend "$development_compose"
+
 setup_case() {
   CASE_ROOT="$test_root/$1"
   CASE_PROJECT="$CASE_ROOT/project"
@@ -33,15 +76,16 @@ set -eu
 printf 'docker:%s\n' "$*" >>"$TRACE_FILE"
 case "${FAKE_STOP_RESULT:-success}" in
   complete)
-    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+    if [ "$*" = "compose stop backend yazio-scheduler withings-scheduler" ]; then
       printf 'stop-result:none-stopped\n' >>"$TRACE_FILE"
       exit 1
     fi
     ;;
   partial)
-    if [ "$*" = "compose stop backend yazio-scheduler" ]; then
+    if [ "$*" = "compose stop backend yazio-scheduler withings-scheduler" ]; then
       printf 'stop-result:backend-stopped\n' >>"$TRACE_FILE"
-      printf 'stop-result:yazio-scheduler-failed\n' >>"$TRACE_FILE"
+      printf 'stop-result:yazio-scheduler-stopped\n' >>"$TRACE_FILE"
+      printf 'stop-result:withings-scheduler-failed\n' >>"$TRACE_FILE"
       exit 1
     fi
     ;;
@@ -104,18 +148,19 @@ expect_writer_stop_failure() {
       assert_trace \
         'docker:compose config --quiet' \
         "backup-postgres:$recipients" \
-        'docker:compose pull postgres backend frontend yazio-scheduler' \
-        'docker:compose stop backend yazio-scheduler' \
+        'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+        'docker:compose stop backend yazio-scheduler withings-scheduler' \
         'stop-result:none-stopped'
       ;;
     partial)
       assert_trace \
         'docker:compose config --quiet' \
         "backup-postgres:$recipients" \
-        'docker:compose pull postgres backend frontend yazio-scheduler' \
-        'docker:compose stop backend yazio-scheduler' \
+        'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+        'docker:compose stop backend yazio-scheduler withings-scheduler' \
         'stop-result:backend-stopped' \
-        'stop-result:yazio-scheduler-failed'
+        'stop-result:yazio-scheduler-stopped' \
+        'stop-result:withings-scheduler-failed'
       ;;
     *) fail "unknown mocked writer-stop result: $stop_result." ;;
   esac
@@ -141,8 +186,8 @@ run_update "BACKUP_AGE_RECIPIENTS_FILE=$environment_recipients"
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$environment_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 expect_writer_stop_failure complete
@@ -162,8 +207,8 @@ assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$fallback_recipients" \
   "backup-secrets:$fallback_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -178,8 +223,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$single_quoted_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -200,8 +245,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -225,8 +270,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -241,8 +286,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$escaped_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -263,8 +308,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 
@@ -282,8 +327,8 @@ run_update
 assert_trace \
   'docker:compose config --quiet' \
   "backup-postgres:$configured_recipients" \
-  'docker:compose pull postgres backend frontend yazio-scheduler' \
-  'docker:compose stop backend yazio-scheduler' \
+  'docker:compose pull postgres backend frontend yazio-scheduler withings-scheduler' \
+  'docker:compose stop backend yazio-scheduler withings-scheduler' \
   'docker:compose up -d --no-build --wait --remove-orphans' \
   'docker:compose ps'
 

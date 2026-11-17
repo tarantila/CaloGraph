@@ -249,6 +249,45 @@ services:
     pids_limit: ${YAZIO_SCHEDULER_PIDS_LIMIT:--1}
     tmpfs:
       - /tmp:size=64m,mode=1777
+  withings-scheduler:
+    image: ${CALOGRAPH_BACKEND_IMAGE:-ghcr.io/tarantila/calograph-backend}:${CALOGRAPH_VERSION:-latest}
+    restart: unless-stopped
+    command: ["python", "-m", "app.cli", "run-withings-scheduler"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:?Set ENVIRONMENT to development, test, or production in .env}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB:-calograph}
+      DATABASE_USER: ${POSTGRES_USER:-calograph}
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      RATE_LIMIT_SECRET_FILE: /run/secrets/rate_limit_secret
+      CREDENTIAL_ENCRYPTION_KEY_FILE: /run/secrets/credential_encryption_key
+      WITHINGS_ENABLED: ${WITHINGS_ENABLED:-false}
+      WITHINGS_SCHEDULER_ENABLED: ${WITHINGS_SCHEDULER_ENABLED:-false}
+      WITHINGS_SYNC_INTERVAL_HOURS: ${WITHINGS_SYNC_INTERVAL_HOURS:-24}
+      WITHINGS_SYNC_DAYS: ${WITHINGS_SYNC_DAYS:-7}
+      WITHINGS_SCHEDULER_POLL_SECONDS: ${WITHINGS_SCHEDULER_POLL_SECONDS:-60}
+    secrets:
+      - postgres_password
+      - rate_limit_secret
+      - credential_encryption_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks: [data, egress]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *default-logging
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    mem_limit: ${WITHINGS_SCHEDULER_MEMORY_LIMIT:-0}
+    cpus: ${WITHINGS_SCHEDULER_CPU_LIMIT:-0}
+    pids_limit: ${WITHINGS_SCHEDULER_PIDS_LIMIT:--1}
+    tmpfs:
+      - /tmp:size=64m,mode=1777
   backup-agent:
     profiles: ["backup"]
     image: ${CALOGRAPH_BACKUP_AGENT_IMAGE:-ghcr.io/tarantila/calograph-backup-agent}:${CALOGRAPH_VERSION:-latest}

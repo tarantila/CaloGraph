@@ -60,6 +60,7 @@ from app.services.user_operation_lock import (
     exclusive_initial_user_operation,
     shared_user_operation,
 )
+from app.services.withings_scheduler import run_due_withings_syncs
 from app.services.yazio_sync import (
     YAZIO_INTER_ACCOUNT_DELAY_SECONDS,
     YazioConnectionNotConfigured,
@@ -530,6 +531,42 @@ def run_yazio_scheduler(args: argparse.Namespace) -> None:
         time.sleep(settings.yazio_scheduler_poll_seconds)
 
 
+def run_withings_scheduler(args: argparse.Namespace) -> None:
+    try:
+        settings.validate_runtime_security("scheduler")
+    except ProductionConfigurationError as exc:
+        raise SystemExit(str(exc)) from None
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logger.info(
+        "withings_scheduler_started poll_seconds=%s",
+        settings.withings_scheduler_poll_seconds,
+    )
+    while True:
+        attempted = succeeded = 0
+        try:
+            attempted, succeeded = run_due_withings_syncs()
+        except Exception as exc:
+            logger.error(
+                "withings_scheduler_cycle_failed error_type=%s",
+                type(exc).__name__,
+            )
+            if args.once:
+                raise SystemExit("Withings scheduler cycle failed.") from None
+        if attempted:
+            logger.info(
+                "withings_scheduler_cycle attempted=%s succeeded=%s",
+                attempted,
+                succeeded,
+            )
+        if args.once:
+            print(f"{attempted} fällige Withings-Verbindung(en), {succeeded} erfolgreich.")
+            return
+        time.sleep(settings.withings_scheduler_poll_seconds)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m app.cli")
     commands = root.add_subparsers(dest="command", required=True)
@@ -649,6 +686,12 @@ def parser() -> argparse.ArgumentParser:
     )
     scheduler.add_argument("--once", action="store_true")
     scheduler.set_defaults(handler=run_yazio_scheduler)
+    scheduler = commands.add_parser(
+        "run-withings-scheduler",
+        help="Fällige Withings-Verbindungen synchronisieren",
+    )
+    scheduler.add_argument("--once", action="store_true")
+    scheduler.set_defaults(handler=run_withings_scheduler)
     return root
 
 

@@ -26,6 +26,20 @@ services:
     environment:
       YAZIO_ENABLED: "true"
       YAZIO_SCHEDULER_ENABLED: "true"
+  withings-scheduler:
+    image: calograph-backend-dev:${CALOGRAPH_VERSION:-0.6.5}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-development
+      args:
+        APP_VERSION: ${CALOGRAPH_VERSION:-0.6.5}
+        APP_UID: ${CALOGRAPH_UID:-10001}
+        APP_GID: ${CALOGRAPH_GID:-10001}
+    environment:
+      WITHINGS_ENABLED: ${WITHINGS_ENABLED:-false}
+      WITHINGS_SCHEDULER_ENABLED: ${WITHINGS_SCHEDULER_ENABLED:-false}
+
   frontend:
     image: calograph-frontend-dev:${CALOGRAPH_VERSION:-0.6.5}
     build:

@@ -41,7 +41,7 @@ case $'\n'"$running_services"$'\n' in *$'\nbackup-agent\n'*) backup_agent_runnin
 scripts/verify-backup.sh "$backup_file"
 # Remove legacy orphans before the destructive restore so they cannot run during it.
 compose up -d --no-recreate --remove-orphans postgres
-compose --profile backup stop frontend backend yazio-scheduler backup-agent
+compose --profile backup stop frontend backend yazio-scheduler withings-scheduler backup-agent
 
 if [[ "$backup_file" == *.age ]]; then
   "$age_bin" --decrypt --identity "$BACKUP_AGE_IDENTITY_FILE" "$backup_file" \
@@ -68,4 +68,4 @@ if [[ "$backup_agent_running" == true ]]; then
   compose --profile backup up -d --wait backup-agent
 fi
 compose ps
-printf 'Restore completed. Verify login, data status, and the YAZIO connection.\n'
+printf 'Restore completed. Verify login, data status, and YAZIO/Withings connections.\n'
