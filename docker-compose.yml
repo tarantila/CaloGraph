@@ -274,6 +274,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      backend:
+        condition: service_healthy
     networks: [data, egress]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

@@ -17,6 +17,49 @@ fail() {
   exit 1
 }
 
+compose_config() {
+  local environment=$1
+  shift
+  env -i PATH="$PATH" HOME="${HOME:-/tmp}" \
+    ENVIRONMENT="$environment" \
+    CALOGRAPH_PUBLIC_URL=https://example.invalid \
+    COOKIE_SECURE=false \
+    TRUSTED_HOSTS=localhost,127.0.0.1 \
+    TRUSTED_ORIGINS=http://127.0.0.1:8180 \
+    ENABLE_HSTS=false \
+    CREDENTIAL_ENCRYPTION_KEY_FILE=/tmp/calograph-test-credential-key \
+    MFA_ENCRYPTION_KEY_FILE=/tmp/calograph-test-mfa-key \
+    POSTGRES_PASSWORD_FILE=/tmp/calograph-test-postgres-password \
+    RATE_LIMIT_SECRET_FILE=/tmp/calograph-test-rate-limit-secret \
+    SESSION_SECRET_FILE=/tmp/calograph-test-session-secret \
+    docker compose --env-file /dev/null "$@" config --format json
+}
+
+assert_withings_scheduler_waits_for_backend() {
+  local rendered_config=$1
+  if ! printf '%s\n' "$rendered_config" | jq -e '
+    .services.backend.depends_on.postgres.condition == "service_healthy"
+    and .services.backend.depends_on.postgres.required == true
+    and .services.backend.healthcheck != null
+    and .services["withings-scheduler"].depends_on.backend.condition == "service_healthy"
+    and .services["withings-scheduler"].depends_on.backend.required == true
+    and .services["withings-scheduler"].depends_on.postgres.condition == "service_healthy"
+    and .services["withings-scheduler"].environment.WITHINGS_ENABLED == "false"
+    and .services["withings-scheduler"].environment.WITHINGS_SCHEDULER_ENABLED == "false"
+  ' >/dev/null; then
+    fail 'Withings scheduler must require healthy backend and PostgreSQL while remaining disabled by default.'
+  fi
+}
+
+production_compose=$(compose_config production -f "$repo_root/docker-compose.yml")
+assert_withings_scheduler_waits_for_backend "$production_compose"
+development_compose=$(
+  compose_config development \
+    -f "$repo_root/docker-compose.yml" \
+    -f "$repo_root/docker-compose.dev.yml"
+)
+assert_withings_scheduler_waits_for_backend "$development_compose"
+
 setup_case() {
   CASE_ROOT="$test_root/$1"
   CASE_PROJECT="$CASE_ROOT/project"
