@@ -191,4 +191,4 @@ printf 'Stopping old backend before the backend migration.\n'
 docker compose stop backend
 docker compose up -d --no-build --wait
 docker compose ps
-printf 'Container-Update abgeschlossen. Anwendung und YAZIO-Status jetzt prüfen.\n'
+printf 'Container-Update abgeschlossen. Anwendung, YAZIO- und Withings-Status jetzt prüfen.\n'

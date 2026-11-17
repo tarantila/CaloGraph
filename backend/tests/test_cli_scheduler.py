@@ -136,9 +136,10 @@ def test_seed_cli_adds_follow_up_meals_and_their_projection_days(db, user, monke
 
 
 
-def test_standalone_yazio_scheduler_cli_is_removed() -> None:
+@pytest.mark.parametrize("command", ["run-yazio-scheduler", "run-withings-scheduler"])
+def test_standalone_provider_scheduler_cli_is_removed(command) -> None:
     with pytest.raises(SystemExit):
-        cli.parser().parse_args(["run-yazio-scheduler"])
+        cli.parser().parse_args([command])
 
 
 def test_scheduler_housekeeping_completes_security_cleanup_cycle(db, user) -> None:

@@ -113,4 +113,4 @@ if [[ "$backup_agent_running" == true ]]; then
   compose --profile backup up -d --wait backup-agent
 fi
 compose ps
-printf 'Restore completed. Verify login, data status, and the YAZIO connection.\n'
+printf 'Restore completed. Verify login, data status, and YAZIO/Withings connections.\n'

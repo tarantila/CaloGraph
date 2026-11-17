@@ -153,6 +153,21 @@ bounding repeated full-history calculations. A `429` response does not
 invalidate the authenticated session; the frontend retries reconciliation on
 the next authenticated bootstrap or explicit import.
 
+Withings periodic synchronization runs in the backend's leader-owned Withings
+lane and is opt-in. Enable both `WITHINGS_ENABLED=true` and
+`WITHINGS_SCHEDULER_ENABLED=true`, then recreate `backend`. It processes only
+active per-user connections with configured credentials and required scopes,
+reuses the manual sync and OAuth refresh path, and records operation status in
+the Integration UI. Weight/body
+measurements and daily activity energy retain independent partial-success
+handling. `WITHINGS_SYNC_INTERVAL_HOURS` defaults to 24,
+`WITHINGS_SYNC_DAYS` to a seven-day inclusive rolling window, and
+`WITHINGS_SCHEDULER_POLL_SECONDS` to 60. The lookback must be at least
+`ceil(interval hours / 24) + 2` days, preserving overlap across local-date and
+DST boundaries so partial daily data is revisited.
+Set `WITHINGS_SCHEDULER_ENABLED=false` and recreate the backend to stop
+background Withings synchronization without disconnecting accounts.
+
 Direct YAZIO access is enabled by `YAZIO_ENABLED=true` and uses only the pinned
 `yazio-sdk==0.4.0` integration. Manual and scheduled sync require a personal
 configured connection; no provider selection or Nutrition Domain rollout
@@ -209,10 +224,10 @@ starts provider scheduling only after the entrypoint has completed migrations.
 Backend startup is rejected when the public origin is not HTTPS, secure
 cookies or HSTS are disabled, known development secrets or database passwords
 are present, secrets are reused, effective proxy trust remains loopback-only or
-uses the generic Docker address pool, direct YAZIO access has no valid Fernet
-key, or upload capacities contradict each other. IPv4 proxy networks broader
-than `/16` and IPv6 networks broader than `/64` are rejected. Development and
-test environments remain able to use localhost HTTP.
+uses the generic Docker address pool, enabled YAZIO or Withings credentials
+lack a valid Fernet key, or upload capacities contradict each other. IPv4 proxy
+networks broader than `/16` and IPv6 networks broader than `/64` are rejected.
+Development and test environments remain able to use localhost HTTP.
 
 Changing only `ENVIRONMENT=production` is therefore intentionally insufficient.
 The real domain, exact Docker subnet, independent secrets, and TLS policy must

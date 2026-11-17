@@ -4,7 +4,7 @@ import logging
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -14,7 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from app.models import HealthSample, User, WithingsConnection
 from app.services.user_operation_lock import UserOperationBusy
 from app.withings.client import WithingsPageResult
-from app.withings.errors import WithingsInvalidResponseError, WithingsProviderUnavailableError
+from app.withings.errors import (
+    WithingsAuthenticationError,
+    WithingsInvalidResponseError,
+    WithingsProviderUnavailableError,
+)
 from app.withings.parsers import (
     ActivityPage,
     MeasurePage,
@@ -523,14 +527,14 @@ def periodic_withings(monkeypatch):
     return settings
 
 
-def _periodic_connection(db, user):
+def _periodic_connection(db, user, *, access_token: str = "synthetic-access"):
     from app.services.credential_crypto import encrypt_credential
     from app.withings.credentials import encrypt_token
 
     connection = _connection(db, user)
     connection.client_id = "synthetic-client"
     connection.encrypted_client_secret = encrypt_credential("synthetic-secret")
-    connection.encrypted_access_token = encrypt_token("synthetic-access")
+    connection.encrypted_access_token = encrypt_token(access_token)
     connection.encrypted_refresh_token = encrypt_token("synthetic-refresh")
     db.commit()
     return connection
@@ -954,3 +958,142 @@ def test_periodic_overlapping_windows_reuse_stable_provider_and_sample_identitie
         (date(2026, 9, 15), date(2026, 9, 21)),
     ]
     assert len(fake.measure_ranges) == 2
+
+
+def _scheduler_session_factory(db):
+    from sqlalchemy.orm import sessionmaker
+
+    return sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+
+
+def test_periodic_scheduler_skips_account_with_held_lifecycle_lock(
+    db, user, periodic_withings
+) -> None:
+    from app.services.user_operation_lock import exclusive_user_lifecycle_operation
+    from app.services.withings_scheduler import run_due_withings_syncs
+
+    connection = _periodic_connection(db, user)
+    connection_id = connection.id
+    factory = _scheduler_session_factory(db)
+    calls: list[UUID] = []
+
+    class RecordingService:
+        def sync(self, *, user_id, **_kwargs):
+            calls.append(user_id)
+
+    with factory() as lock_db, exclusive_user_lifecycle_operation(lock_db, user.id):
+        attempted, succeeded = run_due_withings_syncs(
+            session_factory=factory,
+            sync_service=RecordingService(),
+            now=datetime(2026, 9, 20, 12, tzinfo=UTC),
+        )
+
+    assert (attempted, succeeded) == (0, 0)
+    assert calls == []
+    db.expire_all()
+    assert db.get(WithingsConnection, connection_id).last_attempt_at is None
+
+
+def test_periodic_scheduler_rechecks_connection_after_initial_selection(
+    db, user, periodic_withings
+) -> None:
+    from app.services.withings_scheduler import run_due_withings_syncs
+
+    first_connection = _periodic_connection(db, user)
+    first_connection.last_attempt_at = datetime(2000, 1, 1, tzinfo=UTC)
+    other = User(
+        username=f"disconnected-{uuid4()}",
+        password_hash="hash",
+        timezone="UTC",
+    )
+    db.add(other)
+    db.flush()
+    second_connection = _periodic_connection(db, other)
+    second_connection.last_attempt_at = datetime(2001, 1, 1, tzinfo=UTC)
+    second_connection_id = second_connection.id
+    db.commit()
+    factory = _scheduler_session_factory(db)
+    fake = FakeClient()
+    service = WithingsSyncService(
+        session_factory=factory,
+        client_factory=lambda _token: fake,
+    )
+
+    def disconnect_second_account() -> None:
+        with factory() as update_db:
+            connection = update_db.get(WithingsConnection, second_connection_id)
+            connection.state = "reauth_required"
+            update_db.commit()
+
+    attempted, succeeded = run_due_withings_syncs(
+        session_factory=factory,
+        sync_service=service,
+        now=datetime(2026, 9, 20, 12, tzinfo=UTC),
+        between_connections=disconnect_second_account,
+    )
+
+    assert (attempted, succeeded) == (1, 1)
+    assert len(fake.activity_ranges) == 1
+    db.expire_all()
+    assert db.get(WithingsConnection, second_connection_id).last_success_at is None
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_category", "expected_state"),
+    (
+        (
+            WithingsProviderUnavailableError(upstream_status_code=503),
+            "provider_error",
+            "active",
+        ),
+        (
+            WithingsAuthenticationError(upstream_status_code=401),
+            "reauth_required",
+            "reauth_required",
+        ),
+    ),
+)
+def test_periodic_scheduler_isolates_account_failures(
+    db, user, periodic_withings, error: Exception, expected_category: str, expected_state: str
+) -> None:
+    from app.services.withings_scheduler import run_due_withings_syncs
+
+    failed_connection = _periodic_connection(db, user, access_token="failed-access")
+    failed_connection_id = failed_connection.id
+    other = User(
+        username=f"healthy-{uuid4()}",
+        password_hash="hash",
+        timezone="UTC",
+    )
+    db.add(other)
+    db.flush()
+    healthy_connection = _periodic_connection(db, other, access_token="healthy-access")
+    healthy_connection_id = healthy_connection.id
+    failed_client = FakeClient(measure_error=error, activity_error=error)
+    healthy_client = FakeClient()
+    factory = _scheduler_session_factory(db)
+    service = WithingsSyncService(
+        session_factory=factory,
+        client_factory=lambda token: (
+            failed_client if token == "failed-access" else healthy_client
+        ),
+    )
+
+    attempted, succeeded = run_due_withings_syncs(
+        session_factory=factory,
+        sync_service=service,
+        now=datetime(2026, 9, 20, 12, tzinfo=UTC),
+        between_connections=lambda: None,
+    )
+    db.expire_all()
+    failed_connection = db.get(WithingsConnection, failed_connection_id)
+    healthy_connection = db.get(WithingsConnection, healthy_connection_id)
+
+    assert (attempted, succeeded) == (2, 1)
+    assert failed_connection.last_error_category == expected_category
+    assert failed_connection.last_success_at is None
+    assert failed_connection.last_attempt_at is not None
+    assert failed_connection.last_error == expected_category
+    assert failed_connection.state == expected_state
+    assert healthy_connection.last_success_at is not None
+    assert healthy_client.activity_ranges == [(date(2026, 9, 14), date(2026, 9, 20))]

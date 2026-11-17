@@ -10,12 +10,13 @@ follows [Semantic Versioning](https://semver.org/).
 ### Integrations
 
 - Adds opt-in periodic Withings synchronization for connected accounts. The
-  existing canonical OAuth-refresh and sync paths import weight/body
-  measurements and daily activity energy in a bounded seven-day user-local
-  window by default. Account failures are isolated and domain-level partial
-  success remains visible. Enable both `WITHINGS_ENABLED` and
-  `WITHINGS_SCHEDULER_ENABLED`; periodic scheduling remains disabled by
-  default.
+  existing canonical OAuth-refresh and sync paths reuse configured per-user
+  credentials to import weight/body measurements and daily activity energy in
+  a bounded seven-day user-local window by default. Account failures are
+  isolated and domain-level partial success remains visible. Enable both
+  `WITHINGS_ENABLED` and `WITHINGS_SCHEDULER_ENABLED`; periodic scheduling
+  remains disabled by default. `WITHINGS_SYNC_INTERVAL_HOURS` defaults to 24,
+  `WITHINGS_SYNC_DAYS` to 7, and `WITHINGS_SCHEDULER_POLL_SECONDS` to 60.
 - Runs YAZIO and Withings scheduling under one PostgreSQL-coordinated leader
   in the backend lifecycle. Provider lanes remain independently configurable;
   no additional runtime scheduler container or database migration is needed.
@@ -1051,6 +1052,7 @@ documented reverse-proxy configuration is already in use.
 [Unreleased]: https://github.com/tarantila/CaloGraph/compare/v0.7.1...HEAD
 [0.7.1]: https://github.com/tarantila/CaloGraph/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tarantila/CaloGraph/compare/v0.6.5...v0.7.0
+[0.6.5]: https://github.com/tarantila/CaloGraph/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/tarantila/CaloGraph/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/tarantila/CaloGraph/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/tarantila/CaloGraph/compare/v0.6.1...v0.6.2
