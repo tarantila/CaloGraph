@@ -83,8 +83,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.freeze.outputs.release_commit }}
           RELEASE_BRANCH: ${{ steps.freeze.outputs.release_branch }}
-        run: scripts/release/validate-release.sh \
-          "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BRANCH"
+        run: scripts/release/validate-release.sh "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BRANCH"
 
 
       - name: Validate release metadata before tag creation

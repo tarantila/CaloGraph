@@ -153,7 +153,18 @@ grep -Fq "if: github.ref == 'refs/heads/main'" "$ci_workflow"
 grep -Fq 'headBranch == $branch' "$release_validator"
 grep -Fq '"$EVENT_REF" "$WORKFLOW_REF" "$REPOSITORY"' "$release_workflow"
 grep -Fq 'ref: ${{ github.ref }}' "$release_workflow"
-grep -Fq '"$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BRANCH"' "$release_workflow"
+awk '
+  /scripts\/release\/validate-release\.sh/ {
+    count++
+    if ($0 != "        run: scripts/release/validate-release.sh \"$RELEASE_VERSION\" \"$RELEASE_COMMIT\" \"$RELEASE_BRANCH\"") invalid = 1
+  }
+  END {
+    if (count != 1 || invalid) {
+      print "Release validation must use the exact single-line invocation." > "/dev/stderr"
+      exit 1
+    }
+  }
+' "$release_workflow"
 grep -Fq 'source_ref="refs/heads/$source_branch"' "$release_validator"
 [[ $(grep -Fc -- '--source-ref "$source_ref"' "$release_validator") -eq 2 ]]
 
