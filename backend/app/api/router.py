@@ -5,6 +5,7 @@ from app.api import (
     admin,
     ai_checks,
     ai_connections,
+    ai_preferences,
     analytics,
     auth,
     expert,
@@ -22,6 +23,7 @@ api_router.include_router(achievements.router)
 api_router.include_router(auth.router)
 api_router.include_router(ai_connections.router)
 api_router.include_router(ai_checks.router)
+api_router.include_router(ai_preferences.router)
 api_router.include_router(expert.router)
 api_router.include_router(imports.router)
 api_router.include_router(analytics.router)

@@ -44,6 +44,7 @@ FROM backend-base AS backend-development
 RUN apk add --no-cache bash && uv sync --frozen --all-extras
 COPY backend/tests ./tests
 COPY frontend/src/analysis-presentation.json ./frontend/src/analysis-presentation.json
+COPY frontend/src/generated/ai-contracts.ts ./frontend/src/generated/ai-contracts.ts
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
