@@ -4,12 +4,13 @@ from contextlib import nullcontext
 from uuid import UUID
 
 from pydantic import Field, model_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.connections import ConnectionProblem, ProviderConnectionService
 from app.ai.connections_contracts import ConnectionContract
 from app.ai.contracts import ProviderKind
-from app.models import AIActiveConnection, User
+from app.models import AIActiveConnection, AIProviderConnection, User
 from app.services.user_operation_lock import exclusive_user_lifecycle_operation
 
 
@@ -35,11 +36,19 @@ class AISettingsService:
 
     def get(self) -> AISettingsView:
         self._connections._active()
-        record = self._db.get(AIActiveConnection, self._owner.id, populate_existing=True)
-        if record is None:
-            return AISettingsView(active_connection_id=None)
-        connection = self._connections.get(record.connection_id)
-        return AISettingsView(active_connection_id=connection.id if connection.enabled else None)
+        connection_id = self._db.scalar(
+            select(AIActiveConnection.connection_id)
+            .join(
+                AIProviderConnection,
+                (AIProviderConnection.user_id == AIActiveConnection.user_id)
+                & (AIProviderConnection.id == AIActiveConnection.connection_id),
+            )
+            .where(
+                AIActiveConnection.user_id == self._owner.id,
+                AIProviderConnection.enabled.is_(True),
+            )
+        )
+        return AISettingsView(active_connection_id=connection_id)
 
     def put(self, payload: AISettingsPut, *, _operation_locked: bool = False) -> AISettingsView:
         context = nullcontext() if _operation_locked else exclusive_user_lifecycle_operation(self._db, self._owner.id)

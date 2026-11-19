@@ -2,10 +2,12 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.ai.connections import ConnectionProblem, ProviderConnectionService
 from app.ai.preferences import AISettingsPut, AISettingsService
+from app.database import SessionLocal
 from app.models import User
 from tests.test_ai_connections import KEY, login, payload
 
@@ -57,3 +59,43 @@ def test_preferences_rest_auth_csrf_validation_and_no_outbound_work(client: Test
     assert response.status_code == 200 and response.json()["active_connection_id"] == str(connection.id)
     assert KEY not in response.text
     assert client.get(path).json() == response.json()
+
+
+def test_concurrent_delete_during_selection_read_returns_a_valid_snapshot(
+    client: TestClient, db: Session, user: User,
+) -> None:
+    identifier = uuid4()
+    connection, _ = ProviderConnectionService(db, owner=user).put(
+        identifier, payload(api_key=KEY, enabled=True),
+    )
+    AISettingsService(db, owner=user).put(
+        AISettingsPut(active_connection_id=identifier, configuration_version=connection.configuration_version),
+    )
+    login(client)
+    owner_id = user.id
+    deleted = False
+
+    def delete_after_selection_read(state):
+        nonlocal deleted
+        if deleted or not state.is_select or "ai_active_connections" not in str(state.statement):
+            return state.invoke_statement()
+        # Finish the reader's SQL snapshot, then delete in another session before
+        # the application consumes it. A subsequent lookup must not turn this
+        # otherwise valid read into an unhandled not-found exception.
+        snapshot = state.invoke_statement().freeze()
+        deleted = True
+        with SessionLocal() as writer:
+            owner = writer.get(User, owner_id)
+            assert owner is not None
+            ProviderConnectionService(writer, owner=owner).delete(identifier)
+        return snapshot()
+
+    event.listen(Session, "do_orm_execute", delete_after_selection_read, retval=True)
+    try:
+        response = client.get("/api/v1/settings/ai/preferences")
+        assert deleted
+        assert response.status_code == 200
+        assert response.json()["active_connection_id"] in (None, str(identifier))
+        assert client.get("/api/v1/settings/ai/preferences").json() == {"active_connection_id": None}
+    finally:
+        event.remove(Session, "do_orm_execute", delete_after_selection_read)
