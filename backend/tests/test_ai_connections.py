@@ -14,7 +14,7 @@ from app.ai.connections import ConnectionProblem, ProviderConnectionService
 from app.ai.connections_contracts import ProviderConnectionListQuery, ProviderConnectionPut
 from app.config import settings
 from app.database import SessionLocal
-from app.models import AIProviderConnection, AIProviderCredential, User
+from app.models import AIConnectionRetirement, AIProviderConnection, AIProviderCredential, User
 from app.services.analysis_demo import (
     AnalysisDemoOwnershipError,
     remove_analysis_demo,
@@ -34,6 +34,29 @@ def payload(**changes) -> ProviderConnectionPut:
         "label": "Personal provider", "provider_kind": "openai_api", "model_id": "synthetic-model",
         **changes,
     })
+
+
+def test_unknown_deleted_connection_id_is_retired_only_for_its_owner(
+    client: TestClient, db: Session, user: User,
+) -> None:
+    identifier = uuid4()
+    headers = {"X-CSRF-Token": login(client)}
+    assert client.delete(f"{PATH}/{identifier}", headers=headers).status_code == 204
+    first = db.get(AIConnectionRetirement, (user.id, identifier))
+    assert first is not None
+    timestamp = first.retired_at
+    assert client.delete(f"{PATH}/{identifier}", headers=headers).status_code == 204
+    assert db.get(AIConnectionRetirement, (user.id, identifier)).retired_at == timestamp
+    response = client.put(f"{PATH}/{identifier}", headers=headers, json={
+        "label": "Delayed setup", "provider_kind": "openai_api",
+    })
+    assert response.status_code == 409
+    assert response.json()["type"] == "urn:calograph:problem:ai-connection-retired"
+    other = User(username="other-retirement-owner", password_hash="synthetic-only")
+    db.add(other)
+    db.commit()
+    configured, created = ProviderConnectionService(db, owner=other).put(identifier, payload())
+    assert created and configured.id == identifier
 
 
 def login(client: TestClient) -> str:

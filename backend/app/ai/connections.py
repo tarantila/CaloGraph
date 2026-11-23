@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from app.ai.connections_contracts import (
@@ -15,7 +15,15 @@ from app.ai.connections_contracts import (
     ProviderConnectionPut,
     ProviderConnectionView,
 )
-from app.models import AIActiveConnection, AIProviderConnection, AIProviderCredential, User
+from app.models import (
+    AIActiveConnection,
+    AIConnectionRetirement,
+    AIConsent,
+    AIConsentRevocation,
+    AIProviderConnection,
+    AIProviderCredential,
+    User,
+)
 from app.services.credential_crypto import (
     CredentialEncryptionError,
     decrypt_credential,
@@ -93,6 +101,11 @@ class ProviderConnectionService:
         context = nullcontext() if _operation_locked else exclusive_user_lifecycle_operation(self._db, self._owner.id)
         with context:
             self._active()
+            if self._db.get(AIConnectionRetirement, (self._owner.id, connection_id), populate_existing=True) is not None:
+                raise ConnectionProblem(
+                    "ai-connection-retired", 409,
+                    "Diese Verbindungs-ID wurde gelöscht. Bitte eine neue Verbindung mit neuer ID anlegen.",
+                )
             record = self._record(connection_id)
             created = record is None
             if created and (self._db.scalar(select(func.count()).select_from(AIProviderConnection).where(
@@ -171,6 +184,32 @@ class ProviderConnectionService:
         with context:
             self._active()
             record = self._record(connection_id)
+            retirement = self._db.get(
+                AIConnectionRetirement, (self._owner.id, connection_id), populate_existing=True,
+            )
+            if retirement is None:
+                self._db.add(AIConnectionRetirement(
+                    user_id=self._owner.id, connection_id=connection_id, retired_at=datetime.now(UTC),
+                ))
             if record is not None:
+                # Keep denied permission IDs after the connection's grants are
+                # removed by CASCADE. A recreated connection must not revive a
+                # delayed grant request from its previous lifetime.
+                retained = select(AIConsentRevocation.consent_id).where(
+                    AIConsentRevocation.user_id == AIConsent.user_id,
+                    AIConsentRevocation.consent_id == AIConsent.id,
+                ).exists()
+                self._db.execute(insert(AIConsentRevocation).from_select(
+                    ["user_id", "consent_id", "revoked_at"],
+                    select(
+                        AIConsent.user_id, AIConsent.id,
+                        func.coalesce(AIConsent.revoked_at, datetime.now(UTC)),
+                    ).where(
+                        AIConsent.user_id == self._owner.id,
+                        AIConsent.connection_id == connection_id,
+                        ~retained,
+                    ),
+                ))
                 self._db.delete(record)
+            if retirement is None or record is not None:
                 self._db.commit()

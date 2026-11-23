@@ -68,6 +68,7 @@ def get_connection(
     "/{connection_id}", response_model=ProviderConnectionView, operation_id="ai_put_connection",
     description=(
         "Idempotently create/replace configuration at a client-generated UUID scoped to this account. "
+        "Deleted UUIDs cannot be reused; provide a new UUID for a new connection. "
         "Requires X-CSRF-Token. Omit api_key to retain it, null removes it; saved secrets are never "
         "returned. Provider kind is immutable. Changing a custom destination requires explicit key "
         "replacement/removal. No network request or consent to transmit health data is made. "
@@ -93,7 +94,7 @@ def put_connection(
 @router.delete(
     "/{connection_id}", status_code=204, response_class=Response,
     operation_id="ai_delete_connection",
-    description="Idempotently remove account-local configuration and credentials; requires X-CSRF-Token. Does not revoke a key at its provider.",
+    description="Idempotently remove account-local configuration and credentials and retire this UUID, even if not yet created; requires X-CSRF-Token. Does not revoke a key at its provider.",
 )
 def delete_connection(
     connection_id: UUID,

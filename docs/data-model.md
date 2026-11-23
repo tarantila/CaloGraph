@@ -21,6 +21,20 @@
 - `ai_active_connections`: one optional active AI connection per account. Both
   account and composite connection foreign keys cascade deletion. Disabling the
   selected connection clears this preference in the same transaction.
+- `ai_consents`: immutable, versioned data permissions scoped to an account and
+  provider connection, purpose, data domains, optional meal names and history
+  scope. Each resource snapshots the provider, model, endpoint and connection
+  version; configuration changes invalidate it. Revocation records a UTC
+  timestamp without reactivating an old resource on retry. The composite
+  connection foreign key cascades on connection/account deletion.
+- `ai_consent_revocations`: retained account-local permission IDs and UTC
+  invalidation timestamps. These contain no provider credentials or health data,
+  survive connection deletion and prevent delayed requests from recreating a
+  withdrawn permission. Only account deletion cascades these records.
+- `ai_connection_retirements`: account-local deleted connection IDs and UTC
+  retirement timestamps. A deleted UUID cannot be recreated, so a delayed
+  permission request cannot bind to a different destination under an old ID and
+  configuration version. Account deletion removes these records.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

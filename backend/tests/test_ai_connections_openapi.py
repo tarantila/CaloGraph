@@ -47,7 +47,25 @@ def test_connection_public_response_has_no_secret_fields_and_write_is_documented
         "ai_list_connections", "ai_get_connection", "ai_put_connection", "ai_delete_connection",
         "ai_get_provider_catalog", "ai_get_latest_connection_check", "ai_put_connection_check",
         "ai_get_settings", "ai_put_settings",
+        "ai_list_consents", "ai_get_consent", "ai_put_consent", "ai_revoke_consent",
     }
     mutation = contract["paths"]["/api/v1/settings/ai/connections/{connection_id}"]["put"]
     assert "Idempotently" in mutation["description"]
     assert "201" in mutation["responses"]
+
+
+def test_data_consents_document_immutable_scope_and_explicit_history() -> None:
+    contract = connection_contract()
+    request = contract["schemas"]["AIConsentPut"]
+    assert {"connection_id", "configuration_version", "purpose", "data_domains", "include_meal_names", "history", "policy_version"} <= set(request["required"])
+    assert not {"user_id", "api_key", "base_url"} & set(request["properties"])
+    history = contract["schemas"]["ConsentHistory"]
+    assert {"mode", "start", "end"} <= set(history["required"])
+    assert {"type": "null"} in history["properties"]["start"]["anyOf"]
+    response = contract["schemas"]["AIConsentView"]
+    assert not {"user_id", "api_key", "encrypted_api_key"} & set(response["properties"])
+    assert "ConsentDataUse" not in contract["schemas"]
+    path = contract["paths"]["/api/v1/settings/ai/consents/{consent_id}"]
+    assert "201" in path["put"]["responses"]
+    assert "204" in path["delete"]["responses"]
+    assert all(code in path["put"]["responses"] for code in ("401", "403", "404", "409", "422"))

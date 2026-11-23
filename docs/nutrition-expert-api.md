@@ -61,9 +61,9 @@ or available adapter.
 
 `FakeProvider` is dependency-injected for tests only. It is not registered in
 the API, performs no network I/O, and does not retain prompts. The current
-protocol supports one-shot generation and discovery; native tool definitions,
-streaming run events and consent resources require their own
-typed contracts before those features are exposed.
+protocol supports one-shot generation and discovery; native tool definitions and
+streaming run events require their own typed contracts before those features are
+exposed. Data permissions have the separate contracts described below.
 
 ## Provider connection settings
 
@@ -86,6 +86,9 @@ The `/api/v1/settings/ai/connections` resource supports these operations:
   bypassing the shared account-operation lock.
 - `DELETE /{connection_id}` removes configuration and credentials, returning 204
   even when already absent. It does not revoke a key at the external provider.
+  Deleted connection UUIDs are retained as retired and cannot be reused. A new
+  connection needs a new UUID, preventing delayed permission requests from
+  binding to another destination after deletion.
 
 Mutations require the browser session's `X-CSRF-Token` and pass existing origin
 validation. Unknown input fields, including `user_id`, are rejected. Errors use
@@ -175,6 +178,51 @@ raw network exception text. Only normalized bounded model metadata is persisted.
 Endpoint references: [OpenAI models](https://developers.openai.com/api/reference/resources/models/methods/list),
 [Anthropic models](https://platform.claude.com/docs/en/api/models/list),
 [Gemini models](https://aistudio.google.com/api-reference/models).
+
+## Versioned data permissions
+
+`/api/v1/settings/ai/consents` records explicit, immutable permission for a future
+Nutrition Expert data transfer. Configuration, metadata checks and choosing an
+active connection do not create this permission. The resource performs no health
+data read, credential decryption or provider request.
+
+- `PUT /{id}` creates a grant with a client-generated UUID (201). Replaying the
+  same ID and payload returns its current state (200), including revoked or stale
+  state. Reusing the ID with a different payload returns 409.
+- `GET /{id}` reads an account-local grant. `GET` lists up to 50 grants in UUID
+  order with an exclusive `after` cursor and optional `connection_id` filter.
+- `DELETE /{id}` idempotently revokes an account-local grant (204). Revocation is
+  terminal; retrying an earlier creation request cannot restore permission.
+  Unknown IDs are retained as invalidated, so delayed creation returns 409.
+
+The snapshot binds the authenticated account, provider connection and current
+configuration version, provider kind, selected model, destination, policy version
+and purpose (`nutrition_chat` or `nutrition_check_in`). Data domains are explicit:
+nutrition, targets, weight, activity, profile and health context. Including meal
+names requires separate permission and the nutrition domain. History is either
+all available history or an inclusive, ordered date range. Unknown fields and
+ambiguous scopes are rejected. All mutations require CSRF protection.
+
+Only enabled connections with a selected model can receive new grants. Changed
+connection settings make old grants inapplicable. At most 200 current grants are
+allowed per account; revoked or stale records do not consume that allowance.
+Account and connection deletion cascade through the composite owner/connection
+foreign key. Before connection deletion, its permission IDs are invalidated in
+the same transaction. Retained invalidations survive connection deletion;
+replaying an old ID returns 409 even if the old resource has been removed. A new
+explicit permission needs a new UUID. Administrator status grants no cross-account access.
+
+Migration 0056 backfills existing revocations into the account-local invalidation
+table. It also retains deleted connection UUIDs, preventing their reuse. These
+records contain only account/resource IDs and timestamps. Downgrade is refused
+while either kind of invalidation exists. Account deletion removes these records.
+
+`AIConsentService.require_usable` validates a server-constructed `ConsentDataUse`
+against current state, purpose, domains, meal-name permission and history bounds,
+and rejects future data-use dates in the account timezone. Callers must authorize
+again immediately before an outbound send under the account operation lock;
+reading a grant alone does not serialize later provider traffic. This slice
+exposes permission management, not generation or a new data-selection interface.
 
 ## ChatGPT-plan authentication track
 
