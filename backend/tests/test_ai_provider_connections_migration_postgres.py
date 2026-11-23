@@ -46,6 +46,81 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
                 sa.inspect(connection).get_table_names()
             )
 
+        # Verify the additive 0044 -> 0045 change retains existing user state,
+        # and that downgrade refuses a draft before touching schema or data.
+        command.downgrade(alembic_config, "20261113_0044")
+        migration_owner, migration_connection = uuid4(), uuid4()
+        now = datetime.now(UTC)
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO users (id, username, password_hash, language, timezone, week_starts_on, "
+                "preferred_weight_unit, raw_payload_retention_days, is_active, is_admin, created_at, updated_at) "
+                "VALUES (:id, :username, 'test-password-hash', 'de', 'Europe/Berlin', 1, 'kg', 0, true, false, :now, :now)"
+            ), {"id": migration_owner, "username": f"ai-migration-{uuid4()}", "now": now})
+            connection.execute(text(
+                "INSERT INTO ai_provider_connections (user_id, id, label, provider_kind, model_id, enabled, "
+                "created_at, updated_at) VALUES (:user_id, :id, 'Existing', 'openai_api', 'model-test', true, :now, :now)"
+            ), {"user_id": migration_owner, "id": migration_connection, "now": now})
+            connection.execute(text(
+                "INSERT INTO ai_provider_credentials (user_id, connection_id, encrypted_api_key) "
+                "VALUES (:user_id, :connection_id, :ciphertext)"
+            ), {"user_id": migration_owner, "connection_id": migration_connection, "ciphertext": b"opaque-test-ciphertext"})
+            connection.execute(text(
+                "INSERT INTO ai_provider_checks (user_id, id, connection_id, configuration_version, privacy_version, started_at) "
+                "VALUES (:user_id, :id, :connection_id, 1, 'synthetic-privacy-version', :now)"
+            ), {"user_id": migration_owner, "id": uuid4(), "connection_id": migration_connection, "now": now})
+            connection.execute(text(
+                "INSERT INTO ai_active_connections (user_id, connection_id) VALUES (:user_id, :connection_id)"
+            ), {"user_id": migration_owner, "connection_id": migration_connection})
+        command.upgrade(alembic_config, "head")
+        draft_id = uuid4()
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO ai_provider_connections "
+                "(user_id, id, label, provider_kind, model_id, enabled, created_at, updated_at) "
+                "VALUES (:user_id, :id, 'Discovery draft', 'openai_api', NULL, false, :now, :now)"
+            ), {"user_id": migration_owner, "id": draft_id, "now": now})
+        with pytest.raises(RuntimeError, match="model-less provider drafts"):
+            command.downgrade(alembic_config, "20261113_0044")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261113_0045"
+            assert connection.scalar(text(
+                "SELECT encrypted_api_key FROM ai_provider_credentials WHERE user_id=:user_id AND connection_id=:id"
+            ), {"user_id": migration_owner, "id": migration_connection}) == b"opaque-test-ciphertext"
+            assert connection.scalar(text(
+                "SELECT connection_id FROM ai_active_connections WHERE user_id=:user_id"
+            ), {"user_id": migration_owner}) == migration_connection
+            assert connection.scalar(text(
+                "SELECT count(*) FROM ai_provider_checks WHERE user_id=:user_id"
+            ), {"user_id": migration_owner}) == 1
+            assert connection.scalar(text(
+                "SELECT model_id FROM ai_provider_connections WHERE user_id=:user_id AND id=:id"
+            ), {"user_id": migration_owner, "id": draft_id}) is None
+        with pytest.raises(sa.exc.DBAPIError), engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO ai_provider_connections "
+                "(user_id, id, label, provider_kind, model_id, enabled, created_at, updated_at) "
+                "VALUES (:user_id, :id, 'Invalid enabled draft', 'openai_api', NULL, true, :now, :now)"
+            ), {"user_id": migration_owner, "id": uuid4(), "now": now})
+        with engine.begin() as connection:
+            connection.execute(text(
+                "DELETE FROM ai_provider_connections WHERE user_id=:user_id AND id=:id"
+            ), {"user_id": migration_owner, "id": draft_id})
+        command.downgrade(alembic_config, "20261113_0044")
+        with engine.connect() as connection:
+            assert connection.scalar(text(
+                "SELECT model_id FROM ai_provider_connections WHERE user_id=:user_id AND id=:id"
+            ), {"user_id": migration_owner, "id": migration_connection}) == "model-test"
+            assert connection.scalar(text(
+                "SELECT encrypted_api_key FROM ai_provider_credentials WHERE user_id=:user_id AND connection_id=:id"
+            ), {"user_id": migration_owner, "id": migration_connection}) == b"opaque-test-ciphertext"
+            assert connection.scalar(text(
+                "SELECT connection_id FROM ai_active_connections WHERE user_id=:user_id"
+            ), {"user_id": migration_owner}) == migration_connection
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM users WHERE id=:user_id"), {"user_id": migration_owner})
+
         owner_id, other_id = uuid4(), uuid4()
         shared_connection_id = uuid4()
         other_only_connection_id = uuid4()

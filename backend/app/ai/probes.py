@@ -142,12 +142,15 @@ class ProviderCheckService:
                             headers = {"Authorization": f"Bearer {secret}"}
                     data = fetch_provider_json(base, "/models", headers=headers, timeout_seconds=min(connection.timeout_seconds, 30), native=native)
                     all_models, partial = _model_ids(data, kind, secret)
-                    available = True if connection.model_id in all_models else None if partial else False
+                    available = (
+                        None if connection.model_id is None else
+                        True if connection.model_id in all_models else None if partial else False
+                    )
                     models = all_models[:100]
-                    if available and connection.model_id not in models:
+                    if available and connection.model_id is not None and connection.model_id not in models:
                         models = (*models[:99], connection.model_id)
                     truncated = partial or len(all_models) > 100
-                    status = "available" if available else "model_not_listed"
+                    status = "available" if available is True or connection.model_id is None else "model_not_listed"
             except CredentialEncryptionError:
                 status = "credential_unavailable"
             except OutboundError as exc:

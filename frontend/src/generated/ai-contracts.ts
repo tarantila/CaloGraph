@@ -44,7 +44,7 @@ export type ProviderConnectionPage = {
 export type ProviderConnectionPut = {
   label: string
   provider_kind: "openai_api" | "anthropic" | "gemini" | "local" | "gateway"
-  model_id: string
+  model_id?: string | null
   base_url?: string | null
   enabled?: boolean
   timeout_seconds?: number
@@ -55,7 +55,7 @@ export type ProviderConnectionView = {
   id: string
   label: string
   provider_kind: ProviderKind
-  model_id: string
+  model_id: string | null
   base_url: string | null
   enabled: boolean
   timeout_seconds: number
