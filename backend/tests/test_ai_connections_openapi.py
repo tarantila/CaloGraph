@@ -34,7 +34,10 @@ def test_connection_public_response_has_no_secret_fields_and_write_is_documented
     contract = connection_contract()
     request = contract["schemas"]["ProviderConnectionPut"]
     assert request["properties"]["api_key"]["writeOnly"] is True
+    assert request["properties"]["model_id"].get("default") is None
     response = contract["schemas"]["ProviderConnectionView"]
+    assert "model_id" in response["required"]
+    assert any(schema.get("type") == "null" for schema in response["properties"]["model_id"].get("anyOf", []))
     assert not {"api_key", "encrypted_api_key", "user_id"} & set(response["properties"])
     assert all("Credential" not in key for key in contract["schemas"])
     operations = [operation for path in contract["paths"].values() for operation in path.values()]

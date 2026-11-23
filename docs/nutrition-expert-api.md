@@ -93,11 +93,15 @@ validation. Unknown input fields, including `user_id`, are rejected. Errors use
 operation IDs are `ai_list_connections`, `ai_get_connection`, `ai_put_connection`
 and `ai_delete_connection` under the `AI providers` tag.
 
-Configuration contains a label (1–100 characters), provider kind, model ID
-(1–200 characters), optional custom base URL, enabled flag and timeout (5–300
+Configuration contains a label (1–100 characters), provider kind, optional model ID
+(1–200 characters when set), optional custom base URL, enabled flag and timeout (5–300
 seconds, default 60). There are at most 20 connections per account. Provider kind
 is immutable; create another connection to change it. OpenAI API, Anthropic and
-Gemini require a key when enabled. Disabled drafts may omit it. Local and gateway
+Gemini require a key when enabled. Disabled drafts may omit the model and key so
+model discovery can precede selection. Enabled configurations require a model;
+the database enforces this invariant as well. Migration 0045 preserves existing
+configurations. Its downgrade refuses model-less drafts before changing the
+schema rather than deleting them or inventing model IDs. Local and gateway
 providers require an HTTP(S) base URL and may omit a key. Native providers do not
 accept custom URLs. URLs containing userinfo, query or fragment are rejected.
 

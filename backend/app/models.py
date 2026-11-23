@@ -126,6 +126,10 @@ class AIProviderConnection(Base):
         ),
         CheckConstraint("length(trim(model_id)) > 0", name="ck_ai_provider_connections_model_id"),
         CheckConstraint(
+            "NOT enabled OR model_id IS NOT NULL",
+            name="ck_ai_provider_connections_enabled_model",
+        ),
+        CheckConstraint(
             "(provider_kind IN ('local', 'gateway') AND base_url IS NOT NULL "
             "AND length(trim(base_url)) > 0) OR "
             "(provider_kind NOT IN ('local', 'gateway') AND base_url IS NULL)",
@@ -147,7 +151,7 @@ class AIProviderConnection(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(String(100), nullable=False)
     provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     base_url: Mapped[str | None] = mapped_column(String(2048))
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

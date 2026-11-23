@@ -3167,9 +3167,16 @@
           "title": "Provider Kind"
         },
         "model_id": {
-          "type": "string",
-          "maxLength": 200,
-          "minLength": 1,
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
           "title": "Model Id"
         },
         "base_url": {
@@ -3220,8 +3227,7 @@
       "type": "object",
       "required": [
         "label",
-        "provider_kind",
-        "model_id"
+        "provider_kind"
       ],
       "title": "ProviderConnectionPut"
     },
@@ -3240,7 +3246,14 @@
           "$ref": "#/components/schemas/ProviderKind"
         },
         "model_id": {
-          "type": "string",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "title": "Model Id"
         },
         "base_url": {

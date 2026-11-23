@@ -29,7 +29,7 @@ class ConnectionContract(BaseModel):
 class ProviderConnectionPut(ConnectionContract):
     label: str = Field(min_length=1, max_length=100)
     provider_kind: ConfigurableProvider
-    model_id: str = Field(min_length=1, max_length=200)
+    model_id: str | None = Field(default=None, min_length=1, max_length=200)
     base_url: EndpointUrl | None = Field(
         default=None, description="Required for local/gateway; forbidden for native providers. Saving grants no outbound access.",
     )
@@ -41,11 +41,20 @@ class ProviderConnectionPut(ConnectionContract):
         json_schema_extra={"writeOnly": True},
     )
 
-    @field_validator("label", "model_id")
+    @field_validator("label")
     @classmethod
     def clean_text(cls, value: str) -> str:
         if not value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("configuration text must be non-empty and contain no controls")
+        return value.strip()
+
+    @field_validator("model_id")
+    @classmethod
+    def clean_model_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("model ID must be non-empty and contain no controls")
         return value.strip()
 
     @field_validator("api_key")
@@ -76,7 +85,7 @@ class ProviderConnectionView(ConnectionContract):
     id: UUID
     label: str
     provider_kind: ProviderKind
-    model_id: str
+    model_id: str | None
     base_url: EndpointUrl | None
     enabled: bool
     timeout_seconds: int

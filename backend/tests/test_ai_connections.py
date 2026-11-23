@@ -74,6 +74,38 @@ def test_create_repeat_preserve_replace_clear_and_delete(db: Session, user: User
     assert db.get(AIProviderConnection, (user.id, identifier)) is None
 
 
+def test_disabled_model_discovery_draft_preserves_key_until_activation(db: Session, user: User) -> None:
+    service = ProviderConnectionService(db, owner=user)
+    identifier = uuid4()
+    omitted_model = ProviderConnectionPut.model_validate({
+        "label": "Personal provider", "provider_kind": "openai_api", "api_key": KEY,
+    })
+    assert "model_id" not in omitted_model.model_fields_set
+    draft, created = service.put(identifier, omitted_model)
+    assert created and draft.model_id is None and not draft.enabled and draft.has_credential
+    credential = db.get(AIProviderCredential, (user.id, identifier))
+    assert credential is not None
+    ciphertext = credential.encrypted_api_key
+    assert KEY.encode() not in ciphertext and decrypt_credential(ciphertext) == KEY
+
+    explicit_null, created = service.put(identifier, payload(model_id=None))
+    assert not created and explicit_null == draft
+    assert credential.encrypted_api_key == ciphertext
+
+    selected, created = service.put(identifier, payload(model_id="synthetic-model", enabled=True))
+    assert not created and selected.model_id == "synthetic-model" and selected.enabled
+    assert selected.configuration_version == draft.configuration_version + 1
+    assert selected.has_credential and credential.encrypted_api_key == ciphertext
+
+
+def test_connection_cannot_be_enabled_without_selected_model(db: Session, user: User) -> None:
+    with pytest.raises(ConnectionProblem) as error:
+        ProviderConnectionService(db, owner=user).put(
+            uuid4(), payload(model_id=None, api_key=KEY, enabled=True),
+        )
+    assert error.value.code == "ai-connection-model-required" and error.value.status == 422
+
+
 def test_key_cannot_be_carried_to_another_provider_or_changed_destination(db: Session, user: User) -> None:
     service = ProviderConnectionService(db, owner=user)
     identifier = uuid4()
@@ -194,7 +226,8 @@ def test_reused_session_refreshes_configuration_and_key_after_other_writer(db: S
 
 @pytest.mark.parametrize("changes", [
     {"provider_kind": "chatgpt_plan"}, {"provider_kind": "unknown"}, {"label": "  "},
-    {"model_id": "bad\nmodel"}, {"timeout_seconds": 0}, {"timeout_seconds": 301},
+    {"model_id": "bad\nmodel"}, {"model_id": ""}, {"model_id": "x" * 201},
+    {"timeout_seconds": 0}, {"timeout_seconds": 301},
     {"api_key": ""}, {"api_key": " leading-space"}, {"api_key": "x" * 8193},
     {"base_url": "https://evil.invalid/v1"}, {"provider_kind": "local"},
     {"provider_kind": "local", "base_url": "http://user:pass@host/v1"},

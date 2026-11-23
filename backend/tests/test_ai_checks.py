@@ -68,6 +68,29 @@ def test_native_discovery_auth_and_durable_replay(
         service.put(identifier, uuid4(), request)
 
 
+def test_disabled_draft_discovers_models_without_selected_model(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identifier, request = configured(db, user, model_id=None)
+    connection = ProviderConnectionService(db, owner=user).get(identifier)
+    assert connection.model_id is None and connection.enabled is False
+    monkeypatch.setattr(
+        probes, "fetch_provider_json",
+        lambda *args, **kwargs: {"data": [{"id": "model-one"}, {"id": "model-two"}]},
+    )
+    service = ProviderCheckService(db, owner=user)
+    check_id = uuid4()
+    result = service.put(identifier, check_id, request)
+    assert result.status == "available"
+    assert result.models == ("model-one", "model-two")
+    assert result.selected_model_available is None
+    assert service.latest(identifier) == result
+    ProviderConnectionService(db, owner=user).put(
+        identifier, payload(model_id="model-one", enabled=True),
+    )
+    assert service.latest(identifier) is None
+
+
 @pytest.mark.parametrize(("code", "status", "expected"), [
     ("authentication", 401, "authentication"), ("rate_limited", 429, "rate_limited"),
     ("destination_blocked", None, "destination_blocked"), ("timeout", None, "timeout"),

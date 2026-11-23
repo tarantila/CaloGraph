@@ -41,6 +41,25 @@ def test_selection_is_account_local_idempotent_and_cleared_when_disabled_or_dele
     assert service.get().active_connection_id is None
 
 
+def test_model_discovery_draft_can_be_selected_after_activation_and_disable_clears_it(
+    db: Session, user: User,
+) -> None:
+    connections = ProviderConnectionService(db, owner=user)
+    service = AISettingsService(db, owner=user)
+    identifier = uuid4()
+    draft, _ = connections.put(identifier, payload(model_id=None, api_key=KEY))
+    assert draft.model_id is None and not draft.enabled and service.get().active_connection_id is None
+    with pytest.raises(ConnectionProblem) as error:
+        connections.put(identifier, payload(model_id=None, enabled=True))
+    assert error.value.code == "ai-connection-model-required"
+
+    active, _ = connections.put(identifier, payload(model_id="synthetic-model", enabled=True))
+    selected = AISettingsPut(active_connection_id=identifier, configuration_version=active.configuration_version)
+    assert service.put(selected).active_connection_id == identifier
+    disabled, _ = connections.put(identifier, payload(enabled=False))
+    assert disabled.has_credential and service.get().active_connection_id is None
+
+
 def test_preferences_rest_auth_csrf_validation_and_no_outbound_work(client: TestClient, db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.ai import probes
     monkeypatch.setattr(probes, "fetch_provider_json", lambda *args, **kwargs: pytest.fail("selection must never contact provider"))

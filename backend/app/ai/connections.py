@@ -107,6 +107,11 @@ class ProviderConnectionService:
             if record is not None and record.base_url != url and credential is not None and not key_provided:
                 raise ConnectionProblem("ai-connection-key-confirmation", 422, "Bei einer Zieländerung den Schlüssel ausdrücklich ersetzen oder entfernen.")
             has_key = payload.api_key is not None if key_provided else credential is not None
+            if payload.enabled and payload.model_id is None:
+                raise ConnectionProblem(
+                    "ai-connection-model-required", 422,
+                    "Vor dem Aktivieren muss ein Modell ausgewählt werden.",
+                )
             if payload.enabled and payload.provider_kind in {"openai_api", "anthropic", "gemini"} and not has_key:
                 raise ConnectionProblem("ai-connection-key-required", 422, "Für diesen Provider ist ein API-Schlüssel erforderlich.")
             encrypted: bytes | None = None
