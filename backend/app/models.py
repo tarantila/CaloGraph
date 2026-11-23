@@ -231,6 +231,75 @@ class AIActiveConnection(Base):
     connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
 
 
+class AIConsent(Base):
+    __tablename__ = "ai_consents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_consents_connection",
+        ),
+        CheckConstraint("configuration_version >= 1", name="ck_ai_consents_configuration_version"),
+        CheckConstraint(
+            "provider_kind IN ('openai_api', 'anthropic', 'gemini', 'local', 'gateway')",
+            name="ck_ai_consents_provider_kind",
+        ),
+        CheckConstraint("length(trim(model_id)) > 0", name="ck_ai_consents_model_id"),
+        CheckConstraint(
+            "length(policy_version) > 0", name="ck_ai_consents_policy_version",
+        ),
+        CheckConstraint(
+            "purpose IN ('nutrition_chat', 'nutrition_check_in')", name="ck_ai_consents_purpose",
+        ),
+        CheckConstraint(
+            "(history_mode = 'all_available' AND history_start IS NULL AND history_end IS NULL) OR "
+            "(history_mode = 'date_range' AND history_start IS NOT NULL AND history_end IS NOT NULL "
+            "AND history_start <= history_end)",
+            name="ck_ai_consents_history_scope",
+        ),
+        Index("ix_ai_consents_owner_connection", "user_id", "connection_id", "id"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048))
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    data_domains: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    include_meal_names: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    history_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    history_start: Mapped[date | None] = mapped_column(Date)
+    history_end: Mapped[date | None] = mapped_column(Date)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AIConnectionRetirement(Base):
+    __tablename__ = "ai_connection_retirements"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIConsentRevocation(Base):
+    __tablename__ = "ai_consent_revocations"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    consent_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class UserProviderPriority(Base):
     __tablename__ = "user_provider_priorities"
     __table_args__ = (

@@ -72,7 +72,7 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
             connection.execute(text(
                 "INSERT INTO ai_active_connections (user_id, connection_id) VALUES (:user_id, :connection_id)"
             ), {"user_id": migration_owner, "connection_id": migration_connection})
-        command.upgrade(alembic_config, "head")
+        command.upgrade(alembic_config, "20261113_0045")
         draft_id = uuid4()
         with engine.begin() as connection:
             connection.execute(text(
@@ -286,6 +286,7 @@ def test_ai_provider_connections_migration_constraints_and_cascade() -> None:
             assert "ai_provider_credentials" not in tables
             assert "ai_provider_checks" not in tables
             assert "ai_active_connections" not in tables
+            assert "ai_consents" not in tables
         command.upgrade(alembic_config, "head")
         command.check(alembic_config)
         with engine.connect() as connection:

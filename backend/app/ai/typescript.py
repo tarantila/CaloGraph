@@ -14,6 +14,12 @@ from app.ai.connections_contracts import (
     ProviderConnectionPut,
     ProviderConnectionView,
 )
+from app.ai.consents_contracts import (
+    CONSENT_POLICY_VERSION,
+    AIConsentPage,
+    AIConsentPut,
+    AIConsentView,
+)
 from app.ai.preferences import AISettingsPut, AISettingsView
 from app.ai.probes_contracts import (
     CONNECTION_PRIVACY_VERSION,
@@ -21,6 +27,7 @@ from app.ai.probes_contracts import (
     ConnectionCheckView,
     ProviderCatalog,
 )
+from app.expert.contracts import NutritionDaysPage, NutritionDaysQuery
 
 
 def _type(schema: dict[str, Any]) -> str:
@@ -53,13 +60,14 @@ def _type(schema: dict[str, Any]) -> str:
 
 def generate_typescript() -> str:
     schemas: dict[str, Any] = {}
-    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView):
+    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView, AIConsentPut, AIConsentView, AIConsentPage, NutritionDaysPage, NutritionDaysQuery):
         schema = model.model_json_schema(mode="validation", ref_template="#/$defs/{model}")
         schemas.update(schema.pop("$defs", {}))
         schemas[model.__name__] = schema
     return (
-        "// Generated from public backend AI settings contracts. Do not edit by hand.\n\n"
+        "// Generated from public backend AI settings and Expert contracts. Do not edit by hand.\n\n"
         + f"export const CONNECTION_PRIVACY_VERSION = {json.dumps(CONNECTION_PRIVACY_VERSION)} as const\n\n"
+        + f"export const CONSENT_POLICY_VERSION = {json.dumps(CONSENT_POLICY_VERSION)} as const\n\n"
         + "\n\n".join(f"export type {name} = {_type(schema)}" for name, schema in sorted(schemas.items()))
         + "\n"
     )
