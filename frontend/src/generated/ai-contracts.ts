@@ -70,6 +70,17 @@ export type ConsentHistory = {
   end: string | null
 }
 
+export type ExpertPreferencesPut = {
+  data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
+  include_meal_names: boolean
+}
+
+export type ExpertPreferencesView = {
+  data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
+  include_meal_names: boolean
+  configuration_version: number
+}
+
 export type NutritionDay = {
   date: string
   provider_key: string | null

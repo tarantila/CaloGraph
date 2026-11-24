@@ -1,8 +1,11 @@
 # Nutrition Expert application contracts
 
-The first Expert capability is a bounded, account-scoped canonical nutrition
-day read. That read performs no model calls, stores no credentials, and does not yet
-implement check-ins, historical target evaluation, or complete-history snapshots.
+The first Expert REST capability is a bounded, account-scoped canonical nutrition
+day read. It performs no model calls, stores no credentials, and exposes no
+model-facing generation endpoint. An internal `ContextBuilder` composes the
+currently selected data domains into a complete, compacted whole-history context;
+it does not persist a snapshot or contact a provider. The paginated REST read
+below remains live data and is not a completed all-history assessment.
 
 ## Shared service boundary
 
@@ -18,6 +21,44 @@ remain null; a lower-priority provider cannot fill them. Explicit zero remains
 present evidence. Conflicts fail the read instead of returning a partial page.
 The read excludes meal names and profile information, and skips meal-detail
 loading entirely. It never imports, projects, or changes nutrition evidence.
+
+## Internal whole-history context
+
+`app.expert.context.ContextBuilder` is an owner-bound database reader. It accepts
+the trusted owner and current typed preferences; it has no REST route, provider
+client, or model dependency. It reads complete available selected history in
+bounded 365-day chunks and fails explicitly if a required chunk is incomplete or
+the history exceeds the supported span. Nutrition, weight, and activity summaries
+compact older values by calendar year and retain monthly summaries for the latest
+ten years. Recent daily details cover 31 account-local days. Older history is
+not silently dropped to satisfy a recent-only limit.
+
+Nutrition remains one canonical provider per whole local day. Missing evidence
+stays null and explicit zero remains present. Weight follows the configured
+per-day scalar provider priority and includes provider provenance. Activity uses
+the selected canonical source instance and is not added to other providers.
+Historical target comparison uses the effective base target interval without
+activity credits; it is not an energy-deficit calculation. Profile and health
+notes are read only when their corresponding domains are enabled. Building this
+context does not grant permission to send it; any future caller must recheck the
+active account and purpose-specific consent immediately before an outbound send.
+
+## Data-domain preferences
+
+`GET /api/v1/settings/expert` returns the authenticated account's
+`data_domains`, `include_meal_names`, and `configuration_version`. If no row
+exists, the default enables nutrition, targets, weight, activity, profile, and
+health context, with meal names enabled. `PUT` replaces these values and requires
+the browser session's CSRF token. Domains are unique and returned in canonical
+order; meal names require the nutrition domain. An identical write is a no-op
+and preserves the version. A changed write increments it. Inactive accounts
+cannot read or change preferences, and administrator status grants no access to
+another account's settings. Saving preferences reads no health data and grants
+no provider permission.
+
+Migration `20261114_0047` adds the owner-keyed preferences row. Revision
+`20261124_0057` merges that migration branch with the retained consent
+revocation branch without changing either migration's schema operations.
 
 ## REST contract
 

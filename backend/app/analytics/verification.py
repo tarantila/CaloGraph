@@ -173,7 +173,7 @@ def _provider_record(
     return VerificationActivityProviderRecord(
         provider_key=provider_key,
         status="available",
-        active_energy_kcal=float(active_energy_kcal),
+        active_energy_kcal=active_energy_kcal,
         record_count=len(samples),
         source_types=_source_types_for_samples(provider_key, samples),
     )
@@ -186,6 +186,7 @@ def read_activity_verification(
     start: date,
     end: date,
     view: VerificationView,
+    canonical_source_identifier: str | None = None,
 ) -> VerificationActivityResponse:
     """Read user-scoped activity evidence without blending provider totals."""
     selection: ScalarProviderSelection | None = None
@@ -252,6 +253,12 @@ def read_activity_verification(
         if sample.source_type in _WITHINGS_SOURCE_TYPES and (
             withings_connection is None
             or sample.source_identifier != str(withings_connection.id)
+        ):
+            continue
+        if (
+            view == "canonical" and canonical_source_identifier is not None
+            and selection is not None and provider_key == selection.provider_key
+            and sample.source_identifier != canonical_source_identifier
         ):
             continue
         samples_by_provider_day[(provider_key, sample.local_date)].append(sample)

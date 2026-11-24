@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from alembic import command
@@ -145,7 +146,7 @@ def test_retained_revocations_upgrade_backfill_guard_and_owner_cleanup() -> None
                 history_mode="all_available", history_start=None, history_end=None,
                 policy_version="expert-data-2026-11-14", created_at=now, revoked_at=now,
             ))
-        command.upgrade(config, "head")
+        command.upgrade(config, "20261123_0056")
         with engine.connect() as connection:
             assert connection.scalar(text(
                 "SELECT revoked_at FROM ai_consent_revocations WHERE user_id=:owner AND consent_id=:id"
@@ -153,10 +154,23 @@ def test_retained_revocations_upgrade_backfill_guard_and_owner_cleanup() -> None
             assert connection.scalar(text(
                 "SELECT encrypted_api_key FROM ai_provider_credentials WHERE user_id=:owner AND connection_id=:id"
             ), {"owner": owner_id, "id": connection_id}) == b"synthetic-ciphertext"
+        with engine.begin() as connection:
+            connection.execute(sa.insert(AIConnectionRetirement).values(
+                user_id=owner_id, connection_id=uuid4(), retired_at=now,
+            ))
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM ai_consent_revocations WHERE user_id=:owner"),
+                                     {"owner": owner_id}) == 1
+            assert connection.scalar(text("SELECT count(*) FROM ai_connection_retirements WHERE user_id=:owner"),
+                                     {"owner": owner_id}) == 1
+            assert "expert_preferences" in sa.inspect(connection).get_table_names()
         with pytest.raises(RuntimeError, match="retained consent revocations"):
             command.downgrade(config, "20261114_0046")
         with engine.begin() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261123_0056"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                ScriptDirectory.from_config(config).get_current_head()
+            )
             connection.execute(text("DELETE FROM ai_provider_connections WHERE user_id=:owner AND id=:id"),
                                {"owner": owner_id, "id": connection_id})
             assert connection.scalar(text("SELECT count(*) FROM ai_consents WHERE user_id=:owner"),

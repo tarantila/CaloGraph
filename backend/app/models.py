@@ -300,6 +300,28 @@ class AIConsentRevocation(Base):
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ExpertPreferences(Base):
+    """Account-local Nutrition Expert data-selection configuration."""
+
+    __tablename__ = "expert_preferences"
+    __table_args__ = (
+        CheckConstraint("configuration_version >= 1", name="ck_expert_preferences_version"),
+        CheckConstraint(
+            "json_array_length(data_domains) BETWEEN 1 AND 6",
+            name="ck_expert_preferences_domains_count",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    data_domains: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    include_meal_names: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class UserProviderPriority(Base):
     __tablename__ = "user_provider_priorities"
     __table_args__ = (

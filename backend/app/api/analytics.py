@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import and_, false, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis_registry import analysis_registry_entries
@@ -71,17 +71,15 @@ from app.analytics.verification import (
 )
 from app.analytics.weekdays_canonical import run_weekdays_canonical_read
 from app.analytics.weekly_canonical import run_weekly_canonical_read
+from app.analytics.weight_history import WeightHistorySourceUnavailable, read_weight_history
 from app.auth.dependencies import current_user
 from app.config import settings
 from app.database import get_db
 from app.micronutrients import MICRONUTRIENT_BY_METRIC
 from app.models import (
-    GoogleHealthConnection,
     HealthSample,
     ImportBatch,
     User,
-    WithingsConnection,
-    YazioConnection,
 )
 from app.nutrition.resolution.discovery import discover_nutrition_provider_metadata
 from app.nutrition.resolution.read_context import NutritionEvidenceIndex
@@ -90,7 +88,6 @@ from app.problem_types import (
     PROVIDER_SELECTION_UNAVAILABLE,
     ProblemHTTPException,
 )
-from app.provider_preferences import WEIGHT_DATA_AREA
 from app.schemas import (
     AnalysisMicronutrientResponse,
     AnalysisNutritionMealResponse,
@@ -106,7 +103,6 @@ from app.schemas import (
     WeightResponse,
 )
 from app.services.achievements import unlock_achievement_keys
-from app.weight import WEIGHT_METRIC, WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS
 
 router = APIRouter(tags=["Analytics"])
 @router.get("/analytics/registry", response_model=AnalysisRegistryResponse)
@@ -601,13 +597,21 @@ def weight(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     start, end = _range(start, end, user.timezone, 3661)
-    selection = _preferred_scalar_provider(
-        db,
-        user_id=user.id,
-        data_area=WEIGHT_DATA_AREA,
-        source_types=WEIGHT_PROVIDER_SOURCE_TYPE_GROUPS,
-    )
-    if selection is None:
+    try:
+        history = read_weight_history(db, user_id=user.id, start=start, end=end)
+    except ScalarProviderUnavailable as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist derzeit nicht verfügbar.",
+            problem_type=PROVIDER_SELECTION_UNAVAILABLE,
+        ) from exc
+    except (ScalarProviderNotReady, WeightHistorySourceUnavailable) as exc:
+        raise ProblemHTTPException(
+            status_code=503,
+            detail="Der konfigurierte Datenprovider ist noch nicht lesbar konfiguriert.",
+            problem_type=PROVIDER_SELECTION_NOT_READY,
+        ) from exc
+    if history.selected_provider is None:
         return {
             "start_date": start,
             "end_date": end,
@@ -627,98 +631,11 @@ def weight(
                 "all_data_start_date": None,
             },
         }
-    provider_sources = selection.provider_sources or ((selection.provider_key, selection.source_type),)
-    source_identifier: str | None = None
-    yazio_connection = None
-    google_connection = None
-    if any(provider_key == "yazio" for provider_key, _ in provider_sources):
-        yazio_connection = db.scalar(select(YazioConnection).where(YazioConnection.user_id == user.id))
-        if yazio_connection is None:
-            raise ProblemHTTPException(
-                status_code=503,
-                detail="Der konfigurierte YAZIO-Provider ist nicht mehr verfügbar.",
-                problem_type=PROVIDER_SELECTION_NOT_READY,
-            )
-        source_identifier = yazio_connection.source_identifier
-    if any(provider_key == "google_health" for provider_key, _ in provider_sources):
-        google_connection = db.scalar(
-            select(GoogleHealthConnection).where(
-                GoogleHealthConnection.user_id == user.id,
-                GoogleHealthConnection.state == "active",
-            )
-        )
-    withings_connection = None
-    if any(provider_key == "withings" for provider_key, _ in provider_sources):
-        withings_connection = db.scalar(
-            select(WithingsConnection).where(
-                WithingsConnection.user_id == user.id,
-                WithingsConnection.state == "active",
-            )
-        )
-    provider_by_source_type = {
-        source_type: provider_key for provider_key, source_type in provider_sources
-    }
-    provider_filters = []
-    for provider_key, source_type in provider_sources:
-        source_filter = [
-            HealthSample.source_type == source_type,
-        ]
-        if provider_key == "yazio":
-            source_filter.append(HealthSample.source_identifier == source_identifier)
-        elif provider_key == "analysis_demo":
-            from app.services.analysis_demo import demo_source_instance_id
-
-            source_filter.append(HealthSample.source_identifier == str(demo_source_instance_id(user.id)))
-        elif provider_key == "google_health":
-            source_filter.append(
-                HealthSample.source_identifier
-                == (str(google_connection.id) if google_connection is not None else "")
-            )
-        elif provider_key == "withings":
-            source_filter.extend(
-                (
-                    (
-                        HealthSample.source_identifier == str(withings_connection.id)
-                        if withings_connection is not None
-                        else false()
-                    ),
-                    HealthSample.value > 0,
-                )
-            )
-        provider_filters.append(and_(*source_filter))
-    samples = list(
-        db.scalars(
-            select(HealthSample)
-            .where(
-                HealthSample.user_id == user.id,
-                HealthSample.metric_type == WEIGHT_METRIC,
-                HealthSample.local_date >= start,
-                HealthSample.local_date <= end,
-                or_(*provider_filters),
-            )
-            .order_by(HealthSample.local_date, HealthSample.start_at, HealthSample.id)
-        )
-    )
-    latest_by_provider_day: dict[tuple[str, date], HealthSample] = {}
-    for sample in samples:
-        sample_provider_key = provider_by_source_type.get(sample.source_type)
-        if sample_provider_key is None:
-            continue
-        key = (sample_provider_key, sample.local_date)
-        previous = latest_by_provider_day.get(key)
-        if previous is None or (sample.start_at, sample.id) > (previous.start_at, previous.id):
-            latest_by_provider_day[key] = sample
-
-    latest_by_day: dict[date, HealthSample] = {}
-    for provider_key, _ in provider_sources:
-        for (sample_provider, sample_day), sample in latest_by_provider_day.items():
-            if sample_provider == provider_key and sample_day not in latest_by_day:
-                latest_by_day[sample_day] = sample
-    ordered_points = sorted(latest_by_day.items())
-    weights = [sample.value for _, sample in ordered_points]
+    points = history.points
+    weights = [value for _, value in points]
     point_payload = [
-        {"date": day, "weight_kg": float(sample.value)}
-        for day, sample in ordered_points
+        {"date": day, "weight_kg": float(value)}
+        for day, value in points
     ]
     latest_point = point_payload[-1] if point_payload else None
     summary = {
@@ -740,7 +657,7 @@ def weight(
     return {
         "start_date": start,
         "end_date": end,
-        "selected_provider": {"provider_key": selection.provider_key},
+        "selected_provider": {"provider_key": history.selected_provider},
         "points": point_payload,
         "summary": summary,
         # The requested window does not establish a complete reader start boundary.
