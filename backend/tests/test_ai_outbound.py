@@ -30,6 +30,8 @@ class _ResponseHandler(BaseHTTPRequestHandler):
     response_body = b'{"data":[{"id":"synthetic-model"}]}'
     seen_headers: ClassVar[dict[str, str]] = {}
     requests_seen = 0
+    seen_method: ClassVar[str | None] = None
+    seen_body: ClassVar[bytes] = b""
     slow_header_delay = 0.0
 
     def end_headers(self) -> None:
@@ -43,8 +45,10 @@ class _ResponseHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             time.sleep(self.slow_header_delay)
 
-    def do_GET(self) -> None:
+    def _respond(self) -> None:
         type(self).requests_seen += 1
+        type(self).seen_method = self.command
+        type(self).seen_body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         type(self).seen_headers = {key.lower(): value for key, value in self.headers.items()}
         self.send_response(type(self).response_status)
         for key, value in type(self).response_headers.items():
@@ -53,6 +57,12 @@ class _ResponseHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(type(self).response_body)))
         self.end_headers()
         self.wfile.write(type(self).response_body)
+
+    def do_GET(self) -> None:
+        self._respond()
+
+    def do_POST(self) -> None:
+        self._respond()
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -65,6 +75,8 @@ def local_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setattr(_ResponseHandler, "response_body", b'{"data":[{"id":"synthetic-model"}]}')
     monkeypatch.setattr(_ResponseHandler, "seen_headers", {})
     monkeypatch.setattr(_ResponseHandler, "requests_seen", 0)
+    monkeypatch.setattr(_ResponseHandler, "seen_method", None)
+    monkeypatch.setattr(_ResponseHandler, "seen_body", b"")
     monkeypatch.setattr(_ResponseHandler, "slow_header_delay", 0.0)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ResponseHandler)
     server.daemon_threads = True
@@ -86,6 +98,7 @@ def _call(
     headers: dict[str, str] | None = None,
     timeout_seconds: int = 3,
     native: bool = False,
+    request_body: bytes | None = None,
 ) -> object:
     return fetch_provider_json(
         base_url,
@@ -93,6 +106,7 @@ def _call(
         headers=headers if headers is not None else {"Authorization": "Bearer synthetic-test-key"},
         timeout_seconds=timeout_seconds,
         native=native,
+        request_body=request_body,
     )
 
 
@@ -121,6 +135,28 @@ def test_only_allowlisted_local_destination_gets_one_bounded_json_request(local_
     assert _ResponseHandler.requests_seen == 1
     assert _ResponseHandler.seen_headers["x-api-key"] == "synthetic-key"
     assert _ResponseHandler.seen_headers["accept-encoding"] == "identity"
+
+
+def test_generation_post_sends_one_bounded_json_body_to_the_pinned_destination(local_provider: str) -> None:
+    body = b'{"model":"synthetic-model","messages":[{"role":"user","content":"synthetic"}]}'
+    result = _call(local_provider, request_body=body)
+    assert result == {"data": [{"id": "synthetic-model"}]}
+    assert _ResponseHandler.requests_seen == 1
+    assert _ResponseHandler.seen_method == "POST"
+    assert _ResponseHandler.seen_body == body
+    assert _ResponseHandler.seen_headers["content-type"] == "application/json"
+    assert _ResponseHandler.seen_headers["content-length"] == str(len(body))
+
+
+@pytest.mark.parametrize("body", [b"", b"x" * (outbound.MAX_PROVIDER_REQUEST_BYTES + 1)])
+def test_invalid_post_body_is_rejected_before_connecting(
+    body: bytes, local_provider: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: pytest.fail("unexpected connect"))
+    with pytest.raises(OutboundError) as error:
+        _call(local_provider, request_body=body)
+    assert error.value.code == "destination_blocked"
+    assert _ResponseHandler.requests_seen == 0
 
 
 @pytest.mark.parametrize(
@@ -302,7 +338,7 @@ def test_socket_connect_uses_numeric_ip_and_tls_keeps_original_hostname(monkeypa
 
 def test_resolver_timeout_and_saturation_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     gate = threading.Event()
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: gate.wait(1))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: gate.wait(5))
     monkeypatch.setattr(settings, "ai_allowed_endpoints", "http://slow.test/v1")
     with pytest.raises(OutboundError) as error:
         fetch_provider_json("http://slow.test/v1", "/models", headers={}, timeout_seconds=1, native=False)

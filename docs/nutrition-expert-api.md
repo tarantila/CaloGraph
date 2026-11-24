@@ -179,6 +179,26 @@ Endpoint references: [OpenAI models](https://developers.openai.com/api/reference
 [Anthropic models](https://platform.claude.com/docs/en/api/models/list),
 [Gemini models](https://aistudio.google.com/api-reference/models).
 
+## Bounded provider request transport
+
+`app.ai.generation` provides internal one-shot adapters for native API providers
+and operator-approved compatible endpoints. It uses the same destination checks,
+DNS pinning and TLS validation as metadata discovery. Request and response bodies
+are capped at 256 KiB, and generation has an absolute transport budget of at most
+60 seconds. Native destinations are fixed; custom destinations require the
+existing exact operator allowlist.
+
+The transport sends each request once, without redirects, implicit retries or
+fallback. It normalizes finish reasons and available token usage and emits safe
+error classifications without retaining provider error bodies or credentials.
+Request options follow each adapter's protocol; unsupported cross-provider
+options are not forwarded.
+
+This is an internal transport, not a public generation endpoint or a data-sharing
+authorization service. Its trusted caller must check account state and current
+purpose-bound permission immediately before dispatch. Stored configuration,
+metadata checks and category preferences alone do not authorize a request.
+
 ## Versioned data permissions
 
 `/api/v1/settings/ai/consents` records explicit, immutable permission for a future

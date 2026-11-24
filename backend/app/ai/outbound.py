@@ -1,4 +1,4 @@
-"""Bounded, DNS-pinned JSON GET transport for AI model discovery."""
+"""Bounded, DNS-pinned JSON transport for model discovery and generation."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ _PUBLIC_MESSAGES: dict[OutboundCode, str] = {
     "http_error": "The provider request failed.",
 }
 MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024
+MAX_PROVIDER_REQUEST_BYTES = 256 * 1024
 MAX_PROVIDER_TIMEOUT_SECONDS = 300
 _DNS_WORKERS = 4
 _DNS_EXECUTOR = ThreadPoolExecutor(max_workers=_DNS_WORKERS, thread_name_prefix="ai-provider-dns")
@@ -363,6 +364,7 @@ def fetch_provider_json(
     headers: dict[str, str],
     timeout_seconds: int,
     native: bool,
+    request_body: bytes | None = None,
 ) -> object:
     """Fetch one bounded JSON resource from a fixed native or allowlisted host."""
     if (
@@ -370,6 +372,9 @@ def fetch_provider_json(
         or not isinstance(timeout_seconds, int)
         or not 1 <= timeout_seconds <= MAX_PROVIDER_TIMEOUT_SECONDS
         or not isinstance(native, bool)
+        or (request_body is not None and (
+            not isinstance(request_body, bytes) or not 1 <= len(request_body) <= MAX_PROVIDER_REQUEST_BYTES
+        ))
     ):
         raise OutboundError("destination_blocked")
     endpoint = _endpoint(base_url)
@@ -405,13 +410,18 @@ def fetch_provider_json(
     try:
         if time.monotonic() >= deadline:
             raise OutboundError("timeout")
-        connection.putrequest("GET", target_path, skip_accept_encoding=True)
+        connection.putrequest("POST" if request_body is not None else "GET", target_path, skip_accept_encoding=True)
         connection.putheader("Accept", "application/json")
         connection.putheader("Accept-Encoding", "identity")
         connection.putheader("Connection", "close")
         for name, value in headers.items():
             connection.putheader(name, value)
-        connection.endheaders()
+        if request_body is not None:
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(len(request_body)))
+            connection.endheaders(request_body)
+        else:
+            connection.endheaders()
         if connection.sock is not None:
             connection.sock.settimeout(min(float(timeout_seconds), max(0.001, deadline - time.monotonic())))
         response = connection.getresponse()
