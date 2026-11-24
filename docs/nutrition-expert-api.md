@@ -1,11 +1,10 @@
 # Nutrition Expert application contracts
 
-The first Expert REST capability is a bounded, account-scoped canonical nutrition
-day read. It performs no model calls, stores no credentials, and exposes no
-model-facing generation endpoint. An internal `ContextBuilder` composes the
-currently selected data domains into a complete, compacted whole-history context;
-it does not persist a snapshot or contact a provider. The paginated REST read
-below remains live data and is not a completed all-history assessment.
+The Expert provides a bounded, account-scoped canonical nutrition-day read and
+durable chat/analysis runs. The read endpoint itself performs no model calls and
+remains live data rather than a completed all-history assessment. The run service
+builds an internal selected-history context and dispatches only after checking the
+current account, provider configuration and purpose-specific data permission.
 
 ## Shared service boundary
 
@@ -40,7 +39,7 @@ the selected canonical source instance and is not added to other providers.
 Historical target comparison uses the effective base target interval without
 activity credits; it is not an energy-deficit calculation. Profile and health
 notes are read only when their corresponding domains are enabled. Building this
-context does not grant permission to send it; any future caller must recheck the
+context does not grant permission to send it; the durable run service rechecks the
 active account and purpose-specific consent immediately before an outbound send.
 
 ## Data-domain preferences
@@ -86,9 +85,9 @@ revocation branch without changing either migration's schema operations.
 - 401, 409, 422 and 503 return documented `application/problem+json` envelopes.
   Provider payloads and invalid input values are not echoed.
 
-This read-only GET has no mutating POST or idempotency-key semantics. Future
-run-creation POSTs require explicit idempotency and reconnect/cancellation
-contracts; they are not part of this capability. Future delegated access must
+This read-only GET has no mutating POST or idempotency-key semantics. Durable
+run writes use the UUID-addressed PUT resources described below, with explicit
+replay and cancellation contracts. Future delegated access must
 derive identity and scopes from its own authentication adapter, not reuse a
 browser cookie or add an account argument to a tool.
 
@@ -235,14 +234,15 @@ error classifications without retaining provider error bodies or credentials.
 Request options follow each adapter's protocol; unsupported cross-provider
 options are not forwarded.
 
-This is an internal transport, not a public generation endpoint or a data-sharing
-authorization service. Its trusted caller must check account state and current
-purpose-bound permission immediately before dispatch. Stored configuration,
-metadata checks and category preferences alone do not authorize a request.
+This is an internal transport, not a generic public generation endpoint or a
+data-sharing authorization service. The durable Expert run service checks account
+state and current purpose-bound permission immediately before dispatch. Stored
+configuration, metadata checks and category preferences alone do not authorize a
+request.
 
 ## Versioned data permissions
 
-`/api/v1/settings/ai/consents` records explicit, immutable permission for a future
+`/api/v1/settings/ai/consents` records explicit, immutable permission for a
 Nutrition Expert data transfer. Configuration, metadata checks and choosing an
 active connection do not create this permission. The resource performs no health
 data read, credential decryption or provider request.
@@ -280,10 +280,9 @@ while either kind of invalidation exists. Account deletion removes these records
 
 `AIConsentService.require_usable` validates a server-constructed `ConsentDataUse`
 against current state, purpose, domains, meal-name permission and history bounds,
-and rejects future data-use dates in the account timezone. Callers must authorize
-again immediately before an outbound send under the account operation lock;
-reading a grant alone does not serialize later provider traffic. This slice
-exposes permission management, not generation or a new data-selection interface.
+and rejects future data-use dates in the account timezone. The durable run
+service authorizes again immediately before an outbound send under the account
+operation lock; reading a grant alone does not serialize later provider traffic.
 
 ## ChatGPT-plan authentication track
 
@@ -340,3 +339,48 @@ unstructured prose. A later adapter must map actual validated model output into
 the same expectations. Live-provider evaluations remain separate, optional,
 credential-gated and synthetic-only. Canonical reader regressions independently
 verify the underlying values, missingness and ownership.
+
+## Durable conversation and run resources
+
+All routes bind the session owner; administrator status does not widen access.
+Mutations require CSRF. An account may keep at most 200 conversations and 200
+turns per conversation, with one queued/running turn per account.
+
+- `GET /api/v1/expert/setup?mode=chat|analysis` returns the active configuration,
+  preferences, matching purpose-specific permission and adapter availability.
+- `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
+  immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
+  Consumed UUIDs remain reserved after deletion, including IDs reserved by an
+  idempotent delete of an unknown conversation.
+- `PUT /api/v1/expert/conversations/{uuid}/turns/{run_uuid}` binds the message,
+  request kind, active connection/version, preference version and consent ID.
+  Identical retries return current state without scheduling another execution;
+  changed input returns 409. Run UUIDs remain reserved after conversation deletion.
+- `GET /api/v1/expert/runs/{uuid}` reads queued, running, succeeded, failed,
+  cancelled or interrupted state. `/events` returns bounded typed state events.
+  Reconnection and polling never trigger generation.
+- `PUT /api/v1/expert/runs/{uuid}/cancel` cancels an owned pending run. Before the
+  committed dispatch boundary this prevents sending. Afterwards it discards the
+  result, but cannot retract data already sent. Conversation/account deletion also
+  prevents late completion from being stored.
+- Conversation and turn lists use paired aware timestamp/UUID cursors with limits
+  of 1–50. Responses expose no context payloads, credentials or owner arguments.
+
+A worker claims once, builds the complete selected history in a PostgreSQL
+repeatable-read snapshot, closes that session, then rechecks the live account,
+active provider, configuration, category version and individual purpose-bound
+consent before committing `running`. The commit is the once-only dispatch boundary.
+No database transaction remains open during provider I/O. A request admitted
+before later revocation or cancellation cannot be recalled from a provider; its
+result will not be stored after cancellation or account deletion. Lost workers
+become interrupted after ten minutes and are never automatically retried.
+
+Identity receipts retain only an account ID, resource UUID and timestamp. They
+survive conversation/connection deletion and are removed on account deletion. The
+complete `0047` preference, `0056` consent/connection-retention and `0057` merge
+lineages are preserved; `0058` merges the conversation schema and `0059` adds
+identity receipts while backfilling any pre-existing conversations and runs.
+
+The model receives bounded untrusted data and no executable tools. Responses must
+match the closed `ExpertAnswer` schema and reference known evidence for findings.
+Invalid responses and credential echoes fail without storing provider error bodies.

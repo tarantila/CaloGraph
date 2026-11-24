@@ -45,6 +45,12 @@ export type AISettingsView = {
   active_connection_id: string | null
 }
 
+export type AnswerFinding = {
+  kind: "observation" | "interpretation" | "guidance"
+  text: string
+  evidence_ids: ReadonlyArray<string>
+}
+
 export type ConnectionCheckPut = {
   configuration_version: number
   privacy_version: "connection-metadata-2026-11-13"
@@ -70,6 +76,29 @@ export type ConsentHistory = {
   end: string | null
 }
 
+export type ConversationPage = {
+  items: ReadonlyArray<ConversationView>
+  next_before: ListCursor | null
+}
+
+export type ConversationPut = {
+  mode: "chat" | "analysis"
+}
+
+export type ConversationView = {
+  id: string
+  mode: "chat" | "analysis"
+  created_at: string
+  updated_at: string
+}
+
+export type ExpertAnswer = {
+  text: string
+  findings?: ReadonlyArray<AnswerFinding>
+  limitations?: ReadonlyArray<string>
+  follow_up?: ReadonlyArray<string>
+}
+
 export type ExpertPreferencesPut = {
   data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
   include_meal_names: boolean
@@ -79,6 +108,18 @@ export type ExpertPreferencesView = {
   data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
   include_meal_names: boolean
   configuration_version: number
+}
+
+export type ExpertSetup = {
+  connection: ProviderConnectionView | null
+  preferences: ExpertPreferencesView
+  consent: AIConsentView | null
+  generation_available: boolean
+}
+
+export type ListCursor = {
+  created_at: string
+  id: string
 }
 
 export type NutritionDay = {
@@ -170,3 +211,48 @@ export type ProviderDescriptor = {
 }
 
 export type ProviderKind = "openai_api" | "chatgpt_plan" | "anthropic" | "gemini" | "local" | "gateway"
+
+export type RunEvent = {
+  sequence: number
+  state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+  at: string
+}
+
+export type RunEvents = {
+  run_id: string
+  events: ReadonlyArray<RunEvent>
+}
+
+export type RunPage = {
+  items: ReadonlyArray<RunView>
+  next_before: ListCursor | null
+}
+
+export type RunPut = {
+  kind: "chat" | "analysis"
+  message: string
+  connection_id: string
+  connection_version: number
+  preferences_version: number
+  consent_id: string
+}
+
+export type RunView = {
+  id: string
+  conversation_id: string
+  kind: "chat" | "analysis"
+  message: string
+  state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+  error_code: string | null
+  provider_kind: string
+  model_id: string
+  connection_id: string
+  connection_version: number
+  preferences_version: number
+  created_at: string
+  dispatched_at: string | null
+  finished_at: string | null
+  coverage_start: string | null
+  coverage_end: string | null
+  answer: ExpertAnswer | null
+}

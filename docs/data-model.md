@@ -39,6 +39,16 @@
   data domains and meal-name inclusion. The service supplies canonical defaults
   when no row exists; identical writes do not increment the configuration
   version. The row contains no health values and is removed with its owner.
+- `expert_conversations`: account-scoped immutable initial chat/analysis mode and
+  timestamps. Conversation identity receipts survive deletion and prevent reuse of a
+  previously consumed UUID; only account deletion removes the receipts.
+- `expert_runs`: immutable client request identity plus connection, preference and
+  consent versions, claim/dispatch/completion timestamps, bounded context snapshot
+  and structured answer. Conversation deletion cascades run content; separate
+  account-scoped run identity receipts retain only the run UUID and timestamp so a
+  deleted or completed request cannot be replayed. Account deletion removes receipts.
+  A partial unique index permits at most one queued/running run per account.
+  Credentials are never stored in these records.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

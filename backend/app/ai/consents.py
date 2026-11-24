@@ -247,9 +247,12 @@ class AIConsentService:
             if changed:
                 self._db.commit()
 
-    def require_usable(self, consent_id: UUID, use: ConsentDataUse) -> AIConsentView:
+    def require_usable(
+        self, consent_id: UUID, use: ConsentDataUse, *, _operation_locked: bool = False,
+    ) -> AIConsentView:
         """Authorize a bounded trusted read; this does not serialize a later send."""
-        with shared_user_operation(self._db, self._owner.id):
+        context = nullcontext() if _operation_locked else shared_user_operation(self._db, self._owner.id)
+        with context:
             self._active()
             row = self._row(consent_id)
             if row is None:
