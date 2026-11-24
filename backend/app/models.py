@@ -300,6 +300,30 @@ class AIConsentRevocation(Base):
     revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ExpertConversationIdentity(Base):
+    """Retained owner-scoped conversation IDs prevent replay after deletion."""
+
+    __tablename__ = "expert_conversation_identities"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExpertRunIdentity(Base):
+    """Retained owner-scoped run IDs prevent once-only request replay."""
+
+    __tablename__ = "expert_run_identities"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ExpertPreferences(Base):
     """Account-local Nutrition Expert data-selection configuration."""
 
@@ -320,6 +344,69 @@ class ExpertPreferences(Base):
     configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ExpertConversation(Base):
+    __tablename__ = "expert_conversations"
+    __table_args__ = (
+        CheckConstraint("mode IN ('chat', 'analysis')", name="ck_expert_conversations_mode"),
+        Index("ix_expert_conversations_owner_created", "user_id", "created_at", "id"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ExpertRun(Base):
+    __tablename__ = "expert_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "conversation_id"],
+            ["expert_conversations.user_id", "expert_conversations.id"],
+            ondelete="CASCADE", name="fk_expert_runs_conversation",
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')",
+            name="ck_expert_runs_state",
+        ),
+        CheckConstraint("kind IN ('chat', 'analysis')", name="ck_expert_runs_kind"),
+        CheckConstraint(
+            "connection_version >= 1 AND preferences_version >= 1",
+            name="ck_expert_runs_versions",
+        ),
+        Index("ix_expert_runs_conversation_created", "user_id", "conversation_id", "created_at", "id"),
+        Index(
+            "uq_expert_runs_active_owner", "user_id", unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+            sqlite_where=text("state IN ('queued', 'running')"),
+        ),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    connection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    preferences_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    consent_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    answer: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    coverage_start: Mapped[date | None] = mapped_column(Date)
+    coverage_end: Mapped[date | None] = mapped_column(Date)
 
 
 class UserProviderPriority(Base):

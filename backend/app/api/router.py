@@ -11,6 +11,7 @@ from app.api import (
     auth,
     expert,
     expert_preferences,
+    expert_runs,
     google_health,
     imports,
     settings,
@@ -29,6 +30,7 @@ api_router.include_router(ai_checks.router)
 api_router.include_router(ai_preferences.router)
 api_router.include_router(expert.router)
 api_router.include_router(expert_preferences.router)
+api_router.include_router(expert_runs.router)
 api_router.include_router(imports.router)
 api_router.include_router(analytics.router)
 api_router.include_router(settings.router)

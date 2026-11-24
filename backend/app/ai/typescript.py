@@ -27,6 +27,16 @@ from app.ai.probes_contracts import (
     ConnectionCheckView,
     ProviderCatalog,
 )
+from app.expert.chat_contracts import (
+    ConversationPage,
+    ConversationPut,
+    ConversationView,
+    ExpertSetup,
+    RunEvents,
+    RunPage,
+    RunPut,
+    RunView,
+)
 from app.expert.contracts import NutritionDaysPage, NutritionDaysQuery
 from app.expert.preferences_contracts import ExpertPreferencesPut, ExpertPreferencesView
 
@@ -61,7 +71,7 @@ def _type(schema: dict[str, Any]) -> str:
 
 def generate_typescript() -> str:
     schemas: dict[str, Any] = {}
-    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView, AIConsentPut, AIConsentView, AIConsentPage, NutritionDaysPage, NutritionDaysQuery, ExpertPreferencesPut, ExpertPreferencesView):
+    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView, AIConsentPut, AIConsentView, AIConsentPage, NutritionDaysPage, NutritionDaysQuery, ExpertPreferencesPut, ExpertPreferencesView, ExpertSetup, ConversationPut, ConversationView, ConversationPage, RunPut, RunView, RunPage, RunEvents):
         schema = model.model_json_schema(mode="validation", ref_template="#/$defs/{model}")
         schemas.update(schema.pop("$defs", {}))
         schemas[model.__name__] = schema
