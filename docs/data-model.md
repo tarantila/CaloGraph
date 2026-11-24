@@ -49,6 +49,20 @@
   deleted or completed request cannot be replayed. Account deletion removes receipts.
   A partial unique index permits at most one queued/running run per account.
   Credentials are never stored in these records.
+- `expert_attachments`: private account- and conversation-scoped PDF/image bytes,
+  bounded metadata and SHA-256 used only for immutable upload replay checks.
+  Metadata APIs defer and never return file bytes, hashes or owner IDs. Each run
+  records only explicitly submitted attachment UUIDs; conversation deletion
+  removes its file bytes and metadata.
+- `expert_attachment_identities`: owner-scoped consumed attachment UUIDs and
+  timestamps. Receipts survive file/conversation deletion and prevent a late
+  streamed upload from resurrecting a deleted or previously consumed ID. They
+  contain no filename, digest, file bytes or health data; only account deletion
+  removes them. `expert_conversations.uses_attachments` records successful use
+  without changing the attachment permission requirement.
+- `ai_consents.include_attachments`: explicit immutable permission for external
+  PDFs/images, defaulting to false for existing and new grants. Existing grants
+  do not authorize document transfer.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

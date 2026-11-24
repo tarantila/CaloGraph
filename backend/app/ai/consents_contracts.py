@@ -40,6 +40,7 @@ class AIConsentPut(ConnectionContract):
     purpose: ConsentPurpose
     data_domains: tuple[ConsentDataDomain, ...] = Field(min_length=1, max_length=6)
     include_meal_names: bool
+    include_attachments: bool = False
     history: ConsentHistory
     policy_version: Literal["expert-data-2026-11-14"]
 
@@ -69,6 +70,7 @@ class AIConsentView(ConnectionContract):
     purpose: ConsentPurpose
     data_domains: tuple[ConsentDataDomain, ...] = Field(min_length=1, max_length=6)
     include_meal_names: bool
+    include_attachments: bool = False
     history: ConsentHistory
     policy_version: str
     state: ConsentState
@@ -93,6 +95,7 @@ class ConsentDataUse(ConnectionContract):
     purpose: ConsentPurpose
     data_domains: tuple[ConsentDataDomain, ...] = Field(min_length=1, max_length=6)
     include_meal_names: bool
+    include_attachments: bool = False
     start: date
     end: date
 

@@ -224,9 +224,11 @@ Endpoint references: [OpenAI models](https://developers.openai.com/api/reference
 `app.ai.generation` provides internal one-shot adapters for native API providers
 and operator-approved compatible endpoints. It uses the same destination checks,
 DNS pinning and TLS validation as metadata discovery. Request and response bodies
-are capped at 256 KiB, and generation has an absolute transport budget of at most
-60 seconds. Native destinations are fixed; custom destinations require the
-existing exact operator allowlist.
+are capped at 256 KiB by default, and generation has an absolute transport budget
+of at most 60 seconds. Only a generation request that actually contains validated
+inline media can opt into the 16 MiB absolute request ceiling; response bodies
+remain capped at 256 KiB. Native destinations are fixed; custom destinations
+require the existing exact operator allowlist.
 
 The transport sends each request once, without redirects, implicit retries or
 fallback. It normalizes finish reasons and available token usage and emits safe
@@ -348,6 +350,8 @@ turns per conversation, with one queued/running turn per account.
 
 - `GET /api/v1/expert/setup?mode=chat|analysis` returns the active configuration,
   preferences, matching purpose-specific permission and adapter availability.
+  `include_attachments=true` requests a matching document grant; it does not
+  grant permission or disclose file metadata.
 - `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
   immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
   Consumed UUIDs remain reserved after deletion, including IDs reserved by an
@@ -355,7 +359,9 @@ turns per conversation, with one queued/running turn per account.
 - `PUT /api/v1/expert/conversations/{uuid}/turns/{run_uuid}` binds the message,
   request kind, active connection/version, preference version and consent ID.
   Identical retries return current state without scheduling another execution;
-  changed input returns 409. Run UUIDs remain reserved after conversation deletion.
+  `attachment_ids` may name at most three already uploaded files owned by that
+  conversation. Changed input returns 409. Run UUIDs remain reserved after
+  conversation deletion. Run views may return safe attachment metadata only.
 - `GET /api/v1/expert/runs/{uuid}` reads queued, running, succeeded, failed,
   cancelled or interrupted state. `/events` returns bounded typed state events.
   Reconnection and polling never trigger generation.
@@ -384,3 +390,37 @@ identity receipts while backfilling any pre-existing conversations and runs.
 The model receives bounded untrusted data and no executable tools. Responses must
 match the closed `ExpertAnswer` schema and reference known evidence for findings.
 Invalid responses and credential echoes fail without storing provider error bodies.
+
+### Private document and image attachments
+
+`PUT /api/v1/expert/conversations/{conversation_id}/attachments/{attachment_id}`
+uploads a raw PDF, PNG, JPEG or WebP body using the corresponding content type and
+`X-Attachment-Filename` header. `GET .../{conversation_id}/attachments` lists
+unused drafts and `DELETE .../{conversation_id}/attachments/{attachment_id}`
+deletes an unused file or reserves an unknown UUID. Uploads require session and
+CSRF validation. The request stream is bounded to 4 MiB/file and 20 seconds; at
+most four upload slots are held per backend process. Account-locked database
+quota checks run after the body arrives, so locks and transactions do not span
+untrusted client uploads. The database enforces at most three files and 8 MiB per
+conversation and 64 MiB per account under the account operation lock, including
+uploads handled by separate workers. Draft listing includes files referenced by
+failed or cancelled runs so they can be explicitly selected again. File deletion
+is blocked for every run-referenced attachment; those files are removed with the
+conversation.
+
+The service checks the declared MIME type and a small file signature only. It
+does not parse, execute, OCR, fetch URLs from, or otherwise inspect file contents
+on the host. Bytes stay private and are not returned by metadata routes. The
+dispatch boundary requires a current consent grant with `include_attachments`;
+legacy grants default to false. Only files explicitly attached to the current
+turn and files from earlier successful document turns are sent. Failed or
+cancelled turns remain drafts and require explicit resubmission. The provider
+receives inline base64 media through its native or compatible request format;
+the existing destination, DNS pinning, TLS, redirect and bounded-response
+controls remain in force. Uploaded content is untrusted; external claims are
+referenced as `attachment:<uuid>`, never treated as canonical CaloGraph data.
+
+Attachment UUIDs are immutable per account. Upload consumes the UUID; deleting a
+file or conversation retains a minimal owner-scoped identity receipt, and a late
+upload cannot recreate it. Receipts contain only the UUID and timestamp, cascade
+on account deletion, and do not expose names, hashes or health content.

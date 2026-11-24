@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProviderKind(StrEnum):
@@ -77,9 +77,23 @@ class ModelInfo(_Contract):
     capabilities: ModelCapabilities
 
 
+class AIMedia(_Contract):
+    id: str = Field(min_length=1, max_length=36)
+    file_name: str = Field(min_length=1, max_length=120, repr=False)
+    media_type: Literal["application/pdf", "image/png", "image/jpeg", "image/webp"]
+    data_base64: str = Field(min_length=1, max_length=5_592_408, repr=False)
+
+
 class AIMessage(_Contract):
+    attachments: tuple[AIMedia, ...] = Field(default=(), max_length=3, repr=False)
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=8_000, repr=False)
+
+    @model_validator(mode="after")
+    def user_media(self) -> AIMessage:
+        if self.attachments and self.role != "user":
+            raise ValueError("only user messages may carry media")
+        return self
 
 
 class GenerationRequest(_Contract):
@@ -87,6 +101,13 @@ class GenerationRequest(_Contract):
     messages: tuple[AIMessage, ...] = Field(min_length=1, max_length=32)
     model_id: str = Field(min_length=1, max_length=200)
     max_output_tokens: int = Field(default=1_024, ge=1, le=16_384)
+
+    @model_validator(mode="after")
+    def bounded_media(self) -> GenerationRequest:
+        items = [item for message in self.messages for item in message.attachments]
+        if len(items) > 3 or sum(len(item.data_base64) for item in items) > 11_184_816:
+            raise ValueError("generation media limit exceeded")
+        return self
 
 
 class ProviderUsage(_Contract):

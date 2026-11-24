@@ -17,6 +17,7 @@ RunState = Literal["queued", "running", "succeeded", "failed", "cancelled", "int
 
 class ExpertSetupQuery(ExpertContract):
     mode: ExpertMode = "chat"
+    include_attachments: bool = False
 
 
 class ExpertSetup(ExpertContract):
@@ -24,6 +25,7 @@ class ExpertSetup(ExpertContract):
     preferences: ExpertPreferencesView
     consent: AIConsentView | None
     generation_available: bool
+    attachments_available: bool = False
 
 
 class ConversationPut(ExpertContract):
@@ -35,6 +37,14 @@ class ConversationView(ExpertContract):
     mode: ExpertMode
     created_at: datetime
     updated_at: datetime
+
+
+class AttachmentView(ExpertContract):
+    id: UUID
+    file_name: str
+    media_type: Literal["application/pdf", "image/png", "image/jpeg", "image/webp"]
+    byte_size: int = Field(ge=1, le=4 * 1024 * 1024)
+    created_at: datetime
 
 
 class ListQuery(ExpertContract):
@@ -62,12 +72,20 @@ class ConversationPage(ExpertContract):
 
 
 class RunPut(ExpertContract):
+    attachment_ids: tuple[UUID, ...] = Field(default=(), max_length=3)
     kind: ExpertMode
     message: str = Field(min_length=1, max_length=8000, repr=False)
     connection_id: UUID
     connection_version: int = Field(ge=1)
     preferences_version: int = Field(ge=1)
     consent_id: UUID
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def unique_attachments(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("attachments must be unique")
+        return value
 
     @field_validator("message")
     @classmethod
@@ -101,6 +119,7 @@ class ExpertAnswer(ExpertContract):
 
 
 class RunView(ExpertContract):
+    attachments: tuple[AttachmentView, ...] = Field(default=(), max_length=3, repr=False)
     id: UUID
     conversation_id: UUID
     kind: ExpertMode

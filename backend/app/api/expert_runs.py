@@ -41,7 +41,9 @@ DB = Annotated[Session, Depends(get_db)]
 @router.get("/setup", response_model=ExpertSetup, operation_id="expert_get_setup")
 def setup(query: Annotated[ExpertSetupQuery, Query()], owner: Owner, db: DB) -> ExpertSetup:
     try:
-        return ExpertRunService(db, owner=owner).setup(query.mode)
+        return ExpertRunService(db, owner=owner).setup(
+            query.mode, include_attachments=query.include_attachments,
+        )
     except ConnectionProblem as exc:
         _problem(exc)
 

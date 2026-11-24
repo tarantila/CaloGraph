@@ -272,6 +272,7 @@ class AIConsent(Base):
     purpose: Mapped[str] = mapped_column(String(32), nullable=False)
     data_domains: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     include_meal_names: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    include_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     history_mode: Mapped[str] = mapped_column(String(24), nullable=False)
     history_start: Mapped[date | None] = mapped_column(Date)
     history_end: Mapped[date | None] = mapped_column(Date)
@@ -356,6 +357,8 @@ class ExpertConversation(Base):
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(120))
+    uses_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -390,6 +393,7 @@ class ExpertRun(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    attachment_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     message: Mapped[str] = mapped_column(Text, nullable=False)
     connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     connection_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -407,6 +411,46 @@ class ExpertRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     coverage_start: Mapped[date | None] = mapped_column(Date)
     coverage_end: Mapped[date | None] = mapped_column(Date)
+
+
+class ExpertAttachment(Base):
+    """Untrusted user files; no parsing, execution or external file hosting."""
+
+    __tablename__ = "expert_attachments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "conversation_id"],
+            ["expert_conversations.user_id", "expert_conversations.id"],
+            ondelete="CASCADE", name="fk_expert_attachments_conversation",
+        ),
+        CheckConstraint("byte_size BETWEEN 1 AND 4194304", name="ck_expert_attachments_size"),
+        CheckConstraint(
+            "media_type IN ('application/pdf', 'image/png', 'image/jpeg', 'image/webp')",
+            name="ck_expert_attachments_media",
+        ),
+        Index("ix_expert_attachments_conversation", "user_id", "conversation_id", "created_at"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    file_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ExpertAttachmentIdentity(Base):
+    """Retained owner-scoped attachment IDs prevent upload replay after deletion."""
+
+    __tablename__ = "expert_attachment_identities"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    attachment_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class UserProviderPriority(Base):
