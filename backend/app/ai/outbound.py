@@ -341,6 +341,20 @@ def _validate_path(path: str) -> str:
     return path
 
 
+def _validate_request_path(endpoint: _Endpoint, path: str, *, native: bool, post: bool) -> str:
+    if (
+        native and post
+        and endpoint.base_url == "https://generativelanguage.googleapis.com/v1beta"
+        and isinstance(path, str)
+        and re.fullmatch(r"/models/[A-Za-z0-9_.-]{1,200}:generateContent", path)
+    ):
+        # Only this fixed native action uses a colon. The remaining path still
+        # passes all ordinary segment, traversal and character checks.
+        _validate_path(path.removesuffix(":generateContent"))
+        return path
+    return _validate_path(path)
+
+
 def _validate_headers(headers: dict[str, str]) -> None:
     if not isinstance(headers, dict) or len(headers) > 12:
         raise OutboundError("destination_blocked")
@@ -378,7 +392,7 @@ def fetch_provider_json(
     ):
         raise OutboundError("destination_blocked")
     endpoint = _endpoint(base_url)
-    relative_path = _validate_path(path)
+    relative_path = _validate_request_path(endpoint, path, native=native, post=request_body is not None)
     _validate_headers(headers)
     if native:
         if endpoint.scheme != "https" or endpoint.port != 443:

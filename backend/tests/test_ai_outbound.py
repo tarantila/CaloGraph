@@ -159,6 +159,30 @@ def test_invalid_post_body_is_rejected_before_connecting(
     assert _ResponseHandler.requests_seen == 0
 
 
+@pytest.mark.parametrize(("base_url", "native", "body", "path"), [
+    ("https://generativelanguage.googleapis.com/v1beta", False, b"{}", "/models/synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, None, "/models/synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1", True, b"{}", "/models/synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com:444/v1beta", True, b"{}", "/models/synthetic:generateContent"),
+    ("http://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com.evil.invalid/v1beta", True, b"{}", "/models/synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/synthetic:streamGenerateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/synthetic:generateContent?alt=sse"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/../synthetic:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/..:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/a%2fb:generateContent"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/synthetic:generateContent#fragment"),
+    ("https://generativelanguage.googleapis.com/v1beta", True, b"{}", "/models/synthetic:generateContent:extra"),
+])
+def test_native_action_path_exception_is_restricted_before_dns(
+    base_url: str, native: bool, body: bytes | None, path: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(outbound, "_resolve", lambda *args, **kwargs: pytest.fail("unexpected DNS"))
+    with pytest.raises(OutboundError) as error:
+        _call(base_url, path, native=native, request_body=body)
+    assert error.value.code == "destination_blocked"
+
+
 @pytest.mark.parametrize(
     "base_url",
     [

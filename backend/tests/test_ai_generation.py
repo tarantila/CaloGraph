@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
+import socket
 
 import pytest
 from pydantic import SecretStr
 
 import app.ai.generation as generation
+import app.ai.outbound as outbound
 from app.ai.contracts import FinishReason, GenerationRequest, ProviderKind
 from app.ai.outbound import OutboundError
 
@@ -19,6 +22,61 @@ def request() -> GenerationRequest:
         system_instruction="synthetic system", messages=(AIMessage(role="user", content="hello"),),
         model_id="synthetic-model", max_output_tokens=123,
     )
+
+
+def test_native_generate_content_reaches_the_validated_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps({
+        "candidates": [{"content": {"parts": [{"text": "synthetic response"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2},
+    }).encode()
+    calls: dict[str, object] = {}
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def getheader(self, name, default=None):
+            return {"Content-Type": "application/json", "Content-Length": str(len(body))}.get(name, default)
+
+    class Connection:
+        sock = None
+
+        def __init__(self, endpoint, address, deadline, timeout_seconds):
+            assert endpoint.base_url == "https://generativelanguage.googleapis.com/v1beta"
+            assert str(address.ip) == "1.1.1.1"
+            assert timeout_seconds == 60
+            calls["headers"] = {}
+
+        def putrequest(self, method, path, **kwargs):
+            calls["request"] = (method, path)
+
+        def putheader(self, name, value):
+            calls["headers"][name.lower()] = value
+
+        def endheaders(self, request_body):
+            calls["body"] = json.loads(request_body)
+
+        def getresponse(self):
+            return Response(body)
+
+        def close(self):
+            calls["closed"] = True
+
+    # Keep the adapter, path policy, header validation and response parser real;
+    # replace only DNS and the final HTTPS connection, with no external traffic.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("1.1.1.1", 443)),
+    ])
+    monkeypatch.setattr(outbound, "_PinnedHTTPSConnection", Connection)
+    result = generation.generate(
+        ProviderKind.GEMINI, base_url=None, key=SecretStr(SECRET),
+        request=request(), timeout_seconds=90,
+    )
+    assert calls["request"] == ("POST", "/v1beta/models/synthetic-model:generateContent")
+    assert calls["headers"]["x-goog-api-key"] == SECRET
+    assert "store" not in calls["body"]
+    assert calls["closed"] is True
+    assert result.content == "synthetic response"
+    assert result.usage.input_tokens == 5 and result.usage.output_tokens == 2
 
 
 @pytest.mark.parametrize(
