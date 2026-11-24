@@ -13,7 +13,10 @@ METHODS = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
 
 def expert_contract() -> dict:
     schema = app.openapi()
-    paths = {path: item for path, item in schema["paths"].items() if path.startswith("/api/v1/expert/")}
+    paths = {
+        path: item for path, item in schema["paths"].items()
+        if path.startswith("/api/v1/expert/") or path == "/api/v1/settings/expert"
+    }
     names: set[str] = set()
     pending = [paths]
     while pending:
@@ -63,3 +66,15 @@ def test_expert_documents_explicit_operation_nullable_fields_and_problem_media_t
     assert "fiber_g" in values["required"]
     assert {"type": "null"} in values["properties"]["fiber_g"]["anyOf"]
     assert not any("credential" in key.lower() or "token" in key.lower() for key in contract["schemas"])
+
+
+def test_expert_preferences_openapi_is_owner_scoped_and_closed() -> None:
+    contract = expert_contract()
+    path = contract["paths"]["/api/v1/settings/expert"]
+    assert path["get"]["operationId"] == "expert_get_preferences"
+    assert path["put"]["operationId"] == "expert_put_preferences"
+    assert path["get"]["security"] == [{"CaloGraphSession": []}]
+    assert path["put"]["security"] == [{"CaloGraphSession": []}]
+    payload = contract["schemas"]["ExpertPreferencesPut"]
+    assert payload["additionalProperties"] is False
+    assert set(payload["required"]) == {"data_domains", "include_meal_names"}

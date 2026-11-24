@@ -35,6 +35,10 @@
   retirement timestamps. A deleted UUID cannot be recreated, so a delayed
   permission request cannot bind to a different destination under an old ID and
   configuration version. Account deletion removes these records.
+- `expert_preferences`: optional account-local selection of Nutrition Expert
+  data domains and meal-name inclusion. The service supplies canonical defaults
+  when no row exists; identical writes do not increment the configuration
+  version. The row contains no health values and is removed with its owner.
 - Historical `user_provider_preferences` is migration input only; revision
   `20260918_0031` moves those choices and removes the table from the current schema.
 - `users.active_card_ids`: canonical ordered Analysis Hub membership, including

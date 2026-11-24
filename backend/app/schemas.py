@@ -893,9 +893,13 @@ class VerificationActivityProviderRecord(BaseModel):
 
     provider_key: VerificationActivityProviderKey
     status: VerificationRecordStatus
-    active_energy_kcal: float | None
+    active_energy_kcal: Decimal | None
     record_count: int = Field(ge=0)
     source_types: list[VerificationActivitySourceType]
+
+    @field_serializer("active_energy_kcal", when_used="json")
+    def serialize_active_energy(self, value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
 
 
 class VerificationActivityDayResponse(BaseModel):
