@@ -416,14 +416,35 @@ jobs:
           inspect_digest() {
             local image_ref=$1
             local output
-            if output=$(docker buildx imagetools inspect "$image_ref" 2>&1); then
-              printf '%s\n' "$output" | awk '$1 == "Digest:" {print $2; exit}'
-            else
-              case "$output" in
-                *"not found"*|*"Not Found"*|*"no such manifest"*|*"No such manifest"*|*"MANIFEST_UNKNOWN"*|*"manifest unknown"*) return 2 ;;
-                *) printf '%s\n' "$output" >&2; return 1 ;;
-              esac
-            fi
+            local digest
+            local attempt
+
+            for attempt in 1 2 3 4 5; do
+              if output=$(docker buildx imagetools inspect "$image_ref" 2>&1); then
+                digest=$(
+                  printf '%s\n' "$output" |
+                    awk '$1 == "Digest:" && !found {print $2; found=1}'
+                )
+                if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                  printf '%s\n' "$digest"
+                  return 0
+                fi
+                printf 'No valid digest returned for %s.\n' "$image_ref" >&2
+              else
+                case "$output" in
+                  *"not found"*|*"Not Found"*|*"no such manifest"*|*"No such manifest"*|*"MANIFEST_UNKNOWN"*|*"manifest unknown"*) return 2 ;;
+                  *) printf '%s\n' "$output" >&2 ;;
+                esac
+              fi
+
+              if (( attempt < 5 )); then
+                printf 'Transient registry inspection failure for %s; retrying (%d/5).\n' \
+                  "$image_ref" "$attempt" >&2
+                sleep $((attempt * 2))
+              fi
+            done
+
+            return 1
           }
 
           publish_or_reuse() {
@@ -523,15 +544,40 @@ jobs:
           docker push "${FRONTEND_IMAGE}:edge"
           docker push "${BACKUP_AGENT_IMAGE}:edge"
 
-          backend_edge_digest=$(docker buildx imagetools inspect \
-            "${BACKEND_IMAGE}:edge" |
-            awk '$1 == "Digest:" {print $2; exit}')
-          frontend_edge_digest=$(docker buildx imagetools inspect \
-            "${FRONTEND_IMAGE}:edge" |
-            awk '$1 == "Digest:" {print $2; exit}')
-          backup_agent_edge_digest=$(docker buildx imagetools inspect \
-            "${BACKUP_AGENT_IMAGE}:edge" |
-            awk '$1 == "Digest:" {print $2; exit}')
+          inspect_edge_digest() {
+            local image_ref=$1
+            local output
+            local digest
+            local attempt
+
+            for attempt in 1 2 3 4 5; do
+              if output=$(docker buildx imagetools inspect "$image_ref" 2>&1); then
+                digest=$(
+                  printf '%s\n' "$output" |
+                    awk '$1 == "Digest:" && !found {print $2; found=1}'
+                )
+                if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                  printf '%s\n' "$digest"
+                  return 0
+                fi
+                printf 'No valid digest returned for %s.\n' "$image_ref" >&2
+              else
+                printf '%s\n' "$output" >&2
+              fi
+
+              if (( attempt < 5 )); then
+                printf 'Transient edge digest inspection failure for %s; retrying (%d/5).\n' \
+                  "$image_ref" "$attempt" >&2
+                sleep $((attempt * 2))
+              fi
+            done
+
+            return 1
+          }
+
+          backend_edge_digest=$(inspect_edge_digest "${BACKEND_IMAGE}:edge")
+          frontend_edge_digest=$(inspect_edge_digest "${FRONTEND_IMAGE}:edge")
+          backup_agent_edge_digest=$(inspect_edge_digest "${BACKUP_AGENT_IMAGE}:edge")
           [[ "$backend_edge_digest" == "$BACKEND_DIGEST" ]]
           [[ "$frontend_edge_digest" == "$FRONTEND_DIGEST" ]]
           [[ "$backup_agent_edge_digest" == "$BACKUP_AGENT_DIGEST" ]]
