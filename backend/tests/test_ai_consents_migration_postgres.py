@@ -14,7 +14,6 @@ from alembic import command
 from app.database import engine as application_engine
 from app.models import (
     AIConnectionRetirement,
-    AIConsent,
     AIProviderConnection,
     AIProviderCredential,
     User,
@@ -139,7 +138,10 @@ def test_retained_revocations_upgrade_backfill_guard_and_owner_cleanup() -> None
             connection.execute(sa.insert(AIProviderCredential).values(
                 user_id=owner_id, connection_id=connection_id, encrypted_api_key=b"synthetic-ciphertext",
             ))
-            connection.execute(sa.insert(AIConsent).values(
+            # Reflect the historical schema so defaults from newer consent
+            # columns cannot leak into this pre-attachment migration fixture.
+            legacy_consents = sa.Table("ai_consents", sa.MetaData(), autoload_with=connection)
+            connection.execute(sa.insert(legacy_consents).values(
                 user_id=owner_id, id=consent_id, connection_id=connection_id,
                 configuration_version=1, provider_kind="openai_api", model_id="synthetic-model",
                 purpose="nutrition_chat", data_domains=["nutrition"], include_meal_names=False,

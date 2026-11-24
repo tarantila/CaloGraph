@@ -4301,6 +4301,11 @@
           "type": "boolean",
           "title": "Include Meal Names"
         },
+        "include_attachments": {
+          "type": "boolean",
+          "title": "Include Attachments",
+          "default": false
+        },
         "history": {
           "$ref": "#/components/schemas/ConsentHistory"
         },
@@ -4389,6 +4394,11 @@
         "include_meal_names": {
           "type": "boolean",
           "title": "Include Meal Names"
+        },
+        "include_attachments": {
+          "type": "boolean",
+          "title": "Include Attachments",
+          "default": false
         },
         "history": {
           "$ref": "#/components/schemas/ConsentHistory"

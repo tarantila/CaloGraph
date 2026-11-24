@@ -41,6 +41,7 @@ _PUBLIC_MESSAGES: dict[OutboundCode, str] = {
 }
 MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024
 MAX_PROVIDER_REQUEST_BYTES = 256 * 1024
+MAX_MEDIA_PROVIDER_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_PROVIDER_TIMEOUT_SECONDS = 300
 _DNS_WORKERS = 4
 _DNS_EXECUTOR = ThreadPoolExecutor(max_workers=_DNS_WORKERS, thread_name_prefix="ai-provider-dns")
@@ -379,6 +380,7 @@ def fetch_provider_json(
     timeout_seconds: int,
     native: bool,
     request_body: bytes | None = None,
+    max_request_bytes: int = MAX_PROVIDER_REQUEST_BYTES,
 ) -> object:
     """Fetch one bounded JSON resource from a fixed native or allowlisted host."""
     if (
@@ -386,8 +388,11 @@ def fetch_provider_json(
         or not isinstance(timeout_seconds, int)
         or not 1 <= timeout_seconds <= MAX_PROVIDER_TIMEOUT_SECONDS
         or not isinstance(native, bool)
+        or isinstance(max_request_bytes, bool)
+        or not isinstance(max_request_bytes, int)
+        or not MAX_PROVIDER_REQUEST_BYTES <= max_request_bytes <= MAX_MEDIA_PROVIDER_REQUEST_BYTES
         or (request_body is not None and (
-            not isinstance(request_body, bytes) or not 1 <= len(request_body) <= MAX_PROVIDER_REQUEST_BYTES
+            not isinstance(request_body, bytes) or not 1 <= len(request_body) <= max_request_bytes
         ))
     ):
         raise OutboundError("destination_blocked")

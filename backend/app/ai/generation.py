@@ -12,13 +12,14 @@ from typing import Any
 from pydantic import SecretStr
 
 from app.ai.contracts import (
+    AIMessage,
     FinishReason,
     GenerationRequest,
     GenerationResult,
     ProviderKind,
     ProviderUsage,
 )
-from app.ai.outbound import OutboundError, fetch_provider_json
+from app.ai.outbound import MAX_MEDIA_PROVIDER_REQUEST_BYTES, OutboundError, fetch_provider_json
 
 GENERATION_PROVIDERS = frozenset({"openai_api", "anthropic", "gemini", "local", "gateway"})
 
@@ -35,6 +36,44 @@ def _count(value: object) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10**10
         else None
     )
+
+
+def _message_content(message: AIMessage, kind: ProviderKind) -> str | list[dict[str, Any]]:
+    if not message.attachments:
+        return message.content
+    parts: list[dict[str, Any]] = []
+    if kind == ProviderKind.GEMINI:
+        parts.append({"text": message.content})
+    else:
+        parts.append({"type": "text", "text": message.content})
+    for item in message.attachments:
+        label = f"CALOGRAPH_ATTACHMENT:{item.id} ({item.file_name}); externally supplied, unverified document"
+        if kind == ProviderKind.GEMINI:
+            parts.append({"text": label})
+            parts.append({"inlineData": {"mimeType": item.media_type, "data": item.data_base64}})
+        elif kind == ProviderKind.ANTHROPIC:
+            parts.append({"type": "text", "text": label})
+            source = {"type": "base64", "media_type": item.media_type, "data": item.data_base64}
+            if item.media_type == "application/pdf":
+                parts.append({"type": "document", "source": source})
+            else:
+                parts.append({"type": "image", "source": source})
+        else:
+            parts.append({"type": "text", "text": label})
+            if item.media_type == "application/pdf":
+                parts.append({
+                    "type": "file",
+                    "file": {
+                        "filename": item.file_name,
+                        "file_data": f"data:{item.media_type};base64,{item.data_base64}",
+                    },
+                })
+            else:
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{item.media_type};base64,{item.data_base64}"},
+                })
+    return parts
 
 
 def generate(
@@ -54,7 +93,10 @@ def generate(
         and not secret
     ):
         raise GenerationFailure("authentication")
-    messages = [{"role": message.role, "content": message.content} for message in request.messages]
+    messages = [
+        {"role": message.role, "content": _message_content(message, kind)}
+        for message in request.messages
+    ]
     headers = {"Authorization": f"Bearer {secret}"} if secret else {}
     native = kind not in {ProviderKind.LOCAL, ProviderKind.GATEWAY}
     path = "/chat/completions"
@@ -80,7 +122,7 @@ def generate(
             "contents": [
                 {
                     "role": "model" if m["role"] == "assistant" else "user",
-                    "parts": [{"text": m["content"]}],
+                    "parts": m["content"] if isinstance(m["content"], list) else [{"text": m["content"]}],
                 }
                 for m in messages
             ],
@@ -106,6 +148,9 @@ def generate(
             timeout_seconds=min(timeout_seconds, 60),
             native=native,
             request_body=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+            **({"max_request_bytes": MAX_MEDIA_PROVIDER_REQUEST_BYTES} if any(
+                message.attachments for message in request.messages
+            ) else {}),
         )
     except OutboundError as exc:
         raise GenerationFailure(exc.code) from None

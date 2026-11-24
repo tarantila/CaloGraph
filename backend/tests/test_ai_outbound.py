@@ -99,6 +99,7 @@ def _call(
     timeout_seconds: int = 3,
     native: bool = False,
     request_body: bytes | None = None,
+    max_request_bytes: int = outbound.MAX_PROVIDER_REQUEST_BYTES,
 ) -> object:
     return fetch_provider_json(
         base_url,
@@ -107,6 +108,7 @@ def _call(
         timeout_seconds=timeout_seconds,
         native=native,
         request_body=request_body,
+        max_request_bytes=max_request_bytes,
     )
 
 
@@ -157,6 +159,77 @@ def test_invalid_post_body_is_rejected_before_connecting(
         _call(local_provider, request_body=body)
     assert error.value.code == "destination_blocked"
     assert _ResponseHandler.requests_seen == 0
+
+
+def test_media_request_ceiling_is_opt_in_and_still_bounded(local_provider: str) -> None:
+    large = b"x" * (outbound.MAX_PROVIDER_REQUEST_BYTES + 1)
+    with pytest.raises(OutboundError):
+        _call(local_provider, request_body=large)
+    assert _ResponseHandler.requests_seen == 0
+
+    result = _call(
+        local_provider,
+        request_body=large,
+        max_request_bytes=outbound.MAX_MEDIA_PROVIDER_REQUEST_BYTES,
+    )
+    assert result == {"data": [{"id": "synthetic-model"}]}
+    assert _ResponseHandler.requests_seen == 1
+    assert _ResponseHandler.seen_body == large
+
+    with pytest.raises(OutboundError):
+        _call(
+            local_provider,
+            request_body=b"x" * (outbound.MAX_MEDIA_PROVIDER_REQUEST_BYTES + 1),
+            max_request_bytes=outbound.MAX_MEDIA_PROVIDER_REQUEST_BYTES,
+        )
+    assert _ResponseHandler.requests_seen == 1
+
+
+def test_generation_media_adapter_opts_into_bounded_large_body(local_provider: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import base64
+    from uuid import uuid4
+
+    from app.ai.contracts import AIMedia, AIMessage, GenerationRequest, ProviderKind
+    from app.ai.generation import GenerationFailure, generate
+
+    monkeypatch.setattr(
+        _ResponseHandler,
+        "response_body",
+        b'{"choices":[{"message":{"content":"synthetic answer"},"finish_reason":"stop"}]}',
+    )
+    long_text = "x" * 8_000
+    without_media = GenerationRequest(
+        system_instruction="s" * 8_000,
+        messages=tuple(AIMessage(role="user", content=long_text) for _ in range(32)),
+        model_id="synthetic-model",
+    )
+    with pytest.raises(GenerationFailure, match="could not complete"):
+        generate(
+            ProviderKind.LOCAL, base_url=local_provider, key=None,
+            request=without_media, timeout_seconds=30,
+        )
+    assert _ResponseHandler.requests_seen == 0
+
+    file_bytes = b"%PDF-1.4\n" + b"synthetic-content " * (13 * 1024)
+    media = AIMedia(
+        id=str(uuid4()),
+        file_name="synthetic.pdf",
+        media_type="application/pdf",
+        data_base64=base64.b64encode(file_bytes).decode("ascii"),
+    )
+    with_media = GenerationRequest(
+        system_instruction="synthetic",
+        messages=(AIMessage(role="user", content="Review this synthetic document.", attachments=(media,)),),
+        model_id="synthetic-model",
+    )
+    result = generate(
+        ProviderKind.LOCAL, base_url=local_provider, key=None,
+        request=with_media, timeout_seconds=30,
+    )
+    assert result.content == "synthetic answer"
+    assert _ResponseHandler.requests_seen == 1
+    assert len(_ResponseHandler.seen_body) > outbound.MAX_PROVIDER_REQUEST_BYTES
+    assert len(_ResponseHandler.seen_body) <= outbound.MAX_MEDIA_PROVIDER_REQUEST_BYTES
 
 
 @pytest.mark.parametrize(("base_url", "native", "body", "path"), [

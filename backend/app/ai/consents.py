@@ -76,6 +76,7 @@ class AIConsentService:
             provider_kind=row.provider_kind, model_id=row.model_id, base_url=row.base_url,
             purpose=row.purpose, data_domains=tuple(row.data_domains),
             include_meal_names=row.include_meal_names,
+            include_attachments=row.include_attachments,
             history=ConsentHistory(mode=row.history_mode, start=row.history_start, end=row.history_end),
             policy_version=row.policy_version, state=state,
             created_at=_aware(row.created_at),
@@ -90,6 +91,7 @@ class AIConsentService:
             and row.purpose == payload.purpose
             and tuple(row.data_domains) == payload.data_domains
             and row.include_meal_names == payload.include_meal_names
+            and row.include_attachments == payload.include_attachments
             and row.history_mode == payload.history.mode
             and row.history_start == payload.history.start
             and row.history_end == payload.history.end
@@ -190,6 +192,7 @@ class AIConsentService:
                 base_url=base_url, purpose=payload.purpose,
                 data_domains=list(payload.data_domains),
                 include_meal_names=payload.include_meal_names,
+                include_attachments=payload.include_attachments,
                 history_mode=payload.history.mode, history_start=payload.history.start,
                 history_end=payload.history.end, policy_version=payload.policy_version,
                 created_at=_now(), revoked_at=None,
@@ -264,6 +267,7 @@ class AIConsentService:
                 view.purpose != use.purpose
                 or not set(use.data_domains).issubset(view.data_domains)
                 or (use.include_meal_names and not view.include_meal_names)
+                or (use.include_attachments and not view.include_attachments)
             ):
                 raise ConnectionProblem("ai-consent-scope", 403, "Die Einwilligung deckt diese Daten nicht ab.")
             if view.history.mode == "date_range":

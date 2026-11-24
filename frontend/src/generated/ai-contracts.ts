@@ -15,6 +15,7 @@ export type AIConsentPut = {
   purpose: "nutrition_chat" | "nutrition_check_in"
   data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
   include_meal_names: boolean
+  include_attachments?: boolean
   history: ConsentHistory
   policy_version: "expert-data-2026-11-14"
 }
@@ -29,6 +30,7 @@ export type AIConsentView = {
   purpose: "nutrition_chat" | "nutrition_check_in"
   data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
   include_meal_names: boolean
+  include_attachments?: boolean
   history: ConsentHistory
   policy_version: string
   state: "active" | "revoked" | "configuration_changed" | "connection_disabled"
@@ -49,6 +51,14 @@ export type AnswerFinding = {
   kind: "observation" | "interpretation" | "guidance"
   text: string
   evidence_ids: ReadonlyArray<string>
+}
+
+export type AttachmentView = {
+  id: string
+  file_name: string
+  media_type: "application/pdf" | "image/png" | "image/jpeg" | "image/webp"
+  byte_size: number
+  created_at: string
 }
 
 export type ConnectionCheckPut = {
@@ -115,6 +125,7 @@ export type ExpertSetup = {
   preferences: ExpertPreferencesView
   consent: AIConsentView | null
   generation_available: boolean
+  attachments_available?: boolean
 }
 
 export type ListCursor = {
@@ -229,6 +240,7 @@ export type RunPage = {
 }
 
 export type RunPut = {
+  attachment_ids?: ReadonlyArray<string>
   kind: "chat" | "analysis"
   message: string
   connection_id: string
@@ -238,6 +250,7 @@ export type RunPut = {
 }
 
 export type RunView = {
+  attachments?: ReadonlyArray<AttachmentView>
   id: string
   conversation_id: string
   kind: "chat" | "analysis"
