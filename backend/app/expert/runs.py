@@ -182,7 +182,7 @@ class ExpertRunService:
         )
         with context:
             self.connections._active()
-            selected = AISettingsService(self.db, owner=self.owner).get().active_connection_id
+            selected = AISettingsService(self.db, owner=self.owner).get(_operation_locked=True).active_connection_id
             connection = self.connections.get(selected) if selected else None
             preferences = ExpertPreferencesService(self.db, owner=self.owner).get(
                 _operation_locked=True

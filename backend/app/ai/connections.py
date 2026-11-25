@@ -22,6 +22,7 @@ from app.models import (
     AIConsentRevocation,
     AIProviderConnection,
     AIProviderCredential,
+    AIRoutingConfiguration,
     User,
 )
 from app.services.credential_crypto import (
@@ -210,6 +211,12 @@ class ProviderConnectionService:
                         ~retained,
                     ),
                 ))
+                routing = self._db.get(
+                    AIRoutingConfiguration, self._owner.id, populate_existing=True,
+                )
+                if routing is not None:
+                    routing.configuration_version += 1
+                    routing.updated_at = datetime.now(UTC)
                 self._db.delete(record)
             if retirement is None or record is not None:
                 self._db.commit()

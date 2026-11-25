@@ -9,6 +9,7 @@ from app.ai.connections import ConnectionProblem, ProviderConnectionService
 from app.ai.preferences import AISettingsPut, AISettingsService
 from app.database import SessionLocal
 from app.models import User
+from app.services.user_operation_lock import UserOperationBusy
 from tests.test_ai_connections import KEY, login, payload
 
 
@@ -80,7 +81,7 @@ def test_preferences_rest_auth_csrf_validation_and_no_outbound_work(client: Test
     assert client.get(path).json() == response.json()
 
 
-def test_concurrent_delete_during_selection_read_returns_a_valid_snapshot(
+def test_selection_read_blocks_concurrent_delete_until_snapshot_is_returned(
     client: TestClient, db: Session, user: User,
 ) -> None:
     identifier = uuid4()
@@ -92,29 +93,31 @@ def test_concurrent_delete_during_selection_read_returns_a_valid_snapshot(
     )
     login(client)
     owner_id = user.id
-    deleted = False
+    attempted = False
 
     def delete_after_selection_read(state):
-        nonlocal deleted
-        if deleted or not state.is_select or "ai_active_connections" not in str(state.statement):
+        nonlocal attempted
+        if attempted or not state.is_select or "ai_active_connections" not in str(state.statement):
             return state.invoke_statement()
-        # Finish the reader's SQL snapshot, then delete in another session before
-        # the application consumes it. A subsequent lookup must not turn this
-        # otherwise valid read into an unhandled not-found exception.
+        # Hold the reader's snapshot while another session tries to delete the
+        # selection. The shared operation must reject that writer until the
+        # application has consumed the snapshot and released its read lock.
         snapshot = state.invoke_statement().freeze()
-        deleted = True
+        attempted = True
         with SessionLocal() as writer:
             owner = writer.get(User, owner_id)
             assert owner is not None
-            ProviderConnectionService(writer, owner=owner).delete(identifier)
+            with pytest.raises(UserOperationBusy):
+                ProviderConnectionService(writer, owner=owner).delete(identifier)
         return snapshot()
 
     event.listen(Session, "do_orm_execute", delete_after_selection_read, retval=True)
     try:
         response = client.get("/api/v1/settings/ai/preferences")
-        assert deleted
+        assert attempted
         assert response.status_code == 200
-        assert response.json()["active_connection_id"] in (None, str(identifier))
+        assert response.json() == {"active_connection_id": str(identifier)}
+        ProviderConnectionService(db, owner=user).delete(identifier)
         assert client.get("/api/v1/settings/ai/preferences").json() == {"active_connection_id": None}
     finally:
         event.remove(Session, "do_orm_execute", delete_after_selection_read)

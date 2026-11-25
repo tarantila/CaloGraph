@@ -231,6 +231,41 @@ class AIActiveConnection(Base):
     connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
 
 
+class AIRoutingConfiguration(Base):
+    __tablename__ = "ai_routing_configurations"
+    __table_args__ = (
+        CheckConstraint("configuration_version >= 1", name="ck_ai_routing_configurations_version"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AIRoutingEntry(Base):
+    __tablename__ = "ai_routing_entries"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"], ["ai_routing_configurations.user_id"],
+            ondelete="CASCADE", name="fk_ai_routing_entries_configuration",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_routing_entries_connection",
+        ),
+        CheckConstraint("position >= 0 AND position < 20", name="ck_ai_routing_entries_position"),
+        UniqueConstraint("user_id", "position", name="uq_ai_routing_entries_owner_position"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+
+
 class AIConsent(Base):
     __tablename__ = "ai_consents"
     __table_args__ = (

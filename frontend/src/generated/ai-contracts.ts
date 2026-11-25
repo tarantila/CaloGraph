@@ -38,6 +38,32 @@ export type AIConsentView = {
   revoked_at: string | null
 }
 
+export type AIRoutingEntryPut = {
+  connection_id: string
+  enabled: boolean
+}
+
+export type AIRoutingEntryView = {
+  connection_id: string
+  position: number
+  enabled: boolean
+  provider_kind: ProviderKind
+  label: string
+  model_id: string | null
+  ready: boolean
+}
+
+export type AIRoutingPut = {
+  expected_configuration_version: number
+  entries: ReadonlyArray<AIRoutingEntryPut>
+}
+
+export type AIRoutingView = {
+  configuration_version: number
+  entries: ReadonlyArray<AIRoutingEntryView>
+  primary_connection_id: string | null
+}
+
 export type AISettingsPut = {
   active_connection_id: string | null
   configuration_version: number | null
