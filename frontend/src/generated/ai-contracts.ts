@@ -98,6 +98,7 @@ export type ConversationPut = {
 export type ConversationView = {
   id: string
   mode: "chat" | "analysis"
+  title?: string | null
   created_at: string
   updated_at: string
 }
@@ -107,6 +108,7 @@ export type ExpertAnswer = {
   findings?: ReadonlyArray<AnswerFinding>
   limitations?: ReadonlyArray<string>
   follow_up?: ReadonlyArray<string>
+  conversation_title?: string | null
 }
 
 export type ExpertPreferencesPut = {

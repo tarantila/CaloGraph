@@ -355,7 +355,12 @@ turns per conversation, with one queued/running turn per account.
 - `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
   immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
   Consumed UUIDs remain reserved after deletion, including IDs reserved by an
-  idempotent delete of an unknown conversation.
+  idempotent delete of an unknown conversation. Views include a nullable
+  generated topic title of at most 80 characters. The title is requested inline
+  with the first successful chat answer; a missing or invalid title does not
+  invalidate that answer. Analysis conversations remain untitled. Historical
+  first-message excerpts remain stored but are hidden because their provenance
+  is unknown.
 - `PUT /api/v1/expert/conversations/{uuid}/turns/{run_uuid}` binds the message,
   request kind, active connection/version, preference version and consent ID.
   Identical retries return current state without scheduling another execution;
@@ -370,7 +375,8 @@ turns per conversation, with one queued/running turn per account.
   result, but cannot retract data already sent. Conversation/account deletion also
   prevents late completion from being stored.
 - Conversation and turn lists use paired aware timestamp/UUID cursors with limits
-  of 1–50. Responses expose no context payloads, credentials or owner arguments.
+  of 1–50. Responses expose no context payloads, credentials, title-source
+  metadata or owner arguments.
 
 A worker claims once, builds the complete selected history in a PostgreSQL
 repeatable-read snapshot, closes that session, then rechecks the live account,
@@ -386,6 +392,8 @@ survive conversation/connection deletion and are removed on account deletion. Th
 complete `0047` preference, `0056` consent/connection-retention and `0057` merge
 lineages are preserved; `0058` merges the conversation schema and `0059` adds
 identity receipts while backfilling any pre-existing conversations and runs.
+Revision `0062` adds nullable generated-title provenance without rewriting legacy
+title values; downgrade is refused while generated-title provenance remains.
 
 The model receives bounded untrusted data and no executable tools. Responses must
 match the closed `ExpertAnswer` schema and reference known evidence for findings.

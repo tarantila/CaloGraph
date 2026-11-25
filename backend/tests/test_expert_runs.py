@@ -98,7 +98,12 @@ def test_runs_are_owner_scoped_and_request_replay_does_not_requeue(db: Session, 
     service = runs.ExpertRunService(db, owner=user)
     again, created = service.put_run(conversation_id, identifier, payload)
     assert not created and again.id == identifier and again.state == "queued"
-    stranger = User(username="other", password_hash="synthetic-hash", timezone="Europe/Berlin")
+    own_conversation = db.get(ExpertConversation, (user.id, conversation_id))
+    assert own_conversation is not None
+    own_conversation.title, own_conversation.title_source = "Private generated title", "generated"
+    stranger = User(
+        username="other", password_hash="synthetic-hash", timezone="Europe/Berlin", is_admin=True,
+    )
     db.add(stranger)
     db.commit()
     with pytest.raises(Exception) as error:
@@ -230,6 +235,95 @@ def test_execute_run_dispatches_after_context_transaction_closes(db: Session, us
     assert result.coverage_end == date(2026, 1, 2)
 
 
+def test_chat_title_is_generated_in_first_successful_request_once(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id, run_id, payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    calls: list[str] = []
+
+    def generate(_kind, **kwargs):
+        calls.append(kwargs["request"].system_instruction)
+        return _success(json.dumps({
+            "text": "A grounded summary.", "findings": [], "conversation_title": "Ballaststoffzufuhr im Verlauf",
+        }))
+
+    monkeypatch.setattr(runs, "generate", generate)
+    runs.execute_run(user.id, run_id)
+    first = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert first.state == "succeeded" and first.answer is not None
+    assert first.answer.conversation_title == "Ballaststoffzufuhr im Verlauf"
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title == "Ballaststoffzufuhr im Verlauf"
+    assert len(calls) == 1 and '"generate_conversation_title": true' in calls[0]
+
+    second_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, second_id, payload)
+    runs.execute_run(user.id, second_id)
+    second = runs.ExpertRunService(db, owner=user).get_run(second_id)
+    assert second.answer is not None and second.answer.conversation_title is None
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title == "Ballaststoffzufuhr im Verlauf"
+    assert len(calls) == 2 and '"generate_conversation_title": false' in calls[1]
+
+
+@pytest.mark.parametrize("title", [None, 37, "  \n", "x" * 81, "\ud800"])
+def test_invalid_provider_title_does_not_fail_answer_or_expose_legacy_title(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+    title: object,
+) -> None:
+    conversation_id, run_id, _payload = _queued(db, user)
+    conversation = db.get(ExpertConversation, (user.id, conversation_id))
+    assert conversation is not None
+    conversation.title = "legacy first message excerpt"
+    db.commit()
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(json.dumps({
+        "text": "Valid answer.", "findings": [], "conversation_title": title,
+    })))
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert result.state == "succeeded" and result.answer is not None
+    assert result.answer.conversation_title is None
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title is None
+    stored = db.get(ExpertConversation, (user.id, conversation_id))
+    assert stored is not None and stored.title == "legacy first message excerpt" and stored.title_source is None
+
+
+def test_analysis_conversation_never_generates_title_even_for_chat_followup(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id, analysis_payload, _ = _prepare(db, user, mode="analysis")
+    connection = ProviderConnectionService(db, owner=user).get(analysis_payload.connection_id)
+    prefs = ExpertPreferencesService(db, owner=user).get()
+    chat_consent, _ = AIConsentService(db, owner=user).put(
+        uuid4(),
+        AIConsentPut(
+            connection_id=analysis_payload.connection_id,
+            configuration_version=connection.configuration_version,
+            purpose="nutrition_chat", data_domains=prefs.data_domains,
+            include_meal_names=prefs.include_meal_names,
+            history=ConsentHistory(mode="all_available", start=None, end=None),
+            policy_version=CONSENT_POLICY_VERSION,
+        ),
+    )
+    chat_payload = analysis_payload.model_copy(update={"kind": "chat", "consent_id": chat_consent.id})
+    run_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, run_id, chat_payload)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    calls: list[str] = []
+
+    def generate(_kind, **kwargs):
+        calls.append(kwargs["request"].system_instruction)
+        return _success(json.dumps({"text": "A grounded answer.", "findings": [], "conversation_title": "Should not show"}))
+
+    monkeypatch.setattr(runs, "generate", generate)
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert result.state == "succeeded" and result.answer is not None
+    assert result.answer.conversation_title is None
+    assert '"generate_conversation_title": false' in calls[0]
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title is None
+
+
 @pytest.mark.parametrize("change", ["preferences", "consent", "connection"])
 def test_final_dispatch_rechecks_authorization_after_context_build(
     db: Session, user: User, monkeypatch: pytest.MonkeyPatch, change: str,
@@ -275,7 +369,7 @@ def test_cancel_during_context_prevents_dispatch(db: Session, user: User, monkey
 
 
 def test_cancel_during_provider_call_discards_answer(db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    _conversation_id, identifier, _payload = _queued(db, user)
+    conversation_id, identifier, payload = _queued(db, user)
     monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
 
     def cancel_then_reply(*_args, **_kwargs):
@@ -283,12 +377,57 @@ def test_cancel_during_provider_call_discards_answer(db: Session, user: User, mo
             owner = session.get(User, user.id)
             assert owner is not None
             runs.ExpertRunService(session, owner=owner).cancel(identifier)
-        return _success()
+        return _success(json.dumps({
+            "text": "Valid answer.", "findings": [], "conversation_title": "Discarded title",
+        }))
 
     monkeypatch.setattr(runs, "generate", cancel_then_reply)
     runs.execute_run(user.id, identifier)
     result = runs.ExpertRunService(db, owner=user).get_run(identifier)
     assert result.state == "cancelled" and result.answer is None
+    assert runs.ExpertRunService(db, owner=user).get_conversation(result.conversation_id).title is None
+
+    retry_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, retry_id, payload)
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(json.dumps({
+        "text": "Valid answer.", "findings": [], "conversation_title": "Nutrition overview",
+    })))
+    runs.execute_run(user.id, retry_id)
+    retried = runs.ExpertRunService(db, owner=user).get_run(retry_id)
+    assert retried.state == "succeeded" and retried.answer is not None
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title == "Nutrition overview"
+
+
+def test_failed_first_chat_attempt_allows_next_success_to_title_conversation(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id, first_id, payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: (_ for _ in ()).throw(runs.GenerationFailure("provider_unavailable")))
+    runs.execute_run(user.id, first_id)
+    assert runs.ExpertRunService(db, owner=user).get_run(first_id).state == "failed"
+
+    second_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, second_id, payload)
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(json.dumps({
+        "text": "Valid answer.", "findings": [], "conversation_title": "Ernährung im Überblick",
+    })))
+    runs.execute_run(user.id, second_id)
+    second = runs.ExpertRunService(db, owner=user).get_run(second_id)
+    assert second.state == "succeeded" and second.answer is not None
+    assert second.answer.conversation_title == "Ernährung im Überblick"
+    assert runs.ExpertRunService(db, owner=user).get_conversation(conversation_id).title == "Ernährung im Überblick"
+
+
+def test_credential_echo_in_provider_title_rejects_response(db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    _conversation_id, run_id, _payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(json.dumps({
+        "text": "Valid answer.", "findings": [], "conversation_title": KEY,
+    })))
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert result.state == "failed" and result.error_code == "invalid_response" and result.answer is None
 
 
 def test_unknown_answer_evidence_ids_are_rejected(db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,3 +502,41 @@ def test_turn_endpoint_background_task_runs_after_exclusive_dependency_releases(
     assert response.status_code == 201, response.text
     assert response.json()["state"] == "queued"
     assert called == [True]
+
+
+@pytest.mark.parametrize("content", [
+    '{"text":',
+    '{"text":37,"conversation_title":"Safe title"}',
+    json.dumps({"text": "\ud800", "conversation_title": "Safe title"}),
+    '{"text":"Valid answer","conversation_title":NaN}',
+    '{"text":"Valid answer","conversation_title":Infinity}',
+])
+def test_invalid_answer_json_or_required_text_does_not_persist_title(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch, content: str,
+) -> None:
+    conversation_id, run_id, _payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(content))
+    runs.execute_run(user.id, run_id)
+    service = runs.ExpertRunService(db, owner=user)
+    result = service.get_run(run_id)
+    assert result.state == "failed" and result.answer is None
+    assert service.get_conversation(conversation_id).title is None
+    row = db.get(ExpertConversation, (user.id, conversation_id))
+    assert row is not None and row.title_source is None
+
+
+def test_answer_json_duplicate_keys_preserve_last_value_behavior(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id, run_id, _payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: _success(
+        '{"text":"first","text":"second","conversation_title":"Topic title"}',
+    ))
+    runs.execute_run(user.id, run_id)
+    service = runs.ExpertRunService(db, owner=user)
+    result = service.get_run(run_id)
+    assert result.state == "succeeded" and result.answer is not None
+    assert result.answer.text == "second"
+    assert service.get_conversation(conversation_id).title == "Topic title"

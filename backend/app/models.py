@@ -351,6 +351,10 @@ class ExpertConversation(Base):
     __tablename__ = "expert_conversations"
     __table_args__ = (
         CheckConstraint("mode IN ('chat', 'analysis')", name="ck_expert_conversations_mode"),
+        CheckConstraint(
+            "title_source IS NULL OR title_source = 'generated'",
+            name="ck_expert_conversations_title_source",
+        ),
         Index("ix_expert_conversations_owner_created", "user_id", "created_at", "id"),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -358,6 +362,7 @@ class ExpertConversation(Base):
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     title: Mapped[str | None] = mapped_column(String(120))
+    title_source: Mapped[str | None] = mapped_column(String(16))
     uses_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

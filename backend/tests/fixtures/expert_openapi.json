@@ -5697,6 +5697,18 @@
           "title": "Mode",
           "type": "string"
         },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Title"
+        },
         "updated_at": {
           "format": "date-time",
           "title": "Updated At",
@@ -5715,6 +5727,18 @@
     "ExpertAnswer": {
       "additionalProperties": false,
       "properties": {
+        "conversation_title": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conversation Title"
+        },
         "findings": {
           "default": [],
           "items": {
