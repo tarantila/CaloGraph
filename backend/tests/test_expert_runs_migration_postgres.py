@@ -75,6 +75,13 @@ def test_expert_runs_migration_chain_and_active_owner_uniqueness() -> None:
         # conversation schema before the receipt migration was applied.
         command.upgrade(config, "head")
         with engine.connect() as connection:
+            legacy = connection.execute(
+                text(
+                    "SELECT title, title_source FROM expert_conversations "
+                    "WHERE user_id=:owner AND id=:id"
+                ), {"owner": owner_id, "id": conversation_id},
+            ).one()
+            assert legacy.title == "synthetic question" and legacy.title_source is None
             assert connection.execute(
                 text(
                     "SELECT count(*) FROM expert_conversation_identities "
@@ -87,6 +94,29 @@ def test_expert_runs_migration_chain_and_active_owner_uniqueness() -> None:
                     "WHERE user_id=:owner AND run_id=:id"
                 ), {"owner": owner_id, "id": run_id},
             ).scalar_one() == 1
+        # The metadata-only migration can roll back while all provenance remains
+        # unknown, without changing the legacy title value.
+        command.downgrade(config, "20261124_0061")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT title FROM expert_conversations WHERE user_id=:owner AND id=:id"),
+                {"owner": owner_id, "id": conversation_id},
+            ).scalar_one() == "synthetic question"
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE expert_conversations SET title='Generated topic', title_source='generated' "
+                    "WHERE user_id=:owner AND id=:id"
+                ), {"owner": owner_id, "id": conversation_id},
+            )
+        with pytest.raises(RuntimeError, match="generated Expert conversation title provenance"):
+            command.downgrade(config, "20261124_0061")
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE expert_conversations SET title_source=NULL WHERE user_id=:owner AND id=:id"),
+                {"owner": owner_id, "id": conversation_id},
+            )
         with pytest.raises(RuntimeError, match="Expert request identity receipts"):
             command.downgrade(config, "20261124_0058")
         with engine.begin() as connection, pytest.raises(IntegrityError), connection.begin_nested():
@@ -108,6 +138,12 @@ def test_expert_runs_migration_chain_and_active_owner_uniqueness() -> None:
             )
             connection.execute(
                 text(
+                    "UPDATE expert_conversations SET title='Generated topic', title_source='generated' "
+                    "WHERE user_id=:owner AND id=:id"
+                ), {"owner": owner_id, "id": conversation_id},
+            )
+            connection.execute(
+                text(
                     "INSERT INTO expert_runs (user_id, id, conversation_id, request_hash, kind, message, "
                     "connection_id, connection_version, preferences_version, consent_id, provider_kind, "
                     "model_id, state, created_at) VALUES (:owner, :id, :conversation, :hash, 'chat', "
@@ -122,6 +158,9 @@ def test_expert_runs_migration_chain_and_active_owner_uniqueness() -> None:
                 {"owner": owner_id, "other": other_owner_id},
             )
         with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT count(*) FROM expert_conversations WHERE user_id=:owner"
+            ), {"owner": owner_id}).scalar_one() == 0
             assert connection.execute(text(
                 "SELECT count(*) FROM expert_conversation_identities WHERE user_id=:owner"
             ), {"owner": owner_id}).scalar_one() == 0

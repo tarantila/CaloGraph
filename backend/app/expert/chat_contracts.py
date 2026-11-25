@@ -35,6 +35,7 @@ class ConversationPut(ExpertContract):
 class ConversationView(ExpertContract):
     id: UUID
     mode: ExpertMode
+    title: str | None = Field(default=None, max_length=80, repr=False)
     created_at: datetime
     updated_at: datetime
 
@@ -116,6 +117,14 @@ class ExpertAnswer(ExpertContract):
     findings: tuple[AnswerFinding, ...] = Field(default=(), max_length=8, repr=False)
     limitations: tuple[str, ...] = Field(default=(), max_length=8)
     follow_up: tuple[str, ...] = Field(default=(), max_length=4)
+    conversation_title: str | None = Field(default=None, max_length=80, repr=False)
+
+    @field_validator("conversation_title", mode="before")
+    @classmethod
+    def normalize_conversation_title(cls, value: object) -> str | None:
+        from app.expert.titles import generated_conversation_title
+
+        return generated_conversation_title(value)
 
 
 class RunView(ExpertContract):

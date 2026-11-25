@@ -39,8 +39,10 @@
   data domains and meal-name inclusion. The service supplies canonical defaults
   when no row exists; identical writes do not increment the configuration
   version. The row contains no health values and is removed with its owner.
-- `expert_conversations`: account-scoped immutable initial chat/analysis mode and
-  timestamps. Conversation identity receipts survive deletion and prevent reuse of a
+- `expert_conversations`: account-scoped immutable initial chat/analysis mode,
+  timestamps, a legacy-compatible title and nullable `title_source` provenance.
+  Only titles marked `title_source='generated'` are exposed; unmarked values may be historical
+  first-message excerpts and remain hidden. Conversation identity receipts survive deletion and prevent reuse of a
   previously consumed UUID; only account deletion removes the receipts.
 - `expert_runs`: immutable client request identity plus connection, preference and
   consent versions, claim/dispatch/completion timestamps, bounded context snapshot

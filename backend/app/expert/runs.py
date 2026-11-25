@@ -69,6 +69,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("Non-standard JSON constants are not accepted")
+
+
 def _purpose(mode: str) -> str:
     return "nutrition_check_in" if mode == "analysis" else "nutrition_chat"
 
@@ -77,6 +81,7 @@ def _conversation_view(row: ExpertConversation) -> ConversationView:
     return ConversationView(
         id=row.id,
         mode=row.mode,
+        title=row.title if row.title_source == "generated" else None,
         created_at=_aware(row.created_at),
         updated_at=_aware(row.updated_at),
     )
@@ -587,6 +592,24 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
                 raise GenerationFailure("preferences_changed")
             mode = ConversationPut(mode=row.kind).mode
             message = row.message
+            conversation = db.get(
+                ExpertConversation,
+                (owner_id, row.conversation_id),
+                populate_existing=True,
+            )
+            title_requested = bool(
+                conversation
+                and conversation.mode == "chat"
+                and conversation.title_source is None
+            ) and db.scalar(
+                select(ExpertRun.id)
+                .where(
+                    ExpertRun.user_id == owner_id,
+                    ExpertRun.conversation_id == row.conversation_id,
+                    ExpertRun.state == "succeeded",
+                )
+                .limit(1)
+            ) is None
             prior = db.scalar(
                 select(ExpertRun)
                 .where(
@@ -618,7 +641,12 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
             coverage_start, coverage_end = context.coverage_start, context.coverage_end
             evidence_ids = set(context.evidence_ids)
         metadata = json.dumps(
-            {"language": language, "mode": mode, "previous_check_in_coverage_end": anchor}
+            {
+                "language": language,
+                "mode": mode,
+                "previous_check_in_coverage_end": anchor,
+                "generate_conversation_title": title_requested,
+            }
         )
         chunks = [encoded[offset : offset + 7800] for offset in range(0, len(encoded), 7800)]
         context_messages = [
@@ -695,6 +723,12 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
             evidence_ids.update("attachment:" + item.id for item in media)
             request = GenerationRequest(
                 system_instruction=SYSTEM_PROMPT
+                + (
+                    "\nWhen generate_conversation_title is true, provide conversation_title as a short topic label "
+                    "in the account language, based only on this user's first successful chat message. "
+                    "Use 3 to 7 words and avoid health values or personal details. "
+                    "When false, set conversation_title to null.\n"
+                )
                 + metadata
                 + "\n"
                 + json.dumps(ExpertAnswer.model_json_schema()),
@@ -736,11 +770,15 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
         raw = result.content.strip()
         if raw.startswith("```json") and raw.endswith("```"):
             raw = raw[7:-3].strip()
-        answer = ExpertAnswer.model_validate_json(raw)
+        answer = ExpertAnswer.model_validate(
+            json.loads(raw, parse_constant=_reject_json_constant)
+        )
         if any(not set(finding.evidence_ids).issubset(evidence_ids) for finding in answer.findings):
             raise GenerationFailure("invalid_evidence")
         if key and key.get_secret_value() in answer.model_dump_json():
             raise GenerationFailure("invalid_response")
+        if not title_requested:
+            answer = answer.model_copy(update={"conversation_title": None})
         with SessionLocal() as db, shared_user_operation(db, owner_id):
             owner = db.get(User, owner_id, populate_existing=True)
             row = db.scalar(
@@ -754,6 +792,33 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
                     row.state = "cancelled"
                 else:
                     row.answer, row.state = answer.model_dump(mode="json"), "succeeded"
+                    if title_requested and answer.conversation_title:
+                        conversation = db.scalar(
+                            select(ExpertConversation)
+                            .where(
+                                ExpertConversation.user_id == owner_id,
+                                ExpertConversation.id == row.conversation_id,
+                            )
+                            .with_for_update()
+                        )
+                        has_prior_success = db.scalar(
+                            select(ExpertRun.id)
+                            .where(
+                                ExpertRun.user_id == owner_id,
+                                ExpertRun.conversation_id == row.conversation_id,
+                                ExpertRun.id != row.id,
+                                ExpertRun.state == "succeeded",
+                            )
+                            .limit(1)
+                        ) is not None
+                        if (
+                            conversation is not None
+                            and conversation.mode == "chat"
+                            and conversation.title_source is None
+                            and not has_prior_success
+                        ):
+                            conversation.title = answer.conversation_title
+                            conversation.title_source = "generated"
                     if row.attachment_ids:
                         conversation = db.get(
                             ExpertConversation,
