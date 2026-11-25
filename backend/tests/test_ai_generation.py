@@ -24,6 +24,33 @@ def request() -> GenerationRequest:
     )
 
 
+@pytest.mark.parametrize(("error", "fallback_safe", "status"), [
+    (OutboundError("unavailable", fallback_safe=True), True, None),
+    (OutboundError("unavailable", status=502), False, 502),
+    (OutboundError("destination_blocked"), False, None),
+])
+def test_generation_failure_preserves_only_explicit_safe_transport_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    error: OutboundError,
+    fallback_safe: bool,
+    status: int | None,
+) -> None:
+    def fail_transport(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(generation, "fetch_provider_json", fail_transport)
+    with pytest.raises(generation.GenerationFailure) as failure:
+        generation.generate(
+            ProviderKind.LOCAL,
+            base_url="http://localhost:11434/v1",
+            key=None,
+            request=request(),
+            timeout_seconds=3,
+        )
+    assert failure.value.fallback_safe is fallback_safe
+    assert failure.value.status == status
+
+
 def test_native_generate_content_reaches_the_validated_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     body = json.dumps({
         "candidates": [{"content": {"parts": [{"text": "synthetic response"}]}, "finishReason": "STOP"}],

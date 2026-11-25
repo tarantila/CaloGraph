@@ -5779,6 +5779,67 @@
       "title": "ExpertAnswer",
       "type": "object"
     },
+    "ExpertFallbackCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "format": "uuid",
+          "title": "Connection Id",
+          "type": "string"
+        },
+        "connection_version": {
+          "minimum": 1.0,
+          "title": "Connection Version",
+          "type": "integer"
+        },
+        "consent_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Consent Id"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "position": {
+          "exclusiveMaximum": 20.0,
+          "minimum": 0.0,
+          "title": "Position",
+          "type": "integer"
+        },
+        "provider_kind": {
+          "title": "Provider Kind",
+          "type": "string"
+        },
+        "ready": {
+          "title": "Ready",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connection_id",
+        "connection_version",
+        "provider_kind",
+        "model_id",
+        "position",
+        "enabled",
+        "ready",
+        "consent_id"
+      ],
+      "title": "ExpertFallbackCandidate",
+      "type": "object"
+    },
     "ExpertPreferencesPut": {
       "additionalProperties": false,
       "properties": {
@@ -5849,6 +5910,94 @@
       "title": "ExpertPreferencesView",
       "type": "object"
     },
+    "ExpertProviderAttemptView": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "format": "uuid",
+          "title": "Connection Id",
+          "type": "string"
+        },
+        "dispatched_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dispatched At"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Code"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finished At"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "position": {
+          "exclusiveMaximum": 20.0,
+          "minimum": 0.0,
+          "title": "Position",
+          "type": "integer"
+        },
+        "provider_kind": {
+          "title": "Provider Kind",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "dispatching",
+            "succeeded",
+            "failed",
+            "skipped",
+            "interrupted"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "winner": {
+          "title": "Winner",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "position",
+        "connection_id",
+        "provider_kind",
+        "model_id",
+        "state",
+        "error_code",
+        "dispatched_at",
+        "finished_at",
+        "winner"
+      ],
+      "title": "ExpertProviderAttemptView",
+      "type": "object"
+    },
     "ExpertSetup": {
       "additionalProperties": false,
       "properties": {
@@ -5877,12 +6026,27 @@
             }
           ]
         },
+        "fallback_candidates": {
+          "default": [],
+          "items": {
+            "$ref": "#/components/schemas/ExpertFallbackCandidate"
+          },
+          "maxItems": 20,
+          "title": "Fallback Candidates",
+          "type": "array"
+        },
         "generation_available": {
           "title": "Generation Available",
           "type": "boolean"
         },
         "preferences": {
           "$ref": "#/components/schemas/ExpertPreferencesView"
+        },
+        "routing_configuration_version": {
+          "default": 0,
+          "minimum": 0.0,
+          "title": "Routing Configuration Version",
+          "type": "integer"
         }
       },
       "required": [
@@ -6386,6 +6550,18 @@
           "minimum": 1.0,
           "title": "Preferences Version",
           "type": "integer"
+        },
+        "routing_configuration_version": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Routing Configuration Version"
         }
       },
       "required": [
@@ -6523,6 +6699,15 @@
         "preferences_version": {
           "title": "Preferences Version",
           "type": "integer"
+        },
+        "provider_attempts": {
+          "default": [],
+          "items": {
+            "$ref": "#/components/schemas/ExpertProviderAttemptView"
+          },
+          "maxItems": 20,
+          "title": "Provider Attempts",
+          "type": "array"
         },
         "provider_kind": {
           "title": "Provider Kind",

@@ -25,8 +25,12 @@ GENERATION_PROVIDERS = frozenset({"openai_api", "anthropic", "gemini", "local", 
 
 
 class GenerationFailure(ValueError):
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self, code: str, *, fallback_safe: bool = False, status: int | None = None,
+    ) -> None:
         self.code = code
+        self.fallback_safe = fallback_safe
+        self.status = status
         super().__init__("The provider could not complete this request.")
 
 
@@ -153,7 +157,9 @@ def generate(
             ) else {}),
         )
     except OutboundError as exc:
-        raise GenerationFailure(exc.code) from None
+        raise GenerationFailure(
+            exc.code, fallback_safe=exc.fallback_safe, status=exc.status,
+        ) from None
     try:
         if not isinstance(data, dict):
             raise ValueError

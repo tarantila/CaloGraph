@@ -315,7 +315,18 @@ def test_run_replay_keeps_pre_attachment_empty_payload_hash(db: Session, user: U
     conversation_id, payload, _ = _prepare(db, user)
     run_id = uuid4()
     service = runs.ExpertRunService(db, owner=user)
-    original_hash = __import__("hashlib").sha256(payload.model_dump_json(exclude={"attachment_ids"}).encode()).hexdigest()
+    # Recreate the original wire shape independently of newer optional fields.
+    legacy_payload = {
+        "kind": payload.kind,
+        "message": payload.message,
+        "connection_id": str(payload.connection_id),
+        "connection_version": payload.connection_version,
+        "preferences_version": payload.preferences_version,
+        "consent_id": str(payload.consent_id),
+    }
+    original_hash = __import__("hashlib").sha256(
+        json.dumps(legacy_payload, ensure_ascii=False, separators=(",", ":")).encode(),
+    ).hexdigest()
     service.put_run(conversation_id, run_id, payload)
     stored = db.get(runs.ExpertRun, (user.id, run_id))
     assert stored is not None and stored.request_hash == original_hash

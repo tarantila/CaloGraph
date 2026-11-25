@@ -139,6 +139,40 @@ def test_only_allowlisted_local_destination_gets_one_bounded_json_request(local_
     assert _ResponseHandler.seen_headers["accept-encoding"] == "identity"
 
 
+@pytest.mark.parametrize(("status", "safe"), [(429, True), (503, True), (502, False), (401, False)])
+def test_only_explicit_429_and_503_are_safe_http_fallbacks(
+    status: int, safe: bool, local_provider: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_ResponseHandler, "response_status", status)
+    with pytest.raises(OutboundError) as error:
+        _call(local_provider)
+    assert error.value.status == status
+    assert error.value.fallback_safe is safe
+
+
+def test_connection_failure_before_request_bytes_is_safe_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ResponseHandler)
+    port = server.server_port
+    server.server_close()
+    base_url = f"http://127.0.0.1:{port}/v1"
+    monkeypatch.setattr(settings, "ai_allowed_endpoints", base_url)
+    with pytest.raises(OutboundError) as error:
+        _call(base_url, path="/chat/completions", request_body=b"{}")
+    assert error.value.code == "unavailable"
+    assert error.value.fallback_safe is True
+
+
+def test_timeout_after_request_reaches_provider_is_not_safe_to_fallback(
+    local_provider: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_ResponseHandler, "slow_header_delay", 0.2)
+    with pytest.raises(OutboundError) as error:
+        _call(local_provider, timeout_seconds=1, request_body=b"{}")
+    assert error.value.code == "timeout"
+    assert error.value.fallback_safe is False
+    assert _ResponseHandler.requests_seen == 1
+
+
 def test_generation_post_sends_one_bounded_json_body_to_the_pinned_destination(local_provider: str) -> None:
     body = b'{"model":"synthetic-model","messages":[{"role":"user","content":"synthetic"}]}'
     result = _call(local_provider, request_body=body)
