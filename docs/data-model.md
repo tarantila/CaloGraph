@@ -45,12 +45,18 @@
   first-message excerpts and remain hidden. Conversation identity receipts survive deletion and prevent reuse of a
   previously consumed UUID; only account deletion removes the receipts.
 - `expert_runs`: immutable client request identity plus connection, preference and
-  consent versions, claim/dispatch/completion timestamps, bounded context snapshot
-  and structured answer. Conversation deletion cascades run content; separate
-  account-scoped run identity receipts retain only the run UUID and timestamp so a
-  deleted or completed request cannot be replayed. Account deletion removes receipts.
-  A partial unique index permits at most one queued/running run per account.
+  consent versions, optional routing version and ordered route snapshot,
+  claim/dispatch/completion timestamps, bounded context snapshot and structured
+  answer. Conversation deletion cascades run content; separate account-scoped run
+  identity receipts retain only the run UUID and timestamp so a deleted or
+  completed request cannot be replayed. Account deletion removes receipts. A
+  partial unique index permits at most one queued/running run per account.
   Credentials are never stored in these records.
+- `expert_run_provider_attempts`: per-run ordered provider dispatch claims with
+  snapshotted connection/configuration/model and the provider's own consent ID. A
+  missing consent is recorded as skipped. Each attempt is durably claimed before
+  I/O and is never automatically replayed after interruption. Provider attempt
+  views expose only connection/provider/model provenance and safe state/error codes.
 - `expert_attachments`: private account- and conversation-scoped PDF/image bytes,
   bounded metadata and SHA-256 used only for immutable upload replay checks.
   Metadata APIs defer and never return file bytes, hashes or owner IDs. Each run

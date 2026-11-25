@@ -137,6 +137,17 @@ export type ExpertAnswer = {
   conversation_title?: string | null
 }
 
+export type ExpertFallbackCandidate = {
+  connection_id: string
+  connection_version: number
+  provider_kind: string
+  model_id: string
+  position: number
+  enabled: boolean
+  ready: boolean
+  consent_id: string | null
+}
+
 export type ExpertPreferencesPut = {
   data_domains: ReadonlyArray<"nutrition" | "targets" | "weight" | "activity" | "profile" | "health_context">
   include_meal_names: boolean
@@ -148,12 +159,26 @@ export type ExpertPreferencesView = {
   configuration_version: number
 }
 
+export type ExpertProviderAttemptView = {
+  position: number
+  connection_id: string
+  provider_kind: string
+  model_id: string
+  state: "pending" | "dispatching" | "succeeded" | "failed" | "skipped" | "interrupted"
+  error_code: string | null
+  dispatched_at: string | null
+  finished_at: string | null
+  winner: boolean
+}
+
 export type ExpertSetup = {
   connection: ProviderConnectionView | null
   preferences: ExpertPreferencesView
   consent: AIConsentView | null
   generation_available: boolean
   attachments_available?: boolean
+  routing_configuration_version?: number
+  fallback_candidates?: ReadonlyArray<ExpertFallbackCandidate>
 }
 
 export type ListCursor = {
@@ -275,6 +300,7 @@ export type RunPut = {
   connection_version: number
   preferences_version: number
   consent_id: string
+  routing_configuration_version?: number | null
 }
 
 export type RunView = {
@@ -296,4 +322,5 @@ export type RunView = {
   coverage_start: string | null
   coverage_end: string | null
   answer: ExpertAnswer | null
+  provider_attempts?: ReadonlyArray<ExpertProviderAttemptView>
 }

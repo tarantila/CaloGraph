@@ -72,9 +72,15 @@ _PRIVATE_ADDRESS_NETWORKS = tuple(
 class OutboundError(Exception):
     """Safe transport failure with no URL, request header, or response body."""
 
-    def __init__(self, code: OutboundCode, *, status: int | None = None) -> None:
+    def __init__(
+        self, code: OutboundCode, *, status: int | None = None,
+        fallback_safe: bool = False,
+    ) -> None:
         self.code = code
         self.status = status
+        self.fallback_safe = fallback_safe or (
+            status == 429 and code == "rate_limited"
+        ) or (status == 503 and code == "unavailable")
         super().__init__(f"{_PUBLIC_MESSAGES[code]}{f' (HTTP {status})' if status is not None else ''}")
 
 
@@ -237,9 +243,9 @@ def _resolve(host: str, port: int, deadline: float, timeout_seconds: int, *, nat
         try:
             rows = future.result(timeout=min(timeout_seconds, max(0.0, deadline - time.monotonic())))
         except FutureTimeout:
-            raise OutboundError("timeout") from None
+            raise OutboundError("timeout", fallback_safe=True) from None
         except OSError:
-            raise OutboundError("unavailable") from None
+            raise OutboundError("unavailable", fallback_safe=True) from None
         answers_list: list[_Address] = []
         seen: set[tuple[int, str]] = set()
         for family, _socktype, _protocol, _canonical_name, sockaddr in rows:
@@ -275,13 +281,20 @@ class _PinnedConnection:
         if remaining <= 0:
             raise OutboundError("timeout")
         raw = socket.socket(self.address.family, socket.SOCK_STREAM)
+        raw.settimeout(min(float(timeout_seconds), remaining))
+        destination = (str(self.address.ip), self.endpoint.port)
         try:
-            raw.settimeout(min(float(timeout_seconds), remaining))
-            destination = (str(self.address.ip), self.endpoint.port)
             if self.address.family == socket.AF_INET6:
                 raw.connect((destination[0], destination[1], 0, 0))
             else:
                 raw.connect(destination)
+        except TimeoutError:
+            raw.close()
+            raise OutboundError("timeout", fallback_safe=True) from None
+        except OSError:
+            raw.close()
+            raise OutboundError("unavailable", fallback_safe=True) from None
+        try:
             peer = ipaddress.ip_address(raw.getpeername()[0])
             if peer != self.address.ip:
                 raise OutboundError("destination_blocked")

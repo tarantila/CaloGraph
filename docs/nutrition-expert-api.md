@@ -364,7 +364,8 @@ turns per conversation, with one queued/running turn per account.
 - `GET /api/v1/expert/setup?mode=chat|analysis` returns the active configuration,
   preferences, matching purpose-specific permission and adapter availability.
   `include_attachments=true` requests a matching document grant; it does not
-  grant permission or disclose file metadata.
+  grant permission or disclose file metadata. The response also reports the
+  routing version and each configured candidate's own applicable consent ID.
 - `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
   immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
   Consumed UUIDs remain reserved after deletion, including IDs reserved by an
@@ -378,8 +379,14 @@ turns per conversation, with one queued/running turn per account.
   request kind, active connection/version, preference version and consent ID.
   Identical retries return current state without scheduling another execution;
   `attachment_ids` may name at most three already uploaded files owned by that
-  conversation. Changed input returns 409. Run UUIDs remain reserved after
-  conversation deletion. Run views may return safe attachment metadata only.
+  conversation. An optional `routing_configuration_version` opts into the
+  current ordered provider route. Every enabled candidate is snapshotted with
+  its configuration and own consent ID; candidates without a matching all-history
+  grant are recorded as skipped. Legacy requests that omit this field keep their
+  original single-provider behavior and replay identity. Changed input returns
+  409. Run UUIDs remain reserved after conversation deletion. Run views may return
+  safe attachment metadata and provider attempt provenance (provider, model,
+  connection ID and safe status only).
 - `GET /api/v1/expert/runs/{uuid}` reads queued, running, succeeded, failed,
   cancelled or interrupted state. `/events` returns bounded typed state events.
   Reconnection and polling never trigger generation.
@@ -393,12 +400,17 @@ turns per conversation, with one queued/running turn per account.
 
 A worker claims once, builds the complete selected history in a PostgreSQL
 repeatable-read snapshot, closes that session, then rechecks the live account,
-active provider, configuration, category version and individual purpose-bound
-consent before committing `running`. The commit is the once-only dispatch boundary.
-No database transaction remains open during provider I/O. A request admitted
-before later revocation or cancellation cannot be recalled from a provider; its
-result will not be stored after cancellation or account deletion. Lost workers
-become interrupted after ten minutes and are never automatically retried.
+configuration, category version and individual purpose-bound consent before
+committing each provider attempt for dispatch. The commit is the once-only
+dispatch boundary for that candidate. No database transaction remains open
+during provider I/O. An opted-in route advances only after a DNS/connect failure
+known to precede request bytes or an explicit HTTP 429/503 response. TLS or
+destination-policy failures, authentication errors, ambiguous transport failures,
+invalid output and completed/refused responses never trigger another candidate.
+A request admitted before later revocation or cancellation cannot be recalled
+from a provider; its result will not be stored after cancellation or account
+deletion. Lost workers become interrupted after ten minutes and are never
+automatically retried.
 
 Identity receipts retain only an account ID, resource UUID and timestamp. They
 survive conversation/connection deletion and are removed on account deletion. The
@@ -407,6 +419,9 @@ lineages are preserved; `0058` merges the conversation schema and `0059` adds
 identity receipts while backfilling any pre-existing conversations and runs.
 Revision `0062` adds nullable generated-title provenance without rewriting legacy
 title values; downgrade is refused while generated-title provenance remains.
+Revision `0064` adds optional per-run route snapshots and durable one-time
+provider attempts; downgrade is refused while opt-in routing snapshots or attempts
+remain.
 
 The model receives bounded untrusted data and no executable tools. Responses must
 match the closed `ExpertAnswer` schema and reference known evidence for findings.

@@ -437,6 +437,8 @@ class ExpertRun(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     connection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    routing_version: Mapped[int | None] = mapped_column(Integer)
+    routing_snapshot: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     preferences_version: Mapped[int] = mapped_column(Integer, nullable=False)
     consent_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -451,6 +453,36 @@ class ExpertRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     coverage_start: Mapped[date | None] = mapped_column(Date)
     coverage_end: Mapped[date | None] = mapped_column(Date)
+
+
+class ExpertRunProviderAttempt(Base):
+    """Durable one-time dispatch state for each consent-bound route candidate."""
+
+    __tablename__ = "expert_run_provider_attempts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "run_id"], ["expert_runs.user_id", "expert_runs.id"],
+            ondelete="CASCADE", name="fk_expert_run_provider_attempts_run",
+        ),
+        CheckConstraint("position >= 0 AND position < 20", name="ck_expert_run_provider_attempts_position"),
+        CheckConstraint(
+            "state IN ('pending', 'dispatching', 'succeeded', 'failed', 'skipped', 'interrupted')",
+            name="ck_expert_run_provider_attempts_state",
+        ),
+        CheckConstraint("connection_version >= 1", name="ck_expert_run_provider_attempts_version"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    connection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    consent_id: Mapped[uuid.UUID | None] = mapped_column()
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ExpertAttachment(Base):

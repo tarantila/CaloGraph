@@ -26,6 +26,19 @@ class ExpertSetup(ExpertContract):
     consent: AIConsentView | None
     generation_available: bool
     attachments_available: bool = False
+    routing_configuration_version: int = Field(default=0, ge=0)
+    fallback_candidates: tuple[ExpertFallbackCandidate, ...] = Field(default=(), max_length=20)
+
+
+class ExpertFallbackCandidate(ExpertContract):
+    connection_id: UUID
+    connection_version: int = Field(ge=1)
+    provider_kind: str
+    model_id: str
+    position: int = Field(ge=0, lt=20)
+    enabled: bool
+    ready: bool
+    consent_id: UUID | None
 
 
 class ConversationPut(ExpertContract):
@@ -80,6 +93,7 @@ class RunPut(ExpertContract):
     connection_version: int = Field(ge=1)
     preferences_version: int = Field(ge=1)
     consent_id: UUID
+    routing_configuration_version: int | None = Field(default=None, ge=0)
 
     @field_validator("attachment_ids")
     @classmethod
@@ -146,6 +160,19 @@ class RunView(ExpertContract):
     coverage_start: date | None
     coverage_end: date | None
     answer: ExpertAnswer | None = Field(repr=False)
+    provider_attempts: tuple[ExpertProviderAttemptView, ...] = Field(default=(), max_length=20)
+
+
+class ExpertProviderAttemptView(ExpertContract):
+    position: int = Field(ge=0, lt=20)
+    connection_id: UUID
+    provider_kind: str
+    model_id: str
+    state: Literal["pending", "dispatching", "succeeded", "failed", "skipped", "interrupted"]
+    error_code: str | None
+    dispatched_at: datetime | None
+    finished_at: datetime | None
+    winner: bool
 
 
 class RunPage(ExpertContract):

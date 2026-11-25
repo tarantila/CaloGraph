@@ -17,6 +17,8 @@ from app.ai.consents import AIConsentService
 from app.ai.consents_contracts import CONSENT_POLICY_VERSION, AIConsentPut, ConsentHistory
 from app.ai.contracts import FinishReason, GenerationResult
 from app.ai.preferences import AISettingsPut, AISettingsService
+from app.ai.routing import AIRoutingService
+from app.ai.routing_contracts import AIRoutingEntryPut, AIRoutingPut
 from app.database import SessionLocal
 from app.expert.chat_contracts import ConversationPut, RunPut
 from app.expert.preferences import ExpertPreferencesService
@@ -26,6 +28,7 @@ from app.models import (
     ExpertConversationIdentity,
     ExpertRun,
     ExpertRunIdentity,
+    ExpertRunProviderAttempt,
     User,
 )
 from app.services.user_operation_lock import exclusive_user_lifecycle_operation
@@ -233,6 +236,284 @@ def test_execute_run_dispatches_after_context_transaction_closes(db: Session, us
     result = runs.ExpertRunService(db, owner=user).get_run(identifier)
     assert result.state == "succeeded" and result.answer is not None
     assert result.coverage_end == date(2026, 1, 2)
+
+
+@pytest.mark.parametrize(("fallback_safe", "backup_consent_purpose", "expected_calls", "expected_state"), [
+    (True, "nutrition_chat", 2, "succeeded"), (True, None, 1, "failed"),
+    (True, "nutrition_check_in", 1, "failed"), (False, "nutrition_chat", 1, "failed"),
+])
+def test_opted_in_route_falls_back_only_after_safe_failure(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+    fallback_safe: bool, expected_calls: int, expected_state: str,
+    backup_consent_purpose: str | None,
+) -> None:
+    from app.ai.connections import ProviderConnectionService
+    from app.ai.connections_contracts import ProviderConnectionPut
+    from app.ai.generation import GenerationFailure
+    conversation_id, payload, primary = _prepare(db, user)
+    backup_id = uuid4()
+    backup, _ = ProviderConnectionService(db, owner=user).put(
+        backup_id,
+        ProviderConnectionPut(
+            label="Synthetic backup", provider_kind="anthropic", model_id="backup-model",
+            enabled=True, api_key=KEY,
+        ),
+    )
+    preferences = ExpertPreferencesService(db, owner=user).get()
+    backup_consent = None
+    if backup_consent_purpose:
+        backup_consent, _ = AIConsentService(db, owner=user).put(
+            uuid4(),
+            AIConsentPut(
+                connection_id=backup_id, configuration_version=backup.configuration_version,
+                purpose=backup_consent_purpose, data_domains=preferences.data_domains,
+                include_meal_names=preferences.include_meal_names,
+                history=ConsentHistory(mode="all_available", start=None, end=None),
+                policy_version=CONSENT_POLICY_VERSION,
+            ),
+        )
+        assert backup_consent.state == "active"
+    routed = AIRoutingService(db, owner=user).put(AIRoutingPut(
+        expected_configuration_version=0,
+        entries=(
+            AIRoutingEntryPut(connection_id=primary.id, enabled=True),
+            AIRoutingEntryPut(connection_id=backup_id, enabled=True),
+        ),
+    ))
+    assert routed.configuration_version == 1
+    payload = payload.model_copy(update={"routing_configuration_version": 1})
+    run_id = uuid4()
+    created, is_new = runs.ExpertRunService(db, owner=user).put_run(conversation_id, run_id, payload)
+    assert is_new and len(created.provider_attempts) == 2
+
+    monkeypatch.setattr(
+        runs, "ContextBuilder",
+        lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()),
+    )
+    seen: list[tuple[str, str]] = []
+
+    def generate(kind, **kwargs):
+        seen.append((kind.value, kwargs["request"].model_id))
+        if len(seen) == 1:
+            raise GenerationFailure("unavailable", fallback_safe=fallback_safe)
+        return _success()
+
+    monkeypatch.setattr(runs, "generate", generate)
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert result.state == expected_state
+    assert len(seen) == expected_calls
+    if fallback_safe and backup_consent_purpose == "nutrition_chat":
+        assert seen == [("openai_api", "synthetic-model"), ("anthropic", "backup-model")]
+        assert [(attempt.state, attempt.winner) for attempt in result.provider_attempts] == [
+            ("failed", False), ("succeeded", True),
+        ]
+    else:
+        assert [(attempt.state, attempt.winner) for attempt in result.provider_attempts] == [
+            ("failed", False), ("skipped", False),
+        ]
+    attempts = list(db.scalars(select(ExpertRunProviderAttempt).where(
+        ExpertRunProviderAttempt.user_id == user.id,
+        ExpertRunProviderAttempt.run_id == run_id,
+    ).order_by(ExpertRunProviderAttempt.position)))
+    assert attempts[1].consent_id == (
+        backup_consent.id
+        if backup_consent is not None and backup_consent_purpose == "nutrition_chat"
+        else None
+    )
+    stored = db.get(ExpertRun, (user.id, run_id))
+    assert stored is not None and stored.connection_id == primary.id
+
+
+@pytest.mark.parametrize(("change", "expected_state"), [
+    ("revoke_backup", "failed"),
+    ("change_route", "failed"),
+    ("change_preferences", "failed"),
+    ("cancel", "cancelled"),
+])
+def test_opted_in_route_revalidates_before_each_backup_dispatch(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+    change: str, expected_state: str,
+) -> None:
+    from app.ai.connections import ProviderConnectionService
+    from app.ai.connections_contracts import ProviderConnectionPut
+    from app.ai.generation import GenerationFailure
+
+    conversation_id, payload, primary = _prepare(db, user)
+    backup_id = uuid4()
+    backup, _ = ProviderConnectionService(db, owner=user).put(
+        backup_id,
+        ProviderConnectionPut(
+            label="Synthetic backup", provider_kind="anthropic", model_id="backup-model",
+            enabled=True, api_key=KEY,
+        ),
+    )
+    preferences = ExpertPreferencesService(db, owner=user).get()
+    backup_consent, _ = AIConsentService(db, owner=user).put(
+        uuid4(),
+        AIConsentPut(
+            connection_id=backup_id, configuration_version=backup.configuration_version,
+            purpose="nutrition_chat", data_domains=preferences.data_domains,
+            include_meal_names=preferences.include_meal_names,
+            history=ConsentHistory(mode="all_available", start=None, end=None),
+            policy_version=CONSENT_POLICY_VERSION,
+        ),
+    )
+    AIRoutingService(db, owner=user).put(AIRoutingPut(
+        expected_configuration_version=0,
+        entries=(
+            AIRoutingEntryPut(connection_id=primary.id, enabled=True),
+            AIRoutingEntryPut(connection_id=backup_id, enabled=True),
+        ),
+    ))
+    payload = payload.model_copy(update={"routing_configuration_version": 1})
+    run_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, run_id, payload)
+    monkeypatch.setattr(
+        runs, "ContextBuilder",
+        lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()),
+    )
+    seen: list[str] = []
+
+    def generate(kind, **_kwargs):
+        seen.append(kind.value)
+        if len(seen) == 1:
+            with SessionLocal() as session:
+                current_owner = session.get(User, user.id)
+                assert current_owner is not None
+                if change == "revoke_backup":
+                    AIConsentService(session, owner=current_owner).revoke(backup_consent.id)
+                elif change == "change_route":
+                    AIRoutingService(session, owner=current_owner).put(AIRoutingPut(
+                        expected_configuration_version=1,
+                        entries=(
+                            AIRoutingEntryPut(connection_id=backup_id, enabled=True),
+                            AIRoutingEntryPut(connection_id=primary.id, enabled=True),
+                        ),
+                    ))
+                elif change == "change_preferences":
+                    ExpertPreferencesService(session, owner=current_owner).put(
+                        ExpertPreferencesPut(
+                            data_domains=preferences.data_domains,
+                            include_meal_names=not preferences.include_meal_names,
+                        )
+                    )
+                else:
+                    runs.ExpertRunService(session, owner=current_owner).cancel(run_id)
+            raise GenerationFailure("unavailable", fallback_safe=True)
+        return _success()
+
+    monkeypatch.setattr(runs, "generate", generate)
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert seen == ["openai_api"]
+    assert result.state == expected_state
+
+
+def test_interrupted_opted_in_attempt_is_reaped_and_never_replayed(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import timedelta
+
+    conversation_id, payload, primary = _prepare(db, user)
+    routed = AIRoutingService(db, owner=user).put(AIRoutingPut(
+        expected_configuration_version=0,
+        entries=(AIRoutingEntryPut(connection_id=primary.id, enabled=True),),
+    ))
+    run_id = uuid4()
+    payload = payload.model_copy(update={
+        "routing_configuration_version": routed.configuration_version,
+    })
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, run_id, payload)
+    run = db.get(ExpertRun, (user.id, run_id))
+    attempt = db.get(ExpertRunProviderAttempt, (user.id, run_id, 0))
+    assert run is not None and attempt is not None
+    run.state, run.claimed_at = "running", datetime.now(UTC) - timedelta(minutes=11)
+    run.created_at = datetime.now(UTC) - timedelta(minutes=11)
+    attempt.state, attempt.dispatched_at = "dispatching", datetime.now(UTC) - timedelta(minutes=11)
+    db.commit()
+
+    reaped = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert reaped.state == "interrupted"
+    assert reaped.provider_attempts[0].state == "interrupted"
+    calls: list[bool] = []
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: calls.append(True))
+    runs.execute_run(user.id, run_id)
+    assert calls == []
+
+
+def test_fallback_candidate_without_attachment_scope_is_never_called(
+    db: Session, user: User, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ai.connections import ProviderConnectionService
+    from app.ai.connections_contracts import ProviderConnectionPut
+    from app.ai.generation import GenerationFailure
+    from app.expert.attachments import AttachmentService
+
+    conversation_id, payload, primary = _prepare(db, user)
+    preferences = ExpertPreferencesService(db, owner=user).get()
+    primary_consent, _ = AIConsentService(db, owner=user).put(
+        uuid4(),
+        AIConsentPut(
+            connection_id=primary.id, configuration_version=primary.configuration_version,
+            purpose="nutrition_chat", data_domains=preferences.data_domains,
+            include_meal_names=preferences.include_meal_names, include_attachments=True,
+            history=ConsentHistory(mode="all_available", start=None, end=None),
+            policy_version=CONSENT_POLICY_VERSION,
+        ),
+    )
+    backup_id, attachment_id = uuid4(), uuid4()
+    backup, _ = ProviderConnectionService(db, owner=user).put(
+        backup_id,
+        ProviderConnectionPut(
+            label="Synthetic backup", provider_kind="anthropic", model_id="backup-model",
+            enabled=True, api_key=KEY,
+        ),
+    )
+    AIConsentService(db, owner=user).put(
+        uuid4(),
+        AIConsentPut(
+            connection_id=backup_id, configuration_version=backup.configuration_version,
+            purpose="nutrition_chat", data_domains=preferences.data_domains,
+            include_meal_names=preferences.include_meal_names, include_attachments=False,
+            history=ConsentHistory(mode="all_available", start=None, end=None),
+            policy_version=CONSENT_POLICY_VERSION,
+        ),
+    )
+    AttachmentService(db, owner=user).put(
+        conversation_id, attachment_id, name="synthetic.pdf", media_type="application/pdf",
+        data=b"%PDF-1.4\n% synthetic test fixture only\n%%EOF",
+    )
+    AIRoutingService(db, owner=user).put(AIRoutingPut(
+        expected_configuration_version=0,
+        entries=(
+            AIRoutingEntryPut(connection_id=primary.id, enabled=True),
+            AIRoutingEntryPut(connection_id=backup_id, enabled=True),
+        ),
+    ))
+    payload = payload.model_copy(update={
+        "consent_id": primary_consent.id,
+        "attachment_ids": (attachment_id,),
+        "routing_configuration_version": 1,
+    })
+    run_id = uuid4()
+    runs.ExpertRunService(db, owner=user).put_run(conversation_id, run_id, payload)
+    monkeypatch.setattr(
+        runs, "ContextBuilder",
+        lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()),
+    )
+    seen: list[str] = []
+
+    def generate(kind, **_kwargs):
+        seen.append(kind.value)
+        raise GenerationFailure("unavailable", fallback_safe=True)
+
+    monkeypatch.setattr(runs, "generate", generate)
+    runs.execute_run(user.id, run_id)
+    result = runs.ExpertRunService(db, owner=user).get_run(run_id)
+    assert result.state == "failed"
+    assert seen == ["openai_api"]
+    assert result.provider_attempts[1].state == "skipped"
 
 
 def test_chat_title_is_generated_in_first_successful_request_once(
