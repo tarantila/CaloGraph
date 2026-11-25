@@ -475,6 +475,7 @@ services:
       INITIAL_ADMIN_SETUP_ENABLED: "false"
       CALOGRAPH_PUBLIC_URL: http://frontend:8080
       COOKIE_SECURE: "false"
+      AI_ALLOWED_ENDPOINTS: http://ai-provider-demo:8081/v1
       TRUSTED_HOSTS: localhost,127.0.0.1,frontend
       TRUSTED_ORIGINS: http://frontend:8080,http://localhost:${E2E_PORT:-8187},http://127.0.0.1:${E2E_PORT:-8187},http://localhost:8080,http://127.0.0.1:8080
       TRUSTED_PROXY_NETWORKS: 10.250.0.10/32
@@ -487,6 +488,8 @@ services:
       RUN_MIGRATIONS: "true"
     depends_on:
       e2e-postgres:
+        condition: service_healthy
+      e2e-ai-provider:
         condition: service_healthy
     healthcheck:
       test:
@@ -515,6 +518,44 @@ services:
     pids_limit: ${BACKEND_PIDS_LIMIT:--1}
     tmpfs:
     - /tmp:size=${BACKEND_TMPFS_BYTES:-1090519040},mode=1777
+    profiles:
+    - e2e
+    pull_policy: never
+  e2e-ai-provider:
+    image: ${CALOGRAPH_BACKEND_IMAGE:-calograph-backend-test}:${CALOGRAPH_VERSION:-edge}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-runtime
+      args:
+        APP_VERSION: ${CALOGRAPH_VERSION:-latest}
+        APP_UID: ${CALOGRAPH_UID:-10001}
+        APP_GID: ${CALOGRAPH_GID:-10001}
+    entrypoint: [python]
+    command: [/fixtures/e2e_ai_provider_server.py]
+    volumes:
+    - ./backend/tests/e2e_ai_provider_server.py:/fixtures/e2e_ai_provider_server.py:ro
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8081/health', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      e2e-data:
+        aliases:
+        - ai-provider-demo
+    security_opt:
+    - no-new-privileges:true
+    cap_drop:
+    - ALL
+    init: true
+    read_only: true
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-0}
+    cpus: ${BACKEND_CPU_LIMIT:-0}
+    pids_limit: ${BACKEND_PIDS_LIMIT:--1}
+    tmpfs:
+    - /tmp:size=32m,mode=1777
     profiles:
     - e2e
     pull_policy: never
