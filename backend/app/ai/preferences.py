@@ -10,8 +10,13 @@ from sqlalchemy.orm import Session
 from app.ai.connections import ConnectionProblem, ProviderConnectionService
 from app.ai.connections_contracts import ConnectionContract
 from app.ai.contracts import ProviderKind
-from app.models import AIActiveConnection, AIProviderConnection, User
-from app.services.user_operation_lock import exclusive_user_lifecycle_operation
+from app.ai.routing import AIRoutingService
+from app.ai.routing_contracts import AIRoutingEntryPut, AIRoutingPut
+from app.models import AIActiveConnection, AIProviderConnection, AIRoutingConfiguration, User
+from app.services.user_operation_lock import (
+    exclusive_user_lifecycle_operation,
+    shared_user_operation,
+)
 
 
 class AISettingsPut(ConnectionContract):
@@ -34,8 +39,16 @@ class AISettingsService:
         self._db, self._owner = db, owner
         self._connections = ProviderConnectionService(db, owner=owner)
 
-    def get(self) -> AISettingsView:
-        self._connections._active()
+    def get(self, *, _operation_locked: bool = False) -> AISettingsView:
+        context = nullcontext() if _operation_locked else shared_user_operation(self._db, self._owner.id)
+        with context:
+            self._connections._active()
+            if self._db.get(AIRoutingConfiguration, self._owner.id, populate_existing=True) is not None:
+                routing = AIRoutingService(self._db, owner=self._owner).get(_operation_locked=True)
+                return AISettingsView(active_connection_id=routing.primary_connection_id)
+            return self._get_legacy()
+
+    def _get_legacy(self) -> AISettingsView:
         connection_id = self._db.scalar(
             select(AIActiveConnection.connection_id)
             .join(
@@ -60,6 +73,31 @@ class AISettingsService:
                     raise ConnectionProblem("ai-connection-not-enabled", 422, "Bitte eine aktivierte verfügbare Verbindung wählen.")
                 if connection.configuration_version != payload.configuration_version:
                     raise ConnectionProblem("ai-configuration-changed", 409, "Die Verbindung wurde geändert. Bitte neu laden.")
+            if self._db.get(AIRoutingConfiguration, self._owner.id, populate_existing=True) is not None:
+                current = AIRoutingService(self._db, owner=self._owner).get(_operation_locked=True)
+                ordered = list(current.entries)
+                if payload.active_connection_id is None:
+                    changed = [AIRoutingEntryPut(connection_id=item.connection_id, enabled=False) for item in ordered]
+                else:
+                    chosen = next((item for item in ordered if item.connection_id == payload.active_connection_id), None)
+                    if chosen is None:
+                        raise ConnectionProblem("ai-routing-connections-changed", 409, "Die Verbindungen haben sich geändert. Bitte neu laden.")
+                    ordered.remove(chosen)
+                    ordered.insert(0, chosen)
+                    changed = [
+                        AIRoutingEntryPut(
+                            connection_id=item.connection_id,
+                            enabled=item.connection_id == payload.active_connection_id,
+                        ) for item in ordered
+                    ]
+                AIRoutingService(self._db, owner=self._owner).put(
+                    AIRoutingPut(
+                        expected_configuration_version=current.configuration_version,
+                        entries=tuple(changed),
+                    ),
+                    _operation_locked=True,
+                )
+                return self.get(_operation_locked=True)
             row = self._db.get(AIActiveConnection, self._owner.id, populate_existing=True)
             if payload.active_connection_id is None:
                 if row is not None:
@@ -69,4 +107,4 @@ class AISettingsService:
             else:
                 row.connection_id = payload.active_connection_id
             self._db.commit()
-            return self.get()
+            return self.get(_operation_locked=True)

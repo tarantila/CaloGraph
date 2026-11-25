@@ -4226,6 +4226,631 @@
           }
         }
       }
+    },
+    "/api/v1/settings/ai/routing": {
+      "get": {
+        "tags": [
+          "AI providers"
+        ],
+        "summary": "Get Ai Routing",
+        "operationId": "ai_get_routing",
+        "security": [
+          {
+            "CaloGraphSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIRoutingView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or inactive account session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid CSRF token or request origin for a mutation.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connection not found in the authenticated account.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Lifecycle conflict, immutable provider type, or account connection limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid configuration; secrets and invalid values are not echoed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Credential encryption is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "AI providers"
+        ],
+        "summary": "Put Ai Routing",
+        "description": "Replace the complete account-local provider order and activation set at an expected routing version. Requires CSRF. Routing settings do not send health data or grant consent.",
+        "operationId": "ai_put_routing",
+        "security": [
+          {
+            "CaloGraphSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Csrf-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIRoutingPut"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIRoutingView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or inactive account session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid CSRF token or request origin for a mutation.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connection not found in the authenticated account.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Lifecycle conflict, immutable provider type, or account connection limit.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid configuration; secrets and invalid values are not echoed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Credential encryption is unavailable.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "title": "Type",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "title": "Status",
+                      "type": "integer"
+                    },
+                    "detail": {
+                      "title": "Detail",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Request Id"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "status",
+                    "detail"
+                  ],
+                  "title": "ProblemDetail",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "schemas": {
@@ -4453,6 +5078,140 @@
         "revoked_at"
       ],
       "title": "AIConsentView"
+    },
+    "AIRoutingEntryPut": {
+      "properties": {
+        "connection_id": {
+          "type": "string",
+          "format": "uuid",
+          "title": "Connection Id"
+        },
+        "enabled": {
+          "type": "boolean",
+          "title": "Enabled"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "connection_id",
+        "enabled"
+      ],
+      "title": "AIRoutingEntryPut"
+    },
+    "AIRoutingEntryView": {
+      "properties": {
+        "connection_id": {
+          "type": "string",
+          "format": "uuid",
+          "title": "Connection Id"
+        },
+        "position": {
+          "type": "integer",
+          "exclusiveMaximum": 20.0,
+          "minimum": 0.0,
+          "title": "Position"
+        },
+        "enabled": {
+          "type": "boolean",
+          "title": "Enabled"
+        },
+        "provider_kind": {
+          "$ref": "#/components/schemas/ProviderKind"
+        },
+        "label": {
+          "type": "string",
+          "title": "Label"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Id"
+        },
+        "ready": {
+          "type": "boolean",
+          "title": "Ready"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "connection_id",
+        "position",
+        "enabled",
+        "provider_kind",
+        "label",
+        "model_id",
+        "ready"
+      ],
+      "title": "AIRoutingEntryView"
+    },
+    "AIRoutingPut": {
+      "properties": {
+        "expected_configuration_version": {
+          "type": "integer",
+          "minimum": 0.0,
+          "title": "Expected Configuration Version"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/components/schemas/AIRoutingEntryPut"
+          },
+          "type": "array",
+          "maxItems": 20,
+          "title": "Entries"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "expected_configuration_version",
+        "entries"
+      ],
+      "title": "AIRoutingPut"
+    },
+    "AIRoutingView": {
+      "properties": {
+        "configuration_version": {
+          "type": "integer",
+          "minimum": 0.0,
+          "title": "Configuration Version"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/components/schemas/AIRoutingEntryView"
+          },
+          "type": "array",
+          "maxItems": 20,
+          "title": "Entries"
+        },
+        "primary_connection_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Primary Connection Id"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "configuration_version",
+        "entries",
+        "primary_connection_id"
+      ],
+      "title": "AIRoutingView"
     },
     "AISettingsPut": {
       "properties": {

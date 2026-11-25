@@ -166,6 +166,19 @@ only; a future outbound adapter must enforce its destination policy before use.
 ChatGPT-plan access remains a distinct mandatory v1 provider and requires its
 supported authentication flow; API keys cannot configure it through this resource.
 
+`GET /api/v1/settings/ai/routing` returns the account's ordered connection list,
+enabled state, readiness and current configuration version. Before the first
+routing write it projects the legacy active connection as the first enabled entry
+without persisting anything. New connections are appended disabled after routing
+has been saved. `PUT /api/v1/settings/ai/routing` replaces the complete list and
+requires `expected_configuration_version`; stale writes return 409. Identical
+retries at the immediately preceding version are idempotent. Routing updates make
+no provider requests and do not change consent. The first enabled entry is the
+compatibility active-provider selection only while it is ready; otherwise the
+active selection is null rather than promoting another connection. No automatic
+request fallback is performed. Deleting a connection invalidates the routing
+version.
+
 ## Explicit connection checks and destination policy
 
 `GET /api/v1/settings/ai/providers` describes settings availability, authentication
