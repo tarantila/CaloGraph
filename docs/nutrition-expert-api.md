@@ -56,11 +56,14 @@ another account's settings. Saving preferences reads no health data and grants
 no provider permission.
 
 The account page at `/konto/nutrition-expert` exposes these preferences with
-automatic, serialized saves. It also shows the currently selected provider's
-permission status. Revocation enumerates every consent page for that owned
-connection, revokes each still-unrevoked consent by ID, and verifies the full
-list again before confirming success. An incomplete read or remaining consent
-does not confirm revocation and leaves the status available for retry. Changing
+automatic, serialized saves. Its permission list covers every provider
+connection owned by the signed-in account, including disabled and non-primary
+connections with earlier grants. Revoking a provider's permissions enumerates
+every consent page for that connection, revokes each still-unrevoked consent by
+ID, and verifies the full list again before confirming success. An incomplete
+read or remaining consent does not confirm revocation and leaves the status
+available for retry. If the connection list cannot be read, the preference
+controls remain usable and the permission section offers a retry. Changing
 preferences does not grant or revoke permission and makes no provider request.
 
 Migration `20261114_0047` adds the owner-keyed preferences row. Revision

@@ -23,7 +23,7 @@ const sessionChanged = ref(false)
 const identity = captureAuthIdentity()
 const feedbackConnections = computed(() => props.connections.filter(item => Boolean(messages.value[item.id])))
 const checking = computed(() => props.connections.some(item => states.value[item.id] === 'loading'))
-const noActiveConsents = computed(() => props.connections.length > 0 && props.connections.every(item => states.value[item.id] === 'none') && Object.values(errors.value).every(value => !value) && Object.values(messages.value).every(value => !value))
+const noActiveConsents = computed(() => props.connections.every(item => states.value[item.id] === 'none') && Object.values(errors.value).every(value => !value) && Object.values(messages.value).every(value => !value))
 const currentConnectionIds = computed(() => new Set(props.connections.map(item => item.id)))
 const readTokens: Record<string, number> = {}
 const revokeTokens: Record<string, number> = {}
@@ -192,7 +192,7 @@ onBeforeUnmount(() => { disposed = true; emit('busy', false); for (const id of O
       <div v-for="connection in visibleConnections" :key="connection.id" class="consent-row" :data-connection-id="connection.id">
         <div>
           <strong>{{ providerLabel(connection) }}</strong>
-          <p v-if="enabledConnectionIds" class="help consent-destination">{{ connection.model_id }}<template v-if="connection.base_url"> · {{ connection.base_url }}</template></p>
+          <p v-if="connection.model_id || connection.base_url" class="help consent-destination"><template v-if="connection.model_id">{{ connection.model_id }}</template><template v-if="connection.base_url"><template v-if="connection.model_id"> · </template>{{ connection.base_url }}</template></p>
           <p v-if="states[connection.id] === 'active'" class="help">{{ t('accountAIProviders.consentActive') }}</p>
           <p v-else-if="states[connection.id] === 'stored'" class="help">{{ t('accountAIProviders.consentStored') }}</p>
           <p v-else-if="states[connection.id] === 'none'" class="help">{{ t('providerRouting.consentMissing') }}</p>

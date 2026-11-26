@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }))
 vi.mock('../src/api', () => ({ api: apiMock }))
 
+import type { ProviderConnectionView } from '../src/generated/ai-contracts'
 import AccountNutritionExpertView from '../src/views/AccountNutritionExpertView.vue'
 import { setLocale } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
@@ -15,15 +16,24 @@ const initialPreferences = {
   include_meal_names: true,
   configuration_version: 1,
 }
-const connection = {
+const connection: ProviderConnectionView = {
   id: 'connection-1', label: 'Synthetic provider', provider_kind: 'local', model_id: 'synthetic-model',
   base_url: 'http://synthetic.invalid/v1', enabled: true, timeout_seconds: 30,
   configuration_version: 2, has_credential: true,
   created_at: '2026-11-25T00:00:00Z', updated_at: '2026-11-25T00:00:00Z',
 }
-const consent = (id: string, revoked_at: string | null = null) => ({
-  id, connection_id: connection.id, configuration_version: 2, provider_kind: 'local', model_id: 'synthetic-model',
-  base_url: connection.base_url, purpose: 'nutrition_chat', data_domains: ['nutrition'], include_meal_names: false,
+const otherConnection: ProviderConnectionView = {
+  ...connection,
+  id: 'connection-other', label: 'Other disabled provider', provider_kind: 'gateway', enabled: false,
+  model_id: 'other-model', configuration_version: 3,
+}
+const chatgptConnection: ProviderConnectionView = {
+  ...connection,
+  id: 'connection-chatgpt', label: 'ChatGPT plan', provider_kind: 'chatgpt_plan', model_id: 'GPT-6.1-Sol', base_url: null,
+}
+const consent = (id: string, revoked_at: string | null = null, owner = connection) => ({
+  id, connection_id: owner.id, configuration_version: owner.configuration_version, provider_kind: owner.provider_kind, model_id: owner.model_id,
+  base_url: owner.base_url, purpose: 'nutrition_chat', data_domains: ['nutrition'], include_meal_names: false,
   history: { mode: 'all_available', start: null, end: null }, policy_version: 'test', state: revoked_at ? 'revoked' : 'active',
   created_at: '2026-11-25T00:00:00Z', revoked_at,
 })
@@ -31,21 +41,32 @@ const consent = (id: string, revoked_at: string | null = null) => ({
 let wrappers: VueWrapper[] = []
 let preferences = { ...initialPreferences, data_domains: [...initialPreferences.data_domains] }
 let consents = [consent('consent-current'), consent('consent-older-scope')]
+let connections: ProviderConnectionView[] = [connection]
+let activeConnection: ProviderConnectionView | null = connection
+let splitConnectionPages = false
 
 function setupResponse() {
-  return { connection, preferences: { ...preferences }, consent: null, generation_available: true }
+  return { connection: activeConnection, preferences: { ...preferences }, consent: null, generation_available: true }
 }
 
-function responsePage(after: string | null) {
-  if (!after) return { items: [consents[0]!], next_after: 'page-2' }
-  return { items: [consents[1]!], next_after: null }
+function responsePage(connectionId: string, after: string | null) {
+  const items = consents.filter(item => item.connection_id === connectionId)
+  if (!after) return { items: items.slice(0, 1), next_after: items.length > 1 ? 'page-2' : null }
+  return { items: items.slice(1), next_after: null }
 }
 
 function installDefaultApi(): void {
   apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
     if (path === '/expert/setup') return setupResponse()
+    if (path.startsWith('/settings/ai/connections?')) {
+      const after = new URLSearchParams(path.split('?')[1]).get('after')
+      if (splitConnectionPages && !after) return { items: connections.slice(0, 1), next_after: connections[0]?.id ?? null }
+      if (splitConnectionPages && after) return { items: connections.slice(1), next_after: null }
+      return { items: connections, next_after: null }
+    }
     if (path.startsWith('/settings/ai/consents?')) {
-      return responsePage(new URLSearchParams(path.split('?')[1]).get('after'))
+      const query = new URLSearchParams(path.split('?')[1])
+      return responsePage(query.get('connection_id') ?? '', query.get('after'))
     }
     if (path.startsWith('/settings/ai/consents/') && options?.method === 'DELETE') {
       const id = path.split('/').at(-1)
@@ -78,6 +99,9 @@ describe('Nutrition Expert account settings', () => {
     }
     preferences = { ...initialPreferences, data_domains: [...initialPreferences.data_domains] }
     consents = [consent('consent-current'), consent('consent-older-scope')]
+    connections = [connection]
+    activeConnection = connection
+    splitConnectionPages = false
     apiMock.mockReset()
     installDefaultApi()
   })
@@ -159,6 +183,7 @@ describe('Nutrition Expert account settings', () => {
     let releaseSave!: (value: typeof preferences) => void
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
       if (path === '/expert/setup') return setupResponse()
+      if (path.startsWith('/settings/ai/connections?')) return { items: connections, next_after: null }
       if (path.startsWith('/settings/ai/consents?')) return { items: [], next_after: null }
       if (path === '/settings/expert' && options?.method === 'PUT') {
         return new Promise(resolve => { releaseSave = resolve })
@@ -186,6 +211,7 @@ describe('Nutrition Expert account settings', () => {
     let releaseSave!: (value: typeof preferences) => void
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
       if (path === '/expert/setup') return setupResponse()
+      if (path.startsWith('/settings/ai/connections?')) return { items: connections, next_after: null }
       if (path.startsWith('/settings/ai/consents?')) return { items: [], next_after: null }
       if (path === '/settings/expert' && options?.method === 'PUT') return new Promise(resolve => { releaseSave = resolve })
       throw new Error(`Unexpected API request: ${path}`)
@@ -249,7 +275,8 @@ describe('Nutrition Expert account settings', () => {
 
   it('revokes all consent scopes across pages and confirms only after a full re-read', async () => {
     const wrapper = await mounted()
-    expect(wrapper.text()).toContain('Lokaler KI-Server · synthetic-model')
+    expect(wrapper.get('.consent-row strong').text()).toBe('Lokaler KI-Server')
+    expect(wrapper.get('.consent-destination').text()).toContain('synthetic-model')
     await wrapper.get('button.compact-action').trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('Freigaben widerrufen.'))
 
@@ -274,12 +301,78 @@ describe('Nutrition Expert account settings', () => {
     })
     const wrapper = await mounted()
     await wrapper.get('button.compact-action').trigger('click')
-    await vi.waitFor(() => expect(wrapper.text()).toContain('Die Datenfreigaben konnten nicht widerrufen werden'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Freigaben konnten nicht widerrufen werden'))
     expect(wrapper.text()).not.toContain('Freigaben widerrufen. Neue Anfragen benötigen deine Zustimmung.')
     expect(wrapper.find('button.compact-action').exists()).toBe(true)
 
     await wrapper.get('button.compact-action').trigger('click')
     await vi.waitFor(() => expect(wrapper.text()).toContain('Freigaben widerrufen. Neue Anfragen benötigen deine Zustimmung.'))
     expect(consents.every(item => item.revoked_at !== null)).toBe(true)
+  })
+
+  it.each([
+    ['the active provider has no grants', true],
+    ['there is no active provider', false],
+  ] as const)('shows and revokes stale grants on a disabled provider when %s', async (_scenario, activeConnectionEnabled) => {
+    connections = [{ ...chatgptConnection, enabled: activeConnectionEnabled }, otherConnection]
+    activeConnection = activeConnectionEnabled ? chatgptConnection : null
+    splitConnectionPages = true
+    consents = [consent('other-consent-a', null, otherConnection), consent('other-consent-b', null, otherConnection)]
+    const wrapper = await mounted()
+
+    expect(wrapper.find('.consent-row[data-connection-id="connection-chatgpt"]').exists()).toBe(false)
+    const otherRow = wrapper.get('.consent-row[data-connection-id="connection-other"]')
+    expect(otherRow.text()).toContain('OpenAI-kompatibler Anbieter')
+    expect(otherRow.text()).toContain('other-model')
+    expect(otherRow.text()).toContain('Eine frühere Freigabe ist gespeichert')
+    expect(apiMock.mock.calls.filter(([path]) => String(path).startsWith('/settings/ai/connections?'))).toHaveLength(2)
+
+    await otherRow.get('button.compact-action').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.consent-row[data-connection-id="connection-other"]').exists()).toBe(false))
+    const deletions = apiMock.mock.calls.filter(([path, options]) => String(path).startsWith('/settings/ai/consents/') && options?.method === 'DELETE')
+    expect(deletions.map(([path]) => path).sort()).toEqual([
+      '/settings/ai/consents/other-consent-a',
+      '/settings/ai/consents/other-consent-b',
+    ])
+    expect(consents.every(item => item.revoked_at !== null)).toBe(true)
+    expect(apiMock.mock.calls.some(([path, options]) => String(path).startsWith('/settings/ai/consents/') && options?.method === 'PUT')).toBe(false)
+  })
+
+  it('preserves another provider permission when revoking one provider', async () => {
+    connections = [connection, otherConnection]
+    consents = [consent('primary-consent', null, connection), consent('other-consent', null, otherConnection)]
+    const wrapper = await mounted()
+    await wrapper.get('.consent-row[data-connection-id="connection-other"] button.compact-action').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.consent-row[data-connection-id="connection-other"]').exists()).toBe(false))
+    expect(wrapper.get('.consent-row[data-connection-id="connection-1"] button.compact-action').text()).toBe('Freigaben widerrufen')
+    expect(consents.find(item => item.id === 'primary-consent')?.revoked_at).toBeNull()
+    expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'DELETE').map(([path]) => path)).toEqual(['/settings/ai/consents/other-consent'])
+  })
+
+  it('shows an empty permission state without disabling preferences when no providers exist', async () => {
+    connections = []
+    activeConnection = null
+    const wrapper = await mounted()
+    expect(wrapper.get('.consent-settings').text()).toContain('Keine aktiven KI-Freigaben')
+    expect(wrapper.findAll('.consent-row')).toHaveLength(0)
+    expect(wrapper.get<HTMLInputElement>('input[name="expert-domain"][value="weight"]').element.disabled).toBe(false)
+  })
+
+  it('keeps data settings usable and retries when the owned provider list cannot be read', async () => {
+    const defaultApi = apiMock.getMockImplementation()!
+    let failOnce = true
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.startsWith('/settings/ai/connections?') && failOnce) {
+        failOnce = false
+        throw new Error('synthetic connection-list failure')
+      }
+      return defaultApi(path, options)
+    })
+    const wrapper = await mounted()
+    expect(wrapper.findAll('input[name="expert-domain"]')).toHaveLength(6)
+    expect(wrapper.text()).toContain('Freigaben konnten nicht geladen werden')
+    await wrapper.get('.expert-permission-settings button.text-action').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.consent-settings').exists()).toBe(true))
+    expect(wrapper.findAll('input[name="expert-domain"]')).toHaveLength(6)
   })
 })
