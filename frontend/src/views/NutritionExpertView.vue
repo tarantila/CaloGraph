@@ -84,6 +84,25 @@ watch(() => auth.user?.id, () => {
 })
 const active = computed(() => turns.value.find(turn => turn.state === 'queued' || turn.state === 'running'))
 const provider = computed(() => setup.value?.connection ? t(`accountAISetup.providers.${setup.value.connection.provider_kind}`) : '')
+const attachmentNames = computed(() => new Map(
+  turns.value.flatMap(turn => turn.attachments ?? []).map(file => [file.id.toLowerCase(), file.file_name]),
+))
+function displayAssistantText(value: string): string {
+  return value.replace(/attachment:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi, (_reference, id: string) =>
+    attachmentNames.value.get(id.toLowerCase()) ?? t('expertChat.documentEvidence'),
+  )
+}
+const safeFailureKeys: Record<string, string> = {
+  invalid_request: 'invalidRequest', invalid_response: 'invalidResponse', output_limit: 'outputLimit',
+  timeout: 'timeout', provider_deadline: 'timeout', rate_limited: 'rateLimited',
+  context_too_large: 'contextTooLarge', authentication: 'authentication',
+  credential_unavailable: 'credentialUnavailable', provider_unavailable: 'providerUnavailable',
+}
+function safeFailure(turn: RunView): string {
+  if (turn.state !== 'failed' || !turn.error_code) return ''
+  const key = safeFailureKeys[turn.error_code]
+  return key ? t(`expertChat.failures.${key}`) : ''
+}
 const permissionDescription = computed(() => t('expertChat.permissionDescription', {
   provider: provider.value, model: setup.value?.connection?.model_id || '',
   domains: setup.value?.preferences.data_domains.map(domain => t(`expertSettings.domains.${domain}.label`)).join(', ') ?? '',
@@ -476,8 +495,9 @@ onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); composerRe
             <div class="message-row user-message-row"><div class="user-message"><span class="message-author">{{ t('expertChat.you') }}</span><p>{{ turn.message }}</p><ul v-if="turn.attachments?.length" class="sent-attachments"><li v-for="file in turn.attachments" :key="file.id"><PhPaperclip :size="14" aria-hidden="true" />{{ file.file_name }}</li></ul></div><span class="message-avatar user-avatar" aria-hidden="true"><PhUser :size="17" /></span></div>
             <div class="message-row assistant-message-row"><span class="message-avatar expert-avatar" aria-hidden="true"><PhChatCircleText :size="19" /></span><div class="assistant-message"><span class="message-author">Nutrition Expert <span class="expert-subtle">· {{ turn.model_id }}</span></span>
               <p v-if="turn.provider_attempts?.some(item => item.state === 'succeeded' && item.position > 0)" class="expert-subtle fallback-provenance">{{ t('providerRouting.usedProvider', { provider: t(`accountAISetup.providers.${turn.provider_kind}`) }) }}</p>
-              <template v-if="turn.answer"><p class="answer-text">{{ turn.answer.text }}</p><section v-for="(finding, index) in turn.answer.findings" :key="index" class="expert-finding"><h3>{{ t(`expertChat.findings.${finding.kind}`) }}</h3><p>{{ finding.text }}</p><details v-if="finding.evidence_ids.length"><summary>{{ t('expertChat.evidence') }}</summary><ul><li v-for="id in finding.evidence_ids" :key="id">{{ evidenceLabel(id) }}</li></ul></details></section><aside v-if="turn.answer.limitations?.length" class="answer-limitations"><h3>{{ t('expertChat.limitations') }}</h3><ul><li v-for="item in turn.answer.limitations" :key="item">{{ item }}</li></ul></aside><div v-if="turn.answer.follow_up?.length" class="follow-ups"><button v-for="question in turn.answer.follow_up" :key="question" type="button" :disabled="busy || !!active" @click="draft = question">{{ question }}</button></div></template>
+              <template v-if="turn.answer"><p class="answer-text">{{ displayAssistantText(turn.answer.text) }}</p><section v-for="(finding, index) in turn.answer.findings" :key="index" class="expert-finding"><h3>{{ t(`expertChat.findings.${finding.kind}`) }}</h3><p>{{ displayAssistantText(finding.text) }}</p><details v-if="finding.evidence_ids.length"><summary>{{ t('expertChat.evidence') }}</summary><ul><li v-for="id in finding.evidence_ids" :key="id">{{ evidenceLabel(id) }}</li></ul></details></section><aside v-if="turn.answer.limitations?.length" class="answer-limitations"><h3>{{ t('expertChat.limitations') }}</h3><ul><li v-for="item in turn.answer.limitations" :key="item">{{ displayAssistantText(item) }}</li></ul></aside><div v-if="turn.answer.follow_up?.length" class="follow-ups"><button v-for="question in turn.answer.follow_up" :key="question" type="button" :disabled="busy || !!active" @click="draft = displayAssistantText(question)">{{ displayAssistantText(question) }}</button></div></template>
               <p v-else :role="['queued', 'running'].includes(turn.state) ? 'status' : undefined">{{ t(`expertChat.states.${turn.state}`) }}</p>
+              <p v-if="safeFailure(turn)" class="expert-subtle run-failure-reason">{{ safeFailure(turn) }}</p>
               <button v-if="['failed', 'interrupted', 'cancelled'].includes(turn.state)" class="button secondary" type="button" :disabled="busy || !!active || !!submission" @click="reuseTurn(turn)">{{ t('expertChat.reuseTurn') }}</button>
             </div></div>
           </article>

@@ -55,7 +55,9 @@ beforeEach(() => {
     const payload = typeof options?.body === 'string' ? JSON.parse(options.body) : undefined
     if (path.startsWith('/expert/setup?') || path === '/expert/setup') {
       const purpose = new URL(path, 'http://synthetic.invalid').searchParams.get('mode') === 'analysis' ? 'nutrition_check_in' : 'nutrition_chat'
-      return { ...state, consent: grants[purpose] ?? null }
+      const requestedAttachments = new URL(path, 'http://synthetic.invalid').searchParams.get('include_attachments') === 'true'
+      const saved = grants[purpose] as { include_attachments?: boolean } | undefined
+      return { ...state, consent: saved && (!requestedAttachments || saved.include_attachments) ? saved : null }
     }
     if (path.startsWith('/expert/conversations?')) {
       conversationListRequestCount++
@@ -117,6 +119,48 @@ describe('Nutrition Expert chat', () => {
     expect(wrapper.find('select').exists()).toBe(false)
     expect(writes()).toHaveLength(0)
     expect(apiMock.mock.calls.some(([path]) => path.includes('nutrition-days'))).toBe(false)
+  })
+  it('formats assistant attachment references with known filenames or a generic label only', async () => {
+    const earlierId = '11111111-1111-4111-8111-111111111111'
+    const currentId = '22222222-2222-4222-8222-222222222222'
+    const unknownId = '33333333-3333-4333-8333-333333333333'
+    const unsafeName = '<img src=x onerror=alert(1)>.pdf'
+    conversations = [{ id: 'conversation-1', mode: 'chat', created_at: '2026-11-14T00:00:00Z', updated_at: '2026-11-14T00:00:00Z' }]
+    turns = [
+      {
+        ...savedRun('earlier-run', { kind: 'chat', message: `User mentioned attachment:${earlierId}`, connection_id: connection.id, connection_version: 3, preferences_version: 1, consent_id: 'grant-1' }),
+        id: 'earlier-run',
+        attachments: [{ id: earlierId, file_name: unsafeName, media_type: 'application/pdf', byte_size: 20, created_at: '2026-11-13T00:00:00Z' }],
+        answer: { text: `Earlier attachment:${earlierId}; unknown attachment:${unknownId}`, findings: [{ kind: 'observation', text: `Current attachment:${currentId}`, evidence_ids: [`attachment:${currentId}`] }] },
+      },
+      {
+        ...savedRun('current-run', { kind: 'chat', message: 'Current user message', connection_id: connection.id, connection_version: 3, preferences_version: 1, consent_id: 'grant-1' }),
+        id: 'current-run',
+        attachments: [{ id: currentId, file_name: 'current-report.pdf', media_type: 'application/pdf', byte_size: 20, created_at: '2026-11-14T00:00:00Z' }],
+        answer: { text: `Current attachment:${currentId}`, follow_up: [`Continue with attachment:${currentId}`] },
+      },
+    ]
+    const { wrapper } = await mounted('?conversation=conversation-1')
+    expect(wrapper.findAll('.answer-text')[0]!.text()).toBe(`Earlier ${unsafeName}; unknown Uploaded attachment`)
+    expect(wrapper.findAll('.expert-finding p')[0]!.text()).toBe('Current current-report.pdf')
+    expect(wrapper.findAll('.answer-text')[1]!.text()).toBe('Current current-report.pdf')
+    expect(wrapper.find('.user-message p').text()).toBe(`User mentioned attachment:${earlierId}`)
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.get('.expert-finding').text()).toContain('Uploaded attachment')
+    await wrapper.get('.follow-ups button').trigger('click')
+    expect(wrapper.get('textarea').element).toHaveProperty('value', 'Continue with current-report.pdf')
+  })
+  it('shows only allowlisted friendly failure reasons and never provider error codes', async () => {
+    conversations = [{ id: 'conversation-1', mode: 'chat', created_at: '2026-11-14T00:00:00Z', updated_at: '2026-11-14T00:00:00Z' }]
+    turns = [
+      { ...savedRun('known-failure', { kind: 'chat', message: 'Synthetic known failure', connection_id: connection.id, connection_version: 3, preferences_version: 1, consent_id: 'grant-1' }), state: 'failed', error_code: 'invalid_request', answer: null },
+      { ...savedRun('unknown-failure', { kind: 'chat', message: 'Synthetic unknown failure', connection_id: connection.id, connection_version: 3, preferences_version: 1, consent_id: 'grant-1' }), state: 'failed', error_code: 'provider-secret-synthetic', answer: null },
+    ]
+    const { wrapper } = await mounted('?conversation=conversation-1')
+    expect(wrapper.text()).toContain('The provider rejected the request.')
+    expect(wrapper.text()).toContain('The request could not be completed. There is no automatic retry.')
+    expect(wrapper.text()).not.toContain('provider-secret-synthetic')
+    expect(wrapper.findAll('.run-failure-reason')).toHaveLength(1)
   })
   it('does not auto-send a started analysis after navigation moves to another conversation', async () => {
     conversations = [{ id: 'other-analysis', mode: 'analysis', created_at: '2026-11-13T00:00:00Z', updated_at: '2026-11-13T00:00:00Z' }]
@@ -357,7 +401,7 @@ describe('Nutrition Expert chat', () => {
     expect(apiMock.mock.calls.some(([path]) => path.includes('/turns?'))).toBe(false)
   })
   it('stores an attachment locally, then requests explicit document permission before sending', async () => {
-    const { wrapper } = await mounted()
+    const { wrapper, router } = await mounted()
     await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
     const file = new File(['%PDF-1.4 synthetic'], 'synthetic-report.pdf', { type: 'application/pdf' })
     const input = wrapper.get('input[type="file"]')
@@ -371,6 +415,14 @@ describe('Nutrition Expert chat', () => {
     expect(delivered[0]!.attachment_ids).toEqual([attachments[0]!.id])
     const grants = writes().filter(([path]) => path.includes('/consents/'))
     expect(grants.every(([, options]) => JSON.parse(String(options.body)).include_attachments === true)).toBe(true)
+
+    await router.push({ query: {} }); await flushPromises()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    await wrapper.get('textarea').setValue('A later text-only question')
+    await wrapper.get('form.chat-composer').trigger('submit'); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(delivered).toHaveLength(2)
+    expect(writes().filter(([path]) => path.includes('/consents/'))).toHaveLength(2)
   })
   it('scans every bounded turn page before deciding whether document permission is required', async () => {
     pagedHistory = true

@@ -257,7 +257,7 @@ class ExpertRunService:
                     if (
                         set(candidate_consent.data_domains) == set(preferences.data_domains)
                         and candidate_consent.include_meal_names == preferences.include_meal_names
-                        and candidate_consent.include_attachments == include_attachments
+                        and (candidate_consent.include_attachments or not include_attachments)
                         and AIConsentService(self.db, owner=self.owner)._view(candidate_consent).state == "active"
                     ):
                         matching_consent = candidate_consent.id
@@ -290,7 +290,7 @@ class ExpertRunService:
                     if (
                         set(row.data_domains) == set(preferences.data_domains)
                         and row.include_meal_names == preferences.include_meal_names
-                        and row.include_attachments == include_attachments
+                        and (row.include_attachments or not include_attachments)
                     ):
                         view = AIConsentService(self.db, owner=self.owner)._view(row)
                         if view.state == "active":

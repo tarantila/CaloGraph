@@ -265,6 +265,17 @@ const en = {
     delete: 'Delete conversation', deleteHelp: 'This conversation and its saved responses will be deleted. Your nutrition data will be preserved.',
     evidence: 'Supporting data', limitations: 'Assessment limitations',
     findings: { observation: 'Observation', interpretation: 'Interpretation', guidance: 'Possible next step' },
+    failures: {
+      invalidRequest: 'The provider rejected the request. Check the selected model and try a simpler request.',
+      invalidResponse: 'The provider did not return a usable answer.',
+      outputLimit: 'The provider stopped before completing the answer.',
+      timeout: 'The provider took too long to respond.',
+      rateLimited: 'The provider is temporarily limiting requests. Try again later.',
+      contextTooLarge: 'The request and available history exceed the provider context limit.',
+      authentication: 'The provider rejected its configured sign-in or credential.',
+      credentialUnavailable: 'The configured provider credential is unavailable.',
+      providerUnavailable: 'The provider is currently unavailable.',
+    },
     states: { queued: 'Preparing your data …', running: 'Creating the response …', succeeded: 'Completed', failed: 'The request could not be completed. There is no automatic retry.', cancelled: 'Response cancelled. Data already sent cannot be retrieved.', interrupted: 'The request was interrupted. There is no automatic retry.' },
   },
   expertSettings: {

@@ -382,6 +382,10 @@ turns per conversation, with one queued/running turn per account.
   `include_attachments=true` requests a matching document grant; it does not
   grant permission or disclose file metadata. The response also reports the
   routing version and each configured candidate's own applicable consent ID.
+  Existing grants apply across conversations. An attachment grant also covers
+  text-only requests, while a text-only grant never authorizes attachments.
+  Provider configuration, purpose, data categories, meal-name scope, policy,
+  all-history scope and revocation checks remain unchanged.
 - `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
   immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
   Consumed UUIDs remain reserved after deletion, including IDs reserved by an

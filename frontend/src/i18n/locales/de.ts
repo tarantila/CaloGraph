@@ -269,6 +269,17 @@ const de = {
     delete: 'Gespräch löschen', deleteHelp: 'Dieses Gespräch und seine gespeicherten Antworten werden gelöscht. Deine Ernährungsdaten bleiben erhalten.',
     evidence: 'Datengrundlage', limitations: 'Grenzen der Einschätzung',
     findings: { observation: 'Beobachtung', interpretation: 'Einordnung', guidance: 'Möglicher nächster Schritt' },
+    failures: {
+      invalidRequest: 'Der Anbieter hat die Anfrage abgelehnt. Prüfe das ausgewählte Modell und versuche eine einfachere Anfrage.',
+      invalidResponse: 'Der Anbieter hat keine verwendbare Antwort zurückgegeben.',
+      outputLimit: 'Der Anbieter hat die Antwort vorzeitig beendet.',
+      timeout: 'Der Anbieter hat nicht rechtzeitig geantwortet.',
+      rateLimited: 'Der Anbieter begrenzt Anfragen vorübergehend. Versuche es später erneut.',
+      contextTooLarge: 'Anfrage und verfügbarer Verlauf überschreiten das Kontextlimit des Anbieters.',
+      authentication: 'Der Anbieter hat die konfigurierte Anmeldung oder den Zugang abgelehnt.',
+      credentialUnavailable: 'Der konfigurierte Zugang des Anbieters ist nicht verfügbar.',
+      providerUnavailable: 'Der Anbieter ist derzeit nicht verfügbar.',
+    },
     states: { queued: 'Deine Daten werden vorbereitet …', running: 'Die Antwort wird erstellt …', succeeded: 'Abgeschlossen', failed: 'Die Anfrage konnte nicht abgeschlossen werden. Es erfolgt kein automatischer Neuversuch.', cancelled: 'Antwort abgebrochen. Bereits versendete Daten können nicht zurückgeholt werden.', interrupted: 'Die Anfrage wurde unterbrochen. Es erfolgt kein automatischer Neuversuch.' },
   },
   expertSettings: {
