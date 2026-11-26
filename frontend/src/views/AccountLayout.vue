@@ -38,6 +38,7 @@ const accountNavigationGroups = [
       { name: 'account-data-sources', label: 'dataSources', icon: PhDatabase },
       { name: 'account-data-privacy', label: 'dataPrivacy', icon: PhShieldCheck },
       { name: 'account-ai-providers', label: 'aiProviders', icon: PhCpu },
+      { name: 'account-nutrition-expert', label: 'nutritionExpert', icon: PhGear },
     ],
   },
   {
@@ -61,6 +62,7 @@ const accountContentWidthClasses: Record<string, string> = {
   'account-data-sources': 'account-content--comfortable',
   'account-data-privacy': 'account-content--comfortable',
   'account-ai-providers': 'account-content--comfortable',
+  'account-nutrition-expert': 'account-content--comfortable',
   'account-general': 'account-content--comfortable',
   'account-security': 'account-content--compact',
 }

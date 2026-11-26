@@ -82,6 +82,11 @@ const router = createRouter({
           component: () => import('./views/AccountAIProvidersView.vue'),
         },
         {
+          path: 'nutrition-expert',
+          name: 'account-nutrition-expert',
+          component: () => import('./views/AccountNutritionExpertView.vue'),
+        },
+        {
           path: 'allgemeine-einstellungen',
           name: 'account-general',
           component: () => import('./views/AccountGeneralSettingsView.vue'),
