@@ -55,6 +55,15 @@ cannot read or change preferences, and administrator status grants no access to
 another account's settings. Saving preferences reads no health data and grants
 no provider permission.
 
+The account page at `/konto/nutrition-expert` exposes these preferences with
+automatic, serialized saves and a single action to revoke all Nutrition Expert
+data permissions across every provider. Revocation enumerates all pages of
+consents owned by the signed-in account, revokes each still-unrevoked consent by
+ID, and verifies the full list again before confirming success. An incomplete
+read or any remaining consent does not confirm revocation and leaves the action
+available for retry. Changing preferences does not grant or revoke permission
+and makes no provider request.
+
 Migration `20261114_0047` adds the owner-keyed preferences row. Revision
 `20261124_0057` merges that migration branch with the retained consent
 revocation branch without changing either migration's schema operations.
