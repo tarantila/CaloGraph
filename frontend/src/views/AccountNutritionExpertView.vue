@@ -3,9 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { captureAuthIdentity, isAuthIdentityCurrent } from '../auth-session'
 import { useAuthStore } from '../stores/auth'
-import type { ExpertPreferencesPut, ExpertPreferencesView, ExpertSetup, ProviderConnectionPage, ProviderConnectionView } from '../generated/ai-contracts'
+import type { ExpertPreferencesPut, ExpertPreferencesView, ExpertSetup } from '../generated/ai-contracts'
 import { i18n } from '../i18n'
-import AIConsentSettingsCard from '../components/AIConsentSettingsCard.vue'
+import ExpertConsentCard from '../components/ExpertConsentCard.vue'
 
 const t = i18n.global.t.bind(i18n.global)
 type Domain = ExpertPreferencesPut['data_domains'][number]
@@ -17,9 +17,6 @@ const saving = ref(false)
 const settingsError = ref('')
 const saveMessage = ref('')
 const setup = ref<ExpertSetup | null>(null)
-const connections = ref<ProviderConnectionView[]>([])
-const connectionsLoading = ref(true)
-const connectionsError = ref('')
 const consentBusy = ref(false)
 const failedPreferences = ref<ExpertPreferencesPut | null>(null)
 const savedMessage = ref(false)
@@ -34,7 +31,6 @@ let revision = 0
 let saveLoop: Promise<void> | null = null
 let savedMessageTimer: ReturnType<typeof setTimeout> | undefined
 let savingMessageTimer: ReturnType<typeof setTimeout> | undefined
-let connectionLoadGeneration = 0
 
 function clearSavingMessageDelay(): void {
   if (savingMessageTimer) clearTimeout(savingMessageTimer)
@@ -68,33 +64,6 @@ function showSavedMessage(): void {
   }, 4_000)
 }
 
-async function loadConnections(): Promise<void> {
-  if (!alive()) return
-  const generation = ++connectionLoadGeneration
-  connectionsLoading.value = true
-  connectionsError.value = ''
-  try {
-    let after: string | null = null
-    const loaded: ProviderConnectionView[] = []
-    const seenCursors = new Set<string>()
-    do {
-      const query = new URLSearchParams({ limit: '20' })
-      if (after) query.set('after', after)
-      const page = await api<ProviderConnectionPage>(`/settings/ai/connections?${query.toString()}`)
-      if (!alive() || connectionLoadGeneration !== generation) return
-      loaded.push(...page.items)
-      after = page.next_after
-      if (after && seenCursors.has(after)) throw new Error('Provider pagination did not advance')
-      if (after) seenCursors.add(after)
-    } while (after)
-    if (alive() && connectionLoadGeneration === generation) connections.value = loaded
-  } catch {
-    if (alive() && connectionLoadGeneration === generation) connectionsError.value = t('accountAIProviders.consentLoadFailed')
-  } finally {
-    if (alive() && connectionLoadGeneration === generation) connectionsLoading.value = false
-  }
-}
-
 const auth = useAuthStore()
 const ownerIdentity = captureAuthIdentity()
 const sessionChanged = ref(false)
@@ -107,12 +76,11 @@ function alive(): boolean {
   saveMessage.value = ''
   sessionChanged.value = true
   selected.value = []; mealNames.value = false; setup.value = null; failedPreferences.value = null
-  connections.value = []; connectionsError.value = ''; connectionsLoading.value = false
   return false
 }
 watch(() => auth.user?.id ?? null, () => { alive() }, { flush: 'sync' })
 function reloadSession(): void { window.location.reload() }
-onBeforeUnmount(() => { disposed = true; connectionLoadGeneration += 1; clearSavedMessage(); clearSavingMessageDelay() })
+onBeforeUnmount(() => { disposed = true; clearSavedMessage(); clearSavingMessageDelay() })
 
 function preferences(): ExpertPreferencesPut {
   return {
@@ -133,7 +101,6 @@ async function load(): Promise<void> {
   if (!alive()) return
   loading.value = true
   settingsError.value = ''
-  void loadConnections()
   try {
     const state = await api<ExpertSetup>('/expert/setup')
     if (!alive()) return
@@ -261,13 +228,7 @@ onMounted(() => { void load() })
         </div>
         <p v-if="settingsError" class="account-form-error" role="alert">{{ settingsError }} <button v-if="failedPreferences" class="text-action" type="button" @click="retrySave">{{ t('expertSettings.retrySave') }}</button></p>
       </section>
-      <section v-if="connectionsLoading || connectionsError" class="card form-card expert-permission-settings" aria-labelledby="expert-permission-settings-heading">
-        <h2 id="expert-permission-settings-heading">{{ t('accountAIProviders.consentTitle') }}</h2>
-        <p>{{ t('accountAIProviders.consentHelp') }}</p>
-        <p v-if="connectionsLoading" role="status">{{ t('accountAIProviders.consentLoading') }}</p>
-        <p v-if="connectionsError" class="account-form-error" role="alert">{{ connectionsError }} <button class="text-action" type="button" @click="loadConnections">{{ t('common.tryAgain') }}</button></p>
-      </section>
-      <AIConsentSettingsCard v-else :connections="connections" :paused="saving" @busy="consentBusy = $event" />
+      <ExpertConsentCard :paused="saving" @busy="consentBusy = $event" />
     </template>
     <p v-if="saveFeedback" class="expert-save-toast" :class="{ 'is-saved': savedMessage }" role="status" aria-live="polite">{{ saveFeedback }}</p>
   </section>
@@ -275,8 +236,6 @@ onMounted(() => { void load() })
 
 <style scoped>
 .expert-settings { gap: 1rem; }
-.expert-permission-settings { display: grid; gap: .85rem; }
-.expert-permission-settings > p { margin: 0; }
 .page-heading { margin-bottom: 0; }
 .expert-settings-notice { border-inline-start: .25rem solid var(--accent); padding-block: 1rem; }
 .expert-settings-notice p { margin: 0; color: var(--muted-strong); font-size: .8rem; line-height: 1.55; }
