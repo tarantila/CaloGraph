@@ -11,6 +11,7 @@ const props = defineProps<{
   danger?: boolean
   pending?: boolean
   error?: string
+  confirmDisabled?: boolean
 }>()
 
 const t = i18n.global.t.bind(i18n.global)
@@ -43,6 +44,7 @@ onBeforeUnmount(() => returnFocus?.focus())
     >
       <h2 id="confirm-dialog-title">{{ props.title }}</h2>
       <p>{{ props.description }}</p>
+      <slot />
       <div v-if="props.error" class="error" role="alert">{{ props.error }}</div>
       <div class="dialog-actions">
         <button class="button secondary" type="button" :disabled="props.pending" @click="emit('close')">{{ t('common.cancel') }}</button>
@@ -50,7 +52,7 @@ onBeforeUnmount(() => returnFocus?.focus())
           class="button"
           :class="{ danger: props.danger }"
           type="button"
-          :disabled="props.pending"
+          :disabled="props.pending || props.confirmDisabled"
           @click="emit('confirm')"
         >
           {{ props.confirmLabel }}

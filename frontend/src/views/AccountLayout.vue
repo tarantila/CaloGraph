@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   PhDatabase,
+  PhCpu,
   PhGear,
   PhLockKey,
   PhPlugs,
@@ -36,6 +37,7 @@ const accountNavigationGroups = [
       { name: 'account-integrations', label: 'integrations', icon: PhPlugs },
       { name: 'account-data-sources', label: 'dataSources', icon: PhDatabase },
       { name: 'account-data-privacy', label: 'dataPrivacy', icon: PhShieldCheck },
+      { name: 'account-ai-providers', label: 'aiProviders', icon: PhCpu },
     ],
   },
   {
@@ -58,6 +60,7 @@ const accountContentWidthClasses: Record<string, string> = {
   'account-integrations': 'account-content--comfortable',
   'account-data-sources': 'account-content--comfortable',
   'account-data-privacy': 'account-content--comfortable',
+  'account-ai-providers': 'account-content--comfortable',
   'account-general': 'account-content--comfortable',
   'account-security': 'account-content--compact',
 }

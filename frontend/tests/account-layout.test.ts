@@ -12,6 +12,7 @@ const accountChildren = [
   { path: 'datenstatus', name: 'account-data-status', component: { template: '<h1>Datenstatus</h1>' } },
   { path: 'integrationen', name: 'account-integrations', component: { template: '<h1>Integrationen</h1>' } },
   { path: 'daten-und-datenschutz', name: 'account-data-privacy', component: { template: '<h1>Daten &amp; Datenschutz</h1>' } },
+  { path: 'ki-anbieter', name: 'account-ai-providers', component: { template: '<h1>KI-Anbieter</h1>' } },
   { path: 'datenquellen', name: 'account-data-sources', component: { template: '<h1>Datenquellen</h1>' } },
   { path: 'allgemeine-einstellungen', name: 'account-general', component: { template: '<h1>Allgemeine Einstellungen</h1>' } },
   { path: 'sicherheit', name: 'account-security', component: { template: '<h1>Sicherheit</h1>' } },
@@ -72,9 +73,9 @@ describe('AccountLayout navigation', () => {
 
     const links = wrapper.findAll('.account-navigation a')
     expect(wrapper.get('.account-navigation-nav').attributes('tabindex')).toBe('0')
-    expect(links).toHaveLength(9)
+    expect(links).toHaveLength(10)
     expect(wrapper.get('.account-navigation h1').text()).toBe('Einstellungen')
-    expect(wrapper.findAll('.account-navigation a svg')).toHaveLength(9)
+    expect(wrapper.findAll('.account-navigation a svg')).toHaveLength(10)
     expect(links.filter((link) => link.classes('active'))).toHaveLength(1)
     expect(wrapper.get('a[href="/konto/integrationen"]').classes()).toContain('active')
     expect(wrapper.get('a[href="/konto/integrationen"]').attributes('aria-current')).toBe('page')
@@ -84,7 +85,7 @@ describe('AccountLayout navigation', () => {
     expect(groups).toHaveLength(3)
     expect(groups.map((group) => group.findAll('option').map((option) => option.attributes('value')))).toEqual([
       ['account-personal', 'account-security', 'account-targets'],
-      ['account-imports', 'account-data-status', 'account-integrations', 'account-data-sources', 'account-data-privacy'],
+      ['account-imports', 'account-data-status', 'account-integrations', 'account-data-sources', 'account-data-privacy', 'account-ai-providers'],
       ['account-general'],
     ])
     expect(wrapper.get<HTMLSelectElement>('select[name="account-section"]').element.value).toBe('account-integrations')
@@ -109,6 +110,7 @@ describe('AccountLayout navigation', () => {
       ['/konto/integrationen', 'account-content--comfortable'],
       ['/konto/datenquellen', 'account-content--comfortable'],
       ['/konto/daten-und-datenschutz', 'account-content--comfortable'],
+      ['/konto/ki-anbieter', 'account-content--comfortable'],
       ['/konto/allgemeine-einstellungen', 'account-content--comfortable'],
       ['/konto/sicherheit', 'account-content--compact'],
     ] as const

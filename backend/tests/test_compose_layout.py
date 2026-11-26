@@ -112,6 +112,8 @@ def test_default_development_builds_local_images_and_scheduler_waits_for_backend
 def test_browser_graphs_use_runtime_images_synthetic_tmpfs_database_and_no_dev_dependencies(profile, prefix) -> None:
     services = compose_config(profile)['services']
     names = {f'{prefix}-postgres', f'{prefix}-backend', f'{prefix}-frontend', prefix}
+    if profile == 'e2e':
+        names.add('e2e-ai-provider')
     for name in names:
         assert set(services[name].get('depends_on', {})) <= names
     assert services[f'{prefix}-backend']['build']['target'] == 'backend-runtime'
@@ -123,6 +125,23 @@ def test_browser_graphs_use_runtime_images_synthetic_tmpfs_database_and_no_dev_d
     assert not database.get('volumes')
     assert services[prefix]['environment']['BASE_URL'] == 'http://frontend:8080'
     assert services[f'{prefix}-backend']['environment']['YAZIO_SCHEDULER_ENABLED'] == 'false'
+
+
+def test_provider_fixture_reuses_prebuilt_runtime_and_is_private_to_e2e() -> None:
+    services = compose_config('e2e', CALOGRAPH_BACKEND_IMAGE='synthetic-backend', CALOGRAPH_VERSION='ci')['services']
+    fixture = services['e2e-ai-provider']
+    assert fixture['image'] == services['e2e-backend']['image'] == 'synthetic-backend:ci'
+    assert fixture['build']['target'] == 'backend-runtime'
+    assert fixture['entrypoint'] == ['python']
+    assert fixture['command'] == ['/fixtures/e2e_ai_provider_server.py']
+    assert not fixture.get('ports')
+    assert set(fixture['networks']) == {'e2e-data'}
+    assert fixture['networks']['e2e-data']['aliases'] == ['ai-provider-demo']
+    assert fixture['read_only'] is True
+    assert fixture['volumes'][0]['read_only'] is True
+    assert fixture['volumes'][0]['target'] == '/fixtures/e2e_ai_provider_server.py'
+    assert services['e2e-backend']['environment']['AI_ALLOWED_ENDPOINTS'] == 'http://ai-provider-demo:8081/v1'
+    assert services['e2e-backend']['depends_on']['e2e-ai-provider']['condition'] == 'service_healthy'
 
 
 def test_analysis_acceptance_shares_only_the_isolated_frontend_loopback() -> None:

@@ -77,6 +77,11 @@ const router = createRouter({
           component: () => import('./views/AccountDataPrivacyView.vue'),
         },
         {
+          path: 'ki-anbieter',
+          name: 'account-ai-providers',
+          component: () => import('./views/AccountAIProvidersView.vue'),
+        },
+        {
           path: 'allgemeine-einstellungen',
           name: 'account-general',
           component: () => import('./views/AccountGeneralSettingsView.vue'),
