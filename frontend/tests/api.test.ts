@@ -71,6 +71,43 @@ describe('CSRF self-healing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(new Headers(requestInit.headers).get('X-CSRF-Token')).toBe('csrf-valid')
+    expect(new Headers(requestInit.headers).get('Content-Type')).toBe('application/json')
+  })
+
+  it.each(['application/pdf', 'image/png'])('preserves the declared %s attachment type and raw body', async mediaType => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { id: 'attachment-a' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const apiModule = await loadApi()
+    await setAuthenticatedUser()
+    apiModule.setCsrfToken('csrf-valid')
+    const file = new File(['synthetic test bytes'], 'synthetic-document', { type: mediaType })
+
+    await apiModule.api('/expert/conversations/conversation-a/attachments/attachment-a', {
+      method: 'PUT', body: file,
+      headers: { 'Content-Type': mediaType, 'X-Attachment-Filename': 'synthetic-document' },
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(requestInit.body).toBe(file)
+    expect(new Headers(requestInit.headers).get('Content-Type')).toBe(mediaType)
+    expect(new Headers(requestInit.headers).get('X-Attachment-Filename')).toBe('synthetic-document')
+    expect(new Headers(requestInit.headers).get('X-CSRF-Token')).toBe('csrf-valid')
+  })
+
+  it('does not automatically replay a raw attachment on CSRF rejection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(csrfFailure())
+    vi.stubGlobal('fetch', fetchMock)
+    const apiModule = await loadApi()
+    await setAuthenticatedUser()
+    apiModule.setCsrfToken('csrf-stale')
+    const file = new File(['%PDF-1.7 synthetic'], 'synthetic.pdf', { type: 'application/pdf' })
+
+    await expect(apiModule.api('/expert/conversations/conversation-a/attachments/attachment-a', {
+      method: 'PUT', body: file, headers: { 'Content-Type': 'application/pdf' },
+    })).rejects.toMatchObject({ status: 403 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).body).toBe(file)
   })
 
   it('refreshes once, verifies the initiating identity and replays a replayable mutation', async () => {

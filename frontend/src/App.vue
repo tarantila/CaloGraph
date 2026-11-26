@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   PhCalendarBlank,
+  PhChatCircleText,
   PhChartBar,
   PhChartLineUp,
   PhInfo,
@@ -32,6 +33,7 @@ const primaryNavigation = [
   { to: { name: 'overview' }, label: 'navigation.overview', icon: PhSquaresFour },
   { to: { name: 'daily' }, label: 'navigation.daily', icon: PhListBullets },
   { to: { name: 'analysis-overview' }, label: 'navigation.analysis', icon: PhChartLineUp },
+  { to: { name: 'nutrition-expert' }, label: 'navigation.nutritionExpert', icon: PhChatCircleText },
   { to: { name: 'weekly' }, label: 'navigation.weekly', icon: PhChartBar },
   { to: { name: 'weekdays' }, label: 'navigation.weekdays', icon: PhCalendarBlank },
   { to: { name: 'calendar' }, label: 'navigation.calendar', icon: PhCalendarBlank },

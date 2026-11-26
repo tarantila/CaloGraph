@@ -29,6 +29,7 @@ describe('first-run target routing', () => {
     for (const [path, name] of [
       ['/aktivitaet', 'activity'],
       ['/ernaehrung', 'nutrition'],
+      ['/nutrition-expert', 'nutrition-expert'],
     ] as const) {
       const resolved = router.resolve(path)
       expect(resolved.name).toBe(name)

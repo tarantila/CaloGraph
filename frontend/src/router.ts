@@ -17,6 +17,7 @@ const router = createRouter({
     },
     { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue') },
     { path: '/tage', name: 'daily', component: () => import('./views/DailyView.vue') },
+    { path: '/nutrition-expert', name: 'nutrition-expert', component: () => import('./views/NutritionExpertView.vue') },
     { path: '/ernaehrung', name: 'nutrition', component: () => import('./views/NutritionView.vue') },
     { path: '/ernaehrung/eintrag/:eventId', name: 'nutrition-meal-detail', component: () => import('./views/NutritionMealDetailView.vue') },
     { path: '/aktivitaet', name: 'activity', component: () => import('./views/ActivityView.vue') },

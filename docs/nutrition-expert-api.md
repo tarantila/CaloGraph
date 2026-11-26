@@ -366,6 +366,13 @@ verify the underlying values, missingness and ownership.
 
 ## Durable conversation and run resources
 
+The authenticated frontend exposes conversations at `/nutrition-expert`. The
+entry screen offers chat and full-history analysis; it does not ask for a date
+range. Chat titles come from the server, while analyses are labelled with their
+creation date. Conversation and turn state is reloaded from these resources, so
+opening a saved conversation or checking an existing run never starts provider
+generation.
+
 All routes bind the session owner; administrator status does not widen access.
 Mutations require CSRF. An account may keep at most 200 conversations and 200
 turns per conversation, with one queued/running turn per account.
