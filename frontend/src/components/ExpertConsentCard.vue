@@ -176,7 +176,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .expert-consent-card { display: grid; gap: .75rem; }
 .expert-consent-card h2, .expert-consent-card p { margin: 0; }
-.expert-consent-card .compact-action { justify-self: end; max-width: 100%; }
+.expert-consent-card .compact-action { justify-self: start; max-width: 100%; }
 .expert-consent-help { color: var(--muted-strong); font-size: .8rem; line-height: 1.5; }
 .expert-consent-state { color: var(--muted-strong); font-size: .8rem; }
 .expert-consent-state.success { color: var(--success); }
