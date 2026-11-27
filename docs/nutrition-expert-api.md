@@ -318,13 +318,23 @@ only the scopes actually returned; the Codex-compatible flow does not establish
 the documented `chatgpt.tokens.use.direct` scope or prove compatibility with the
 public Responses API plan-usage contract.
 
-This protocol module is not registered in the application, has no HTTP routes,
-browser surface, encrypted persistence or inference adapter, and cannot connect
-an account yet. It uses fixed authorization-host endpoints through the shared
-bounded outbound transport. It does not use browser cookies, local helper
-processes, copied credentials or private ChatGPT inference endpoints. Keep the
-ChatGPT-plan provider contract separate so a supported public SIWC flow can
-replace this experimental transport without changing the product settings UI.
+The protocol is kept separate from its encrypted credential lifecycle. The
+internal owner-bound store persists access, refresh and ID tokens plus the
+immutable issuer/client/subject/workspace binding as authenticated encrypted
+values. Its metadata exposes only state, version and expiry. It creates only a
+disabled, model-less provider draft and neither grants consent nor reads health
+data. Both encrypted envelopes bind the owning account and connection; token
+envelopes also bind the credential generation. A refresh claim or invalidation
+advances that generation, so an old token blob or delayed authorization cannot
+restore superseded credentials. Refresh uses a durable one-use claim and an atomic rotated-token update;
+ambiguous outcomes require reauthentication and are not retried automatically.
+Disconnect disables local use and commits token removal before one best-effort
+remote revocation. A failed revocation remains unconfirmed and is never retried
+automatically. This remains an experimental Codex-compatible transport and does
+not establish SIWC scope or public Responses API compatibility. The storage
+contract is isolated so a supported SIWC transport can replace it without
+changing product settings. These are internal primitives; authorization routes,
+browser controls and inference integration are not registered yet.
 
 ## OpenAPI validation
 

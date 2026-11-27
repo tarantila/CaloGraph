@@ -72,6 +72,13 @@ backups, and the availability of the private application.
   provider provenance, and reports domains separately. Local disconnect clears
   the stored grant but does not revoke permission at the provider or delete
   imported data. Protect the credential key and encrypted backups together.
+- **Experimental ChatGPT-plan credentials:** access, refresh and retained ID
+  tokens plus the verified identity/workspace binding are Fernet-encrypted and
+  owner/connection scoped. Refresh and revocation claims commit before remote
+  I/O; uncertain outcomes are non-usable and never replay an old refresh or
+  revocation request automatically. Local disconnect disables use and clears
+  tokens before attempting provider revocation. The compatibility-sensitive
+  Codex transport does not establish the documented SIWC plan-usage contract.
 - **Unofficial third-party interface:** SDK-only direct sync uses the pinned
   `yazio-sdk==0.4.0` through an isolated transport process, a fixed provider
   endpoint, explicit network timeouts, rejected redirects, no automatic

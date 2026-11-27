@@ -198,6 +198,46 @@ class AIProviderCredential(Base):
     connection: Mapped[AIProviderConnection] = relationship(back_populates="credential")
 
 
+class SubscriptionCredential(Base):
+    """Encrypted credentials for the experimental ChatGPT-plan transport."""
+
+    __tablename__ = "ai_subscription_credentials"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_subscription_credentials_connection",
+        ),
+        CheckConstraint(
+            "state IN ('ready', 'refresh_claimed', 'refresh_unconfirmed', 'reauth_required', "
+            "'revocation_pending', 'revocation_unconfirmed', 'disconnected')",
+            name="ck_ai_subscription_credentials_state",
+        ),
+        CheckConstraint("credential_version >= 1", name="ck_ai_subscription_credentials_version"),
+        CheckConstraint("length(encrypted_binding) > 0", name="ck_ai_subscription_credentials_binding"),
+        CheckConstraint(
+            "(state = 'ready' AND encrypted_tokens IS NOT NULL AND expires_at IS NOT NULL) OR "
+            "(state <> 'ready' AND encrypted_tokens IS NULL)",
+            name="ck_ai_subscription_credentials_token_state",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    encrypted_tokens: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encrypted_binding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"SubscriptionCredential(state={self.state!r}, "
+            f"credential_version={self.credential_version!r}, expires_at={self.expires_at!r})"
+        )
+
+
 class AIProviderCheck(Base):
     __tablename__ = "ai_provider_checks"
     __table_args__ = (
