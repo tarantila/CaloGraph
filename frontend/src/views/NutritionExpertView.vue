@@ -433,7 +433,7 @@ async function uploadFiles(files: readonly File[]): Promise<void> {
   try {
     const existingIds = new Set(turns.value.flatMap(turn => turn.attachments ?? []).map(file => file.id))
     selectedFiles.value.forEach(file => existingIds.add(file.id))
-    if (existingIds.size + files.length > 3) { error.value = t('expertChat.fileLimit'); return }
+    if (existingIds.size + files.length > 20) { error.value = t('expertChat.fileLimit'); return }
     for (const file of files) {
       if (!current(token)) return
       const media = file.type || ({ pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' } as Record<string, string>)[file.name.split('.').at(-1)?.toLowerCase() ?? '']
@@ -652,7 +652,7 @@ onBeforeUnmount(() => { disposed = true; generation++; resetFileDrag(); stopPoll
 .composer-status { grid-area: status; margin: 0; color: var(--muted-strong); font-size: .8rem; }
 .composer-message { margin: .5rem 0; }
 .draft-attachments, .sent-attachments { display: flex; flex-wrap: wrap; gap: .5rem; list-style: none; margin: 0; padding: 0; font-size: .8rem; }
-.draft-attachments { grid-area: attachments; min-width: 0; }
+.draft-attachments { grid-area: attachments; min-width: 0; max-height: 6rem; overflow-y: auto; overscroll-behavior: contain; padding: .15rem; }
 .draft-attachments li, .sent-attachments li { display: flex; align-items: center; gap: .4rem; background: var(--bg); border: 1px solid var(--border); border-radius: .5rem; padding: .4rem .6rem; }
 .draft-attachments li > span { overflow-wrap: anywhere; }
 .draft-attachments button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted-strong); cursor: pointer; padding: .2rem; line-height: 1; }

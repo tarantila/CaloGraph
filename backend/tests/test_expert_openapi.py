@@ -68,6 +68,12 @@ def test_expert_documents_explicit_operation_nullable_fields_and_problem_media_t
     assert not any("credential" in key.lower() or "token" in key.lower() for key in contract["schemas"])
 
 
+def test_attachment_contract_allows_twenty_files_per_conversation() -> None:
+    contract = expert_contract()
+    assert contract["schemas"]["RunPut"]["properties"]["attachment_ids"]["maxItems"] == 20
+    assert contract["schemas"]["RunView"]["properties"]["attachments"]["maxItems"] == 20
+
+
 def test_expert_preferences_openapi_is_owner_scoped_and_closed() -> None:
     contract = expert_contract()
     path = contract["paths"]["/api/v1/settings/expert"]

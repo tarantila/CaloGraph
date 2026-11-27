@@ -6,10 +6,12 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import app.expert.runs as runs
+from app.ai.connections import ConnectionProblem
 from app.ai.consents import AIConsentService
 from app.ai.consents_contracts import AIConsentPut
 from app.ai.contracts import AIMedia, AIMessage, GenerationRequest, ProviderKind
@@ -46,10 +48,17 @@ def test_file_replay_owner_conversation_limits_and_cascade(db: Session, user: Us
     with pytest.raises(ValueError):
         AttachmentService(db, owner=other).rows(conversation_id, (identifier,))
     assert len(attachments.drafts(conversation_id)) == 1
-    attachments.put(conversation_id, uuid4(), name="second.png", media_type="image/png", data=PNG)
-    attachments.put(conversation_id, uuid4(), name="third.pdf", media_type="application/pdf", data=PDF)
-    with pytest.raises(ValueError):
-        attachments.put(conversation_id, uuid4(), name="fourth.pdf", media_type="application/pdf", data=PDF)
+    for index in range(1, 20):
+        attachments.put(conversation_id, uuid4(), name=f"synthetic-{index}.pdf", media_type="application/pdf", data=PDF)
+    assert len(attachments.drafts(conversation_id)) == 20
+    twenty_ids = tuple(item.id for item in attachments.drafts(conversation_id))
+    assert len(attachments.rows(conversation_id, twenty_ids)) == 20
+    with pytest.raises(ConnectionProblem) as limit_error:
+        attachments.put(conversation_id, uuid4(), name="twenty-first.pdf", media_type="application/pdf", data=PDF)
+    assert limit_error.value.code == "expert-attachment-limit"
+    with pytest.raises(ConnectionProblem) as request_limit_error:
+        attachments.rows(conversation_id, (*twenty_ids, uuid4()))
+    assert request_limit_error.value.code == "expert-attachment-limit"
     service.delete_conversation(conversation_id)
     assert db.scalar(select(func.count()).select_from(ExpertAttachment)) == 0
 
@@ -159,6 +168,38 @@ def test_document_permission_checked_again_at_dispatch_and_kept_for_followups(db
     assert service.get_run(followup_id).state == "failed" and len(calls) == 1
 
 
+def test_followup_can_add_fourth_document_and_retains_prior_successful_files(db: Session, user: User, monkeypatch) -> None:
+    conversation_id, payload, _connection = _prepare(db, user)
+    attachments = AttachmentService(db, owner=user)
+    identifiers = tuple(uuid4() for _ in range(4))
+    for index, identifier in enumerate(identifiers[:3]):
+        attachments.put(conversation_id, identifier, name=f"synthetic-{index}.pdf", media_type="application/pdf", data=PDF)
+    prior = AIConsentService(db, owner=user).get(payload.consent_id)
+    permission, _ = AIConsentService(db, owner=user).put(uuid4(), AIConsentPut(
+        connection_id=prior.connection_id, configuration_version=prior.configuration_version,
+        purpose=prior.purpose, data_domains=prior.data_domains, include_meal_names=prior.include_meal_names,
+        include_attachments=True, history=prior.history, policy_version=prior.policy_version,
+    ))
+    service = runs.ExpertRunService(db, owner=user)
+    first = payload.model_copy(update={"attachment_ids": identifiers[:3], "consent_id": permission.id})
+    first_id = uuid4()
+    service.put_run(conversation_id, first_id, first)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *a, **k: type("Builder", (), {"build": lambda self, _prefs: _context()})())
+    calls = []
+    monkeypatch.setattr(runs, "generate", lambda *a, **kwargs: calls.append(kwargs["request"]) or _success())
+    runs.execute_run(user.id, first_id)
+    assert service.get_run(first_id).state == "succeeded"
+    attachments.put(conversation_id, identifiers[3], name="synthetic-fourth.pdf", media_type="application/pdf", data=PDF)
+    second = payload.model_copy(update={"attachment_ids": (identifiers[3],), "consent_id": permission.id})
+    second_id = uuid4()
+    service.put_run(conversation_id, second_id, second)
+    runs.execute_run(user.id, second_id)
+    assert service.get_run(second_id).state == "succeeded"
+    sent_media = calls[1].messages[-1].attachments
+    assert {item.id for item in sent_media} == {str(identifier) for identifier in identifiers}
+    assert len(sent_media) == 4
+
+
 @pytest.mark.parametrize("kind", [ProviderKind.OPENAI_API, ProviderKind.ANTHROPIC, ProviderKind.GEMINI, ProviderKind.LOCAL, ProviderKind.GATEWAY])
 def test_media_uses_inline_provider_contracts_without_remote_file_urls(kind: ProviderKind, monkeypatch) -> None:
     from pydantic import SecretStr
@@ -184,6 +225,23 @@ def test_media_uses_inline_provider_contracts_without_remote_file_urls(kind: Pro
     else:
         assert content[2]["file"]["file_data"].startswith("data:application/pdf;base64,")
         assert content[4]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_generation_contract_allows_twenty_media_and_rejects_twenty_one() -> None:
+    media = tuple(AIMedia(
+        id=str(uuid4()), file_name=f"synthetic-{index}.pdf", media_type="application/pdf",
+        data_base64=base64.b64encode(PDF).decode(),
+    ) for index in range(20))
+    request = GenerationRequest(
+        system_instruction="synthetic test", messages=(AIMessage(role="user", content="review these files", attachments=media),),
+        model_id="synthetic-model",
+    )
+    assert len(request.messages[0].attachments) == 20
+    with pytest.raises(ValidationError):
+        AIMessage(role="user", content="review these files", attachments=(*media, AIMedia(
+            id=str(uuid4()), file_name="synthetic-21.pdf", media_type="application/pdf",
+            data_base64=base64.b64encode(PDF).decode(),
+        )))
 
 
 def test_upload_slots_are_bounded_and_release_on_errors() -> None:

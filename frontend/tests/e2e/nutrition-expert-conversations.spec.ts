@@ -86,21 +86,25 @@ test('Nutrition Expert conversations preserve permission, history and durable ru
   const uploaded = page.waitForRequest(request => request.method() === 'PUT' && /\/attachments\/[^/]+$/.test(new URL(request.url()).pathname))
   await page.locator('textarea').evaluate(target => {
     const transfer = new DataTransfer()
-    transfer.items.add(new File(['%PDF-1.7\n% Synthetic test document without health data.\n%%EOF'], 'synthetischer-bericht.pdf', { type: 'application/pdf' }))
+    for (let index = 0; index < 4; index++) {
+      transfer.items.add(new File([`%PDF-1.7\n% Synthetic test document ${index + 1} without health data.\n%%EOF`], `synthetischer-bericht-${index + 1}.pdf`, { type: 'application/pdf' }))
+    }
     for (const type of ['dragenter', 'dragover', 'drop']) {
       target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }))
     }
   })
   expect((await uploaded).headers()['content-type']).toBe('application/pdf')
-  await expect(page.locator('.draft-attachments')).toContainText('synthetischer-bericht.pdf')
+  await uploaded
+  await expect(page.locator('.draft-attachments li')).toHaveCount(4)
+  await expect(page.locator('.draft-attachments')).toContainText('synthetischer-bericht-4.pdf')
   await page.locator('textarea').press('Enter')
   await expect(page.getByRole('dialog')).toContainText('Anhänge')
   await page.getByRole('dialog').getByRole('button', { name: 'Freigeben und starten', exact: true }).click()
   await expect(page.locator('.answer-text')).toHaveCount(2)
   expect(runRequests).toHaveLength(2)
-  expect(runRequests[1]!.payload.attachment_ids).toHaveLength(1)
+  expect(runRequests[1]!.payload.attachment_ids).toHaveLength(4)
   await page.reload()
-  await expect(page.locator('.sent-attachments')).toContainText('synthetischer-bericht.pdf')
+  await expect(page.locator('.sent-attachments')).toContainText('synthetischer-bericht-4.pdf')
   expect(runRequests).toHaveLength(2)
 
   await page.getByRole('link', { name: 'Neues Gespräch', exact: true }).click()

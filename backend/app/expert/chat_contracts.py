@@ -86,7 +86,7 @@ class ConversationPage(ExpertContract):
 
 
 class RunPut(ExpertContract):
-    attachment_ids: tuple[UUID, ...] = Field(default=(), max_length=3)
+    attachment_ids: tuple[UUID, ...] = Field(default=(), max_length=20)
     kind: ExpertMode
     message: str = Field(min_length=1, max_length=8000, repr=False)
     connection_id: UUID
@@ -150,7 +150,7 @@ class ExpertAnswer(ExpertContract):
 
 
 class RunView(ExpertContract):
-    attachments: tuple[AttachmentView, ...] = Field(default=(), max_length=3, repr=False)
+    attachments: tuple[AttachmentView, ...] = Field(default=(), max_length=20, repr=False)
     id: UUID
     conversation_id: UUID
     kind: ExpertMode

@@ -398,7 +398,7 @@ turns per conversation, with one queued/running turn per account.
 - `PUT /api/v1/expert/conversations/{uuid}/turns/{run_uuid}` binds the message,
   request kind, active connection/version, preference version and consent ID.
   Identical retries return current state without scheduling another execution;
-  `attachment_ids` may name at most three already uploaded files owned by that
+  `attachment_ids` may name at most 20 already uploaded files owned by that
   conversation. An optional `routing_configuration_version` opts into the
   current ordered provider route. Every enabled candidate is snapshotted with
   its configuration and own consent ID; candidates without a matching all-history
@@ -457,7 +457,7 @@ deletes an unused file or reserves an unknown UUID. Uploads require session and
 CSRF validation. The request stream is bounded to 4 MiB/file and 20 seconds; at
 most four upload slots are held per backend process. Account-locked database
 quota checks run after the body arrives, so locks and transactions do not span
-untrusted client uploads. The database enforces at most three files and 8 MiB per
+untrusted client uploads. The service enforces at most 20 files and 8 MiB per
 conversation and 64 MiB per account under the account operation lock, including
 uploads handled by separate workers. Draft listing includes files referenced by
 failed or cancelled runs so they can be explicitly selected again. File deletion

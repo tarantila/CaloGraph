@@ -483,11 +483,26 @@ describe('Nutrition Expert chat', () => {
     expect(wrapper.text()).toContain('Choose a PDF, PNG, JPEG or WebP file up to 4 MB.')
     expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(0)
 
-    const extra = [0, 1, 2, 3].map(index => new File(['%PDF-1.4'], `extra-${index}.pdf`, { type: 'application/pdf' }))
+    const extra = Array.from({ length: 21 }, (_, index) => new File(['%PDF-1.4'], `extra-${index}.pdf`, { type: 'application/pdf' }))
     dispatchTransfer(textarea, 'drop', { files: extra })
     await flushPromises()
-    expect(wrapper.text()).toContain('A conversation can contain at most three attachments.')
+    expect(wrapper.text()).toContain('A conversation can contain at most 20 attachments.')
     expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(0)
+  })
+  it('accepts more than three files over multiple uploads in one conversation', async () => {
+    const { wrapper } = await mounted()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    const textarea = wrapper.get('textarea').element
+    const first = Array.from({ length: 4 }, (_, index) => new File(['%PDF-1.4'], `first-${index}.pdf`, { type: 'application/pdf' }))
+    dispatchTransfer(textarea, 'drop', { files: first })
+    await flushPromises()
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(4)
+    expect(wrapper.findAll('.draft-attachments li')).toHaveLength(4)
+    const later = new File(['%PDF-1.4'], 'later.pdf', { type: 'application/pdf' })
+    dispatchTransfer(textarea, 'drop', { files: [later] })
+    await flushPromises()
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(5)
+    expect(wrapper.findAll('.draft-attachments li')).toHaveLength(5)
   })
   it('prevents file navigation but ignores drops while a run is active', async () => {
     conversations = [{ id: 'conversation-1', mode: 'chat', created_at: '2026-11-14T00:00:00Z', updated_at: '2026-11-14T00:00:00Z' }]
