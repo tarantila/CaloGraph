@@ -232,7 +232,7 @@ const de = {
     sessionChanged: 'Die Sitzung wurde geändert. Bitte lade die Seite neu.', reloadSession: 'Seite neu laden',
     reuseTurn: 'Nachricht erneut verwenden',
     attach: 'Datei anhängen', fileHelp: 'PDF, PNG, JPEG oder WebP · bis 4 MB je Datei, drei Anhänge und 8 MB pro Gespräch. Das gewählte Modell muss Dateien verstehen können.',
-    fileInvalid: 'Bitte eine PDF-, PNG-, JPEG- oder WebP-Datei bis 4 MB auswählen.', fileFailed: 'Der Anhang konnte nicht übertragen werden. Erneut versuchen oder das Gespräch neu öffnen, um gespeicherte Entwürfe zu laden.',
+    fileInvalid: 'Bitte eine PDF-, PNG-, JPEG- oder WebP-Datei bis 4 MB auswählen.', fileLimit: 'Ein Gespräch kann höchstens drei Anhänge enthalten.', dropFiles: 'Dateien hier ablegen, um sie anzuhängen.', fileFailed: 'Der Anhang konnte nicht übertragen werden. Erneut versuchen oder das Gespräch neu öffnen, um gespeicherte Entwürfe zu laden.',
     uploading: 'Anhang wird gespeichert …', removeFile: 'Anhang {name} entfernen', retryUpload: 'Anhang erneut übertragen',
     documentPrompt: 'Bitte besprich die angehängten Dokumente mit mir.', documentEvidence: 'Hochgeladener Anhang',
     documentPermission: ' Außerdem erhält dieser Anbieter die Anhänge, die du in deinen Gesprächen sendest, vollständig einschließlich möglicher Metadaten. Die Schalter für CaloGraph-Daten filtern den Inhalt dieser Anhänge nicht.',

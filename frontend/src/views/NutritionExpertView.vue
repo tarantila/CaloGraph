@@ -34,6 +34,7 @@ const permissionError = ref('')
 const deleteTarget = ref<ConversationView | null>(null)
 const selectedFiles = ref<AttachmentView[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+const fileDragActive = ref(false)
 const composerInput = ref<HTMLTextAreaElement | null>(null)
 let composerResizeObserver: ResizeObserver | null = null
 const uploading = ref(false)
@@ -71,12 +72,15 @@ let generation = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 let openingConversation: { id: string; promise: Promise<void> } | null = null
+let fileDragDepth = 0
 function sessionCurrent(): boolean { return !disposed && isAuthIdentityCurrent(ownerIdentity) }
 function current(token = generation): boolean { return sessionCurrent() && token === generation }
+function resetFileDrag(): void { fileDragDepth = 0; fileDragActive.value = false }
 function reloadSession(): void { window.location.reload() }
 watch(() => auth.user?.id, () => {
   if (sessionCurrent()) return
   dictation.stop(); stopPolling(); generation++
+  resetFileDrag()
   dictationConsent.value = false
   setup.value = null; conversation.value = null; conversations.value = []; turns.value = []
   selectedFiles.value = []; pendingUpload.value = null; draft.value = ''; permission.value = false; permissionIds = null; pending = null; creation = null; deleteTarget.value = null; submission.value = null; busy.value = false; uploading.value = false
@@ -172,7 +176,7 @@ function openConversation(id: string): Promise<void> {
 async function loadConversation(id: string): Promise<void> {
   if (!sessionCurrent()) return
   const token = ++generation
-  stopPolling(); dictation.stop(); selectedFiles.value = []; reusedAttachmentIds.clear(); pendingUpload.value = null; error.value = ''; turns.value = []; conversation.value = null; submission.value = null; pending = null; permission.value = false; busy.value = false; uploading.value = false
+  stopPolling(); dictation.stop(); resetFileDrag(); selectedFiles.value = []; reusedAttachmentIds.clear(); pendingUpload.value = null; error.value = ''; turns.value = []; conversation.value = null; submission.value = null; pending = null; permission.value = false; busy.value = false; uploading.value = false
   loading.value = true
   try {
     const [item, firstPage, drafts] = await Promise.all([
@@ -204,7 +208,7 @@ async function loadConversation(id: string): Promise<void> {
 }
 watch(() => route.query.conversation, id => {
   if (typeof id === 'string') { if (conversation.value?.id !== id) void openConversation(id) }
-  else { generation++; const token = generation; stopPolling(); dictation.stop(); selectedFiles.value = []; reusedAttachmentIds.clear(); pendingUpload.value = null; conversation.value = null; turns.value = []; draft.value = ''; submission.value = null; permission.value = false; busy.value = false; uploading.value = false; void loadConversations().catch(() => { if (current(token)) error.value = t('expertChat.loadFailed') }) }
+  else { generation++; const token = generation; stopPolling(); dictation.stop(); resetFileDrag(); selectedFiles.value = []; reusedAttachmentIds.clear(); pendingUpload.value = null; conversation.value = null; turns.value = []; draft.value = ''; submission.value = null; permission.value = false; busy.value = false; uploading.value = false; void loadConversations().catch(() => { if (current(token)) error.value = t('expertChat.loadFailed') }) }
 })
 async function start(mode: Mode): Promise<void> {
   const token = generation
@@ -379,15 +383,57 @@ function conversationTitle(item: ConversationView): string {
   if (item.mode === 'analysis') return t('expertChat.analysisDated', { date: new Date(item.created_at).toLocaleDateString(i18n.global.locale.value, { timeZone: auth.user?.timezone ?? 'UTC' }) })
   return item.title || t('expertChat.chatTitle')
 }
-async function attachFiles(event: Event): Promise<void> {
-  const token = generation
+function attachFiles(event: Event): void {
   const input = event.target as HTMLInputElement
   const files = [...(input.files ?? [])]
   input.value = ''
+  void uploadFiles(files)
+}
+function transferHasFiles(transfer: DataTransfer | null): boolean {
+  if (!transfer) return false
+  return Array.from(transfer.types).includes('Files')
+    || Array.from(transfer.items).some(item => item.kind === 'file')
+    || transfer.files.length > 0
+}
+function canUploadFiles(): boolean {
+  return current() && Boolean(conversation.value) && !busy.value && !uploading.value
+    && !pendingUpload.value && !active.value && !submission.value && !dictation.recording.value
+}
+function handleFileDragEnter(event: DragEvent): void {
+  if (!transferHasFiles(event.dataTransfer)) return
+  event.preventDefault()
+  if (!canUploadFiles()) return
+  fileDragDepth++
+  fileDragActive.value = true
+}
+function handleFileDragOver(event: DragEvent): void {
+  if (!transferHasFiles(event.dataTransfer)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = canUploadFiles() ? 'copy' : 'none'
+  if (canUploadFiles()) fileDragActive.value = true
+}
+function handleFileDragLeave(event: DragEvent): void {
+  if (!fileDragActive.value) return
+  event.preventDefault()
+  fileDragDepth = Math.max(0, fileDragDepth - 1)
+  if (fileDragDepth === 0) fileDragActive.value = false
+}
+function handleFileDrop(event: DragEvent): void {
+  if (!transferHasFiles(event.dataTransfer)) return
+  event.preventDefault()
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  resetFileDrag()
+  if (files.length) void uploadFiles(files)
+}
+async function uploadFiles(files: readonly File[]): Promise<void> {
+  const token = generation
   const target = conversation.value
-  if (!target || busy.value || uploading.value || active.value) return
+  if (!files.length || !target || !canUploadFiles()) return
   uploading.value = true; error.value = ''
   try {
+    const existingIds = new Set(turns.value.flatMap(turn => turn.attachments ?? []).map(file => file.id))
+    selectedFiles.value.forEach(file => existingIds.add(file.id))
+    if (existingIds.size + files.length > 3) { error.value = t('expertChat.fileLimit'); return }
     for (const file of files) {
       if (!current(token)) return
       const media = file.type || ({ pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' } as Record<string, string>)[file.name.split('.').at(-1)?.toLowerCase() ?? '']
@@ -469,7 +515,7 @@ onMounted(async () => {
   catch { if (current(token)) error.value = t('expertChat.loadFailed') }
   finally { if (current(token)) { loading.value = false; await nextTick(); if (current(token)) resizeComposer() } }
 })
-onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); composerResizeObserver?.disconnect(); window.removeEventListener('resize', resizeComposer) })
+onBeforeUnmount(() => { disposed = true; generation++; resetFileDrag(); stopPolling(); composerResizeObserver?.disconnect(); window.removeEventListener('resize', resizeComposer) })
 </script>
 
 <template>
@@ -502,7 +548,8 @@ onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); composerRe
             </div></div>
           </article>
         </div>
-        <form class="chat-composer" @submit.prevent="requestSend(draftKind, draft)">
+        <form :class="['chat-composer', { 'file-drag-active': fileDragActive }]" @submit.prevent="requestSend(draftKind, draft)" @dragenter="handleFileDragEnter" @dragover="handleFileDragOver" @dragleave="handleFileDragLeave" @drop="handleFileDrop">
+          <p v-if="fileDragActive" class="file-drop-hint" role="status">{{ t('expertChat.dropFiles') }}</p>
           <ul v-if="selectedFiles.length" class="draft-attachments"><li v-for="file in selectedFiles" :key="file.id"><PhPaperclip :size="14" aria-hidden="true" /><span>{{ file.file_name }}</span><button type="button" :aria-label="t('expertChat.removeFile', { name: file.file_name })" :disabled="busy || uploading" @click="removeAttachment(file)"><PhX :size="14" aria-hidden="true" /></button></li></ul>
           <label class="sr-only" for="expert-message">{{ t('expertChat.message') }}</label>
           <textarea id="expert-message" ref="composerInput" v-model="draft" name="expert-message" rows="1" maxlength="8000" :placeholder="t('expertChat.placeholder')" :readonly="dictation.recording.value" :disabled="busy || !!active || !!submission" @input="draftKind = 'chat'" @keydown="handleComposerKeydown" />
@@ -588,6 +635,8 @@ onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); composerRe
 .follow-ups { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .follow-ups button { color: var(--accent); border: 1px solid var(--border); border-radius: .5rem; background: transparent; padding: .5rem .7rem; text-align: start; font: inherit; font-size: .8rem; cursor: pointer; }
 .chat-composer { flex-shrink: 0; margin: .5rem 0 0; border: 1px solid var(--border); border-radius: .8rem; padding: .45rem .55rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "attachments attachments" "input toolbar" "status status"; align-items: end; gap: .3rem .45rem; background: var(--control-bg); }
+.chat-composer.file-drag-active { border-color: var(--accent); background: var(--accent-soft); }
+.file-drop-hint { grid-column: 1 / -1; margin: 0; padding: .45rem .6rem; border: 1px dashed var(--accent); border-radius: .5rem; color: var(--accent); font-size: .8rem; text-align: center; }
 .chat-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .chat-composer textarea:focus, .chat-composer textarea:focus-visible { outline: none; box-shadow: none; border: 0; }
 .chat-composer textarea { grid-area: input; align-self: center; resize: none; width: 100%; min-width: 0; min-height: 2.5rem; max-height: 8rem; overflow-y: hidden; border: 0; background: transparent; box-shadow: none; padding: .5rem .35rem; font-size: .875rem; line-height: 1.45; }

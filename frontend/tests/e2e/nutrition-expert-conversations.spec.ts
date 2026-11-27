@@ -84,7 +84,13 @@ test('Nutrition Expert conversations preserve permission, history and durable ru
   expect(runRequests).toHaveLength(1)
   await page.locator('textarea').fill('Bitte besprich dieses synthetische Dokument.')
   const uploaded = page.waitForRequest(request => request.method() === 'PUT' && /\/attachments\/[^/]+$/.test(new URL(request.url()).pathname))
-  await page.locator('input[type="file"]').setInputFiles({ name: 'synthetischer-bericht.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n% Synthetic test document without health data.\n%%EOF') })
+  await page.locator('textarea').evaluate(target => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['%PDF-1.7\n% Synthetic test document without health data.\n%%EOF'], 'synthetischer-bericht.pdf', { type: 'application/pdf' }))
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }))
+    }
+  })
   expect((await uploaded).headers()['content-type']).toBe('application/pdf')
   await expect(page.locator('.draft-attachments')).toContainText('synthetischer-bericht.pdf')
   await page.locator('textarea').press('Enter')

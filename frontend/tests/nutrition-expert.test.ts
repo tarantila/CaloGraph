@@ -27,6 +27,19 @@ let conversationListRequestCount = 0
 let nextUploadFailure: unknown
 let wrappers: ReturnType<typeof mount>[]
 function button(wrapper: ReturnType<typeof mount>, name: string) { return wrapper.findAll('button').find(item => item.text() === name)! }
+function dispatchTransfer(target: Element, type: string, options: { files?: File[]; types?: string[] } = {}): Event {
+  const files = options.files ?? []
+  const transfer = {
+    types: options.types ?? (files.length ? ['Files'] : []),
+    items: files.map(() => ({ kind: 'file' })),
+    files,
+    dropEffect: 'none',
+  } as unknown as DataTransfer
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'dataTransfer', { value: transfer })
+  target.dispatchEvent(event)
+  return event
+}
 async function mounted(query = '') {
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/nutrition-expert', name: 'nutrition-expert', component: { template: '<div />' } },
@@ -86,7 +99,7 @@ beforeEach(() => {
       if (options?.method === 'PUT') {
         if (nextUploadFailure) { const cause = nextUploadFailure; nextUploadFailure = undefined; throw cause }
         const file = options.body as File
-        const result: AttachmentView = { id, file_name: file.name, byte_size: file.size, media_type: 'application/pdf', created_at: '2026-11-14T00:00:00Z' }
+        const result: AttachmentView = { id, file_name: file.name, byte_size: file.size, media_type: file.type as AttachmentView['media_type'], created_at: '2026-11-14T00:00:00Z' }
         attachments.push(result); return result
       }
       attachments = attachments.filter(item => item.id !== id); return undefined
@@ -423,6 +436,100 @@ describe('Nutrition Expert chat', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(delivered).toHaveLength(2)
     expect(writes().filter(([path]) => path.includes('/consents/'))).toHaveLength(2)
+  })
+  it.each([
+    ['PDF', 'synthetic-drop.pdf', 'application/pdf'],
+    ['image', 'synthetic-drop.png', 'image/png'],
+  ])('uploads a dropped %s through the attachment flow and waits for explicit send', async (_kind, name, mediaType) => {
+    const { wrapper } = await mounted()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    const file = new File(['synthetic file content'], name, { type: mediaType })
+    const textarea = wrapper.get('textarea').element
+    const entered = dispatchTransfer(textarea, 'dragenter', { files: [file] })
+    await flushPromises()
+    expect(entered.defaultPrevented).toBe(true)
+    expect(wrapper.get('.chat-composer').classes()).toContain('file-drag-active')
+    expect(wrapper.get('.file-drop-hint').text()).toContain('Drop files here')
+    dispatchTransfer(textarea, 'dragover', { files: [file] })
+    const dropped = dispatchTransfer(textarea, 'drop', { files: [file] })
+    await flushPromises()
+    expect(dropped.defaultPrevented).toBe(true)
+    expect(wrapper.get('.chat-composer').classes()).not.toContain('file-drag-active')
+    expect(wrapper.get('.draft-attachments').text()).toContain(name)
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(1)
+    expect(delivered).toHaveLength(0)
+    expect(writes().filter(([path]) => path.includes('/consents/'))).toHaveLength(0)
+
+    await wrapper.get('form.chat-composer').trigger('submit'); await flushPromises()
+    expect(wrapper.get('[role="dialog"]').text()).toContain('in full')
+    expect(delivered).toHaveLength(0)
+    await button(wrapper, 'Allow and start').trigger('click'); await flushPromises()
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]!.attachment_ids).toEqual([attachments[0]!.id])
+  })
+  it('leaves ordinary text drags alone and rejects invalid or excess files without upload', async () => {
+    const { wrapper } = await mounted()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    const textarea = wrapper.get('textarea').element
+    const textOver = dispatchTransfer(textarea, 'dragover', { types: ['text/plain'] })
+    const textDrop = dispatchTransfer(textarea, 'drop', { types: ['text/plain'] })
+    expect(textOver.defaultPrevented).toBe(false)
+    expect(textDrop.defaultPrevented).toBe(false)
+    expect(wrapper.get('.chat-composer').classes()).not.toContain('file-drag-active')
+
+    const invalid = dispatchTransfer(textarea, 'drop', { files: [new File(['plain'], 'notes.txt', { type: 'text/plain' })] })
+    await flushPromises()
+    expect(invalid.defaultPrevented).toBe(true)
+    expect(wrapper.text()).toContain('Choose a PDF, PNG, JPEG or WebP file up to 4 MB.')
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(0)
+
+    const extra = [0, 1, 2, 3].map(index => new File(['%PDF-1.4'], `extra-${index}.pdf`, { type: 'application/pdf' }))
+    dispatchTransfer(textarea, 'drop', { files: extra })
+    await flushPromises()
+    expect(wrapper.text()).toContain('A conversation can contain at most three attachments.')
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(0)
+  })
+  it('prevents file navigation but ignores drops while a run is active', async () => {
+    conversations = [{ id: 'conversation-1', mode: 'chat', created_at: '2026-11-14T00:00:00Z', updated_at: '2026-11-14T00:00:00Z' }]
+    turns = [{ ...savedRun('active-run', { kind: 'chat', message: 'Active synthetic request', connection_id: connection.id, connection_version: 3, preferences_version: 1, consent_id: 'grant-1' }), state: 'running', answer: null }]
+    const { wrapper } = await mounted('?conversation=conversation-1')
+    const file = new File(['%PDF-1.4'], 'busy.pdf', { type: 'application/pdf' })
+    const dropped = dispatchTransfer(wrapper.get('textarea').element, 'drop', { files: [file] })
+    await flushPromises()
+    expect(dropped.defaultPrevented).toBe(true)
+    expect(writes().filter(([path]) => /\/attachments\//.test(path))).toHaveLength(0)
+  })
+  it('discards a late dropped-file upload after route navigation', async () => {
+    const { wrapper, router } = await mounted()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    const original = apiMock.getMockImplementation()!
+    let releaseUpload: (() => void) | undefined
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      const result = await original(path, options)
+      if (/\/attachments\//.test(path) && options?.method === 'PUT') await new Promise<void>(resolve => { releaseUpload = resolve })
+      return result
+    })
+    const file = new File(['%PDF-1.4'], 'late.pdf', { type: 'application/pdf' })
+    dispatchTransfer(wrapper.get('textarea').element, 'drop', { files: [file] })
+    await vi.waitFor(() => expect(releaseUpload).toBeTypeOf('function'))
+    await router.push({ query: {} }); await flushPromises()
+    releaseUpload!()
+    await flushPromises()
+    expect(wrapper.find('.draft-attachments').exists()).toBe(false)
+    expect(wrapper.findAll('.entry-card')).toHaveLength(2)
+  })
+  it('clears the drag target when route navigation leaves and reopens the composer', async () => {
+    conversations = [{ id: 'conversation-1', mode: 'chat', created_at: '2026-11-14T00:00:00Z', updated_at: '2026-11-14T00:00:00Z' }]
+    const { wrapper, router } = await mounted('?conversation=conversation-1')
+    dispatchTransfer(wrapper.get('textarea').element, 'dragenter', {
+      files: [new File(['%PDF-1.4'], 'route-reset.pdf', { type: 'application/pdf' })],
+    })
+    await flushPromises()
+    expect(wrapper.get('.chat-composer').classes()).toContain('file-drag-active')
+    await router.push({ query: {} }); await flushPromises()
+    await wrapper.get('.entry-card:nth-child(2)').trigger('click'); await flushPromises()
+    expect(wrapper.get('.chat-composer').classes()).not.toContain('file-drag-active')
+    expect(wrapper.find('.file-drop-hint').exists()).toBe(false)
   })
   it('scans every bounded turn page before deciding whether document permission is required', async () => {
     pagedHistory = true

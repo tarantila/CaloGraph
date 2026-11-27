@@ -229,7 +229,7 @@ const en = {
     sessionChanged: 'The session changed. Please reload this page.', reloadSession: 'Reload page',
     reuseTurn: 'Reuse message',
     attach: 'Attach file', fileHelp: 'PDF, PNG, JPEG or WebP · up to 4 MB each, three attachments and 8 MB per conversation. The selected model must support files.',
-    fileInvalid: 'Choose a PDF, PNG, JPEG or WebP file up to 4 MB.', fileFailed: 'The attachment could not be transferred. Retry or reopen the conversation to load saved drafts.',
+    fileInvalid: 'Choose a PDF, PNG, JPEG or WebP file up to 4 MB.', fileLimit: 'A conversation can contain at most three attachments.', dropFiles: 'Drop files here to attach them.', fileFailed: 'The attachment could not be transferred. Retry or reopen the conversation to load saved drafts.',
     uploading: 'Saving attachment …', removeFile: 'Remove attachment {name}', retryUpload: 'Retry attachment upload',
     documentPrompt: 'Please discuss the attached documents with me.', documentEvidence: 'Uploaded attachment',
     documentPermission: ' This provider also receives attachments you send in your conversations in full, including possible metadata. CaloGraph data switches do not filter attachment contents.',
