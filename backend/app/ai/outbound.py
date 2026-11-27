@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from app.config import settings
 
@@ -43,6 +43,20 @@ MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024
 MAX_PROVIDER_REQUEST_BYTES = 256 * 1024
 MAX_MEDIA_PROVIDER_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_PROVIDER_TIMEOUT_SECONDS = 300
+MAX_OAUTH_BODY_BYTES = 64 * 1024
+OAUTH_TERMINAL_REFRESH_ERRORS = frozenset({
+    "invalid_grant", "invalid_refresh_token", "refresh_token_reused", "token_expired",
+})
+_SAFE_OAUTH_ERRORS = frozenset({
+    "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type",
+    "invalid_scope", "server_error", "temporarily_unavailable", "invalid_grant",
+    "invalid_client", "authorization_pending", "slow_down", "expired_token",
+}) | OAUTH_TERMINAL_REFRESH_ERRORS
+_CHATGPT_AUTH_HOST = "https://auth.openai.com"
+_CHATGPT_AUTH_PATHS = frozenset({
+    "/api/accounts/deviceauth/usercode", "/api/accounts/deviceauth/token",
+    "/oauth/token", "/oauth/revoke", "/.well-known/jwks.json",
+})
 _DNS_WORKERS = 4
 _DNS_EXECUTOR = ThreadPoolExecutor(max_workers=_DNS_WORKERS, thread_name_prefix="ai-provider-dns")
 _DNS_SLOTS = threading.BoundedSemaphore(_DNS_WORKERS)
@@ -74,10 +88,11 @@ class OutboundError(Exception):
 
     def __init__(
         self, code: OutboundCode, *, status: int | None = None,
-        fallback_safe: bool = False,
+        fallback_safe: bool = False, oauth_error: str | None = None,
     ) -> None:
         self.code = code
         self.status = status
+        self.oauth_error = oauth_error if oauth_error in _SAFE_OAUTH_ERRORS else None
         self.fallback_safe = fallback_safe or (
             status == 429 and code == "rate_limited"
         ) or (status == 503 and code == "unavailable")
@@ -385,7 +400,7 @@ def _validate_headers(headers: dict[str, str]) -> None:
             raise OutboundError("destination_blocked")
 
 
-def fetch_provider_json(
+def _fetch_provider_json(
     base_url: str,
     path: str,
     *,
@@ -394,6 +409,11 @@ def fetch_provider_json(
     native: bool,
     request_body: bytes | None = None,
     max_request_bytes: int = MAX_PROVIDER_REQUEST_BYTES,
+    _request_content_type: Literal["application/json", "application/x-www-form-urlencoded"] = "application/json",
+    _accepted_statuses: tuple[int, ...] = (),
+    _allow_oauth_error: bool = False,
+    _allow_empty_success: bool = False,
+    _return_status: bool = False,
 ) -> object:
     """Fetch one bounded JSON resource from a fixed native or allowlisted host."""
     if (
@@ -401,6 +421,12 @@ def fetch_provider_json(
         or not isinstance(timeout_seconds, int)
         or not 1 <= timeout_seconds <= MAX_PROVIDER_TIMEOUT_SECONDS
         or not isinstance(native, bool)
+        or _request_content_type not in {"application/json", "application/x-www-form-urlencoded"}
+        or not isinstance(_allow_oauth_error, bool)
+        or not isinstance(_allow_empty_success, bool)
+        or not isinstance(_return_status, bool)
+        or not isinstance(_accepted_statuses, tuple)
+        or any(isinstance(item, bool) or not isinstance(item, int) or not 100 <= item <= 599 for item in _accepted_statuses)
         or isinstance(max_request_bytes, bool)
         or not isinstance(max_request_bytes, int)
         or not MAX_PROVIDER_REQUEST_BYTES <= max_request_bytes <= MAX_MEDIA_PROVIDER_REQUEST_BYTES
@@ -449,7 +475,7 @@ def fetch_provider_json(
         for name, value in headers.items():
             connection.putheader(name, value)
         if request_body is not None:
-            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Type", _request_content_type)
             connection.putheader("Content-Length", str(len(request_body)))
             connection.endheaders(request_body)
         else:
@@ -458,24 +484,30 @@ def fetch_provider_json(
             connection.sock.settimeout(min(float(timeout_seconds), max(0.001, deadline - time.monotonic())))
         response = connection.getresponse()
         status = response.status
-        if status in (401, 403):
+        accepted_status = status in _accepted_statuses
+        oauth_error_status = _allow_oauth_error and status in (400, 401, 403)
+        empty_success = _allow_empty_success and status == 200
+        if status in (401, 403) and not accepted_status and not oauth_error_status:
             raise OutboundError("authentication", status=status)
         if status == 429:
             raise OutboundError("rate_limited", status=status)
         if 500 <= status <= 599:
             raise OutboundError("unavailable", status=status)
-        if not 200 <= status <= 299:
+        if not 200 <= status <= 299 and not accepted_status and not oauth_error_status:
             raise OutboundError("http_error", status=status)
+        if accepted_status:
+            return (status, None) if _return_status else None
         content_encoding = response.getheader("Content-Encoding", "identity").strip().lower()
         content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
-        if content_encoding not in {"", "identity"} or not (
-            content_type == "application/json" or content_type.endswith("+json")
-        ):
+        valid_content_type = content_type == "application/json" or content_type.endswith("+json")
+        if empty_success and not content_type:
+            valid_content_type = True
+        if content_encoding not in {"", "identity"} or not valid_content_type:
             raise OutboundError("invalid_response", status=status)
         content_length = response.getheader("Content-Length")
         if content_length is not None:
             try:
-                if int(content_length) > MAX_PROVIDER_RESPONSE_BYTES:
+                if int(content_length) > min(MAX_PROVIDER_RESPONSE_BYTES, MAX_OAUTH_BODY_BYTES if (_allow_oauth_error or _return_status) else MAX_PROVIDER_RESPONSE_BYTES):
                     raise OutboundError("invalid_response", status=status)
             except ValueError:
                 raise OutboundError("invalid_response", status=status) from None
@@ -484,25 +516,38 @@ def fetch_provider_json(
             if remaining <= 0:
                 raise OutboundError("timeout")
             connection.sock.settimeout(min(float(timeout_seconds), remaining))
+        body_limit = min(
+            MAX_PROVIDER_RESPONSE_BYTES,
+            MAX_OAUTH_BODY_BYTES if (_allow_oauth_error or _return_status) else MAX_PROVIDER_RESPONSE_BYTES,
+        )
         body = bytearray()
-        while len(body) <= MAX_PROVIDER_RESPONSE_BYTES:
+        while len(body) <= body_limit:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OutboundError("timeout")
             if connection.sock is not None:
                 connection.sock.settimeout(min(float(timeout_seconds), remaining))
-            chunk = response.read1(min(16 * 1024, MAX_PROVIDER_RESPONSE_BYTES + 1 - len(body)))
+            chunk = response.read1(min(16 * 1024, body_limit + 1 - len(body)))
             if not chunk:
                 break
             body.extend(chunk)
         if time.monotonic() >= deadline:
             raise OutboundError("timeout")
-        if len(body) > MAX_PROVIDER_RESPONSE_BYTES:
+        if len(body) > body_limit:
+            raise OutboundError("invalid_response", status=status)
+        if empty_success:
+            if not body:
+                return None
             raise OutboundError("invalid_response", status=status)
         try:
-            return json.loads(body.decode("utf-8"))
+            payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             raise OutboundError("invalid_response", status=status) from None
+        if oauth_error_status:
+            raw_error = payload.get("error") if isinstance(payload, dict) else None
+            safe_error = raw_error if isinstance(raw_error, str) and raw_error in _SAFE_OAUTH_ERRORS else None
+            raise OutboundError("http_error", status=status, oauth_error=safe_error)
+        return (status, payload) if _return_status else payload
     except OutboundError:
         raise
     except TimeoutError:
@@ -513,3 +558,100 @@ def fetch_provider_json(
         if response is not None:
             response.close()
         connection.close()
+
+
+def _fetch_chatgpt_auth(
+    path: str,
+    body: bytes,
+    *,
+    content_type: Literal["application/json", "application/x-www-form-urlencoded"],
+    timeout_seconds: int,
+    accepted_statuses: tuple[int, ...] = (),
+    allow_oauth_error: bool = False,
+    allow_empty_success: bool = False,
+    return_status: bool = False,
+) -> object:
+    if path not in _CHATGPT_AUTH_PATHS or len(body) > MAX_OAUTH_BODY_BYTES:
+        raise OutboundError("destination_blocked")
+    return _fetch_provider_json(
+        _CHATGPT_AUTH_HOST, path, headers={}, timeout_seconds=timeout_seconds, native=True,
+        request_body=body, _request_content_type=content_type, _accepted_statuses=accepted_statuses,
+        _allow_oauth_error=allow_oauth_error, _allow_empty_success=allow_empty_success,
+        _return_status=return_status,
+    )
+
+
+def fetch_chatgpt_auth_json(
+    path: str, body: bytes, *, timeout_seconds: int, accepted_statuses: tuple[int, ...] = (),
+) -> tuple[int, object]:
+    """POST bounded JSON only to fixed device authorization endpoints."""
+    if path not in {"/api/accounts/deviceauth/usercode", "/api/accounts/deviceauth/token"}:
+        raise OutboundError("destination_blocked")
+    result = _fetch_chatgpt_auth(
+        path, body, content_type="application/json", timeout_seconds=timeout_seconds,
+        accepted_statuses=accepted_statuses, return_status=True,
+    )
+    if not isinstance(result, tuple) or len(result) != 2 or not isinstance(result[0], int):
+        raise OutboundError("invalid_response")
+    return result
+
+
+def fetch_chatgpt_oauth_form(
+    path: str,
+    fields: dict[str, str],
+    *,
+    timeout_seconds: int,
+    allow_oauth_error: bool = False,
+    allow_empty_success: bool = False,
+) -> object:
+    """POST a bounded form only to fixed token or revocation endpoints."""
+    if path not in {"/oauth/token", "/oauth/revoke"} or not isinstance(fields, dict) or len(fields) > 8:
+        raise OutboundError("destination_blocked")
+    try:
+        body = urlencode(fields).encode("ascii")
+    except (UnicodeEncodeError, TypeError, ValueError):
+        raise OutboundError("destination_blocked") from None
+    return _fetch_chatgpt_auth(
+        path, body, content_type="application/x-www-form-urlencoded", timeout_seconds=timeout_seconds,
+        allow_oauth_error=allow_oauth_error, allow_empty_success=allow_empty_success,
+    )
+
+
+def fetch_chatgpt_oauth_json(
+    path: str, fields: dict[str, str], *, timeout_seconds: int, allow_oauth_error: bool = False,
+) -> object:
+    """POST the bounded JSON refresh protocol to its fixed token endpoint."""
+    if path != "/oauth/token" or not isinstance(fields, dict) or len(fields) > 8:
+        raise OutboundError("destination_blocked")
+    try:
+        body = json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    except (TypeError, ValueError, UnicodeError):
+        raise OutboundError("destination_blocked") from None
+    return _fetch_chatgpt_auth(
+        path, body, content_type="application/json", timeout_seconds=timeout_seconds,
+        allow_oauth_error=allow_oauth_error,
+    )
+
+
+def fetch_chatgpt_jwks() -> object:
+    """GET the fixed issuer key set through the pinned HTTPS transport."""
+    return fetch_provider_json(
+        _CHATGPT_AUTH_HOST, "/.well-known/jwks.json", headers={}, timeout_seconds=10, native=True,
+    )
+
+
+def fetch_provider_json(
+    base_url: str,
+    path: str,
+    *,
+    headers: dict[str, str],
+    timeout_seconds: int,
+    native: bool,
+    request_body: bytes | None = None,
+    max_request_bytes: int = MAX_PROVIDER_REQUEST_BYTES,
+) -> object:
+    """Fetch one bounded JSON resource using the provider's default HTTP contract."""
+    return _fetch_provider_json(
+        base_url, path, headers=headers, timeout_seconds=timeout_seconds, native=native,
+        request_body=request_body, max_request_bytes=max_request_bytes,
+    )
