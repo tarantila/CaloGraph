@@ -1,6 +1,13 @@
 import { expect, test as base, type Page, type Response } from '@playwright/test'
 
-const username = process.env.E2E_USERNAME ?? 'e2e-admin'
+const sharedUsername = process.env.E2E_USERNAME ?? 'e2e-admin'
+const username = process.env.E2E_NUTRITION_USERNAME ?? ''
+if (!username) {
+  throw new Error('E2E_NUTRITION_USERNAME must be provisioned by scripts/e2e.sh')
+}
+if (username === sharedUsername) {
+  throw new Error('Nutrition Expert conversations require an isolated E2E user')
+}
 const password = process.env.E2E_PASSWORD ?? 'e2e-password-change-me'
 const endpoint = 'http://ai-provider-demo:8081/v1'
 
@@ -81,6 +88,9 @@ async function configureSyntheticProvider(page: Page, kind: 'local' | 'gateway')
 test('Nutrition Expert conversations preserve permission, history and durable run state', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await login(page)
+  const actorResponse = await page.request.get('/api/v1/auth/me')
+  expect(actorResponse.status()).toBe(200)
+  expect((await actorResponse.json() as { is_admin: boolean }).is_admin).toBe(false)
   await page.goto('/konto/ki-anbieter')
   const connectionId = await configureSyntheticProvider(page, 'local')
   const routing = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().endsWith('/settings/ai/routing'))

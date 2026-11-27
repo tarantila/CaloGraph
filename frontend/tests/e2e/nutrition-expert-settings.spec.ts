@@ -30,7 +30,12 @@ async function configureSyntheticProvider(page: Page, kind: 'local' | 'gateway')
   const response = page.waitForResponse(result => result.request().method() === 'PUT' && /\/settings\/ai\/connections\/[^/]+$/.test(new URL(result.url()).pathname))
   await page.getByRole('button', { name: 'Zugang speichern und Modelle laden', exact: true }).click()
   const saved = await response
-  expect([200, 201]).toContain(saved.status())
+  if (![200, 201].includes(saved.status())) {
+    const problem = await saved.json().catch(() => ({})) as { type?: unknown; detail?: unknown }
+    const type = typeof problem.type === 'string' && /^(?:about:blank|urn:calograph:problem:[a-z0-9-]+)$/.test(problem.type) ? problem.type : 'unclassified'
+    const accountBusy = problem.detail === 'Für dieses Konto läuft gerade eine administrative Operation.'
+    expect([200, 201], `Provider setup rejected: HTTP ${saved.status()}, ${type}, accountBusy=${accountBusy}`).toContain(saved.status())
+  }
   const connection = await saved.json() as { id: string }
   await expect(page.locator('select[name="ai-model"] option[value="synthetic-nutrition-model"]')).toHaveCount(1)
   const modelSaved = page.waitForResponse(result => result.request().method() === 'PUT' && result.url().includes(`/settings/ai/connections/${connection.id}`))
