@@ -148,6 +148,8 @@ def test_document_permission_checked_again_at_dispatch_and_kept_for_followups(db
     runs.execute_run(user.id, run_id)
     assert service.get_run(run_id).state == "succeeded"
     assert base64.b64decode(calls[0].messages[-1].attachments[0].data_base64) == PDF
+    assert "even though they are not in CALOGRAPH_CONTEXT" in calls[0].system_instruction
+    assert "CALOGRAPH_ATTACHMENT:<id>" in calls[0].system_instruction
     followup_id = uuid4()
     with pytest.raises(ValueError):
         service.put_run(conversation_id, followup_id, payload)

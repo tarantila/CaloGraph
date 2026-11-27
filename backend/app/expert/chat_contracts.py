@@ -117,7 +117,15 @@ class RunPut(ExpertContract):
 class AnswerFinding(ExpertContract):
     kind: Literal["observation", "interpretation", "guidance"]
     text: str = Field(min_length=1, max_length=2500, repr=False)
-    evidence_ids: tuple[str, ...] = Field(max_length=8)
+    evidence_ids: tuple[str, ...] = Field(
+        max_length=8,
+        description=(
+            "Use only IDs supplied in CALOGRAPH_CONTEXT evidence_ids or in a "
+            "CALOGRAPH_ATTACHMENT:<id> label. Cite an uploaded file as "
+            "attachment:<id>. Observations and interpretations require at least "
+            "one known evidence ID; never invent or guess IDs."
+        ),
+    )
 
     @model_validator(mode="after")
     def grounded_finding(self) -> AnswerFinding:

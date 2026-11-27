@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.orm import Session, defer
 
@@ -723,6 +723,10 @@ the supplied coverage anchor while preserving long-term context. A date mentione
 is a question, not a reason to discard the overall history. Ask when detail is unavailable.
 Return ONLY JSON matching this schema, without markdown. Every observation/interpretation
 finding requires known evidence_ids from context. General guidance may use an empty list.
+Uploaded files are identified by CALOGRAPH_ATTACHMENT:<id> labels in the user message.
+For any finding about an uploaded file, include its exact attachment:<id> reference in
+evidence_ids; these file references are valid even though they are not in CALOGRAPH_CONTEXT.
+Never invent a file ID. If a document does not support a finding, omit that finding.
 The opening text must not invent factual numbers unsupported by findings.
 """
 
@@ -1090,9 +1094,12 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
         raw = result.content.strip()
         if raw.startswith("```json") and raw.endswith("```"):
             raw = raw[7:-3].strip()
-        answer = ExpertAnswer.model_validate(
-            json.loads(raw, parse_constant=_reject_json_constant)
-        )
+        try:
+            answer = ExpertAnswer.model_validate(
+                json.loads(raw, parse_constant=_reject_json_constant)
+            )
+        except (ValidationError, json.JSONDecodeError):
+            raise GenerationFailure("invalid_response") from None
         if any(not set(finding.evidence_ids).issubset(evidence_ids) for finding in answer.findings):
             raise GenerationFailure("invalid_evidence")
         if key and key.get_secret_value() in answer.model_dump_json():

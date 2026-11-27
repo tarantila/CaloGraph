@@ -929,3 +929,17 @@ def test_answer_json_duplicate_keys_preserve_last_value_behavior(
     assert result.state == "succeeded" and result.answer is not None
     assert result.answer.text == "second"
     assert service.get_conversation(conversation_id).title == "Topic title"
+
+
+def test_observation_without_evidence_is_rejected(db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    _conversation_id, identifier, _payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    ungrounded = json.dumps({"text": "Unsupported", "findings": [{
+        "kind": "observation", "text": "An ungrounded observation.", "evidence_ids": [],
+    }]})
+    calls = []
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: calls.append(True) or _success(ungrounded))
+    runs.execute_run(user.id, identifier)
+    result = runs.ExpertRunService(db, owner=user).get_run(identifier)
+    assert result.state == "failed" and result.error_code == "invalid_response" and result.answer is None
+    assert calls == [True]
