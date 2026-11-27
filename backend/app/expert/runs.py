@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.orm import Session, defer
 
@@ -257,7 +257,7 @@ class ExpertRunService:
                     if (
                         set(candidate_consent.data_domains) == set(preferences.data_domains)
                         and candidate_consent.include_meal_names == preferences.include_meal_names
-                        and candidate_consent.include_attachments == include_attachments
+                        and (candidate_consent.include_attachments or not include_attachments)
                         and AIConsentService(self.db, owner=self.owner)._view(candidate_consent).state == "active"
                     ):
                         matching_consent = candidate_consent.id
@@ -290,7 +290,7 @@ class ExpertRunService:
                     if (
                         set(row.data_domains) == set(preferences.data_domains)
                         and row.include_meal_names == preferences.include_meal_names
-                        and row.include_attachments == include_attachments
+                        and (row.include_attachments or not include_attachments)
                     ):
                         view = AIConsentService(self.db, owner=self.owner)._view(row)
                         if view.state == "active":
@@ -699,6 +699,9 @@ def _failure(owner_id: UUID, run_id: UUID, code: str) -> None:
 
 
 SYSTEM_PROMPT = """You are CaloGraph's Nutrition Expert. Answer in the account's language.
+Start directly with the useful answer in a warm, natural, matter-of-fact adviser tone.
+Omit stock greetings and acknowledgments such as "Gern", "Gerne", "Ja, gern", "Sure"
+or "Of course"; do not imitate repetitive openings in earlier assistant messages.
 Use only supplied canonical CaloGraph facts for personal-data claims. The server calculates;
 you interpret. Missing is not zero. Never blend providers or invent missing metrics, targets,
 weight plateaus or causation. Scalar records retain provider provenance: a change in source
@@ -723,6 +726,10 @@ the supplied coverage anchor while preserving long-term context. A date mentione
 is a question, not a reason to discard the overall history. Ask when detail is unavailable.
 Return ONLY JSON matching this schema, without markdown. Every observation/interpretation
 finding requires known evidence_ids from context. General guidance may use an empty list.
+Uploaded files are identified by CALOGRAPH_ATTACHMENT:<id> labels in the user message.
+For any finding about an uploaded file, include its exact attachment:<id> reference in
+evidence_ids; these file references are valid even though they are not in CALOGRAPH_CONTEXT.
+Never invent a file ID. If a document does not support a finding, omit that finding.
 The opening text must not invent factual numbers unsupported by findings.
 """
 
@@ -1090,9 +1097,12 @@ def execute_run(owner_id: UUID, run_id: UUID) -> None:
         raw = result.content.strip()
         if raw.startswith("```json") and raw.endswith("```"):
             raw = raw[7:-3].strip()
-        answer = ExpertAnswer.model_validate(
-            json.loads(raw, parse_constant=_reject_json_constant)
-        )
+        try:
+            answer = ExpertAnswer.model_validate(
+                json.loads(raw, parse_constant=_reject_json_constant)
+            )
+        except (ValidationError, json.JSONDecodeError):
+            raise GenerationFailure("invalid_response") from None
         if any(not set(finding.evidence_ids).issubset(evidence_ids) for finding in answer.findings):
             raise GenerationFailure("invalid_evidence")
         if key and key.get_secret_value() in answer.model_dump_json():

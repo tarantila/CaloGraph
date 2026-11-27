@@ -85,7 +85,7 @@ class AIMedia(_Contract):
 
 
 class AIMessage(_Contract):
-    attachments: tuple[AIMedia, ...] = Field(default=(), max_length=3, repr=False)
+    attachments: tuple[AIMedia, ...] = Field(default=(), max_length=20, repr=False)
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=8_000, repr=False)
 
@@ -105,7 +105,7 @@ class GenerationRequest(_Contract):
     @model_validator(mode="after")
     def bounded_media(self) -> GenerationRequest:
         items = [item for message in self.messages for item in message.attachments]
-        if len(items) > 3 or sum(len(item.data_base64) for item in items) > 11_184_816:
+        if len(items) > 20 or sum(len(item.data_base64) for item in items) > 11_184_816:
             raise ValueError("generation media limit exceeded")
         return self
 

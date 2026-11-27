@@ -181,6 +181,7 @@ test('daily averages, weekday content, and sidebar order stay consistent', async
     'Übersicht',
     'Tagesverlauf',
     'Analyse',
+    'Nutrition Expert',
     'Wochenbudget',
     'Wochentage',
     'Kalender',
@@ -190,7 +191,7 @@ test('daily averages, weekday content, and sidebar order stay consistent', async
     label.trim(),
   )
   expect(utilityNavigation).toEqual(['Konto'])
-  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(8)
+  expect(new Set([...primaryNavigation, ...utilityNavigation]).size).toBe(9)
   expect(page.locator('.sidebar nav a.active')).toHaveCount(1)
   await page.getByRole('link', { name: 'Wochentage' }).click()
   await expect(page.getByRole('heading', { name: 'Wochentagsanalyse' })).toBeVisible()

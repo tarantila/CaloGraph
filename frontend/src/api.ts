@@ -306,7 +306,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const identitySnapshot = mutating && !publicMutation ? captureAuthIdentity() : undefined
   let requestCsrfGeneration = csrfTokenGeneration
   const headers = new Headers(options.headers)
-  if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   if (identitySnapshot) {
     assertAuthIdentity(identitySnapshot)
     let requestToken = csrfToken

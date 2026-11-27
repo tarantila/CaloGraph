@@ -39,6 +39,15 @@ if [ -n "${E2E_USERNAME:-}" ]; then
 else
   e2e_username="e2e-admin-$(date +%s)-$$"
 fi
+if [ -n "${E2E_NUTRITION_USERNAME:-}" ]; then
+  e2e_nutrition_username=$E2E_NUTRITION_USERNAME
+else
+  e2e_nutrition_username="nutrition-e2e-$(date +%s)-$$"
+fi
+if [ "$e2e_nutrition_username" = "$e2e_username" ]; then
+  printf 'E2E_NUTRITION_USERNAME must differ from E2E_USERNAME.\n' >&2
+  exit 1
+fi
 e2e_password=${E2E_PASSWORD:-e2e-password-change-me}
 analysis_demo_password=${E2E_ANALYSIS_DEMO_PASSWORD:-analysis-demo-ci-synthetic-password}
 
@@ -55,6 +64,11 @@ compose exec -T e2e-backend python -m app.cli create-user \
   --admin \
   --skip-onboarding \
   --if-not-exists
+compose exec -T e2e-backend python -m app.cli create-user \
+  --username "$e2e_nutrition_username" \
+  --password "$e2e_password" \
+  --skip-onboarding \
+  --if-not-exists
 token_output=$(compose exec -T e2e-backend python -m app.cli create-import-token \
   --username "$e2e_username" \
   --label playwright)
@@ -64,12 +78,14 @@ if [ "${E2E_USE_PREBUILT_IMAGES:-false}" = "true" ]; then
   compose build e2e
   compose run --rm --no-deps \
     -e E2E_USERNAME="$e2e_username" \
+    -e E2E_NUTRITION_USERNAME="$e2e_nutrition_username" \
     -e E2E_PASSWORD="$e2e_password" \
     -e E2E_IMPORT_TOKEN="$e2e_token" \
     e2e npx playwright test --workers=1 --grep-invert='verification-data\.spec\.ts'
 else
   compose run --rm --build --no-deps \
     -e E2E_USERNAME="$e2e_username" \
+    -e E2E_NUTRITION_USERNAME="$e2e_nutrition_username" \
     -e E2E_PASSWORD="$e2e_password" \
     -e E2E_IMPORT_TOKEN="$e2e_token" \
     e2e npx playwright test --workers=1 --grep-invert='verification-data\.spec\.ts'

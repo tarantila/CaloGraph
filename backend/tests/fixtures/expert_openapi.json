@@ -5515,7 +5515,8 @@
           },
           "maxItems": 8,
           "title": "Evidence Ids",
-          "type": "array"
+          "type": "array",
+          "description": "Use only IDs supplied in CALOGRAPH_CONTEXT evidence_ids or in a CALOGRAPH_ATTACHMENT:<id> label. Cite an uploaded file as attachment:<id>. Observations and interpretations require at least one known evidence ID; never invent or guess IDs."
         },
         "kind": {
           "enum": [
@@ -6513,7 +6514,7 @@
             "format": "uuid",
             "type": "string"
           },
-          "maxItems": 3,
+          "maxItems": 20,
           "title": "Attachment Ids",
           "type": "array"
         },
@@ -6593,7 +6594,7 @@
           "items": {
             "$ref": "#/components/schemas/AttachmentView"
           },
-          "maxItems": 3,
+          "maxItems": 20,
           "title": "Attachments",
           "type": "array"
         },

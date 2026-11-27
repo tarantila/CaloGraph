@@ -25,7 +25,7 @@ from app.services.user_operation_lock import exclusive_user_lifecycle_operation
 MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 MAX_CONVERSATION_BYTES = 8 * 1024 * 1024
 MAX_ACCOUNT_BYTES = 64 * 1024 * 1024
-MAX_ATTACHMENTS = 3
+MAX_ATTACHMENTS = 20
 MEDIA_TYPES = frozenset({"application/pdf", "image/png", "image/jpeg", "image/webp"})
 
 
@@ -89,7 +89,7 @@ class AttachmentService:
 
     def rows(self, conversation_id: UUID, identifiers: tuple[UUID, ...]) -> tuple[ExpertAttachment, ...]:
         if len(set(identifiers)) != len(identifiers) or len(identifiers) > MAX_ATTACHMENTS:
-            raise ConnectionProblem("expert-attachment-limit", 422, "Maximal drei Anhänge pro Anfrage.")
+            raise ConnectionProblem("expert-attachment-limit", 422, "Maximal 20 Anhänge pro Anfrage.")
         result = []
         for identifier in identifiers:
             row = self.db.get(ExpertAttachment, (self.owner.id, identifier), populate_existing=True)

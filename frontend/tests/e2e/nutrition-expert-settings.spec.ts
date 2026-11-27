@@ -30,7 +30,12 @@ async function configureSyntheticProvider(page: Page, kind: 'local' | 'gateway')
   const response = page.waitForResponse(result => result.request().method() === 'PUT' && /\/settings\/ai\/connections\/[^/]+$/.test(new URL(result.url()).pathname))
   await page.getByRole('button', { name: 'Zugang speichern und Modelle laden', exact: true }).click()
   const saved = await response
-  expect([200, 201]).toContain(saved.status())
+  if (![200, 201].includes(saved.status())) {
+    const problem = await saved.json().catch(() => ({})) as { type?: unknown; detail?: unknown }
+    const type = typeof problem.type === 'string' && /^(?:about:blank|urn:calograph:problem:[a-z0-9-]+)$/.test(problem.type) ? problem.type : 'unclassified'
+    const accountBusy = problem.detail === 'Für dieses Konto läuft gerade eine administrative Operation.'
+    expect([200, 201], `Provider setup rejected: HTTP ${saved.status()}, ${type}, accountBusy=${accountBusy}`).toContain(saved.status())
+  }
   const connection = await saved.json() as { id: string }
   await expect(page.locator('select[name="ai-model"] option[value="synthetic-nutrition-model"]')).toHaveCount(1)
   const modelSaved = page.waitForResponse(result => result.request().method() === 'PUT' && result.url().includes(`/settings/ai/connections/${connection.id}`))
@@ -77,7 +82,14 @@ test('Nutrition Expert can revoke all account permissions with one action', asyn
   const gatewayId = await configureSyntheticProvider(page, 'gateway')
   await setRoutingEnabled(page, localId, true)
   await setRoutingEnabled(page, gatewayId, true)
-  await expect(page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${localId}"]`) })).toContainText('Bevorzugter Anbieter')
+  await expect(page.locator('.routing-row')).toHaveCount(2)
+  const localRow = page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${localId}"]`) })
+  if ((await localRow.locator('.routing-position').innerText()).trim() !== '1.') {
+    const reordered = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().endsWith('/settings/ai/routing'))
+    await localRow.getByRole('button', { name: 'Lokaler KI-Server nach oben', exact: true }).click()
+    expect((await reordered).status()).toBe(200)
+  }
+  await expect(localRow).toContainText('Bevorzugter Anbieter')
   await expect(page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${gatewayId}"]`) })).toContainText('Ersatzanbieter')
 
   const grantedResponses = [

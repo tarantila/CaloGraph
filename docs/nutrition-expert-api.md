@@ -366,6 +366,13 @@ verify the underlying values, missingness and ownership.
 
 ## Durable conversation and run resources
 
+The authenticated frontend exposes conversations at `/nutrition-expert`. The
+entry screen offers chat and full-history analysis; it does not ask for a date
+range. Chat titles come from the server, while analyses are labelled with their
+creation date. Conversation and turn state is reloaded from these resources, so
+opening a saved conversation or checking an existing run never starts provider
+generation.
+
 All routes bind the session owner; administrator status does not widen access.
 Mutations require CSRF. An account may keep at most 200 conversations and 200
 turns per conversation, with one queued/running turn per account.
@@ -375,6 +382,10 @@ turns per conversation, with one queued/running turn per account.
   `include_attachments=true` requests a matching document grant; it does not
   grant permission or disclose file metadata. The response also reports the
   routing version and each configured candidate's own applicable consent ID.
+  Existing grants apply across conversations. An attachment grant also covers
+  text-only requests, while a text-only grant never authorizes attachments.
+  Provider configuration, purpose, data categories, meal-name scope, policy,
+  all-history scope and revocation checks remain unchanged.
 - `PUT /api/v1/expert/conversations/{uuid}` creates (201) or replays (200) an
   immutable chat/analysis conversation. GET lists/reads; DELETE removes its turns.
   Consumed UUIDs remain reserved after deletion, including IDs reserved by an
@@ -387,7 +398,7 @@ turns per conversation, with one queued/running turn per account.
 - `PUT /api/v1/expert/conversations/{uuid}/turns/{run_uuid}` binds the message,
   request kind, active connection/version, preference version and consent ID.
   Identical retries return current state without scheduling another execution;
-  `attachment_ids` may name at most three already uploaded files owned by that
+  `attachment_ids` may name at most 20 already uploaded files owned by that
   conversation. An optional `routing_configuration_version` opts into the
   current ordered provider route. Every enabled candidate is snapshotted with
   its configuration and own consent ID; candidates without a matching all-history
@@ -446,7 +457,7 @@ deletes an unused file or reserves an unknown UUID. Uploads require session and
 CSRF validation. The request stream is bounded to 4 MiB/file and 20 seconds; at
 most four upload slots are held per backend process. Account-locked database
 quota checks run after the body arrives, so locks and transactions do not span
-untrusted client uploads. The database enforces at most three files and 8 MiB per
+untrusted client uploads. The service enforces at most 20 files and 8 MiB per
 conversation and 64 MiB per account under the account operation lock, including
 uploads handled by separate workers. Draft listing includes files referenced by
 failed or cancelled runs so they can be explicitly selected again. File deletion

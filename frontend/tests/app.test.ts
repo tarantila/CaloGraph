@@ -31,6 +31,7 @@ async function mountApp(path = '/tage', isAdmin = false) {
     routes: [
       { path: '/', name: 'overview', component: { template: '<h1>Übersicht</h1>' } },
       { path: '/tage', name: 'daily', component: { template: '<h1>Tagesverlauf</h1>' } },
+      { path: '/nutrition-expert', name: 'nutrition-expert', component: { template: '<h1>Nutrition Expert</h1>' } },
       { path: '/ernaehrung', name: 'nutrition', component: { template: '<h1>Ernährung</h1>' } },
       { path: '/aktivitaet', name: 'activity', component: { template: '<h1>Aktivität</h1>' } },
       { path: '/gewicht', name: 'weight', component: { template: '<h1>Gewicht</h1>' } },
@@ -97,6 +98,7 @@ describe('App-Sidebar-Navigation', () => {
       { href: '/', label: 'Übersicht' },
       { href: '/tage', label: 'Tagesverlauf' },
       { href: '/analyse', label: 'Analyse' },
+      { href: '/nutrition-expert', label: 'Nutrition Expert' },
       { href: '/wochen', label: 'Wochenbudget' },
       { href: '/wochentage', label: 'Wochentage' },
       { href: '/kalender', label: 'Kalender' },
@@ -106,7 +108,7 @@ describe('App-Sidebar-Navigation', () => {
       '/konto/persoenliche-daten',
     ])
     expect(wrapper.findAll('aside a').filter((link) => link.classes('active'))).toHaveLength(1)
-    expect(wrapper.findAll('aside nav a')).toHaveLength(8)
+    expect(wrapper.findAll('aside nav a')).toHaveLength(9)
     wrapper.unmount()
   })
 
@@ -124,6 +126,14 @@ describe('App-Sidebar-Navigation', () => {
   it('does not show an admin-console entry to normal users', async () => {
     const { wrapper } = await mountApp()
     expect(wrapper.find('aside a[href^="/admin"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('marks Nutrition Expert as the active primary navigation entry', async () => {
+    const { wrapper } = await mountApp('/nutrition-expert')
+    const link = wrapper.get('.sidebar-primary-navigation a[href="/nutrition-expert"]')
+    expect(link.text()).toBe('Nutrition Expert')
+    expect(link.classes()).toContain('active')
     wrapper.unmount()
   })
 

@@ -96,6 +96,114 @@ def _queued(db: Session, owner: User, *, mode: str = "chat") -> tuple[object, Ru
     return (conversation_id, identifier, payload)
 
 
+def test_setup_reuses_document_grants_for_text_and_never_widens_text_grants(
+    db: Session, user: User,
+) -> None:
+    _conversation_id, payload, primary = _prepare(db, user)
+    preferences = ExpertPreferencesService(db, owner=user).get()
+    primary_text = AIConsentService(db, owner=user).get(payload.consent_id)
+    backup, _ = ProviderConnectionService(db, owner=user).put(
+        uuid4(),
+        ProviderConnectionPut(
+            label="Synthetic fallback", provider_kind="anthropic", model_id="backup-model",
+            enabled=True, api_key=KEY,
+        ),
+    )
+
+    def grant(connection, *, documents: bool):
+        consent, _ = AIConsentService(db, owner=user).put(
+            uuid4(),
+            AIConsentPut(
+                connection_id=connection.id,
+                configuration_version=connection.configuration_version,
+                purpose="nutrition_chat",
+                data_domains=preferences.data_domains,
+                include_meal_names=preferences.include_meal_names,
+                include_attachments=documents,
+                history=ConsentHistory(mode="all_available", start=None, end=None),
+                policy_version=CONSENT_POLICY_VERSION,
+            ),
+        )
+        return consent
+
+    backup_text = grant(backup, documents=False)
+    routing = AIRoutingService(db, owner=user).get()
+    AIRoutingService(db, owner=user).put(AIRoutingPut(
+        expected_configuration_version=routing.configuration_version,
+        entries=(
+            AIRoutingEntryPut(connection_id=primary.id, enabled=True),
+            AIRoutingEntryPut(connection_id=backup.id, enabled=True),
+        ),
+    ))
+    service = runs.ExpertRunService(db, owner=user)
+
+    document_setup = service.setup("chat", include_attachments=True)
+    assert document_setup.consent is None
+    assert document_setup.fallback_candidates[1].consent_id is None
+
+    primary_documents = grant(primary, documents=True)
+    backup_documents = grant(backup, documents=True)
+    document_setup = service.setup("chat", include_attachments=True)
+    assert document_setup.consent is not None and document_setup.consent.id == primary_documents.id
+    assert document_setup.fallback_candidates[1].consent_id == backup_documents.id
+
+    text_setup = service.setup("chat", include_attachments=False)
+    assert text_setup.consent is not None and text_setup.consent.id == primary_documents.id
+    assert text_setup.fallback_candidates[1].consent_id == backup_documents.id
+    assert primary_text.include_attachments is False
+    assert backup_text.include_attachments is False
+    AIConsentService(db, owner=user).revoke(backup_documents.id)
+    assert service.setup("chat", include_attachments=True).fallback_candidates[1].consent_id is None
+    assert service.setup("chat", include_attachments=False).fallback_candidates[1].consent_id == backup_text.id
+
+
+def test_setup_keeps_domain_purpose_revocation_and_configuration_scope_exact(
+    db: Session, user: User,
+) -> None:
+    _conversation_id, payload, connection = _prepare(db, user)
+    service = runs.ExpertRunService(db, owner=user)
+    consent_service = AIConsentService(db, owner=user)
+    assert service.setup("chat").consent is not None
+    assert service.setup("analysis").consent is None
+
+    preferences = ExpertPreferencesService(db, owner=user).get()
+    ExpertPreferencesService(db, owner=user).put(ExpertPreferencesPut(
+        data_domains=("nutrition",), include_meal_names=False,
+    ))
+    assert service.setup("chat").consent is None
+
+    ExpertPreferencesService(db, owner=user).put(ExpertPreferencesPut(
+        data_domains=preferences.data_domains, include_meal_names=False,
+    ))
+    assert service.setup("chat").consent is None
+
+    consent_service.revoke(payload.consent_id)
+    ExpertPreferencesService(db, owner=user).put(ExpertPreferencesPut(
+        data_domains=preferences.data_domains,
+        include_meal_names=preferences.include_meal_names,
+    ))
+    assert service.setup("chat").consent is None
+
+    active, _ = consent_service.put(uuid4(), AIConsentPut(
+        connection_id=connection.id,
+        configuration_version=connection.configuration_version,
+        purpose="nutrition_chat", data_domains=preferences.data_domains,
+        include_meal_names=preferences.include_meal_names,
+        history=ConsentHistory(mode="all_available", start=None, end=None),
+        policy_version=CONSENT_POLICY_VERSION,
+    ))
+    assert service.setup("chat").consent.id == active.id
+    replacement, _ = ProviderConnectionService(db, owner=user).put(
+        connection.id,
+        ProviderConnectionPut(
+            label="Updated synthetic provider", provider_kind=connection.provider_kind,
+            model_id=connection.model_id, enabled=True, api_key=KEY,
+        ),
+    )
+    assert replacement.configuration_version > connection.configuration_version
+    assert service.setup("chat").consent is None
+
+
 def test_runs_are_owner_scoped_and_request_replay_does_not_requeue(db: Session, user: User) -> None:
     conversation_id, identifier, payload = _queued(db, user)
     service = runs.ExpertRunService(db, owner=user)
@@ -821,3 +929,17 @@ def test_answer_json_duplicate_keys_preserve_last_value_behavior(
     assert result.state == "succeeded" and result.answer is not None
     assert result.answer.text == "second"
     assert service.get_conversation(conversation_id).title == "Topic title"
+
+
+def test_observation_without_evidence_is_rejected(db: Session, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    _conversation_id, identifier, _payload = _queued(db, user)
+    monkeypatch.setattr(runs, "ContextBuilder", lambda *_args, **_kwargs: SimpleNamespace(build=lambda _prefs: _context()))
+    ungrounded = json.dumps({"text": "Unsupported", "findings": [{
+        "kind": "observation", "text": "An ungrounded observation.", "evidence_ids": [],
+    }]})
+    calls = []
+    monkeypatch.setattr(runs, "generate", lambda *_args, **_kwargs: calls.append(True) or _success(ungrounded))
+    runs.execute_run(user.id, identifier)
+    result = runs.ExpertRunService(db, owner=user).get_run(identifier)
+    assert result.state == "failed" and result.error_code == "invalid_response" and result.answer is None
+    assert calls == [True]
