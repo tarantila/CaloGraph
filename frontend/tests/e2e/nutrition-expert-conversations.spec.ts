@@ -1,8 +1,47 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test as base, type Page, type Response } from '@playwright/test'
 
 const username = process.env.E2E_USERNAME ?? 'e2e-admin'
 const password = process.env.E2E_PASSWORD ?? 'e2e-password-change-me'
 const endpoint = 'http://ai-provider-demo:8081/v1'
+
+const test = base.extend<{ ownedResources: void }>({
+  ownedResources: [async ({ page }, use) => {
+    const connectionIds = new Set<string>()
+    const conversationIds = new Set<string>()
+    const recordCreatedResource = (response: Response): void => {
+      if (response.request().method() !== 'PUT' || response.status() !== 201) return
+      const path = new URL(response.url()).pathname
+      const conversation = path.match(/^\/api\/v1\/expert\/conversations\/([\da-f-]{36})$/i)
+      const connection = path.match(/^\/api\/v1\/settings\/ai\/connections\/([\da-f-]{36})$/i)
+      if (conversation) conversationIds.add(conversation[1]!)
+      if (connection) connectionIds.add(connection[1]!)
+    }
+    page.on('response', recordCreatedResource)
+    await use()
+    page.off('response', recordCreatedResource)
+
+    if (conversationIds.size === 0 && connectionIds.size === 0) return
+
+    const csrfResponse = await page.request.get(new URL('/api/v1/auth/csrf', page.url()).toString())
+    expect(csrfResponse.status()).toBe(200)
+    const csrf = await csrfResponse.json() as { csrf_token: string }
+    const headers = { 'X-CSRF-Token': csrf.csrf_token }
+    for (const id of conversationIds) {
+      const deleted = await page.request.delete(
+        new URL(`/api/v1/expert/conversations/${id}`, page.url()).toString(),
+        { headers },
+      )
+      expect(deleted.status()).toBe(204)
+    }
+    for (const id of connectionIds) {
+      const deleted = await page.request.delete(
+        new URL(`/api/v1/settings/ai/connections/${id}`, page.url()).toString(),
+        { headers },
+      )
+      expect(deleted.status()).toBe(204)
+    }
+  }, { auto: true }],
+})
 
 async function login(page: Page): Promise<void> {
   await page.goto('/login')

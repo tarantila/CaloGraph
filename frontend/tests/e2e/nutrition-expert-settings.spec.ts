@@ -77,7 +77,14 @@ test('Nutrition Expert can revoke all account permissions with one action', asyn
   const gatewayId = await configureSyntheticProvider(page, 'gateway')
   await setRoutingEnabled(page, localId, true)
   await setRoutingEnabled(page, gatewayId, true)
-  await expect(page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${localId}"]`) })).toContainText('Bevorzugter Anbieter')
+  await expect(page.locator('.routing-row')).toHaveCount(2)
+  const localRow = page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${localId}"]`) })
+  if ((await localRow.locator('.routing-position').innerText()).trim() !== '1.') {
+    const reordered = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().endsWith('/settings/ai/routing'))
+    await localRow.getByRole('button', { name: 'Lokaler KI-Server nach oben', exact: true }).click()
+    expect((await reordered).status()).toBe(200)
+  }
+  await expect(localRow).toContainText('Bevorzugter Anbieter')
   await expect(page.locator('.routing-row').filter({ has: page.locator(`input[data-connection-id="${gatewayId}"]`) })).toContainText('Ersatzanbieter')
 
   const grantedResponses = [
