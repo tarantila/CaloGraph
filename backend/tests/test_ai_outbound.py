@@ -17,6 +17,7 @@ from app.ai.outbound import (
     OutboundError,
     _Address,
     _Endpoint,
+    _fetch_provider_json,
     _PinnedConnection,
     _validate_headers,
     fetch_provider_json,
@@ -33,6 +34,7 @@ class _ResponseHandler(BaseHTTPRequestHandler):
     seen_method: ClassVar[str | None] = None
     seen_body: ClassVar[bytes] = b""
     slow_header_delay = 0.0
+    automatic_content_length = True
 
     def end_headers(self) -> None:
         if self.slow_header_delay <= 0:
@@ -53,7 +55,7 @@ class _ResponseHandler(BaseHTTPRequestHandler):
         self.send_response(type(self).response_status)
         for key, value in type(self).response_headers.items():
             self.send_header(key, value)
-        if not any(key.lower() == "content-length" for key in type(self).response_headers):
+        if self.automatic_content_length and not any(key.lower() == "content-length" for key in type(self).response_headers):
             self.send_header("Content-Length", str(len(type(self).response_body)))
         self.end_headers()
         self.wfile.write(type(self).response_body)
@@ -78,6 +80,7 @@ def local_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setattr(_ResponseHandler, "seen_method", None)
     monkeypatch.setattr(_ResponseHandler, "seen_body", b"")
     monkeypatch.setattr(_ResponseHandler, "slow_header_delay", 0.0)
+    monkeypatch.setattr(_ResponseHandler, "automatic_content_length", True)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ResponseHandler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -182,6 +185,126 @@ def test_generation_post_sends_one_bounded_json_body_to_the_pinned_destination(l
     assert _ResponseHandler.seen_body == body
     assert _ResponseHandler.seen_headers["content-type"] == "application/json"
     assert _ResponseHandler.seen_headers["content-length"] == str(len(body))
+
+
+def test_oauth_form_uses_shared_pinned_transport_and_form_content_type(local_provider: str) -> None:
+    body = b"grant_type=refresh_token&refresh_token=synthetic-refresh"
+    result = _fetch_provider_json(
+        local_provider, "/oauth/token", headers={}, timeout_seconds=3, native=False,
+        request_body=body, _request_content_type="application/x-www-form-urlencoded",
+    )
+    assert result == {"data": [{"id": "synthetic-model"}]}
+    assert _ResponseHandler.seen_headers["content-type"] == "application/x-www-form-urlencoded"
+    assert _ResponseHandler.seen_body == body
+
+
+def test_oauth_json_refresh_uses_json_and_safe_empty_revocation_contract(local_provider: str, monkeypatch) -> None:
+    # Exercise the shared JSON encoding and response parser on the disposable
+    # local provider; the public helper itself remains pinned to OpenAI hosts.
+    body = b'{"client_id":"synthetic-client","grant_type":"refresh_token"}'
+    result = _fetch_provider_json(
+        local_provider, "/oauth/token", headers={}, timeout_seconds=3, native=False,
+        request_body=body,
+    )
+    assert result == {"data": [{"id": "synthetic-model"}]}
+    assert _ResponseHandler.seen_headers["content-type"] == "application/json"
+    assert _ResponseHandler.seen_body == body
+    monkeypatch.setattr(_ResponseHandler, "response_headers", {"Content-Length": "0"})
+    monkeypatch.setattr(_ResponseHandler, "response_body", b"")
+    assert _fetch_provider_json(
+        local_provider, "/oauth/revoke", headers={}, timeout_seconds=3, native=False,
+        request_body=b"token=synthetic", _allow_empty_success=True,
+    ) is None
+    unexpected = b'{"unexpected":true}'
+    monkeypatch.setattr(_ResponseHandler, "response_body", unexpected)
+    monkeypatch.setattr(_ResponseHandler, "response_headers", {"Content-Length": str(len(unexpected))})
+    with pytest.raises(OutboundError) as error:
+        _fetch_provider_json(
+            local_provider, "/oauth/revoke", headers={}, timeout_seconds=3, native=False,
+            request_body=b"token=synthetic", _allow_empty_success=True,
+        )
+    assert error.value.code == "invalid_response"
+
+
+def test_default_provider_response_requires_json_content_type(local_provider: str, monkeypatch) -> None:
+    monkeypatch.setattr(_ResponseHandler, "response_headers", {"Content-Length": "2"})
+    monkeypatch.setattr(_ResponseHandler, "response_body", b"{}")
+    with pytest.raises(OutboundError) as error:
+        _call(local_provider)
+    assert error.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("body", [b"", b"{}"])
+def test_revocation_reads_response_without_content_length_before_confirming_success(
+    local_provider: str, monkeypatch, chunked: bool, body: bytes,
+) -> None:
+    monkeypatch.setattr(_ResponseHandler, "automatic_content_length", False)
+    headers = {"Transfer-Encoding": "chunked"} if chunked else {}
+    wire_body = ((b"2\r\n" + body + b"\r\n") if body else b"") + b"0\r\n\r\n" if chunked else body
+    monkeypatch.setattr(_ResponseHandler, "response_headers", headers)
+    monkeypatch.setattr(_ResponseHandler, "response_body", wire_body)
+
+    def revoke():
+        return _fetch_provider_json(
+            local_provider, "/oauth/revoke", headers={}, timeout_seconds=3, native=False,
+            request_body=b"token=synthetic", _allow_empty_success=True,
+        )
+
+    if not body:
+        assert revoke() is None
+    else:
+        with pytest.raises(OutboundError) as error:
+            revoke()
+        assert error.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_only_explicitly_accepted_protocol_statuses_return_status_tuple(local_provider: str, monkeypatch, status: int) -> None:
+    monkeypatch.setattr(_ResponseHandler, "response_status", status)
+    monkeypatch.setattr(_ResponseHandler, "response_headers", {})
+    monkeypatch.setattr(_ResponseHandler, "response_body", b"")
+    assert _fetch_provider_json(
+        local_provider, "/oauth/poll", headers={}, timeout_seconds=3, native=False,
+        request_body=b"{}", _accepted_statuses=(403, 404), _return_status=True,
+    ) == (status, None)
+
+
+@pytest.mark.parametrize("code", ["invalid_grant", "invalid_refresh_token", "refresh_token_reused", "token_expired"])
+def test_oauth_errors_are_allowlisted_and_response_body_is_never_exposed(local_provider: str, monkeypatch, code: str) -> None:
+    monkeypatch.setattr(_ResponseHandler, "response_status", 400)
+    monkeypatch.setattr(_ResponseHandler, "response_body", json.dumps({"error": code, "error_description": "secret synthetic detail"}).encode())
+    with pytest.raises(OutboundError) as error:
+        _fetch_provider_json(
+            local_provider, "/oauth/token", headers={}, timeout_seconds=3, native=False,
+            request_body=b"synthetic-secret", _allow_oauth_error=True,
+        )
+    assert error.value.oauth_error == code
+    assert "synthetic" not in str(error.value)
+    monkeypatch.setattr(_ResponseHandler, "response_body", b'{"error":"attacker-value","error_description":"secret"}')
+    with pytest.raises(OutboundError) as error:
+        _fetch_provider_json(
+            local_provider, "/oauth/token", headers={}, timeout_seconds=3, native=False,
+            request_body=b"{}", _allow_oauth_error=True,
+        )
+    assert error.value.oauth_error is None
+
+
+def test_fixed_auth_wrappers_reject_unreviewed_host_paths_and_oversized_forms() -> None:
+    from app.ai.outbound import (
+        fetch_chatgpt_auth_json,
+        fetch_chatgpt_oauth_form,
+        fetch_chatgpt_oauth_json,
+    )
+
+    with pytest.raises(OutboundError):
+        fetch_chatgpt_auth_json("/admin", b"{}", timeout_seconds=3)
+    with pytest.raises(OutboundError):
+        fetch_chatgpt_oauth_form("/responses", {"token": "synthetic"}, timeout_seconds=3)
+    with pytest.raises(OutboundError):
+        fetch_chatgpt_oauth_json("/responses", {"refresh_token": "synthetic"}, timeout_seconds=3)
+    with pytest.raises(OutboundError):
+        fetch_chatgpt_oauth_form("/oauth/token", {"token": "x" * (64 * 1024)}, timeout_seconds=3)
 
 
 @pytest.mark.parametrize("body", [b"", b"x" * (outbound.MAX_PROVIDER_REQUEST_BYTES + 1)])

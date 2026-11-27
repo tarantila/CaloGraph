@@ -310,24 +310,21 @@ operation lock; reading a grant alone does not serialize later provider traffic.
 
 ## ChatGPT-plan authentication track
 
-As checked on 2026-11-13, the official
-[plan-usage guide](https://developers.openai.com/siwc/token-sharing-open-source)
-documents dynamic registration for open-source/local applications and directs
-paid or remotely hosted applications to an interest form. The
-[self-hosted VM guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
-requires completing OAuth locally and securely transferring the selected grant
-to a VM with its own stable host ID. A browser's loopback callback reaches the
-browser machine. The [client-ID guide](https://developers.openai.com/siwc/request-client-id)
-describes selected-partner access.
+The official [OpenAI authentication documentation](https://learn.chatgpt.com/docs/auth)
+describes device-code sign-in for Codex. This repository contains an isolated,
+experimental protocol module for that fixed-client device exchange, PKCE,
+signed identity validation, refresh rotation inputs and revocation. It records
+only the scopes actually returned; the Codex-compatible flow does not establish
+the documented `chatgpt.tokens.use.direct` scope or prove compatibility with the
+public Responses API plan-usage contract.
 
-These pages establish an official integration direction, but do not settle
-CaloGraph's centrally hosted multi-account browser authorization flow or its
-client eligibility. Official access/flow confirmation is still required before
-implementing that adapter. Keep per-account/per-workspace grants, PKCE/state/nonce,
-serialized refresh rotation and revocation as separate authentication contracts.
-No private ChatGPT backend endpoint, browser cookie or existing tool credential
-store is used. ChatGPT-plan remains required for v1; this unresolved authentication
-boundary does not prevent independent provider-settings implementation.
+This protocol module is not registered in the application, has no HTTP routes,
+browser surface, encrypted persistence or inference adapter, and cannot connect
+an account yet. It uses fixed authorization-host endpoints through the shared
+bounded outbound transport. It does not use browser cookies, local helper
+processes, copied credentials or private ChatGPT inference endpoints. Keep the
+ChatGPT-plan provider contract separate so a supported public SIWC flow can
+replace this experimental transport without changing the product settings UI.
 
 ## OpenAPI validation
 
