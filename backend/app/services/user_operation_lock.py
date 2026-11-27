@@ -101,6 +101,10 @@ def _postgres_lock(
                 text("SELECT pg_advisory_lock(:lock_id)"),
                 {"lock_id": lock_id},
             )
+            # PostgreSQL advisory locks are session-level: commit the SELECT's
+            # transaction while retaining the lock so remote I/O in the caller
+            # does not hold an idle-in-transaction connection open.
+            connection.commit()
             try:
                 yield
             finally:
@@ -108,6 +112,7 @@ def _postgres_lock(
                     text("SELECT pg_advisory_unlock(:lock_id)"),
                     {"lock_id": lock_id},
                 )
+                connection.commit()
         return
     acquire_function = "pg_try_advisory_lock_shared" if shared else "pg_try_advisory_lock"
     release_function = "pg_advisory_unlock_shared" if shared else "pg_advisory_unlock"
@@ -118,6 +123,7 @@ def _postgres_lock(
                 {"lock_id": lock_id},
             )
         )
+        connection.commit()
         if not acquired:
             raise UserOperationBusy
         try:
@@ -127,6 +133,7 @@ def _postgres_lock(
                 text(f"SELECT {release_function}(:lock_id)"),
                 {"lock_id": lock_id},
             )
+            connection.commit()
 
 @contextmanager
 def _operation_lock(db: Session, lock_id: int, *, shared: bool) -> Iterator[None]:

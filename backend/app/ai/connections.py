@@ -23,6 +23,7 @@ from app.models import (
     AIProviderConnection,
     AIProviderCredential,
     AIRoutingConfiguration,
+    SubscriptionCredential,
     User,
 )
 from app.services.credential_crypto import (
@@ -185,6 +186,18 @@ class ProviderConnectionService:
         with context:
             self._active()
             record = self._record(connection_id)
+            if record is not None:
+                subscription_credential = self._db.get(
+                    SubscriptionCredential, (self._owner.id, connection_id), populate_existing=True,
+                )
+                if subscription_credential is not None and (
+                    subscription_credential.encrypted_tokens is not None
+                    or subscription_credential.state in {"ready", "revocation_pending"}
+                ):
+                    raise ConnectionProblem(
+                        "ai-subscription-disconnect-required", 409,
+                        "Trenne zuerst das ChatGPT-Konto, bevor du diese Verbindung löschst.",
+                    )
             retirement = self._db.get(
                 AIConnectionRetirement, (self._owner.id, connection_id), populate_existing=True,
             )
