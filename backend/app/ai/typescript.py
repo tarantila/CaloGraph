@@ -33,6 +33,12 @@ from app.ai.routing_contracts import (
     AIRoutingPut,
     AIRoutingView,
 )
+from app.ai.subscription_authorization_contracts import (
+    SUBSCRIPTION_DEVICE_PRIVACY_ACKNOWLEDGEMENT,
+    SubscriptionAuthorizationStart,
+    SubscriptionAuthorizationView,
+    SubscriptionStatus,
+)
 from app.expert.chat_contracts import (
     AttachmentView,
     ConversationPage,
@@ -78,7 +84,7 @@ def _type(schema: dict[str, Any]) -> str:
 
 def generate_typescript() -> str:
     schemas: dict[str, Any] = {}
-    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView, AIRoutingEntryPut, AIRoutingEntryView, AIRoutingPut, AIRoutingView, AIConsentPut, AIConsentView, AIConsentPage, NutritionDaysPage, NutritionDaysQuery, ExpertPreferencesPut, ExpertPreferencesView, ExpertSetup, ConversationPut, ConversationView, ConversationPage, AttachmentView, RunPut, RunView, RunPage, RunEvents):
+    for model in (ProviderConnectionPut, ProviderConnectionView, ProviderConnectionPage, ProviderCatalog, ConnectionCheckPut, ConnectionCheckView, AISettingsPut, AISettingsView, AIRoutingEntryPut, AIRoutingEntryView, AIRoutingPut, AIRoutingView, AIConsentPut, AIConsentView, AIConsentPage, SubscriptionAuthorizationStart, SubscriptionAuthorizationView, SubscriptionStatus, NutritionDaysPage, NutritionDaysQuery, ExpertPreferencesPut, ExpertPreferencesView, ExpertSetup, ConversationPut, ConversationView, ConversationPage, AttachmentView, RunPut, RunView, RunPage, RunEvents):
         schema = model.model_json_schema(mode="validation", ref_template="#/$defs/{model}")
         schemas.update(schema.pop("$defs", {}))
         schemas[model.__name__] = schema
@@ -86,6 +92,7 @@ def generate_typescript() -> str:
         "// Generated from public backend AI settings and Expert contracts. Do not edit by hand.\n\n"
         + f"export const CONNECTION_PRIVACY_VERSION = {json.dumps(CONNECTION_PRIVACY_VERSION)} as const\n\n"
         + f"export const CONSENT_POLICY_VERSION = {json.dumps(CONSENT_POLICY_VERSION)} as const\n\n"
+        + f"export const SUBSCRIPTION_DEVICE_PRIVACY_ACKNOWLEDGEMENT = {json.dumps(SUBSCRIPTION_DEVICE_PRIVACY_ACKNOWLEDGEMENT)} as const\n\n"
         + "\n\n".join(f"export type {name} = {_type(schema)}" for name, schema in sorted(schemas.items()))
         + "\n"
     )

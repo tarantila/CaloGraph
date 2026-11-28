@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,7 @@ from app.models import (
     AIConnectionRetirement,
     AIProviderConnection,
     SubscriptionCredential,
+    SubscriptionDeviceAuthorization,
     User,
 )
 from app.services.credential_crypto import (
@@ -189,6 +192,46 @@ class SubscriptionCredentialStore:
             raise SubscriptionCredentialProblem("credential_unavailable")
         return {key: str(payload[key]) for key in fields}
 
+    def ensure_device_encryption(self, connection_id: UUID, authorization_id: UUID) -> None:
+        """Fail before an external authorization is started if encryption is unavailable."""
+        self._seal({"authorization": str(authorization_id), "probe": True}, connection_id)
+
+    def seal_device_metadata(
+        self,
+        connection_id: UUID,
+        authorization_id: UUID,
+        *,
+        configuration_version: int,
+        credential_generation: int,
+        metadata: dict[str, object],
+    ) -> bytes:
+        return self._seal({
+            "authorization": str(authorization_id),
+            "configuration_version": configuration_version,
+            "credential_generation": credential_generation,
+            "metadata": metadata,
+        }, connection_id, version=credential_generation)
+
+    def open_device_metadata(
+        self,
+        row: SubscriptionDeviceAuthorization,
+    ) -> dict[str, object]:
+        if row.encrypted_device is None:
+            raise SubscriptionCredentialProblem("authorization_state_unavailable")
+        payload = self._open(
+            row.encrypted_device, row.connection_id, version=row.credential_generation,
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"authorization", "configuration_version", "credential_generation", "metadata"}
+            or payload.get("authorization") != str(row.id)
+            or payload.get("configuration_version") != row.configuration_version
+            or payload.get("credential_generation") != row.credential_generation
+            or not isinstance(payload.get("metadata"), dict)
+        ):
+            raise SubscriptionCredentialProblem("authorization_state_binding_invalid")
+        return cast(dict[str, object], payload["metadata"])
+
     def _stored_grant(self, row: SubscriptionCredential, binding: dict[str, str]) -> DeviceGrant:
         if row.encrypted_tokens is None:
             raise SubscriptionCredentialProblem("credential_unavailable")
@@ -268,8 +311,11 @@ class SubscriptionCredentialStore:
         grant: DeviceGrant,
         *,
         expected_credential_version: int = 0,
+        _operation_locked: bool = False,
+        _commit: bool = True,
     ) -> SubscriptionCredentialMetadata:
-        with exclusive_user_lifecycle_operation(self._db, self._owner_id):
+        context = nullcontext() if _operation_locked else exclusive_user_lifecycle_operation(self._db, self._owner_id)
+        with context:
             if self._db.get(
                 AIConnectionRetirement, (self._owner_id, connection_id), populate_existing=True,
             ) is not None:
@@ -310,7 +356,8 @@ class SubscriptionCredentialStore:
                 row.encrypted_binding = encrypted_binding
                 row.expires_at = expires_at
                 row.updated_at = datetime.now(UTC)
-            self._commit()
+            if _commit:
+                self._commit()
             return self._metadata(row)
 
     @staticmethod
@@ -391,11 +438,38 @@ class SubscriptionCredentialStore:
             self._commit()
             return _PrivateSubscriptionGrant(rotated, self._owner_id, connection_id, latest.credential_version)
 
-    def disconnect(self, connection_id: UUID) -> SubscriptionCredentialMetadata | None:
-        with exclusive_user_lifecycle_operation(self._db, self._owner_id):
+    def disconnect(
+        self, connection_id: UUID, *, _operation_locked: bool = False,
+    ) -> SubscriptionCredentialMetadata | None:
+        context = nullcontext() if _operation_locked else exclusive_user_lifecycle_operation(self._db, self._owner_id)
+        with context:
             connection = self._connection(connection_id)
+            cancelled_ids = self._db.scalars(select(SubscriptionDeviceAuthorization.id).where(
+                SubscriptionDeviceAuthorization.user_id == self._owner_id,
+                SubscriptionDeviceAuthorization.connection_id == connection_id,
+                SubscriptionDeviceAuthorization.state.in_(
+                    ("starting", "pending", "polling", "exchanging"),
+                ),
+            )).all()
+            self._db.execute(
+                update(SubscriptionDeviceAuthorization)
+                .where(
+                    SubscriptionDeviceAuthorization.user_id == self._owner_id,
+                    SubscriptionDeviceAuthorization.connection_id == connection_id,
+                    SubscriptionDeviceAuthorization.state.in_(
+                        ("starting", "pending", "polling", "exchanging"),
+                    ),
+                )
+                .values(
+                    state="cancelled", safe_error_code="subscription-device-cancelled",
+                    encrypted_device=None, next_poll_at=None, updated_at=datetime.now(UTC),
+                )
+            )
+            cancelled = bool(cancelled_ids)
             row = self._registration(connection_id)
             if row is None:
+                if cancelled:
+                    self._commit()
                 return None
             grant: DeviceGrant | None = None
             encrypted_tokens = row.encrypted_tokens
@@ -406,6 +480,8 @@ class SubscriptionCredentialStore:
                 except SubscriptionCredentialProblem:
                     grant = None
             if row.state == "disconnected":
+                if cancelled:
+                    self._commit()
                 return self._metadata(row)
             if row.state in {
                 "revocation_pending", "revocation_unconfirmed", "refresh_claimed",

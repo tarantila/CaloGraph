@@ -79,6 +79,13 @@ backups, and the availability of the private application.
   revocation request automatically. Local disconnect disables use and clears
   tokens before attempting provider revocation. The compatibility-sensitive
   Codex transport does not establish the documented SIWC plan-usage contract.
+- **Device authorization replay or account mix-up:** server-side authorization
+  attempts are scoped to the authenticated account and connection, encrypt the
+  device metadata, and snapshot connection configuration and credential
+  generation. Durable one-use claims prevent start, poll or exchange replay;
+  retained UUID receipts block delayed starts after cancellation, pruning or
+  connection deletion. Only the user code and fixed verification URL reach the
+  browser, and device credentials remain server-side.
 - **Unofficial third-party interface:** SDK-only direct sync uses the pinned
   `yazio-sdk==0.4.0` through an isolated transport process, a fixed provider
   endpoint, explicit network timeouts, rejected redirects, no automatic

@@ -49,6 +49,10 @@ def test_connection_public_response_has_no_secret_fields_and_write_is_documented
         "ai_get_settings", "ai_put_settings",
         "ai_get_routing", "ai_put_routing",
         "ai_list_consents", "ai_get_consent", "ai_put_consent", "ai_revoke_consent",
+        "ai_get_subscription_status", "ai_disconnect_subscription",
+        "ai_get_current_subscription_authorization", "ai_get_subscription_authorization",
+        "ai_put_subscription_authorization", "ai_poll_subscription_authorization",
+        "ai_cancel_subscription_authorization",
     }
     mutation = contract["paths"]["/api/v1/settings/ai/connections/{connection_id}"]["put"]
     assert "Idempotently" in mutation["description"]
