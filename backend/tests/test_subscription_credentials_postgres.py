@@ -198,6 +198,7 @@ def test_0065_upgrade_adds_device_attempts_and_retained_receipts(monkeypatch):
             session.commit()
 
         command.upgrade(config, "20261128_0066")
+        command.check(config)
         inspector = sa.inspect(schema_engine)
         assert {"ai_subscription_device_authorizations", "ai_subscription_device_authorization_receipts"} <= set(
             inspector.get_table_names()

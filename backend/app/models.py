@@ -312,6 +312,10 @@ class SubscriptionDeviceAuthorizationReceipt(Base):
 
     __table_args__ = (
         CheckConstraint("length(request_hash) = 64", name="ck_ai_subscription_device_authorization_receipts_hash"),
+        Index(
+            "ix_ai_subscription_device_authorization_receipts_owner_created",
+            "user_id", "created_at",
+        ),
     )
 
     def __repr__(self) -> str:
