@@ -15,6 +15,7 @@ from app.models import (
     MfaRecoveryCode,
     PasskeyCredential,
     RateLimitBucket,
+    SubscriptionDeviceAuthorization,
     User,
     UserInvitation,
     UserSession,
@@ -228,6 +229,19 @@ def _apply_deactivation(db: Session, target: User, changed_at: datetime) -> None
         target.is_active = False
         target.deactivated_at = changed_at
     _revoke_open_recovery_tokens(db, target.id, changed_at)
+    db.execute(
+        update(SubscriptionDeviceAuthorization)
+        .where(
+            SubscriptionDeviceAuthorization.user_id == target.id,
+            SubscriptionDeviceAuthorization.state.in_(
+                ("starting", "pending", "polling", "exchanging"),
+            ),
+        )
+        .values(
+            state="cancelled", safe_error_code="subscription-device-cancelled",
+            encrypted_device=None, next_poll_at=None, updated_at=changed_at,
+        )
+    )
     db.execute(delete(UserSession).where(UserSession.user_id == target.id))
     db.execute(
         update(ApiToken)

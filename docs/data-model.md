@@ -23,6 +23,14 @@
   refresh or revocation I/O. An interrupted or ambiguous claim is not
   automatically retried. Application deletion requires disconnect before live
   credentials can be removed; database foreign keys cascade connection deletion.
+- `ai_subscription_device_authorizations`: owner-scoped, single-use device sign-in
+  attempts, bound to the provider connection and snapshots of its configuration
+  and credential generation. Device codes and private polling metadata are
+  encrypted; browser responses expose only the short user code and fixed
+  verification URI. Durable starting, polling and exchange claims prevent
+  replay after interruption. Small owner-scoped authorization receipts outlive
+  pruned attempts and connection deletion, preventing delayed requests from
+  resurrecting an authorization ID.
 - `ai_provider_checks`: account-scoped idempotent metadata-check claims and
   bounded normalized outcomes; records the configuration and privacy versions.
   The composite connection foreign key cascades deletion. A claim without a

@@ -238,6 +238,86 @@ class SubscriptionCredential(Base):
         )
 
 
+class SubscriptionDeviceAuthorization(Base):
+    """Bounded, encrypted one-attempt lifecycle for subscription device auth."""
+
+    __tablename__ = "ai_subscription_device_authorizations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["ai_provider_connections.user_id", "ai_provider_connections.id"],
+            ondelete="CASCADE", name="fk_ai_subscription_device_authorizations_connection",
+        ),
+        CheckConstraint(
+            "state IN ('starting', 'pending', 'polling', 'exchanging', 'completed', "
+            "'denied', 'failed', 'cancelled', 'expired', 'interrupted')",
+            name="ck_ai_subscription_device_authorizations_state",
+        ),
+        CheckConstraint("length(request_hash) = 64", name="ck_ai_subscription_device_authorizations_hash"),
+        CheckConstraint(
+            "configuration_version >= 1 AND credential_generation >= 0",
+            name="ck_ai_subscription_device_authorizations_snapshot",
+        ),
+        CheckConstraint(
+            "poll_interval_seconds BETWEEN 1 AND 60",
+            name="ck_ai_subscription_device_authorizations_interval",
+        ),
+        Index(
+            "uq_ai_subscription_device_authorizations_active_connection",
+            "user_id", "connection_id", unique=True,
+            postgresql_where=text("state IN ('starting', 'pending', 'polling', 'exchanging')"),
+            sqlite_where=text("state IN ('starting', 'pending', 'polling', 'exchanging')"),
+        ),
+        Index(
+            "ix_ai_subscription_device_authorizations_owner_created",
+            "user_id", "created_at",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    credential_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    safe_error_code: Mapped[str | None] = mapped_column(String(64))
+    oauth_status: Mapped[int | None] = mapped_column(Integer)
+    encrypted_device: Mapped[bytes | None] = mapped_column(LargeBinary)
+    poll_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"SubscriptionDeviceAuthorization(state={self.state!r}, "
+            f"configuration_version={self.configuration_version!r}, "
+            f"credential_generation={self.credential_generation!r})"
+        )
+
+
+class SubscriptionDeviceAuthorizationReceipt(Base):
+    """Minimal consumed-ID tombstone surviving attempt and connection deletion."""
+
+    __tablename__ = "ai_subscription_device_authorization_receipts"
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    authorization_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("length(request_hash) = 64", name="ck_ai_subscription_device_authorization_receipts_hash"),
+    )
+
+    def __repr__(self) -> str:
+        return "SubscriptionDeviceAuthorizationReceipt(<redacted>)"
+
+
 class AIProviderCheck(Base):
     __tablename__ = "ai_provider_checks"
     __table_args__ = (

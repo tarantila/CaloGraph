@@ -333,8 +333,18 @@ remote revocation. A failed revocation remains unconfirmed and is never retried
 automatically. This remains an experimental Codex-compatible transport and does
 not establish SIWC scope or public Responses API compatibility. The storage
 contract is isolated so a supported SIWC transport can replace it without
-changing product settings. These are internal primitives; authorization routes,
-browser controls and inference integration are not registered yet.
+changing product settings. The browser-facing device authorization API is
+registered under `/api/v1/settings/ai/connections/{connection_id}/subscription`.
+Starting requires the explicit privacy acknowledgement and the current
+credential version. The server returns only a short user code, the fixed
+official verification URI, status and bounded timing metadata. Polling and code
+exchange remain server-side; tokens, authorization codes, verifiers, device
+authorization IDs, account subjects and workspace IDs are never returned.
+Attempts are single-use, encrypted, owner-scoped and bound to the connection
+configuration and credential generation. Replays return the recorded state or
+conflict, and uncertain provider operations are not automatically retried.
+Disconnect cancels outstanding attempts before clearing the local grant.
+Inference integration remains separate.
 
 ## OpenAPI validation
 

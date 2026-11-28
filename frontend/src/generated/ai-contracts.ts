@@ -4,6 +4,8 @@ export const CONNECTION_PRIVACY_VERSION = "connection-metadata-2026-11-13" as co
 
 export const CONSENT_POLICY_VERSION = "expert-data-2026-11-14" as const
 
+export const SUBSCRIPTION_DEVICE_PRIVACY_ACKNOWLEDGEMENT = "subscription-device-oauth-2026-11-28" as const
+
 export type AIConsentPage = {
   items: ReadonlyArray<AIConsentView>
   next_after: string | null
@@ -323,4 +325,29 @@ export type RunView = {
   coverage_end: string | null
   answer: ExpertAnswer | null
   provider_attempts?: ReadonlyArray<ExpertProviderAttemptView>
+}
+
+export type SubscriptionAuthorizationStart = {
+  privacy_acknowledgement: "subscription-device-oauth-2026-11-28"
+  expected_credential_version: number
+}
+
+export type SubscriptionAuthorizationView = {
+  id: string
+  state: "starting" | "pending" | "polling" | "exchanging" | "completed" | "denied" | "failed" | "cancelled" | "expired" | "interrupted"
+  safe_error_code?: string | null
+  oauth_status?: number | null
+  created_at: string
+  expires_at: string
+  next_poll_at: string | null
+  poll_interval_seconds: number
+  user_code?: string | null
+  verification_uri?: "https://auth.openai.com/codex/device" | null
+}
+
+export type SubscriptionStatus = {
+  state: "not_connected" | "ready" | "refresh_claimed" | "refresh_unconfirmed" | "reauth_required" | "revocation_pending" | "revocation_unconfirmed" | "disconnected"
+  credential_version: number
+  expires_at: string | null
+  has_credential: boolean
 }
